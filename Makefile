@@ -1,4 +1,4 @@
-.PHONY: build test lint clean docker-build docker-push install-tools
+.PHONY: init build test lint clean docker-build docker-push
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
@@ -9,6 +9,14 @@ DOCKER_TAG?=latest
 AWS_REGION?=ap-northeast-1
 AWS_ACCOUNT_ID?=$(shell aws sts get-caller-identity --query Account --output text)
 ECR_REGISTRY?=$(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
+
+# Initialize project
+init:
+	@echo "Initializing project..."
+	@mkdir -p bin
+	go mod download
+	go mod verify
+	@echo "Project initialized successfully"
 
 # Build server binary
 build-server:
@@ -60,20 +68,11 @@ docker-push: docker-build
 	@echo "Pushing to ECR..."
 	docker push $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
 
-# Install development tools
-install-tools:
-	@echo "Installing development tools..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 # Run server locally
 run-server:
 	@echo "Running server locally..."
 	go run cmd/server/main.go
-
-# Format code
-fmt:
-	@echo "Formatting code..."
-	go fmt ./...
 
 # Update dependencies
 deps:
@@ -87,11 +86,12 @@ mocks:
 	go generate ./...
 
 # Full CI pipeline
-ci: deps fmt lint test build
+ci: deps lint test build
 
 # Help
 help:
 	@echo "Available targets:"
+	@echo "  init            - Initialize project (download deps, setup)"
 	@echo "  build-server    - Build server binary"
 	@echo "  build-agent     - Build agent binaries (amd64 + arm64)"
 	@echo "  build           - Build all binaries"
@@ -100,9 +100,7 @@ help:
 	@echo "  clean           - Remove build artifacts"
 	@echo "  docker-build    - Build Docker image"
 	@echo "  docker-push     - Build and push to ECR"
-	@echo "  install-tools   - Install development tools"
 	@echo "  run-server      - Run server locally"
-	@echo "  fmt             - Format code"
 	@echo "  deps            - Update dependencies"
 	@echo "  ci              - Run full CI pipeline"
 	@echo "  help            - Show this help"

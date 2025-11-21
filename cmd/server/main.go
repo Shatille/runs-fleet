@@ -21,12 +21,12 @@ func main() {
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK\n")
+		_, _ = fmt.Fprintf(w, "OK\n")
 	})
 
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Webhook received\n")
+		_, _ = fmt.Fprintf(w, "Webhook received\n")
 	})
 
 	server := &http.Server{
