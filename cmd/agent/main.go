@@ -1,3 +1,4 @@
+// Package main implements the runs-fleet agent that runs on EC2 instances to execute GitHub Actions jobs.
 package main
 
 import (

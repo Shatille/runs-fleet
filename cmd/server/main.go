@@ -1,3 +1,4 @@
+// Package main implements the runs-fleet orchestrator server that processes GitHub webhook events.
 package main
 
 import (
@@ -38,7 +39,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})

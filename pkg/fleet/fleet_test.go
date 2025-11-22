@@ -79,7 +79,7 @@ func TestCreateFleet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockEC2Client{
-				CreateFleetFunc: func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
 					if len(params.LaunchTemplateConfigs) > 0 && len(params.LaunchTemplateConfigs[0].Overrides) > 0 {
 						gotType := params.LaunchTemplateConfigs[0].Overrides[0].InstanceType
 						if string(gotType) != tt.wantInstanceType {
@@ -107,7 +107,7 @@ func TestCreateFleet(t *testing.T) {
 				},
 			}
 
-			manager := &FleetManager{
+			manager := &Manager{
 				ec2Client: mock,
 				config:    tt.config,
 			}
@@ -224,7 +224,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			manager := &FleetManager{
+			manager := &Manager{
 				ec2Client: tt.mock,
 				config:    tt.config,
 			}

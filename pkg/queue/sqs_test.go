@@ -102,7 +102,7 @@ func TestClient_SendMessage(t *testing.T) {
 				RunnerSpec:   "2cpu-linux-arm64",
 			},
 			mock: &mockSQSClient{
-				SendMessageFunc: func(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+				SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 					if params.MessageGroupId == nil || *params.MessageGroupId != "test-run-123" {
 						t.Error("MessageGroupId not set correctly")
 					}
@@ -124,7 +124,7 @@ func TestClient_SendMessage(t *testing.T) {
 				InstanceType: "t4g.medium",
 			},
 			mock: &mockSQSClient{
-				SendMessageFunc: func(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+				SendMessageFunc: func(_ context.Context, _ *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 					return nil, errors.New("sqs error")
 				},
 			},
@@ -157,7 +157,7 @@ func TestClient_ReceiveMessages(t *testing.T) {
 		{
 			name: "success with messages",
 			mock: &mockSQSClient{
-				ReceiveMessageFunc: func(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+				ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
 					return &sqs.ReceiveMessageOutput{
 						Messages: []types.Message{
 							{
@@ -180,7 +180,7 @@ func TestClient_ReceiveMessages(t *testing.T) {
 		{
 			name: "success with no messages",
 			mock: &mockSQSClient{
-				ReceiveMessageFunc: func(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+				ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
 					return &sqs.ReceiveMessageOutput{
 						Messages: []types.Message{},
 					}, nil
@@ -192,7 +192,7 @@ func TestClient_ReceiveMessages(t *testing.T) {
 		{
 			name: "sqs error",
 			mock: &mockSQSClient{
-				ReceiveMessageFunc: func(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+				ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
 					return nil, errors.New("sqs error")
 				},
 			},
@@ -228,7 +228,7 @@ func TestClient_DeleteMessage(t *testing.T) {
 		{
 			name: "success",
 			mock: &mockSQSClient{
-				DeleteMessageFunc: func(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
+				DeleteMessageFunc: func(_ context.Context, params *sqs.DeleteMessageInput, _ ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
 					if params.ReceiptHandle == nil || *params.ReceiptHandle != "receipt-123" {
 						t.Error("ReceiptHandle not set correctly")
 					}
@@ -240,7 +240,7 @@ func TestClient_DeleteMessage(t *testing.T) {
 		{
 			name: "sqs error",
 			mock: &mockSQSClient{
-				DeleteMessageFunc: func(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
+				DeleteMessageFunc: func(_ context.Context, _ *sqs.DeleteMessageInput, _ ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
 					return nil, errors.New("sqs error")
 				},
 			},

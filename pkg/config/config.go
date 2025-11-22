@@ -1,3 +1,4 @@
+// Package config manages application configuration from environment variables.
 package config
 
 import (
@@ -7,6 +8,7 @@ import (
 	"strings"
 )
 
+// Config holds all application configuration loaded from environment variables.
 type Config struct {
 	AWSRegion string
 
@@ -36,6 +38,7 @@ type Config struct {
 	LaunchTemplateName string
 }
 
+// Load reads configuration from environment variables and validates required fields.
 func Load() (*Config, error) {
 	cfg := &Config{
 		AWSRegion:           getEnv("AWS_REGION", "ap-northeast-1"),
@@ -69,6 +72,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// Validate checks that all required configuration fields are present and valid.
 func (c *Config) Validate() error {
 	if c.GitHubOrg == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_ORG is required")

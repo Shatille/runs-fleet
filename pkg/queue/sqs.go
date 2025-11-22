@@ -1,3 +1,4 @@
+// Package queue provides SQS-based message queue operations for job orchestration.
 package queue
 
 import (

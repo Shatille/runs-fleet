@@ -24,6 +24,7 @@ linters:
     - dupl
     - bodyclose
     - errorlint
+    - revive
 
 issues:
   exclude-use-default: false
