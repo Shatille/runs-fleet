@@ -3,7 +3,6 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strings"
 )
@@ -40,6 +39,11 @@ type Config struct {
 
 // Load reads configuration from environment variables and validates required fields.
 func Load() (*Config, error) {
+	maxRuntimeMinutes, err := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
 	cfg := &Config{
 		AWSRegion:           getEnv("AWS_REGION", "ap-northeast-1"),
 		GitHubOrg:           getEnv("RUNS_FLEET_GITHUB_ORG", ""),
@@ -60,7 +64,7 @@ func Load() (*Config, error) {
 		InstanceProfileARN:  getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
 		KeyName:             getEnv("RUNS_FLEET_KEY_NAME", ""),
 		SpotEnabled:         getEnv("RUNS_FLEET_SPOT_ENABLED", "true") == "true",
-		MaxRuntimeMinutes:   getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360),
+		MaxRuntimeMinutes:   maxRuntimeMinutes,
 		LogLevel:            getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
 		LaunchTemplateName:  getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 	}
@@ -117,16 +121,15 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func getEnvInt(key string, defaultValue int) int {
+func getEnvInt(key string, defaultValue int) (int, error) {
 	if value := os.Getenv(key); value != "" {
 		var result int
 		if _, err := fmt.Sscanf(value, "%d", &result); err != nil {
-			log.Printf("Warning: invalid integer for %s=%q, using default %d", key, value, defaultValue)
-		} else {
-			return result
+			return 0, fmt.Errorf("invalid integer for %s=%q: %w", key, value, err)
 		}
+		return result, nil
 	}
-	return defaultValue
+	return defaultValue, nil
 }
 
 func splitAndFilter(s string) []string {

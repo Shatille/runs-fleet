@@ -123,7 +123,7 @@ func main() {
 	<-ctx.Done()
 	log.Println("Shutdown signal received, gracefully stopping...")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
