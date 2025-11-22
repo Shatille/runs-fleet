@@ -13,6 +13,7 @@ import (
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -37,7 +38,11 @@ func main() {
 
 	queueClient := queue.NewClient(awsCfg, cfg.QueueURL)
 
+	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
+	cacheHandler := cache.NewHandler(cacheServer)
+
 	mux := http.NewServeMux()
+	cacheHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
