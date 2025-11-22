@@ -33,14 +33,14 @@ func (m *MockDBClient) UpdatePoolState(ctx context.Context, poolName string, run
 
 // MockFleetAPI implements FleetAPI interface
 type MockFleetAPI struct {
-	CreateFleetFunc func(ctx context.Context, spec *fleet.LaunchSpec) error
+	CreateFleetFunc func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
 }
 
-func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) error {
+func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
 	if m.CreateFleetFunc != nil {
 		return m.CreateFleetFunc(ctx, spec)
 	}
-	return nil
+	return nil, nil
 }
 
 func TestReconcileLoop(t *testing.T) {
@@ -76,7 +76,14 @@ func TestGetInstance(t *testing.T) {
 		wantErr        bool
 	}{
 		{
-			name:     "Pool Exists",
+			name:           "Empty Pool Name",
+			poolName:       "",
+			mockDB:         &MockDBClient{},
+			wantInstanceID: "",
+			wantErr:        true,
+		},
+		{
+			name:     "Pool Exists But No Instance Available",
 			poolName: "default-pool",
 			mockDB: &MockDBClient{
 				GetPoolConfigFunc: func(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -87,8 +94,8 @@ func TestGetInstance(t *testing.T) {
 					}, nil
 				},
 			},
-			wantInstanceID: "", // Currently returns empty string in MVP
-			wantErr:        false,
+			wantInstanceID: "",
+			wantErr:        true, // Now returns ErrNoInstanceAvailable
 		},
 		{
 			name:     "Pool Not Found",

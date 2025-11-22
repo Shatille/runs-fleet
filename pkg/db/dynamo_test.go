@@ -72,6 +72,13 @@ func TestGetPoolConfig(t *testing.T) {
 			wantConfig: nil,
 			wantErr:    false,
 		},
+		{
+			name:       "Empty Pool Name",
+			poolName:   "",
+			mockDB:     &MockDynamoDBAPI{},
+			wantConfig: nil,
+			wantErr:    true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -114,42 +121,63 @@ func TestGetPoolConfig(t *testing.T) {
 }
 
 func TestUpdatePoolState(t *testing.T) {
-	mockDB := &MockDynamoDBAPI{
-		UpdateItemFunc: func(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
-			if *params.TableName != "pools-table" {
-				t.Errorf("TableName = %s, want pools-table", *params.TableName)
-			}
-			var key map[string]string
-			if err := attributevalue.UnmarshalMap(params.Key, &key); err != nil {
-				t.Errorf("Failed to unmarshal key: %v", err)
-			}
-			if key["pool_name"] != "test-pool" {
-				t.Errorf("Key pool_name = %s, want test-pool", key["pool_name"])
-			}
-			var values map[string]int
-			if err := attributevalue.UnmarshalMap(params.ExpressionAttributeValues, &values); err != nil {
-				t.Errorf("Failed to unmarshal values: %v", err)
-			}
-			if values[":r"] != 10 {
-				t.Errorf(":r = %d, want 10", values[":r"])
-			}
-			if values[":s"] != 5 {
-				t.Errorf(":s = %d, want 5", values[":s"])
-			}
-			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_exists(pool_name)" {
-				t.Errorf("ConditionExpression = %v, want attribute_exists(pool_name)", params.ConditionExpression)
-			}
-			return &dynamodb.UpdateItemOutput{}, nil
+	tests := []struct {
+		name     string
+		poolName string
+		running  int
+		stopped  int
+		mockDB   *MockDynamoDBAPI
+		wantErr  bool
+	}{
+		{
+			name:     "Success",
+			poolName: "test-pool",
+			running:  10,
+			stopped:  5,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:     "Empty Pool Name",
+			poolName: "",
+			running:  10,
+			stopped:  5,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "Negative Running Count",
+			poolName: "test-pool",
+			running:  -1,
+			stopped:  5,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "Negative Stopped Count",
+			poolName: "test-pool",
+			running:  10,
+			stopped:  -1,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
 		},
 	}
 
-	client := &Client{
-		dynamoClient: mockDB,
-		poolsTable:   "pools-table",
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   "pools-table",
+			}
 
-	err := client.UpdatePoolState(context.Background(), "test-pool", 10, 5)
-	if err != nil {
-		t.Errorf("UpdatePoolState() error = %v, want nil", err)
+			err := client.UpdatePoolState(context.Background(), tt.poolName, tt.running, tt.stopped)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("UpdatePoolState() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }

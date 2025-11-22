@@ -3,11 +3,13 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 type DynamoDBAPI interface {
@@ -35,6 +37,10 @@ type PoolConfig struct {
 }
 
 func (c *Client) GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error) {
+	if poolName == "" {
+		return nil, fmt.Errorf("pool name cannot be empty")
+	}
+
 	key, err := attributevalue.MarshalMap(map[string]string{
 		"pool_name": poolName,
 	})
@@ -62,11 +68,16 @@ func (c *Client) GetPoolConfig(ctx context.Context, poolName string) (*PoolConfi
 	return &config, nil
 }
 
-// UpdatePoolState updates the current state of the pool (e.g., running/stopped counts)
-// Note: In a real implementation, this might be more complex or use a separate table/field
+// UpdatePoolState updates the current state of the pool (e.g., running/stopped counts).
+// Pool must exist in the table before calling this method.
 func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error {
-	// For MVP, we might just log this or update a status field
-	// Here we assume there are fields 'current_running' and 'current_stopped' in the same table
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+	if running < 0 || stopped < 0 {
+		return fmt.Errorf("running and stopped counts must be non-negative")
+	}
+
 	key, err := attributevalue.MarshalMap(map[string]string{
 		"pool_name": poolName,
 	})
@@ -91,6 +102,10 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 		ConditionExpression:       aws.String("attribute_exists(pool_name)"),
 	})
 	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return fmt.Errorf("pool %s does not exist", poolName)
+		}
 		return fmt.Errorf("failed to update item: %w", err)
 	}
 
