@@ -45,6 +45,13 @@ type JobMessage struct {
 
 // SendMessage sends job message to SQS FIFO queue with deduplication.
 func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
+	if job.JobID == "" {
+		return fmt.Errorf("job ID is required for SQS FIFO deduplication")
+	}
+	if job.RunID == "" {
+		return fmt.Errorf("run ID is required for SQS FIFO message grouping")
+	}
+
 	body, err := json.Marshal(job)
 	if err != nil {
 		return fmt.Errorf("failed to marshal job: %w", err)
