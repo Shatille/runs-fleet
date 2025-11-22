@@ -162,3 +162,12 @@ func (s *Server) CreateCacheEntry(_ context.Context, key string, version string)
 func (s *Server) CommitCacheEntry(_ context.Context, _ string) error {
 	return nil
 }
+
+// NewServerWithClients creates a cache server with custom clients for testing.
+func NewServerWithClients(s3Client S3API, presignClient PresignAPI, bucketName string) *Server {
+	return &Server{
+		s3Client:        s3Client,
+		presignClient:   presignClient,
+		cacheBucketName: bucketName,
+	}
+}
