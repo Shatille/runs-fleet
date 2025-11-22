@@ -1,8 +1,9 @@
+// Package metrics publishes CloudWatch metrics.
 package metrics
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -10,15 +11,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 )
 
+// CloudWatchAPI provides CloudWatch operations.
 type CloudWatchAPI interface {
 	PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error)
 }
 
+// Publisher publishes metrics to CloudWatch.
 type Publisher struct {
 	client    CloudWatchAPI
 	namespace string
 }
 
+// NewPublisher creates a CloudWatch metrics publisher.
 func NewPublisher(cfg aws.Config) *Publisher {
 	return &Publisher{
 		client:    cloudwatch.NewFromConfig(cfg),
@@ -26,23 +30,27 @@ func NewPublisher(cfg aws.Config) *Publisher {
 	}
 }
 
-func (p *Publisher) PublishQueueDepth(ctx context.Context, depth float64) {
-	p.putMetric(ctx, "QueueDepth", depth, types.StandardUnitCount)
+// PublishQueueDepth publishes queue depth metric.
+func (p *Publisher) PublishQueueDepth(ctx context.Context, depth float64) error {
+	return p.putMetric(ctx, "QueueDepth", depth, types.StandardUnitCount)
 }
 
-func (p *Publisher) PublishFleetSize(ctx context.Context, size float64) {
-	p.putMetric(ctx, "FleetSize", size, types.StandardUnitCount)
+// PublishFleetSize publishes fleet size metric.
+func (p *Publisher) PublishFleetSize(ctx context.Context, size float64) error {
+	return p.putMetric(ctx, "FleetSize", size, types.StandardUnitCount)
 }
 
-func (p *Publisher) PublishJobDuration(ctx context.Context, durationSeconds float64) {
-	p.putMetric(ctx, "JobDuration", durationSeconds, types.StandardUnitSeconds)
+// PublishJobDuration publishes job duration metric.
+func (p *Publisher) PublishJobDuration(ctx context.Context, durationSeconds float64) error {
+	return p.putMetric(ctx, "JobDuration", durationSeconds, types.StandardUnitSeconds)
 }
 
-func (p *Publisher) PublishSpotInterruption(ctx context.Context) {
-	p.putMetric(ctx, "SpotInterruptions", 1, types.StandardUnitCount)
+// PublishSpotInterruption publishes spot interruption metric.
+func (p *Publisher) PublishSpotInterruption(ctx context.Context) error {
+	return p.putMetric(ctx, "SpotInterruptions", 1, types.StandardUnitCount)
 }
 
-func (p *Publisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) {
+func (p *Publisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{
@@ -55,6 +63,7 @@ func (p *Publisher) putMetric(ctx context.Context, name string, value float64, u
 		},
 	})
 	if err != nil {
-		log.Printf("Failed to publish metric %s: %v", name, err)
+		return fmt.Errorf("failed to publish metric %s: %w", name, err)
 	}
+	return nil
 }

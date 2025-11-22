@@ -26,15 +26,15 @@ func TestPublishMetrics(t *testing.T) {
 		metricName string
 		value      float64
 		unit       types.StandardUnit
-		publish    func(p *Publisher)
+		publish    func(p *Publisher) error
 	}{
 		{
 			name:       "QueueDepth",
 			metricName: "QueueDepth",
 			value:      10.0,
 			unit:       types.StandardUnitCount,
-			publish: func(p *Publisher) {
-				p.PublishQueueDepth(context.Background(), 10.0)
+			publish: func(p *Publisher) error {
+				return p.PublishQueueDepth(context.Background(), 10.0)
 			},
 		},
 		{
@@ -42,8 +42,8 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "FleetSize",
 			value:      5.0,
 			unit:       types.StandardUnitCount,
-			publish: func(p *Publisher) {
-				p.PublishFleetSize(context.Background(), 5.0)
+			publish: func(p *Publisher) error {
+				return p.PublishFleetSize(context.Background(), 5.0)
 			},
 		},
 		{
@@ -51,8 +51,8 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "JobDuration",
 			value:      120.5,
 			unit:       types.StandardUnitSeconds,
-			publish: func(p *Publisher) {
-				p.PublishJobDuration(context.Background(), 120.5)
+			publish: func(p *Publisher) error {
+				return p.PublishJobDuration(context.Background(), 120.5)
 			},
 		},
 		{
@@ -60,8 +60,8 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "SpotInterruptions",
 			value:      1.0,
 			unit:       types.StandardUnitCount,
-			publish: func(p *Publisher) {
-				p.PublishSpotInterruption(context.Background())
+			publish: func(p *Publisher) error {
+				return p.PublishSpotInterruption(context.Background())
 			},
 		},
 	}
@@ -69,7 +69,7 @@ func TestPublishMetrics(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := &MockCloudWatchAPI{
-				PutMetricDataFunc: func(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 					if *params.Namespace != "RunsFleet" {
 						t.Errorf("Namespace = %s, want RunsFleet", *params.Namespace)
 					}
@@ -95,7 +95,9 @@ func TestPublishMetrics(t *testing.T) {
 				namespace: "RunsFleet",
 			}
 
-			tt.publish(publisher)
+			if err := tt.publish(publisher); err != nil {
+				t.Errorf("publish() error = %v", err)
+			}
 		})
 	}
 }
