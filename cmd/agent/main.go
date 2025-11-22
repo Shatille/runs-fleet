@@ -32,10 +32,20 @@ func main() {
 
 	log.Println("Downloading GitHub Actions runner...")
 	log.Println("Registering runner...")
-	log.Println("Waiting for job...")
+	log.Println("Executing job...")
 
-	<-ctx.Done()
-	log.Println("Shutdown signal received, terminating instance...")
+	jobDone := make(chan struct{})
+	go func() {
+		defer close(jobDone)
+	}()
+
+	select {
+	case <-jobDone:
+		log.Println("Job completed successfully")
+	case <-ctx.Done():
+		log.Println("Shutdown signal received during job execution")
+	}
+
 	terminateInstance(context.Background(), instanceID)
 }
 

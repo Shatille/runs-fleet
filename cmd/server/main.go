@@ -95,7 +95,7 @@ func main() {
 			RunnerSpec:   jobConfig.RunnerSpec,
 		}
 
-		if err := queueClient.SendMessage(ctx, job); err != nil {
+		if err := queueClient.SendMessage(r.Context(), job); err != nil {
 			log.Printf("Failed to send message to queue: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
@@ -123,7 +123,7 @@ func main() {
 	<-ctx.Done()
 	log.Println("Shutdown signal received, gracefully stopping...")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
