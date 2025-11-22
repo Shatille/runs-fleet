@@ -13,10 +13,9 @@ import (
 	"github.com/google/go-github/v57/github"
 )
 
-// ValidateSignature validates the GitHub webhook signature
 func ValidateSignature(payload []byte, signatureHeader string, secret string) error {
 	if secret == "" {
-		return nil // Dev mode or no secret configured
+		return errors.New("webhook secret not configured")
 	}
 
 	if !strings.HasPrefix(signatureHeader, "sha256=") {
@@ -36,23 +35,27 @@ func ValidateSignature(payload []byte, signatureHeader string, secret string) er
 	return nil
 }
 
-// ParseWebhook parses the incoming webhook request
 func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
-	payload, err := io.ReadAll(r.Body)
+	defer func() { _ = r.Body.Close() }()
+
+	event := r.Header.Get("X-GitHub-Event")
+	if event == "" {
+		return nil, errors.New("missing X-GitHub-Event header")
+	}
+
+	limitedReader := io.LimitReader(r.Body, 1<<20)
+	payload, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
-	defer r.Body.Close()
 
 	if err := ValidateSignature(payload, r.Header.Get("X-Hub-Signature-256"), secret); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	event := github.WebHookType(r)
 	return github.ParseWebHook(event, payload)
 }
 
-// JobConfig holds the configuration extracted from labels
 type JobConfig struct {
 	RunID        string
 	InstanceType string
@@ -62,10 +65,9 @@ type JobConfig struct {
 	RunnerSpec   string
 }
 
-// ParseLabels extracts runs-fleet configuration from workflow job labels
 func ParseLabels(labels []string) (*JobConfig, error) {
 	config := &JobConfig{
-		Spot: true, // Default to spot
+		Spot: true,
 	}
 
 	var runsFleetLabel string
@@ -80,7 +82,6 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		return nil, errors.New("no runs-fleet label found")
 	}
 
-	// Format: runs-fleet=<run-id>/runner=<spec>/pool=<name>/private=true/spot=false
 	parts := strings.Split(strings.TrimPrefix(runsFleetLabel, "runs-fleet="), "/")
 	if len(parts) == 0 {
 		return nil, errors.New("invalid runs-fleet label format")
@@ -98,7 +99,6 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		switch key {
 		case "runner":
 			config.RunnerSpec = value
-			// Map spec to instance type (simple mapping for now)
 			switch {
 			case strings.HasPrefix(value, "2cpu-linux-arm64"):
 				config.InstanceType = "t4g.medium"
@@ -109,7 +109,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 			case strings.HasPrefix(value, "8cpu-linux-arm64"):
 				config.InstanceType = "c7g.2xlarge"
 			default:
-				config.InstanceType = "t4g.medium" // Fallback
+				config.InstanceType = "t4g.medium"
 			}
 		case "pool":
 			config.Pool = value

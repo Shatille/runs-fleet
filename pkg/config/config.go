@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 )
@@ -22,16 +23,17 @@ type Config struct {
 	CacheBucketName  string
 	ConfigBucketName string
 
-	VPCID               string
-	PublicSubnetIDs     []string
-	PrivateSubnetIDs    []string
-	SecurityGroupID     string
-	InstanceProfileARN  string
-	KeyName             string
+	VPCID              string
+	PublicSubnetIDs    []string
+	PrivateSubnetIDs   []string
+	SecurityGroupID    string
+	InstanceProfileARN string
+	KeyName            string
 
 	SpotEnabled        bool
 	MaxRuntimeMinutes  int
 	LogLevel           string
+	LaunchTemplateName string
 }
 
 func Load() (*Config, error) {
@@ -49,14 +51,15 @@ func Load() (*Config, error) {
 		CacheBucketName:     getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
 		ConfigBucketName:    getEnv("RUNS_FLEET_CONFIG_BUCKET", ""),
 		VPCID:               getEnv("RUNS_FLEET_VPC_ID", ""),
-		PublicSubnetIDs:     strings.Split(getEnv("RUNS_FLEET_PUBLIC_SUBNET_IDS", ""), ","),
-		PrivateSubnetIDs:    strings.Split(getEnv("RUNS_FLEET_PRIVATE_SUBNET_IDS", ""), ","),
+		PublicSubnetIDs:     splitAndFilter(getEnv("RUNS_FLEET_PUBLIC_SUBNET_IDS", "")),
+		PrivateSubnetIDs:    splitAndFilter(getEnv("RUNS_FLEET_PRIVATE_SUBNET_IDS", "")),
 		SecurityGroupID:     getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
 		InstanceProfileARN:  getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
 		KeyName:             getEnv("RUNS_FLEET_KEY_NAME", ""),
 		SpotEnabled:         getEnv("RUNS_FLEET_SPOT_ENABLED", "true") == "true",
 		MaxRuntimeMinutes:   getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360),
 		LogLevel:            getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
+		LaunchTemplateName:  getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -69,6 +72,15 @@ func Load() (*Config, error) {
 func (c *Config) Validate() error {
 	if c.GitHubOrg == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_ORG is required")
+	}
+	if c.GitHubWebhookSecret == "" {
+		return fmt.Errorf("RUNS_FLEET_GITHUB_WEBHOOK_SECRET is required")
+	}
+	if c.GitHubAppID == "" {
+		return fmt.Errorf("RUNS_FLEET_GITHUB_APP_ID is required")
+	}
+	if c.GitHubAppPrivateKey == "" {
+		return fmt.Errorf("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY is required")
 	}
 	if c.QueueURL == "" {
 		return fmt.Errorf("RUNS_FLEET_QUEUE_URL is required")
@@ -89,9 +101,25 @@ func getEnv(key, defaultValue string) string {
 func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		var result int
-		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
+		if _, err := fmt.Sscanf(value, "%d", &result); err != nil {
+			log.Printf("Warning: invalid integer for %s=%q, using default %d", key, value, defaultValue)
+		} else {
 			return result
 		}
 	}
 	return defaultValue
+}
+
+func splitAndFilter(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

@@ -10,8 +10,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+type SQSAPI interface {
+	SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
+	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
+	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+}
+
 type Client struct {
-	sqsClient *sqs.Client
+	sqsClient SQSAPI
 	queueURL  string
 }
 
@@ -40,8 +46,7 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 	input := &sqs.SendMessageInput{
 		QueueUrl:       aws.String(c.queueURL),
 		MessageBody:    aws.String(string(body)),
-		MessageGroupId: aws.String(job.RunID), // FIFO requirement
-		// MessageDeduplicationId is auto-generated if ContentBasedDeduplication is enabled on the queue
+		MessageGroupId: aws.String(job.RunID),
 	}
 
 	_, err = c.sqsClient.SendMessage(ctx, input)

@@ -11,7 +11,6 @@ func TestValidateSignature(t *testing.T) {
 	secret := "test-secret"
 	payload := []byte("test-payload")
 
-	// Calculated HMAC-SHA256 of "test-payload" with key "test-secret"
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	validSignature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
@@ -49,7 +48,7 @@ func TestValidateSignature(t *testing.T) {
 			payload:   payload,
 			signature: "sha256=anything",
 			secret:    "",
-			wantErr:   false,
+			wantErr:   true,
 		},
 		{
 			name:      "Malformed signature header",

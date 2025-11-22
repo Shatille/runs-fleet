@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -12,43 +14,29 @@ import (
 func main() {
 	log.Println("Starting runs-fleet agent...")
 
-	// In a real scenario, we would fetch config from SSM or User Data
-	// For MVP, we assume env vars are set by User Data script
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	runID := os.Getenv("RUNS_FLEET_RUN_ID")
-	instanceID := os.Getenv("RUNS_FLEET_INSTANCE_ID")
-
 	if runID == "" {
-		log.Println("Warning: RUNS_FLEET_RUN_ID not set")
-	} else {
-		log.Printf("Agent running for job %s", runID)
+		log.Fatal("RUNS_FLEET_RUN_ID environment variable is required")
 	}
+	log.Printf("Agent running for job %s", runID)
 
+	instanceID := os.Getenv("RUNS_FLEET_INSTANCE_ID")
 	if instanceID == "" {
-		log.Println("Warning: RUNS_FLEET_INSTANCE_ID not set")
-	} else {
-		log.Printf("Instance ID: %s", instanceID)
+		log.Fatal("RUNS_FLEET_INSTANCE_ID environment variable is required")
 	}
+	log.Printf("Instance ID: %s", instanceID)
 
-	// 1. Download Runner (Mock)
 	log.Println("Downloading GitHub Actions runner...")
-
-	// 2. Register Runner (Mock)
 	log.Println("Registering runner...")
-
-	// 3. Run Job
 	log.Println("Waiting for job...")
-
-	// 4. Self-terminate
-	if instanceID != "" {
-		log.Println("Job complete, terminating instance...")
-		terminateInstance(instanceID)
-	} else {
-		log.Println("No instance ID, skipping termination (local dev?)")
-	}
+	log.Println("Job complete, terminating instance...")
+	terminateInstance(ctx, instanceID)
 }
 
-func terminateInstance(instanceID string) {
-	ctx := context.Background()
+func terminateInstance(ctx context.Context, instanceID string) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		log.Printf("Failed to load AWS config: %v", err)

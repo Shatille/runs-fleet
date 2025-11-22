@@ -2,7 +2,6 @@ package fleet
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -35,13 +34,8 @@ type LaunchSpec struct {
 }
 
 func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error {
-	userData, err := m.generateUserData(spec.RunID)
-	if err != nil {
-		return fmt.Errorf("failed to generate user data: %w", err)
-	}
-
 	launchTemplate := &types.FleetLaunchTemplateSpecificationRequest{
-		LaunchTemplateName: aws.String("runs-fleet-runner"), // Assumes pre-created LT
+		LaunchTemplateName: aws.String(m.config.LaunchTemplateName),
 		Version:            aws.String("$Latest"),
 	}
 
@@ -51,9 +45,6 @@ func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error 
 			SubnetId:     aws.String(spec.SubnetID),
 		},
 	}
-
-	// TODO: Use userData in Launch Template Version
-	_ = userData
 
 	targetCapacity := int32(1)
 
@@ -69,6 +60,21 @@ func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error 
 			DefaultTargetCapacityType: types.DefaultTargetCapacityTypeSpot,
 		},
 		Type: types.FleetTypeRequest,
+		TagSpecifications: []types.TagSpecification{
+			{
+				ResourceType: types.ResourceTypeInstance,
+				Tags: []types.Tag{
+					{
+						Key:   aws.String("runs-fleet:run-id"),
+						Value: aws.String(spec.RunID),
+					},
+					{
+						Key:   aws.String("runs-fleet:managed"),
+						Value: aws.String("true"),
+					},
+				},
+			},
+		},
 	}
 
 	if !spec.Spot || !m.config.SpotEnabled {
@@ -79,23 +85,22 @@ func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error 
 		}
 	}
 
-	_, err = m.ec2Client.CreateFleet(ctx, req)
+	output, err := m.ec2Client.CreateFleet(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to create fleet: %w", err)
 	}
 
+	if len(output.Errors) > 0 {
+		errMsg := "unknown error"
+		if output.Errors[0].ErrorMessage != nil {
+			errMsg = *output.Errors[0].ErrorMessage
+		}
+		return fmt.Errorf("fleet creation had errors: %s", errMsg)
+	}
+
+	if len(output.Instances) == 0 {
+		return fmt.Errorf("no instances were created")
+	}
+
 	return nil
-}
-
-func (m *FleetManager) generateUserData(runID string) (string, error) {
-	// Basic user data to start the agent
-	// In a real scenario, this would be more complex, possibly fetching a binary from S3
-	script := fmt.Sprintf(`#!/bin/bash
-echo "Starting runs-fleet agent for run %s"
-export RUNS_FLEET_INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-export RUNS_FLEET_RUN_ID=%s
-# /usr/local/bin/agent would be baked into the AMI or downloaded here
-`, runID, runID)
-
-	return base64.StdEncoding.EncodeToString([]byte(script)), nil
 }
