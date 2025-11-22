@@ -1,11 +1,11 @@
 package cache
 
 import (
-	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
@@ -24,7 +24,8 @@ type reserveCacheRequest struct {
 }
 
 type reserveCacheResponse struct {
-	CacheID int `json:"cacheId"`
+	CacheID  int    `json:"cacheId"`
+	CacheKey string `json:"cacheKey,omitempty"`
 }
 
 type commitCacheRequest struct {
@@ -59,19 +60,17 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	uploadURL, err := h.server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodPut)
 	if err != nil {
+		log.Printf("Failed to generate upload URL for key=%s: %v", cacheKey, err)
 		http.Error(w, "Failed to generate upload URL", http.StatusInternalServerError)
 		return
 	}
 
-	var randBytes [8]byte
-	if _, err := rand.Read(randBytes[:]); err != nil {
-		http.Error(w, "Failed to generate cache ID", http.StatusInternalServerError)
-		return
+	resp := reserveCacheResponse{
+		CacheID:  int(time.Now().Unix()),
+		CacheKey: cacheKey,
 	}
 
-	resp := reserveCacheResponse{
-		CacheID: int(binary.BigEndian.Uint64(randBytes[:]) & 0x7FFFFFFFFFFFFFFF),
-	}
+	log.Printf("Reserved cache entry: key=%s version=%s cacheId=%d", req.Key, req.Version, resp.CacheID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", uploadURL)
@@ -89,10 +88,18 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 
 	var req commitCacheRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Failed to decode commit request for cacheId=%s: %v", cacheID, err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	if err := h.server.CommitCacheEntry(r.Context(), cacheID); err != nil {
+		log.Printf("Failed to commit cache entry cacheId=%s size=%d: %v", cacheID, req.Size, err)
+		http.Error(w, "Failed to commit cache entry", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Committed cache entry: cacheId=%s size=%d", cacheID, req.Size)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -119,20 +126,25 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 	keys := strings.Split(keysParam, ",")
 	cacheKey, found, err := h.server.GetCacheEntry(r.Context(), keys, version)
 	if err != nil {
+		log.Printf("Failed to check cache entry keys=%v version=%s: %v", keys, version, err)
 		http.Error(w, "Failed to check cache entry", http.StatusInternalServerError)
 		return
 	}
 
 	if !found {
+		log.Printf("Cache miss: keys=%v version=%s", keys, version)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	downloadURL, err := h.server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodGet)
 	if err != nil {
+		log.Printf("Failed to generate download URL for cacheKey=%s: %v", cacheKey, err)
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("Cache hit: cacheKey=%s keys=%v version=%s", cacheKey, keys, version)
 
 	resp := getCacheResponse{
 		ArchiveLocation: downloadURL,
@@ -151,16 +163,19 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := validateKey(cacheID); err != nil {
+		log.Printf("Invalid cache ID in download request: cacheId=%s err=%v", cacheID, err)
 		http.Error(w, "Invalid cache parameters", http.StatusBadRequest)
 		return
 	}
 
 	downloadURL, err := h.server.GeneratePresignedURL(r.Context(), cacheID, http.MethodGet)
 	if err != nil {
+		log.Printf("Failed to generate download URL for cacheId=%s: %v", cacheID, err)
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("Redirecting to download URL: cacheId=%s", cacheID)
 	http.Redirect(w, r, downloadURL, http.StatusTemporaryRedirect)
 }
 
