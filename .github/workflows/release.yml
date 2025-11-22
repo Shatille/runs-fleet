@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: runs-fleet
+  S3_CONFIG_BUCKET: shavakan-runs-fleet-config
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build binaries
+        run: |
+          # Server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/runs-fleet-server-linux-amd64 \
+            ./cmd/server
+
+          # Agent amd64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/runs-fleet-agent-linux-amd64 \
+            ./cmd/agent
+
+          # Agent arm64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o dist/runs-fleet-agent-linux-arm64 \
+            ./cmd/agent
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --push \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            .
+
+      - name: Upload agent binaries to S3
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          aws s3 cp dist/runs-fleet-agent-linux-amd64 \
+            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$VERSION/agent-linux-amd64
+
+          aws s3 cp dist/runs-fleet-agent-linux-arm64 \
+            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$VERSION/agent-linux-arm64
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          if [ -z "$(git tag -l --sort=-v:refname | sed -n '2p')" ]; then
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          else
+            PREV_TAG=$(git tag -l --sort=-v:refname | sed -n '2p')
+          fi
+
+          echo "### Changes since $PREV_TAG" > CHANGELOG.md
+          git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" >> CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: CHANGELOG.md
+          files: |
+            dist/runs-fleet-server-linux-amd64
+            dist/runs-fleet-agent-linux-amd64
+            dist/runs-fleet-agent-linux-arm64
+          draft: false
+          prerelease: false
