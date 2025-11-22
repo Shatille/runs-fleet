@@ -30,6 +30,7 @@ type FleetAPI interface {
 
 // Manager orchestrates warm pool operations and instance assignment.
 type Manager struct {
+	// mu protects in-memory pool state (to be added in Phase 3)
 	mu           sync.RWMutex
 	dbClient     DBClient
 	fleetManager FleetAPI
@@ -67,6 +68,7 @@ func (m *Manager) GetInstance(ctx context.Context, poolName string) (string, err
 	log.Printf("Checked pool %s: DesiredRunning=%d, DesiredStopped=%d",
 		poolName, poolConfig.DesiredRunning, poolConfig.DesiredStopped)
 
+	// Placeholder: Always returns ErrNoInstanceAvailable to force cold start until Phase 3.
 	return "", ErrNoInstanceAvailable
 }
 
@@ -86,6 +88,7 @@ func (m *Manager) ReconcileLoop(ctx context.Context) {
 }
 
 func (m *Manager) reconcile(_ context.Context) {
+	// TODO: Use ctx for EC2 API calls and cancellation once reconciliation is implemented.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
