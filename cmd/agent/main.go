@@ -15,7 +15,7 @@ import (
 func main() {
 	log.Println("Starting runs-fleet agent...")
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	runID := os.Getenv("RUNS_FLEET_RUN_ID")

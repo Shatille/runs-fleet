@@ -137,5 +137,9 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		}
 	}
 
+	if config.RunnerSpec == "" {
+		return nil, errors.New("missing runner key in runs-fleet label")
+	}
+
 	return config, nil
 }
