@@ -3,12 +3,16 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/google/uuid"
 )
 
 // SQSAPI defines SQS operations for queue message handling.
@@ -44,6 +48,7 @@ type JobMessage struct {
 }
 
 // SendMessage sends job message to SQS FIFO queue with deduplication.
+// Deduplication ID uses JobID + timestamp + UUID to prevent race conditions from concurrent sends.
 func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 	if job.JobID == "" {
 		return fmt.Errorf("job ID is required for SQS FIFO deduplication")
@@ -57,11 +62,15 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
+	dedupKey := fmt.Sprintf("%s-%d-%s", job.JobID, time.Now().UnixNano(), uuid.New().String()[:8])
+	hash := sha256.Sum256([]byte(dedupKey))
+	dedupID := hex.EncodeToString(hash[:])
+
 	input := &sqs.SendMessageInput{
 		QueueUrl:               aws.String(c.queueURL),
 		MessageBody:            aws.String(string(body)),
 		MessageGroupId:         aws.String(job.RunID),
-		MessageDeduplicationId: aws.String(job.JobID),
+		MessageDeduplicationId: aws.String(dedupID),
 	}
 
 	_, err = c.sqsClient.SendMessage(ctx, input)
