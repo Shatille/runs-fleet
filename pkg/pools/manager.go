@@ -1,3 +1,4 @@
+// Package pools manages warm pool operations for maintaining pre-provisioned EC2 instances.
 package pools
 
 import (

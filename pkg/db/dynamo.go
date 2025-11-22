@@ -1,3 +1,4 @@
+// Package db provides DynamoDB client operations for pool configuration and state management.
 package db
 
 import (
