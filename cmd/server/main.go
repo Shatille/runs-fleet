@@ -19,7 +19,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	log.Println("Starting runs-fleet server...")
 
@@ -68,6 +69,12 @@ func main() {
 			return
 		}
 
+		if event.WorkflowJob.ID == nil {
+			log.Printf("Workflow job missing ID")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		jobConfig, err := github.ParseLabels(event.WorkflowJob.Labels)
 		if err != nil {
 			log.Printf("Failed to parse labels: %v", err)
@@ -112,13 +119,10 @@ func main() {
 		}
 	}()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	<-sigChan
+	<-ctx.Done()
 	log.Println("Shutdown signal received, gracefully stopping...")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {

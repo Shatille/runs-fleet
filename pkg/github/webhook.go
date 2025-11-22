@@ -44,16 +44,14 @@ func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 
 	defer func() { _ = r.Body.Close() }()
 
-	limitedReader := io.LimitReader(r.Body, 1<<20)
+	limitedReader := &io.LimitedReader{R: r.Body, N: 1<<20 + 1}
 	payload, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	if int64(len(payload)) == 1<<20 {
-		if _, err := r.Body.Read(make([]byte, 1)); err != io.EOF {
-			return nil, errors.New("request body exceeds 1MB limit")
-		}
+	if len(payload) > 1<<20 {
+		return nil, errors.New("request body exceeds 1MB limit")
 	}
 
 	if err := ValidateSignature(payload, signatureHeader, secret); err != nil {
