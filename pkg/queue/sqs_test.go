@@ -123,6 +123,24 @@ func TestClient_SendMessage(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "empty job ID",
+			job: &JobMessage{
+				RunID:        "test-run-123",
+				InstanceType: "t4g.medium",
+			},
+			mock:    &mockSQSClient{},
+			wantErr: true,
+		},
+		{
+			name: "empty run ID",
+			job: &JobMessage{
+				JobID:        "job-123",
+				InstanceType: "t4g.medium",
+			},
+			mock:    &mockSQSClient{},
+			wantErr: true,
+		},
+		{
 			name: "sqs error",
 			job: &JobMessage{
 				JobID:        "job-456",
@@ -150,6 +168,50 @@ func TestClient_SendMessage(t *testing.T) {
 				t.Errorf("SendMessage() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
+	var firstDedupID, secondDedupID string
+
+	job := &JobMessage{
+		JobID:        "job-retry-test",
+		RunID:        "run-123",
+		InstanceType: "t4g.medium",
+		Spot:         true,
+		RunnerSpec:   "2cpu-linux-arm64",
+	}
+
+	mock := &mockSQSClient{
+		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+			if firstDedupID == "" {
+				firstDedupID = *params.MessageDeduplicationId
+			} else {
+				secondDedupID = *params.MessageDeduplicationId
+			}
+			return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
+		},
+	}
+
+	client := &Client{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	if err := client.SendMessage(context.Background(), job); err != nil {
+		t.Fatalf("First SendMessage() failed: %v", err)
+	}
+
+	if err := client.SendMessage(context.Background(), job); err != nil {
+		t.Fatalf("Second SendMessage() failed: %v", err)
+	}
+
+	if firstDedupID == "" || secondDedupID == "" {
+		t.Fatal("Deduplication IDs were not captured")
+	}
+
+	if firstDedupID == secondDedupID {
+		t.Errorf("Retry produced same deduplication ID, preventing retries. First=%s, Second=%s", firstDedupID, secondDedupID)
 	}
 }
 

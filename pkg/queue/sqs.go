@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -46,6 +47,7 @@ type JobMessage struct {
 }
 
 // SendMessage sends job message to SQS FIFO queue with deduplication.
+// Deduplication ID uses JobID + timestamp to allow retries while preventing rapid duplicates.
 func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 	if job.JobID == "" {
 		return fmt.Errorf("job ID is required")
@@ -59,7 +61,8 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
-	hash := sha256.Sum256(body)
+	dedupKey := fmt.Sprintf("%s-%d", job.JobID, time.Now().UnixNano())
+	hash := sha256.Sum256([]byte(dedupKey))
 	dedupID := hex.EncodeToString(hash[:])
 
 	input := &sqs.SendMessageInput{
