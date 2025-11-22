@@ -14,17 +14,21 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
 )
 
+// ErrNoInstanceAvailable indicates no warm pool instance is available for assignment.
 var ErrNoInstanceAvailable = errors.New("no instance available in pool")
 
+// DBClient defines DynamoDB operations for pool configuration.
 type DBClient interface {
 	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 }
 
+// FleetAPI defines EC2 fleet operations for instance provisioning.
 type FleetAPI interface {
 	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
 }
 
+// Manager orchestrates warm pool operations and instance assignment.
 type Manager struct {
 	mu           sync.RWMutex
 	dbClient     DBClient
@@ -32,6 +36,7 @@ type Manager struct {
 	config       *config.Config
 }
 
+// NewManager creates pool manager with DB and fleet clients.
 func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *Manager {
 	return &Manager{
 		dbClient:     dbClient,
@@ -65,7 +70,7 @@ func (m *Manager) GetInstance(ctx context.Context, poolName string) (string, err
 	return "", ErrNoInstanceAvailable
 }
 
-// ReconcileLoop runs periodically to maintain pool size
+// ReconcileLoop runs periodically to maintain pool size.
 func (m *Manager) ReconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -80,7 +85,7 @@ func (m *Manager) ReconcileLoop(ctx context.Context) {
 	}
 }
 
-func (m *Manager) reconcile(ctx context.Context) {
+func (m *Manager) reconcile(_ context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

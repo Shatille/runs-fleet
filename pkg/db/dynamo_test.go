@@ -40,7 +40,7 @@ func TestGetPoolConfig(t *testing.T) {
 			name:     "Found",
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
-				GetItemFunc: func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 					item, err := attributevalue.MarshalMap(map[string]interface{}{
 						"pool_name":       "test-pool",
 						"instance_type":   "t3.micro",
@@ -65,7 +65,7 @@ func TestGetPoolConfig(t *testing.T) {
 			name:     "Not Found",
 			poolName: "unknown-pool",
 			mockDB: &MockDynamoDBAPI{
-				GetItemFunc: func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 					return &dynamodb.GetItemOutput{Item: nil}, nil
 				},
 			},
@@ -135,7 +135,7 @@ func TestUpdatePoolState(t *testing.T) {
 			running:  10,
 			stopped:  5,
 			mockDB: &MockDynamoDBAPI{
-				UpdateItemFunc: func(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 					return &dynamodb.UpdateItemOutput{}, nil
 				},
 			},

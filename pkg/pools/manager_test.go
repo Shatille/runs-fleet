@@ -86,7 +86,7 @@ func TestGetInstance(t *testing.T) {
 			name:     "Pool Exists But No Instance Available",
 			poolName: "default-pool",
 			mockDB: &MockDBClient{
-				GetPoolConfigFunc: func(ctx context.Context, poolName string) (*db.PoolConfig, error) {
+				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 					return &db.PoolConfig{
 						PoolName:       "default-pool",
 						DesiredRunning: 5,
@@ -101,7 +101,7 @@ func TestGetInstance(t *testing.T) {
 			name:     "Pool Not Found",
 			poolName: "unknown-pool",
 			mockDB: &MockDBClient{
-				GetPoolConfigFunc: func(ctx context.Context, poolName string) (*db.PoolConfig, error) {
+				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 					return nil, nil
 				},
 			},
@@ -112,7 +112,7 @@ func TestGetInstance(t *testing.T) {
 			name:     "DB Error",
 			poolName: "error-pool",
 			mockDB: &MockDBClient{
-				GetPoolConfigFunc: func(ctx context.Context, poolName string) (*db.PoolConfig, error) {
+				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 					return nil, fmt.Errorf("db error")
 				},
 			},

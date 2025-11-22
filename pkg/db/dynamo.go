@@ -12,16 +12,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
+// DynamoDBAPI defines DynamoDB operations for pool configuration storage.
 type DynamoDBAPI interface {
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 }
 
+// Client provides DynamoDB operations for pool configuration and state.
 type Client struct {
 	dynamoClient DynamoDBAPI
 	poolsTable   string
 }
 
+// NewClient creates DynamoDB client for specified pools table.
 func NewClient(cfg aws.Config, poolsTable string) *Client {
 	return &Client{
 		dynamoClient: dynamodb.NewFromConfig(cfg),
@@ -29,6 +32,7 @@ func NewClient(cfg aws.Config, poolsTable string) *Client {
 	}
 }
 
+// PoolConfig represents pool configuration from DynamoDB.
 type PoolConfig struct {
 	PoolName       string `dynamodbav:"pool_name"`
 	InstanceType   string `dynamodbav:"instance_type"`
@@ -36,6 +40,7 @@ type PoolConfig struct {
 	DesiredStopped int    `dynamodbav:"desired_stopped"`
 }
 
+// GetPoolConfig retrieves pool configuration from DynamoDB.
 func (c *Client) GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
