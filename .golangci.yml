@@ -1,3 +1,5 @@
+version: "2"
+
 linters-settings:
   govet:
     check-shadowing: true
@@ -12,17 +14,16 @@ linters-settings:
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - goconst
     - gocyclo
     - dupl
+    - bodyclose
+    - errorlint
     - revive
 
 issues:

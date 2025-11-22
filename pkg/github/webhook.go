@@ -1,0 +1,145 @@
+// Package github provides webhook validation and label parsing for GitHub Actions workflow jobs.
+package github
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/google/go-github/v57/github"
+)
+
+// ValidateSignature verifies GitHub webhook HMAC-SHA256 signature against the expected secret.
+func ValidateSignature(payload []byte, signatureHeader string, secret string) error {
+	if secret == "" {
+		return errors.New("webhook secret not configured")
+	}
+
+	signature := strings.TrimPrefix(signatureHeader, "sha256=")
+	if signature == signatureHeader {
+		return errors.New("signature missing sha256= prefix")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expectedMAC := mac.Sum(nil)
+	expectedSignature := hex.EncodeToString(expectedMAC)
+
+	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
+		return errors.New("signature mismatch")
+	}
+
+	return nil
+}
+
+// ParseWebhook validates HMAC signature and parses GitHub webhook payload with 1MB size limit.
+func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
+	event := r.Header.Get("X-GitHub-Event")
+	if event == "" {
+		return nil, errors.New("missing X-GitHub-Event header")
+	}
+
+	signatureHeader := r.Header.Get("X-Hub-Signature-256")
+	if !strings.HasPrefix(signatureHeader, "sha256=") {
+		return nil, errors.New("invalid or missing signature header")
+	}
+
+	defer func() { _ = r.Body.Close() }()
+
+	limitedReader := &io.LimitedReader{R: r.Body, N: 1<<20 + 1}
+	payload, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read request body: %w", err)
+	}
+
+	if len(payload) > 1<<20 {
+		return nil, errors.New("request body exceeds 1MB limit")
+	}
+
+	if err := ValidateSignature(payload, signatureHeader, secret); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	return github.ParseWebHook(event, payload)
+}
+
+// JobConfig represents parsed runner configuration from workflow job labels.
+type JobConfig struct {
+	RunID        string
+	InstanceType string
+	Pool         string
+	Private      bool
+	Spot         bool
+	RunnerSpec   string
+}
+
+// ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
+func ParseLabels(labels []string) (*JobConfig, error) {
+	config := &JobConfig{
+		Spot: true,
+	}
+
+	var runsFleetLabel string
+	for _, label := range labels {
+		if strings.HasPrefix(label, "runs-fleet=") {
+			runsFleetLabel = label
+			break
+		}
+	}
+
+	if runsFleetLabel == "" {
+		return nil, errors.New("no runs-fleet label found")
+	}
+
+	parts := strings.Split(strings.TrimPrefix(runsFleetLabel, "runs-fleet="), "/")
+	if len(parts) == 0 {
+		return nil, errors.New("invalid runs-fleet label format")
+	}
+
+	config.RunID = parts[0]
+	if config.RunID == "" {
+		return nil, errors.New("empty run-id in label")
+	}
+
+	for _, part := range parts[1:] {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		key, value := kv[0], kv[1]
+
+		switch key {
+		case "runner":
+			config.RunnerSpec = value
+			switch {
+			case strings.HasPrefix(value, "2cpu-linux-arm64"):
+				config.InstanceType = "t4g.medium"
+			case strings.HasPrefix(value, "4cpu-linux-arm64"):
+				config.InstanceType = "c7g.xlarge"
+			case strings.HasPrefix(value, "4cpu-linux-x64"):
+				config.InstanceType = "c6i.xlarge"
+			case strings.HasPrefix(value, "8cpu-linux-arm64"):
+				config.InstanceType = "c7g.2xlarge"
+			default:
+				config.InstanceType = "t4g.medium"
+			}
+		case "pool":
+			config.Pool = value
+		case "private":
+			config.Private = value == "true"
+		case "spot":
+			config.Spot = value != "false"
+		}
+	}
+
+	if config.RunnerSpec == "" {
+		return nil, errors.New("missing runner key in runs-fleet label")
+	}
+
+	return config, nil
+}

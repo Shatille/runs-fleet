@@ -185,6 +185,32 @@ terraform apply
 
 **Non-negotiable:** Code that fails lint, tests, or review does not get committed.
 
+## Git Workflow
+
+**Maintain linear history at all times:**
+
+1. **Rebase over merge**
+   - NEVER create merge commits
+   - Use `git pull --rebase` instead of `git pull`
+   - Rebase feature branches on target branch before PR
+
+2. **PR/Branch strategy**
+   - Fast-forward merges only to main
+   - Squash commits if branch has WIP/fixup commits
+   - Each PR represents one logical change
+   - Delete branches after merge
+
+3. **Commit atomicity**
+   - Each commit must be complete and functional
+   - Commit should pass all tests independently
+   - One logical change per commit (single responsibility)
+   - No "fix typo" or "forgot to add file" commits (amend or rebase)
+
+**Pre-push checklist:**
+- `git log --oneline --graph` shows straight line (no branches/merges)
+- Each commit message follows conventional commits format
+- Each commit passes `make lint && make test`
+
 ## Design Principles
 
 - Spot-first with on-demand fallback (cost optimization)

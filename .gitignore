@@ -4,8 +4,8 @@ bin/
 *.dll
 *.so
 *.dylib
-runs-fleet
-agent
+runs-fleet-server
+runs-fleet-agent
 
 # Test binary
 *.test
