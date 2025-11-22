@@ -32,8 +32,10 @@ func main() {
 	log.Println("Downloading GitHub Actions runner...")
 	log.Println("Registering runner...")
 	log.Println("Waiting for job...")
-	log.Println("Job complete, terminating instance...")
-	terminateInstance(ctx, instanceID)
+
+	<-ctx.Done()
+	log.Println("Shutdown signal received, terminating instance...")
+	terminateInstance(context.Background(), instanceID)
 }
 
 func terminateInstance(ctx context.Context, instanceID string) {

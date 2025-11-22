@@ -97,6 +97,12 @@ func (c *Config) Validate() error {
 	if len(c.PublicSubnetIDs) == 0 && len(c.PrivateSubnetIDs) == 0 {
 		return fmt.Errorf("at least one of RUNS_FLEET_PUBLIC_SUBNET_IDS or RUNS_FLEET_PRIVATE_SUBNET_IDS is required")
 	}
+	if c.MaxRuntimeMinutes <= 0 {
+		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must be greater than 0, got %d", c.MaxRuntimeMinutes)
+	}
+	if c.MaxRuntimeMinutes > 1440 {
+		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must not exceed 1440 (24 hours), got %d", c.MaxRuntimeMinutes)
+	}
 	return nil
 }
 

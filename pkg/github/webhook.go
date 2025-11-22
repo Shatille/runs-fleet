@@ -1,3 +1,4 @@
+// Package github provides webhook validation and label parsing for GitHub Actions workflow jobs.
 package github
 
 import (
@@ -13,13 +14,17 @@ import (
 	"github.com/google/go-github/v57/github"
 )
 
-// ValidateSignature verifies GitHub webhook HMAC-SHA256 signature.
+// ValidateSignature verifies GitHub webhook HMAC-SHA256 signature against the expected secret.
 func ValidateSignature(payload []byte, signatureHeader string, secret string) error {
 	if secret == "" {
 		return errors.New("webhook secret not configured")
 	}
 
 	signature := strings.TrimPrefix(signatureHeader, "sha256=")
+	if signature == signatureHeader {
+		return errors.New("signature missing sha256= prefix")
+	}
+
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	expectedMAC := mac.Sum(nil)
@@ -32,7 +37,7 @@ func ValidateSignature(payload []byte, signatureHeader string, secret string) er
 	return nil
 }
 
-// ParseWebhook validates and parses GitHub webhook request with size limit enforcement.
+// ParseWebhook validates HMAC signature and parses GitHub webhook payload with 1MB size limit.
 func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "" {
@@ -63,7 +68,7 @@ func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 	return github.ParseWebHook(event, payload)
 }
 
-// JobConfig contains parsed workflow job configuration from labels.
+// JobConfig represents parsed runner configuration from workflow job labels.
 type JobConfig struct {
 	RunID        string
 	InstanceType string
@@ -73,7 +78,7 @@ type JobConfig struct {
 	RunnerSpec   string
 }
 
-// ParseLabels extracts job configuration from runs-fleet workflow labels.
+// ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
 func ParseLabels(labels []string) (*JobConfig, error) {
 	config := &JobConfig{
 		Spot: true,
