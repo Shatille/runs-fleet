@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -111,9 +112,15 @@ func TestCreateFleet(t *testing.T) {
 				config:    tt.config,
 			}
 
-			err := manager.CreateFleet(context.Background(), tt.spec)
+			instanceIDs, err := manager.CreateFleet(context.Background(), tt.spec)
 			if err != nil {
 				t.Errorf("CreateFleet() error = %v", err)
+			}
+			if len(instanceIDs) != 1 {
+				t.Errorf("CreateFleet() returned %d instance IDs, want 1", len(instanceIDs))
+			}
+			if len(instanceIDs) > 0 && instanceIDs[0] != "i-123456789" {
+				t.Errorf("CreateFleet() returned instance ID %s, want i-123456789", instanceIDs[0])
 			}
 		})
 	}
@@ -222,26 +229,16 @@ func TestCreateFleet_Errors(t *testing.T) {
 				config:    tt.config,
 			}
 
-			err := manager.CreateFleet(context.Background(), tt.spec)
+			instanceIDs, err := manager.CreateFleet(context.Background(), tt.spec)
 			if err == nil {
 				t.Fatalf("CreateFleet() expected error containing %q, got nil", tt.wantErr)
 			}
-			if !contains(err.Error(), tt.wantErr) {
+			if instanceIDs != nil {
+				t.Errorf("CreateFleet() returned non-nil instance IDs on error: %v", instanceIDs)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("CreateFleet() error = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
-}
-
-func containsMiddle(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

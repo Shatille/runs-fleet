@@ -37,18 +37,32 @@ func main() {
 }
 
 func terminateInstance(ctx context.Context, instanceID string) {
-	cfg, err := config.LoadDefaultConfig(ctx)
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		log.Printf("AWS_REGION environment variable not set (instance will rely on max runtime timeout)")
+		return
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
-		log.Printf("Failed to load AWS config: %v", err)
+		log.Printf("Failed to load AWS config: %v (instance will rely on max runtime timeout)", err)
 		return
 	}
 
 	client := ec2.NewFromConfig(cfg)
 
-	_, err = client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+	output, err := client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		log.Printf("Failed to terminate instance: %v", err)
+		log.Printf("Failed to terminate instance: %v (instance will rely on max runtime timeout)", err)
+		return
+	}
+
+	if len(output.TerminatingInstances) > 0 {
+		state := output.TerminatingInstances[0].CurrentState
+		if state != nil {
+			log.Printf("Instance %s termination initiated: %s", instanceID, state.Name)
+		}
 	}
 }

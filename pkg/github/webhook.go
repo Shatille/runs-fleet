@@ -18,10 +18,6 @@ func ValidateSignature(payload []byte, signatureHeader string, secret string) er
 		return errors.New("webhook secret not configured")
 	}
 
-	if !strings.HasPrefix(signatureHeader, "sha256=") {
-		return errors.New("invalid signature format")
-	}
-
 	signature := strings.TrimPrefix(signatureHeader, "sha256=")
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
@@ -36,12 +32,17 @@ func ValidateSignature(payload []byte, signatureHeader string, secret string) er
 }
 
 func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
-	defer func() { _ = r.Body.Close() }()
-
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "" {
 		return nil, errors.New("missing X-GitHub-Event header")
 	}
+
+	signatureHeader := r.Header.Get("X-Hub-Signature-256")
+	if !strings.HasPrefix(signatureHeader, "sha256=") {
+		return nil, errors.New("invalid or missing signature header")
+	}
+
+	defer func() { _ = r.Body.Close() }()
 
 	limitedReader := io.LimitReader(r.Body, 1<<20)
 	payload, err := io.ReadAll(limitedReader)
@@ -49,7 +50,13 @@ func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	if err := ValidateSignature(payload, r.Header.Get("X-Hub-Signature-256"), secret); err != nil {
+	if int64(len(payload)) == 1<<20 {
+		if _, err := r.Body.Read(make([]byte, 1)); err != io.EOF {
+			return nil, errors.New("request body exceeds 1MB limit")
+		}
+	}
+
+	if err := ValidateSignature(payload, signatureHeader, secret); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -88,6 +95,9 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	}
 
 	config.RunID = parts[0]
+	if config.RunID == "" {
+		return nil, errors.New("empty run-id in label")
+	}
 
 	for _, part := range parts[1:] {
 		kv := strings.SplitN(part, "=", 2)
@@ -118,10 +128,6 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		case "spot":
 			config.Spot = value != "false"
 		}
-	}
-
-	if config.RunID == "" {
-		return nil, errors.New("missing run-id in label")
 	}
 
 	return config, nil

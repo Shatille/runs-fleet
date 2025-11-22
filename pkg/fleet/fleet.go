@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -33,7 +34,7 @@ type LaunchSpec struct {
 	Spot         bool
 }
 
-func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error {
+func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
 	launchTemplate := &types.FleetLaunchTemplateSpecificationRequest{
 		LaunchTemplateName: aws.String(m.config.LaunchTemplateName),
 		Version:            aws.String("$Latest"),
@@ -47,6 +48,17 @@ func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error 
 	}
 
 	targetCapacity := int32(1)
+
+	tags := []types.Tag{
+		{
+			Key:   aws.String("runs-fleet:run-id"),
+			Value: aws.String(spec.RunID),
+		},
+		{
+			Key:   aws.String("runs-fleet:managed"),
+			Value: aws.String("true"),
+		},
+	}
 
 	req := &ec2.CreateFleetInput{
 		LaunchTemplateConfigs: []types.FleetLaunchTemplateConfigRequest{
@@ -63,16 +75,15 @@ func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error 
 		TagSpecifications: []types.TagSpecification{
 			{
 				ResourceType: types.ResourceTypeInstance,
-				Tags: []types.Tag{
-					{
-						Key:   aws.String("runs-fleet:run-id"),
-						Value: aws.String(spec.RunID),
-					},
-					{
-						Key:   aws.String("runs-fleet:managed"),
-						Value: aws.String("true"),
-					},
-				},
+				Tags:         tags,
+			},
+			{
+				ResourceType: types.ResourceTypeVolume,
+				Tags:         tags,
+			},
+			{
+				ResourceType: types.ResourceTypeNetworkInterface,
+				Tags:         tags,
 			},
 		},
 	}
@@ -87,20 +98,29 @@ func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) error 
 
 	output, err := m.ec2Client.CreateFleet(ctx, req)
 	if err != nil {
-		return fmt.Errorf("failed to create fleet: %w", err)
+		return nil, fmt.Errorf("failed to create fleet: %w", err)
 	}
 
 	if len(output.Errors) > 0 {
-		errMsg := "unknown error"
-		if output.Errors[0].ErrorMessage != nil {
-			errMsg = *output.Errors[0].ErrorMessage
+		var errMsgs []string
+		for _, e := range output.Errors {
+			if e.ErrorMessage != nil {
+				errMsgs = append(errMsgs, *e.ErrorMessage)
+			} else {
+				errMsgs = append(errMsgs, "unknown error")
+			}
 		}
-		return fmt.Errorf("fleet creation had errors: %s", errMsg)
+		return nil, fmt.Errorf("fleet creation had errors: %s", strings.Join(errMsgs, ", "))
 	}
 
 	if len(output.Instances) == 0 {
-		return fmt.Errorf("no instances were created")
+		return nil, fmt.Errorf("no instances were created")
 	}
 
-	return nil
+	instanceIDs := make([]string, 0, len(output.Instances))
+	for _, inst := range output.Instances {
+		instanceIDs = append(instanceIDs, inst.InstanceIds...)
+	}
+
+	return instanceIDs, nil
 }

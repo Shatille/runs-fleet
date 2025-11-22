@@ -29,6 +29,7 @@ func NewClient(cfg aws.Config, queueURL string) *Client {
 }
 
 type JobMessage struct {
+	JobID        string `json:"job_id,omitempty"`
 	RunID        string `json:"run_id"`
 	InstanceType string `json:"instance_type"`
 	Pool         string `json:"pool,omitempty"`
@@ -44,9 +45,10 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 	}
 
 	input := &sqs.SendMessageInput{
-		QueueUrl:       aws.String(c.queueURL),
-		MessageBody:    aws.String(string(body)),
-		MessageGroupId: aws.String(job.RunID),
+		QueueUrl:               aws.String(c.queueURL),
+		MessageBody:            aws.String(string(body)),
+		MessageGroupId:         aws.String(job.RunID),
+		MessageDeduplicationId: aws.String(job.JobID),
 	}
 
 	_, err = c.sqsClient.SendMessage(ctx, input)

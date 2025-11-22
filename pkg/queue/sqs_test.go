@@ -40,6 +40,7 @@ func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMes
 
 func TestJobMessage_Marshal(t *testing.T) {
 	job := &JobMessage{
+		JobID:        "456",
 		RunID:        "123",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
@@ -53,7 +54,7 @@ func TestJobMessage_Marshal(t *testing.T) {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	expected := `{"run_id":"123","instance_type":"t4g.medium","pool":"default","private":true,"spot":false,"runner_spec":"2cpu-linux-arm64"}`
+	expected := `{"job_id":"456","run_id":"123","instance_type":"t4g.medium","pool":"default","private":true,"spot":false,"runner_spec":"2cpu-linux-arm64"}`
 	if string(data) != expected {
 		t.Errorf("Marshal result = %s, want %s", string(data), expected)
 	}
@@ -94,6 +95,7 @@ func TestClient_SendMessage(t *testing.T) {
 		{
 			name: "success",
 			job: &JobMessage{
+				JobID:        "job-123",
 				RunID:        "test-run-123",
 				InstanceType: "t4g.medium",
 				Spot:         true,
@@ -103,6 +105,9 @@ func TestClient_SendMessage(t *testing.T) {
 				SendMessageFunc: func(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 					if params.MessageGroupId == nil || *params.MessageGroupId != "test-run-123" {
 						t.Error("MessageGroupId not set correctly")
+					}
+					if params.MessageDeduplicationId == nil || *params.MessageDeduplicationId != "job-123" {
+						t.Error("MessageDeduplicationId not set correctly")
 					}
 					return &sqs.SendMessageOutput{
 						MessageId: aws.String("msg-123"),
@@ -114,6 +119,7 @@ func TestClient_SendMessage(t *testing.T) {
 		{
 			name: "sqs error",
 			job: &JobMessage{
+				JobID:        "job-456",
 				RunID:        "test-run-456",
 				InstanceType: "t4g.medium",
 			},
