@@ -106,8 +106,14 @@ func TestClient_SendMessage(t *testing.T) {
 					if params.MessageGroupId == nil || *params.MessageGroupId != "test-run-123" {
 						t.Error("MessageGroupId not set correctly")
 					}
-					if params.MessageDeduplicationId == nil || *params.MessageDeduplicationId != "job-123" {
-						t.Error("MessageDeduplicationId not set correctly")
+					if params.MessageDeduplicationId == nil || *params.MessageDeduplicationId == "" {
+						t.Error("MessageDeduplicationId not set")
+					}
+					if *params.MessageDeduplicationId == "test-run-123" {
+						t.Error("MessageDeduplicationId should not equal RunID")
+					}
+					if *params.MessageDeduplicationId == "job-123" {
+						t.Error("MessageDeduplicationId should not equal JobID")
 					}
 					return &sqs.SendMessageOutput{
 						MessageId: aws.String("msg-123"),

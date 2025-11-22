@@ -41,12 +41,15 @@ func TestGetPoolConfig(t *testing.T) {
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
 				GetItemFunc: func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-					item, _ := attributevalue.MarshalMap(map[string]interface{}{
+					item, err := attributevalue.MarshalMap(map[string]interface{}{
 						"pool_name":       "test-pool",
 						"instance_type":   "t3.micro",
 						"desired_running": 5,
 						"desired_stopped": 2,
 					})
+					if err != nil {
+						t.Fatalf("Failed to marshal item: %v", err)
+					}
 					return &dynamodb.GetItemOutput{Item: item}, nil
 				},
 			},
@@ -98,6 +101,12 @@ func TestGetPoolConfig(t *testing.T) {
 					if got.InstanceType != tt.wantConfig.InstanceType {
 						t.Errorf("InstanceType = %v, want %v", got.InstanceType, tt.wantConfig.InstanceType)
 					}
+					if got.DesiredRunning != tt.wantConfig.DesiredRunning {
+						t.Errorf("DesiredRunning = %v, want %v", got.DesiredRunning, tt.wantConfig.DesiredRunning)
+					}
+					if got.DesiredStopped != tt.wantConfig.DesiredStopped {
+						t.Errorf("DesiredStopped = %v, want %v", got.DesiredStopped, tt.wantConfig.DesiredStopped)
+					}
 				}
 			}
 		})
@@ -110,20 +119,25 @@ func TestUpdatePoolState(t *testing.T) {
 			if *params.TableName != "pools-table" {
 				t.Errorf("TableName = %s, want pools-table", *params.TableName)
 			}
-			// Verify key
 			var key map[string]string
-			attributevalue.UnmarshalMap(params.Key, &key)
+			if err := attributevalue.UnmarshalMap(params.Key, &key); err != nil {
+				t.Errorf("Failed to unmarshal key: %v", err)
+			}
 			if key["pool_name"] != "test-pool" {
 				t.Errorf("Key pool_name = %s, want test-pool", key["pool_name"])
 			}
-			// Verify values
 			var values map[string]int
-			attributevalue.UnmarshalMap(params.ExpressionAttributeValues, &values)
+			if err := attributevalue.UnmarshalMap(params.ExpressionAttributeValues, &values); err != nil {
+				t.Errorf("Failed to unmarshal values: %v", err)
+			}
 			if values[":r"] != 10 {
 				t.Errorf(":r = %d, want 10", values[":r"])
 			}
 			if values[":s"] != 5 {
 				t.Errorf(":s = %d, want 5", values[":s"])
+			}
+			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_exists(pool_name)" {
+				t.Errorf("ConditionExpression = %v, want attribute_exists(pool_name)", params.ConditionExpression)
 			}
 			return &dynamodb.UpdateItemOutput{}, nil
 		},

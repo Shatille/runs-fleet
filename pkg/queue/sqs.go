@@ -3,6 +3,8 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -57,11 +59,14 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
+	hash := sha256.Sum256(body)
+	dedupID := hex.EncodeToString(hash[:])
+
 	input := &sqs.SendMessageInput{
 		QueueUrl:               aws.String(c.queueURL),
 		MessageBody:            aws.String(string(body)),
 		MessageGroupId:         aws.String(job.RunID),
-		MessageDeduplicationId: aws.String(job.JobID),
+		MessageDeduplicationId: aws.String(dedupID),
 	}
 
 	_, err = c.sqsClient.SendMessage(ctx, input)

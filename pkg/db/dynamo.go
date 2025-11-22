@@ -31,7 +31,6 @@ type PoolConfig struct {
 	InstanceType   string `dynamodbav:"instance_type"`
 	DesiredRunning int    `dynamodbav:"desired_running"`
 	DesiredStopped int    `dynamodbav:"desired_stopped"`
-	MaxIdleMinutes int    `dynamodbav:"max_idle_minutes"`
 }
 
 func (c *Client) GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error) {
@@ -88,6 +87,7 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 		Key:                       key,
 		UpdateExpression:          aws.String(update),
 		ExpressionAttributeValues: exprValues,
+		ConditionExpression:       aws.String("attribute_exists(pool_name)"),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update item: %w", err)

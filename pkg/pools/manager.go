@@ -78,7 +78,15 @@ func (m *Manager) ReconcileLoop(ctx context.Context) {
 }
 
 func (m *Manager) reconcile(ctx context.Context) {
-	// 1. List all pools (needs Scan or known list)
-	// For MVP, we might just check a hardcoded list or single pool if we don't implement Scan
+	// Phase 2 implementation plan (see README.md):
+	// 1. List all pools (DynamoDB Scan on pools table)
+	// 2. For each pool:
+	//    a. Count actual running/stopped instances (EC2 DescribeInstances with pool tags)
+	//    b. Compare with desired state (DesiredRunning, DesiredStopped)
+	//    c. Create instances if under-provisioned (EC2 RunInstances)
+	//    d. Stop/terminate instances if over-provisioned
+	//    e. Track idle instances and stop after idle timeout
+	//    f. Update pool state in DynamoDB (UpdatePoolState)
+	// 3. Handle spot interruption replacements
 	log.Println("Reconciling pools... (Not implemented in MVP)")
 }

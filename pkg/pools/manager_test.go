@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
@@ -40,6 +41,30 @@ func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) 
 		return m.CreateFleetFunc(ctx, spec)
 	}
 	return nil
+}
+
+func TestReconcileLoop(t *testing.T) {
+	mockDB := &MockDBClient{}
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		manager.ReconcileLoop(ctx)
+		close(done)
+	}()
+
+	cancel()
+
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer timeoutCancel()
+
+	select {
+	case <-done:
+	case <-timeoutCtx.Done():
+		t.Error("ReconcileLoop did not stop after context cancellation")
+	}
 }
 
 func TestGetInstance(t *testing.T) {
