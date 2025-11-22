@@ -47,6 +47,9 @@ func validateKey(s string) error {
 	if s == "" {
 		return fmt.Errorf("key cannot be empty")
 	}
+	// GitHub Actions cache API spec allows up to 512 characters for cache keys.
+	// We use 504 bytes to allow for potential encoding overhead or additional metadata.
+	// See: https://docs.github.com/en/rest/actions/cache?apiVersion=2022-11-28#create-a-cache
 	if len(s) > 504 {
 		return fmt.Errorf("key exceeds maximum length of 504 bytes")
 	}
@@ -63,6 +66,8 @@ func validateVersion(s string) error {
 	if s == "" {
 		return fmt.Errorf("version cannot be empty")
 	}
+	// GitHub Actions cache API spec allows up to 512 bytes for version strings.
+	// Version is typically a hash of dependencies (e.g., package-lock.json hash).
 	if len(s) > 512 {
 		return fmt.Errorf("version exceeds maximum length of 512 bytes")
 	}
