@@ -21,6 +21,7 @@ type Config struct {
 	EventsQueueURL   string
 	LocksTableName   string
 	JobsTableName    string
+	PoolsTableName   string
 	CacheBucketName  string
 	ConfigBucketName string
 
@@ -55,6 +56,7 @@ func Load() (*Config, error) {
 		EventsQueueURL:      getEnv("RUNS_FLEET_EVENTS_QUEUE_URL", ""),
 		LocksTableName:      getEnv("RUNS_FLEET_LOCKS_TABLE", ""),
 		JobsTableName:       getEnv("RUNS_FLEET_JOBS_TABLE", ""),
+		PoolsTableName:      getEnv("RUNS_FLEET_POOLS_TABLE", ""),
 		CacheBucketName:     getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
 		ConfigBucketName:    getEnv("RUNS_FLEET_CONFIG_BUCKET", ""),
 		VPCID:               getEnv("RUNS_FLEET_VPC_ID", ""),
