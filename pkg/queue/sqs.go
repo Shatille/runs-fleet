@@ -10,17 +10,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+// SQSAPI defines SQS operations for queue message handling.
 type SQSAPI interface {
 	SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
 	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 }
 
+// Client provides SQS queue operations for job messages.
 type Client struct {
 	sqsClient SQSAPI
 	queueURL  string
 }
 
+// NewClient creates SQS client for specified queue URL.
 func NewClient(cfg aws.Config, queueURL string) *Client {
 	return &Client{
 		sqsClient: sqs.NewFromConfig(cfg),
@@ -28,6 +31,7 @@ func NewClient(cfg aws.Config, queueURL string) *Client {
 	}
 }
 
+// JobMessage represents workflow job configuration for queue transport.
 type JobMessage struct {
 	JobID        string `json:"job_id,omitempty"`
 	RunID        string `json:"run_id"`
@@ -38,6 +42,7 @@ type JobMessage struct {
 	RunnerSpec   string `json:"runner_spec"`
 }
 
+// SendMessage sends job message to SQS FIFO queue with deduplication.
 func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 	body, err := json.Marshal(job)
 	if err != nil {
@@ -59,6 +64,7 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 	return nil
 }
 
+// ReceiveMessages retrieves messages from queue with long polling.
 func (c *Client) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
 	input := &sqs.ReceiveMessageInput{
 		QueueUrl:            aws.String(c.queueURL),
@@ -75,6 +81,7 @@ func (c *Client) ReceiveMessages(ctx context.Context, maxMessages int32, waitTim
 	return output.Messages, nil
 }
 
+// DeleteMessage removes processed message from queue.
 func (c *Client) DeleteMessage(ctx context.Context, receiptHandle string) error {
 	_, err := c.sqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(c.queueURL),

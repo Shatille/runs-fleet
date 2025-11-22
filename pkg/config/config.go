@@ -97,9 +97,6 @@ func (c *Config) Validate() error {
 	if len(c.PublicSubnetIDs) == 0 && len(c.PrivateSubnetIDs) == 0 {
 		return fmt.Errorf("at least one of RUNS_FLEET_PUBLIC_SUBNET_IDS or RUNS_FLEET_PRIVATE_SUBNET_IDS is required")
 	}
-	if c.LaunchTemplateName == "" {
-		return fmt.Errorf("RUNS_FLEET_LAUNCH_TEMPLATE_NAME is required")
-	}
 	return nil
 }
 

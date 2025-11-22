@@ -13,6 +13,7 @@ import (
 	"github.com/google/go-github/v57/github"
 )
 
+// ValidateSignature verifies GitHub webhook HMAC-SHA256 signature.
 func ValidateSignature(payload []byte, signatureHeader string, secret string) error {
 	if secret == "" {
 		return errors.New("webhook secret not configured")
@@ -31,6 +32,7 @@ func ValidateSignature(payload []byte, signatureHeader string, secret string) er
 	return nil
 }
 
+// ParseWebhook validates and parses GitHub webhook request with size limit enforcement.
 func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "" {
@@ -61,6 +63,7 @@ func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 	return github.ParseWebHook(event, payload)
 }
 
+// JobConfig contains parsed workflow job configuration from labels.
 type JobConfig struct {
 	RunID        string
 	InstanceType string
@@ -70,6 +73,7 @@ type JobConfig struct {
 	RunnerSpec   string
 }
 
+// ParseLabels extracts job configuration from runs-fleet workflow labels.
 func ParseLabels(labels []string) (*JobConfig, error) {
 	config := &JobConfig{
 		Spot: true,

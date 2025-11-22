@@ -11,15 +11,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+// EC2API defines EC2 operations for fleet management.
 type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
 }
 
+// FleetManager orchestrates EC2 fleet creation for runner instances.
 type FleetManager struct {
 	ec2Client EC2API
 	config    *config.Config
 }
 
+// NewManager creates fleet manager with EC2 client and configuration.
 func NewManager(cfg aws.Config, appConfig *config.Config) *FleetManager {
 	return &FleetManager{
 		ec2Client: ec2.NewFromConfig(cfg),
@@ -27,6 +30,7 @@ func NewManager(cfg aws.Config, appConfig *config.Config) *FleetManager {
 	}
 }
 
+// LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
 	RunID        string
 	InstanceType string
@@ -34,6 +38,7 @@ type LaunchSpec struct {
 	Spot         bool
 }
 
+// CreateFleet launches EC2 instances using spot or on-demand capacity.
 func (m *FleetManager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
 	launchTemplate := &types.FleetLaunchTemplateSpecificationRequest{
 		LaunchTemplateName: aws.String(m.config.LaunchTemplateName),
