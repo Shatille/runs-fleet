@@ -38,12 +38,21 @@ func TestPublishMetrics(t *testing.T) {
 			},
 		},
 		{
-			name:       "FleetSize",
-			metricName: "FleetSize",
-			value:      5.0,
+			name:       "FleetSizeIncrement",
+			metricName: "FleetSizeIncrement",
+			value:      1.0,
 			unit:       types.StandardUnitCount,
 			publish: func(p *Publisher) error {
-				return p.PublishFleetSize(context.Background(), 5)
+				return p.PublishFleetSizeIncrement(context.Background())
+			},
+		},
+		{
+			name:       "FleetSizeDecrement",
+			metricName: "FleetSizeDecrement",
+			value:      1.0,
+			unit:       types.StandardUnitCount,
+			publish: func(p *Publisher) error {
+				return p.PublishFleetSizeDecrement(context.Background())
 			},
 		},
 		{

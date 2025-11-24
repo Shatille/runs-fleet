@@ -35,9 +35,14 @@ func (p *Publisher) PublishQueueDepth(ctx context.Context, depth float64) error 
 	return p.putMetric(ctx, "QueueDepth", depth, types.StandardUnitCount)
 }
 
-// PublishFleetSize publishes fleet size metric.
-func (p *Publisher) PublishFleetSize(ctx context.Context, size int64) error {
-	return p.putMetric(ctx, "FleetSize", float64(size), types.StandardUnitCount)
+// PublishFleetSizeIncrement publishes fleet size increment metric.
+func (p *Publisher) PublishFleetSizeIncrement(ctx context.Context) error {
+	return p.putMetric(ctx, "FleetSizeIncrement", 1, types.StandardUnitCount)
+}
+
+// PublishFleetSizeDecrement publishes fleet size decrement metric.
+func (p *Publisher) PublishFleetSizeDecrement(ctx context.Context) error {
+	return p.putMetric(ctx, "FleetSizeDecrement", 1, types.StandardUnitCount)
 }
 
 // PublishJobDuration publishes job duration metric.

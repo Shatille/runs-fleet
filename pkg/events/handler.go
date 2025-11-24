@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -41,7 +42,8 @@ type JobInfo struct {
 // MetricsAPI provides CloudWatch metrics publishing.
 type MetricsAPI interface {
 	PublishSpotInterruption(ctx context.Context) error
-	PublishFleetSize(ctx context.Context, size int64) error
+	PublishFleetSizeIncrement(ctx context.Context) error
+	PublishFleetSizeDecrement(ctx context.Context) error
 	PublishMessageDeletionFailure(ctx context.Context) error
 }
 
@@ -114,6 +116,16 @@ func (h *Handler) Run(ctx context.Context) {
 			cancel()
 			if err != nil {
 				log.Printf("failed to receive event messages: %v", err)
+				continue
+			}
+
+			if len(messages) == 0 {
+				jitter := time.Duration(160+rand.Int63n(80)) * time.Millisecond
+				select {
+				case <-time.After(jitter):
+				case <-ctx.Done():
+					return
+				}
 				continue
 			}
 
@@ -282,16 +294,12 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 
 	switch detail.State {
 	case "running":
-		if err := h.retryWithBackoff(ctx, func(mctx context.Context) error {
-			return h.metrics.PublishFleetSize(mctx, 1)
-		}); err != nil {
-			return fmt.Errorf("failed to publish fleet size metric for running: %w", err)
+		if err := h.retryWithBackoff(ctx, h.metrics.PublishFleetSizeIncrement); err != nil {
+			return fmt.Errorf("failed to publish fleet size increment metric: %w", err)
 		}
 	case "stopped", "terminated":
-		if err := h.retryWithBackoff(ctx, func(mctx context.Context) error {
-			return h.metrics.PublishFleetSize(mctx, -1)
-		}); err != nil {
-			return fmt.Errorf("failed to publish fleet size metric for %s: %w", detail.State, err)
+		if err := h.retryWithBackoff(ctx, h.metrics.PublishFleetSizeDecrement); err != nil {
+			return fmt.Errorf("failed to publish fleet size decrement metric: %w", err)
 		}
 	case "pending", "stopping", "shutting-down":
 		log.Printf("Ignoring intermediate state %s for instance %s", detail.State, detail.InstanceID)

@@ -64,8 +64,9 @@ func (m *MockDBAPI) GetJobByInstance(ctx context.Context, instanceID string) (*J
 
 // MockMetricsAPI implements MetricsAPI interface
 type MockMetricsAPI struct {
-	PublishSpotInterruptionFunc      func(ctx context.Context) error
-	PublishFleetSizeFunc             func(ctx context.Context, size int64) error
+	PublishSpotInterruptionFunc       func(ctx context.Context) error
+	PublishFleetSizeIncrementFunc     func(ctx context.Context) error
+	PublishFleetSizeDecrementFunc     func(ctx context.Context) error
 	PublishMessageDeletionFailureFunc func(ctx context.Context) error
 }
 
@@ -76,9 +77,16 @@ func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context) error {
 	return nil
 }
 
-func (m *MockMetricsAPI) PublishFleetSize(ctx context.Context, size int64) error {
-	if m.PublishFleetSizeFunc != nil {
-		return m.PublishFleetSizeFunc(ctx, size)
+func (m *MockMetricsAPI) PublishFleetSizeIncrement(ctx context.Context) error {
+	if m.PublishFleetSizeIncrementFunc != nil {
+		return m.PublishFleetSizeIncrementFunc(ctx)
+	}
+	return nil
+}
+
+func (m *MockMetricsAPI) PublishFleetSizeDecrement(ctx context.Context) error {
+	if m.PublishFleetSizeDecrementFunc != nil {
+		return m.PublishFleetSizeDecrementFunc(ctx)
 	}
 	return nil
 }
@@ -120,11 +128,8 @@ func TestProcessEvent(t *testing.T) {
 					"state": "terminated"
 				}
 			}`,
-			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeFunc = func(_ context.Context, size int64) error {
-					if size != -1 {
-						t.Errorf("Expected fleet size change -1, got %d", size)
-					}
+			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
+				m.PublishFleetSizeDecrementFunc = func(_ context.Context) error {
 					return nil
 				}
 			},
@@ -138,11 +143,8 @@ func TestProcessEvent(t *testing.T) {
 					"state": "running"
 				}
 			}`,
-			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeFunc = func(_ context.Context, size int64) error {
-					if size != 1 {
-						t.Errorf("Expected fleet size change 1, got %d", size)
-					}
+			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
+				m.PublishFleetSizeIncrementFunc = func(_ context.Context) error {
 					return nil
 				}
 			},
@@ -156,11 +158,8 @@ func TestProcessEvent(t *testing.T) {
 					"state": "stopped"
 				}
 			}`,
-			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeFunc = func(_ context.Context, size int64) error {
-					if size != -1 {
-						t.Errorf("Expected fleet size change -1 for stopped, got %d", size)
-					}
+			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
+				m.PublishFleetSizeDecrementFunc = func(_ context.Context) error {
 					return nil
 				}
 			},
@@ -176,7 +175,8 @@ func TestProcessEvent(t *testing.T) {
 
 			// Ensure mocks are called
 			called := false
-			if tt.name == "Spot Interruption" {
+			switch tt.name {
+			case "Spot Interruption":
 				originalFunc := mockMetrics.PublishSpotInterruptionFunc
 				mockMetrics.PublishSpotInterruptionFunc = func(ctx context.Context) error {
 					called = true
@@ -185,12 +185,21 @@ func TestProcessEvent(t *testing.T) {
 					}
 					return nil
 				}
-			} else {
-				originalFunc := mockMetrics.PublishFleetSizeFunc
-				mockMetrics.PublishFleetSizeFunc = func(ctx context.Context, size int64) error {
+			case "State Change - Running":
+				originalFunc := mockMetrics.PublishFleetSizeIncrementFunc
+				mockMetrics.PublishFleetSizeIncrementFunc = func(ctx context.Context) error {
 					called = true
 					if originalFunc != nil {
-						return originalFunc(ctx, size)
+						return originalFunc(ctx)
+					}
+					return nil
+				}
+			default:
+				originalFunc := mockMetrics.PublishFleetSizeDecrementFunc
+				mockMetrics.PublishFleetSizeDecrementFunc = func(ctx context.Context) error {
+					called = true
+					if originalFunc != nil {
+						return originalFunc(ctx)
 					}
 					return nil
 				}
@@ -278,7 +287,10 @@ func TestProcessEventErrors(t *testing.T) {
 				PublishSpotInterruptionFunc: func(_ context.Context) error {
 					return tt.metricsError
 				},
-				PublishFleetSizeFunc: func(_ context.Context, _ int64) error {
+				PublishFleetSizeIncrementFunc: func(_ context.Context) error {
+					return tt.metricsError
+				},
+				PublishFleetSizeDecrementFunc: func(_ context.Context) error {
 					return tt.metricsError
 				},
 			}
