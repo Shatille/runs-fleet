@@ -232,11 +232,11 @@ func TestProcessEvent(t *testing.T) {
 
 func TestProcessEventErrors(t *testing.T) {
 	tests := []struct {
-		name              string
-		eventBody         *string
-		receiptHandle     *string
-		metricsError      error
-		expectDeleteCall  bool
+		name             string
+		eventBody        *string
+		receiptHandle    *string
+		metricsError     error
+		expectDeleteCall bool
 	}{
 		{
 			name:             "Nil Body",
@@ -973,9 +973,9 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			name:       "Invalid job data - empty JobID",
 			instanceID: "i-emptyjobid",
 			job: &JobInfo{
-				JobID:  "",
-				RunID:  "run-valid",
-				Spot:   true,
+				JobID: "",
+				RunID: "run-valid",
+				Spot:  true,
 			},
 			expectMarkCalled:  true,
 			expectGetCalled:   true,
@@ -986,9 +986,9 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			name:       "Invalid job data - empty RunID",
 			instanceID: "i-emptyrunid",
 			job: &JobInfo{
-				JobID:  "job-valid",
-				RunID:  "",
-				Spot:   true,
+				JobID: "job-valid",
+				RunID: "",
+				Spot:  true,
 			},
 			expectMarkCalled:  true,
 			expectGetCalled:   true,
@@ -1016,9 +1016,9 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			name:       "Queue send failure",
 			instanceID: "i-queuefail",
 			job: &JobInfo{
-				JobID:  "job-fail",
-				RunID:  "run-fail",
-				Spot:   true,
+				JobID: "job-fail",
+				RunID: "run-fail",
+				Spot:  true,
 			},
 			queueSendErr:      fmt.Errorf("sqs throttled"),
 			expectMarkCalled:  true,
