@@ -3,21 +3,36 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/config"
-	"github.com/Shavakan/runs-fleet/pkg/github"
+	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/events"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	gh "github.com/Shavakan/runs-fleet/pkg/github"
+	"github.com/Shavakan/runs-fleet/pkg/metrics"
+	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	gh "github.com/google/go-github/v57/github"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/google/go-github/v57/github"
+)
+
+const (
+	maxDeleteRetries      = 3
+	retryDelay            = 1 * time.Second
+	maxFleetCreateRetries = 3
+	fleetRetryBaseDelay   = 2 * time.Second
 )
 
 func main() {
@@ -36,18 +51,24 @@ func main() {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	queueClient := queue.NewClient(awsCfg, cfg.QueueURL)
-
+	sqsClient := queue.NewClient(awsCfg, cfg.QueueURL)
+	eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
+	fleetManager := fleet.NewManager(awsCfg, cfg)
+	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName)
+	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
-	cacheHandler := cache.NewHandler(cacheServer)
+	metricsPublisher := metrics.NewPublisher(awsCfg)
+	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 
 	mux := http.NewServeMux()
-	cacheHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})
+
+	cacheHandler := cache.NewHandler(cacheServer)
+	cacheHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -55,59 +76,29 @@ func main() {
 			return
 		}
 
-		payload, err := github.ParseWebhook(r, cfg.GitHubWebhookSecret)
+		payload, err := gh.ParseWebhook(r, cfg.GitHubWebhookSecret)
 		if err != nil {
-			log.Printf("Webhook validation failed: %v", err)
-			http.Error(w, "Webhook validation failed", http.StatusUnauthorized)
+			log.Printf("Webhook parsing failed: %v", err)
+			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
 
-		event, ok := payload.(*gh.WorkflowJobEvent)
-		if !ok || event.Action == nil || *event.Action != "queued" {
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, "Event ignored\n")
-			return
-		}
-
-		if event.WorkflowJob == nil || event.WorkflowJob.Labels == nil {
-			log.Printf("Workflow job missing labels")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		if event.WorkflowJob.ID == nil {
-			log.Printf("Workflow job missing ID")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		jobConfig, err := github.ParseLabels(event.WorkflowJob.Labels)
-		if err != nil {
-			log.Printf("Failed to parse labels: %v", err)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		jobID := strconv.FormatInt(*event.WorkflowJob.ID, 10)
-
-		job := &queue.JobMessage{
-			JobID:        jobID,
-			RunID:        jobConfig.RunID,
-			InstanceType: jobConfig.InstanceType,
-			Pool:         jobConfig.Pool,
-			Private:      jobConfig.Private,
-			Spot:         jobConfig.Spot,
-			RunnerSpec:   jobConfig.RunnerSpec,
-		}
-
-		if err := queueClient.SendMessage(r.Context(), job); err != nil {
-			log.Printf("Failed to send message to queue: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
+		processed := false
+		switch event := payload.(type) {
+		case *github.WorkflowJobEvent:
+			if event.GetAction() == "queued" {
+				if err := handleWorkflowJob(r.Context(), event, sqsClient, metricsPublisher); err == nil {
+					processed = true
+				}
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "Job queued\n")
+		if processed {
+			_, _ = fmt.Fprintf(w, "Job queued\n")
+		} else {
+			_, _ = fmt.Fprintf(w, "Event acknowledged\n")
+		}
 	})
 
 	server := &http.Server{
@@ -117,6 +108,13 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	var subnetIndex uint64
+	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, cfg, &subnetIndex)
+
+	go poolManager.ReconcileLoop(ctx)
+
+	go eventHandler.Run(ctx)
 
 	go func() {
 		log.Printf("Server listening on %s", server.Addr)
@@ -136,4 +134,202 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *queue.Client, m *metrics.Publisher) error {
+	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
+
+	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
+	if err != nil {
+		log.Printf("Skipping job (no runs-fleet labels): %v", err)
+		return nil
+	}
+
+	msg := &queue.JobMessage{
+		JobID:        fmt.Sprintf("%d", event.GetWorkflowJob().GetID()),
+		RunID:        jobConfig.RunID,
+		InstanceType: jobConfig.InstanceType,
+		Pool:         jobConfig.Pool,
+		Private:      jobConfig.Private,
+		Spot:         jobConfig.Spot,
+		RunnerSpec:   jobConfig.RunnerSpec,
+	}
+
+	if err := q.SendMessage(ctx, msg); err != nil {
+		log.Printf("Failed to enqueue job: %v", err)
+		return fmt.Errorf("failed to enqueue job: %w", err)
+	}
+
+	if err := m.PublishQueueDepth(ctx, 1); err != nil {
+		log.Printf("Failed to publish queue depth metric: %v", err)
+	}
+	log.Printf("Enqueued job for run %s", jobConfig.RunID)
+	return nil
+}
+
+func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, cfg *config.Config, subnetIndex *uint64) {
+	log.Println("Starting worker loop...")
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	const maxConcurrency = 5
+	sem := make(chan struct{}, maxConcurrency)
+	var activeWork sync.WaitGroup
+
+	defer func() {
+		log.Println("Waiting for in-flight work to complete...")
+		activeWork.Wait()
+		log.Println("Worker shutdown complete")
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			timeout := 25 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if remaining < timeout {
+					timeout = remaining
+				}
+			}
+			recvCtx, cancel := context.WithTimeout(ctx, timeout)
+			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
+			cancel()
+			if err != nil {
+				log.Printf("Failed to receive messages: %v", err)
+				continue
+			}
+
+			if len(messages) == 0 {
+				continue
+			}
+
+			for _, msg := range messages {
+				msg := msg
+				activeWork.Add(1)
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("panic in processMessage: %v", r)
+						}
+					}()
+					defer activeWork.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
+					processCtx, processCancel := context.WithTimeout(ctx, 30*time.Second)
+					defer processCancel()
+					processMessage(processCtx, q, f, pm, m, msg, cfg, subnetIndex)
+				}()
+			}
+		}
+	}
+}
+
+func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
+	startTime := time.Now()
+	fleetCreated := false
+	poisonMessage := false
+
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+
+		if fleetCreated {
+			deleteErr := q.DeleteMessage(cleanupCtx, *msg.ReceiptHandle)
+			for attempts := 1; attempts < maxDeleteRetries && deleteErr != nil; attempts++ {
+				time.Sleep(retryDelay)
+				deleteErr = q.DeleteMessage(cleanupCtx, *msg.ReceiptHandle)
+			}
+			if deleteErr != nil {
+				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, deleteErr)
+			}
+
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
+			}
+
+			if metricErr := m.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
+				log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+			}
+		}
+
+		if poisonMessage {
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
+			}
+		}
+
+		if err := m.PublishJobDuration(cleanupCtx, time.Since(startTime).Seconds()); err != nil {
+			log.Printf("Failed to publish job duration metric: %v", err)
+		}
+	}()
+
+	var job queue.JobMessage
+	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
+		log.Printf("Failed to unmarshal message: %v", err)
+		poisonMessage = true
+
+		deleteErr := q.DeleteMessage(ctx, *msg.ReceiptHandle)
+		for attempts := 1; attempts < maxDeleteRetries && deleteErr != nil; attempts++ {
+			time.Sleep(retryDelay)
+			deleteErr = q.DeleteMessage(ctx, *msg.ReceiptHandle)
+		}
+		if deleteErr != nil {
+			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, deleteErr)
+		}
+
+		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer metricCancel()
+		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
+			log.Printf("Failed to publish poison message metric: %v", metricErr)
+		}
+		return
+	}
+
+	log.Printf("Processing job for run %s", job.RunID)
+
+	subnetID := ""
+	if job.Private && len(cfg.PrivateSubnetIDs) > 0 {
+		idx := atomic.AddUint64(subnetIndex, 1) - 1
+		subnetID = cfg.PrivateSubnetIDs[idx%uint64(len(cfg.PrivateSubnetIDs))]
+	} else if len(cfg.PublicSubnetIDs) > 0 {
+		idx := atomic.AddUint64(subnetIndex, 1) - 1
+		subnetID = cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
+	}
+
+	spec := &fleet.LaunchSpec{
+		RunID:        job.RunID,
+		InstanceType: job.InstanceType,
+		SubnetID:     subnetID,
+		Spot:         job.Spot,
+		Pool:         job.Pool,
+	}
+
+	var instanceIDs []string
+	var err error
+	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
+		if attempt > 0 {
+			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
+			log.Printf("Retrying fleet creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
+			time.Sleep(backoff)
+		}
+
+		instanceIDs, err = f.CreateFleet(ctx, spec)
+		if err == nil {
+			break
+		}
+
+		log.Printf("Fleet creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
+	}
+
+	if err != nil {
+		log.Printf("Failed to create fleet after %d attempts: %v", maxFleetCreateRetries, err)
+		return
+	}
+
+	fleetCreated = true
+	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
 }

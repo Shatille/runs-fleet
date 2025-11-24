@@ -31,6 +31,7 @@ func TestCreateFleet(t *testing.T) {
 		wantSpot         bool
 		wantOnDemand     bool
 		wantInstanceType string
+		wantPool         string
 	}{
 		{
 			name: "Spot Request",
@@ -45,6 +46,22 @@ func TestCreateFleet(t *testing.T) {
 			},
 			wantSpot:         true,
 			wantInstanceType: "t4g.medium",
+		},
+		{
+			name: "With Pool",
+			spec: &LaunchSpec{
+				RunID:        "run-1",
+				InstanceType: "t4g.medium",
+				SubnetID:     "subnet-1",
+				Spot:         true,
+				Pool:         "default",
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantSpot:         true,
+			wantInstanceType: "t4g.medium",
+			wantPool:         "default",
 		},
 		{
 			name: "Explicit On-Demand",
@@ -94,6 +111,21 @@ func TestCreateFleet(t *testing.T) {
 					} else if tt.wantOnDemand {
 						if params.TargetCapacitySpecification.DefaultTargetCapacityType != types.DefaultTargetCapacityTypeOnDemand {
 							t.Errorf("TargetCapacityType = %v, want OnDemand", params.TargetCapacitySpecification.DefaultTargetCapacityType)
+						}
+					}
+
+					if tt.wantPool != "" {
+						found := false
+						for _, tagSpec := range params.TagSpecifications {
+							for _, tag := range tagSpec.Tags {
+								if aws.ToString(tag.Key) == "runs-fleet:pool" && aws.ToString(tag.Value) == tt.wantPool {
+									found = true
+									break
+								}
+							}
+						}
+						if !found {
+							t.Errorf("Pool tag not found or incorrect, want pool=%s", tt.wantPool)
 						}
 					}
 

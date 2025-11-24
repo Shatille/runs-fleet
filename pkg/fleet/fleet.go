@@ -37,6 +37,7 @@ type LaunchSpec struct {
 	InstanceType string
 	SubnetID     string
 	Spot         bool
+	Pool         string
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
@@ -64,6 +65,13 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 			Key:   aws.String("runs-fleet:managed"),
 			Value: aws.String("true"),
 		},
+	}
+
+	if spec.Pool != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:pool"),
+			Value: aws.String(spec.Pool),
+		})
 	}
 
 	req := &ec2.CreateFleetInput{
