@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -167,11 +166,18 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 
 func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, cfg *config.Config, subnetIndex *uint64) {
 	log.Println("Starting worker loop...")
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 
 	const maxConcurrency = 5
 	sem := make(chan struct{}, maxConcurrency)
+	var activeWork sync.WaitGroup
+
+	defer func() {
+		log.Println("Waiting for in-flight work to complete...")
+		activeWork.Wait()
+		log.Println("Worker shutdown complete")
+	}()
 
 	for {
 		select {
@@ -194,26 +200,19 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 			}
 
 			if len(messages) == 0 {
-				jitter := time.Duration(160+rand.Int63n(80)) * time.Millisecond
-				select {
-				case <-time.After(jitter):
-				case <-ctx.Done():
-					return
-				}
 				continue
 			}
 
-			var wg sync.WaitGroup
 			for _, msg := range messages {
 				msg := msg
-				wg.Add(1)
+				activeWork.Add(1)
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
 							log.Printf("panic in processMessage: %v", r)
 						}
 					}()
-					defer wg.Done()
+					defer activeWork.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
 
@@ -221,18 +220,6 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 					defer processCancel()
 					processMessage(processCtx, q, f, pm, m, msg, cfg, subnetIndex)
 				}()
-			}
-
-			done := make(chan struct{})
-			go func() {
-				wg.Wait()
-				close(done)
-			}()
-
-			select {
-			case <-done:
-			case <-ctx.Done():
-				return
 			}
 		}
 	}
@@ -281,12 +268,8 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *p
 		log.Printf("Failed to create fleet: %v", err)
 		return
 	}
-	if len(instanceIDs) == 0 {
-		log.Printf("Fleet created but no instances returned for run %s", job.RunID)
-		return
-	}
 
-	log.Printf("Successfully launched instance for run %s", job.RunID)
+	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
 	if err := q.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
 		log.Printf("Failed to delete message: %v", err)
 	}

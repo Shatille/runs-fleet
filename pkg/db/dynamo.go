@@ -119,11 +119,13 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 }
 
 // MarkInstanceTerminating marks an instance as terminating in DynamoDB.
+// TODO(Phase 4): Implement job-to-instance tracking for spot interruption handling.
 func (c *Client) MarkInstanceTerminating(_ context.Context, instanceID string) error {
 	return fmt.Errorf("MarkInstanceTerminating not yet implemented for instance %s", instanceID)
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
+// TODO(Phase 4): Implement job-to-instance tracking for spot interruption re-queueing.
 func (c *Client) GetJobByInstance(_ context.Context, instanceID string) (*events.JobInfo, error) {
 	return nil, fmt.Errorf("GetJobByInstance not yet implemented for instance %s", instanceID)
 }

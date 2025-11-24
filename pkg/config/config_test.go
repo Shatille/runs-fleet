@@ -6,15 +6,14 @@ import (
 )
 
 func TestLoad(t *testing.T) {
-	// Save original env vars and restore after test
 	originalEnv := os.Environ()
-	defer func() {
+	t.Cleanup(func() {
 		os.Clearenv()
 		for _, e := range originalEnv {
 			pair := splitEnv(e)
 			_ = os.Setenv(pair[0], pair[1])
 		}
-	}()
+	})
 
 	tests := []struct {
 		name    string
@@ -90,8 +89,10 @@ func TestLoad(t *testing.T) {
 func TestGetEnvInt(t *testing.T) {
 	_ = os.Setenv("TEST_INT", "123")
 	_ = os.Setenv("TEST_BAD_INT", "abc")
-	defer func() { _ = os.Unsetenv("TEST_INT") }()
-	defer func() { _ = os.Unsetenv("TEST_BAD_INT") }()
+	t.Cleanup(func() {
+		_ = os.Unsetenv("TEST_INT")
+		_ = os.Unsetenv("TEST_BAD_INT")
+	})
 
 	val, err := getEnvInt("TEST_INT", 0)
 	if err != nil {
