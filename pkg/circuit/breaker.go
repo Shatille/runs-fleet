@@ -43,14 +43,14 @@ type DynamoDBAPI interface {
 
 // CircuitRecord represents circuit breaker state in DynamoDB.
 type CircuitRecord struct {
-	InstanceType         string    `dynamodbav:"instance_type"`
-	State                string    `dynamodbav:"state"`
-	InterruptionCount    int       `dynamodbav:"interruption_count"`
-	FirstInterruptionAt  string    `dynamodbav:"first_interruption_at"`
-	LastInterruptionAt   string    `dynamodbav:"last_interruption_at"`
-	OpenedAt             string    `dynamodbav:"opened_at"`
-	AutoResetAt          string    `dynamodbav:"auto_reset_at"`
-	TTL                  int64     `dynamodbav:"ttl"`
+	InstanceType        string `dynamodbav:"instance_type"`
+	State               string `dynamodbav:"state"`
+	InterruptionCount   int    `dynamodbav:"interruption_count"`
+	FirstInterruptionAt string `dynamodbav:"first_interruption_at"`
+	LastInterruptionAt  string `dynamodbav:"last_interruption_at"`
+	OpenedAt            string `dynamodbav:"opened_at"`
+	AutoResetAt         string `dynamodbav:"auto_reset_at"`
+	TTL                 int64  `dynamodbav:"ttl"`
 }
 
 // Breaker implements circuit breaker pattern for spot interruptions.
@@ -63,9 +63,9 @@ type Breaker struct {
 
 // CachedState represents cached circuit state.
 type CachedState struct {
-	State     CircuitState
-	CachedAt  time.Time
-	CacheTTL  time.Duration
+	State    CircuitState
+	CachedAt time.Time
+	CacheTTL time.Duration
 }
 
 // NewBreaker creates a new circuit breaker.

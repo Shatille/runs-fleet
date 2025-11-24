@@ -47,12 +47,18 @@ type MetricsAPI interface {
 	PublishMessageDeletionFailure(ctx context.Context) error
 }
 
+// CircuitBreakerAPI provides circuit breaker operations.
+type CircuitBreakerAPI interface {
+	RecordInterruption(ctx context.Context, instanceType string) error
+}
+
 // Handler processes EventBridge events from SQS queue.
 type Handler struct {
-	queueClient QueueAPI
-	dbClient    DBAPI
-	metrics     MetricsAPI
-	config      *config.Config
+	queueClient    QueueAPI
+	dbClient       DBAPI
+	metrics        MetricsAPI
+	config         *config.Config
+	circuitBreaker CircuitBreakerAPI
 }
 
 // NewHandler creates a new event handler.
@@ -63,6 +69,11 @@ func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, cfg *config.Config) *Handler
 		metrics:     m,
 		config:      cfg,
 	}
+}
+
+// SetCircuitBreaker sets the circuit breaker for recording interruptions.
+func (h *Handler) SetCircuitBreaker(cb CircuitBreakerAPI) {
+	h.circuitBreaker = cb
 }
 
 // EventBridgeEvent represents an EventBridge event from SQS.
@@ -267,20 +278,30 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return nil
 	}
 
+	// Record interruption in circuit breaker
+	if h.circuitBreaker != nil && job.InstanceType != "" {
+		if err := h.circuitBreaker.RecordInterruption(ctx, job.InstanceType); err != nil {
+			log.Printf("Warning: failed to record interruption in circuit breaker: %v", err)
+		}
+	}
+
+	// Re-queue with ForceOnDemand to ensure job completes on retry
 	requeueMsg := &queue.JobMessage{
-		JobID:        job.JobID,
-		RunID:        job.RunID,
-		InstanceType: job.InstanceType,
-		Pool:         job.Pool,
-		Private:      job.Private,
-		Spot:         job.Spot,
-		RunnerSpec:   job.RunnerSpec,
+		JobID:         job.JobID,
+		RunID:         job.RunID,
+		InstanceType:  job.InstanceType,
+		Pool:          job.Pool,
+		Private:       job.Private,
+		Spot:          job.Spot,
+		RunnerSpec:    job.RunnerSpec,
+		RetryCount:    1,    // Mark as retry
+		ForceOnDemand: true, // Force on-demand for retries after spot interruption
 	}
 	if err := h.queueClient.SendMessage(ctx, requeueMsg); err != nil {
 		return fmt.Errorf("failed to re-queue job %s: %w", job.JobID, err)
 	}
 
-	log.Printf("Successfully re-queued job %s from interrupted instance %s", job.JobID, detail.InstanceID)
+	log.Printf("Successfully re-queued job %s from interrupted instance %s (ForceOnDemand=true)", job.JobID, detail.InstanceID)
 	return nil
 }
 

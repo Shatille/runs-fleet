@@ -16,15 +16,19 @@ type Config struct {
 	GitHubAppID         string
 	GitHubAppPrivateKey string
 
-	QueueURL            string
-	PoolQueueURL        string
-	EventsQueueURL      string
-	TerminationQueueURL string
-	LocksTableName   string
-	JobsTableName    string
-	PoolsTableName   string
-	CacheBucketName  string
-	ConfigBucketName string
+	QueueURL             string
+	PoolQueueURL         string
+	EventsQueueURL       string
+	TerminationQueueURL  string
+	HousekeepingQueueURL string
+	LocksTableName       string
+	JobsTableName        string
+	PoolsTableName       string
+	CircuitBreakerTable  string
+	CacheBucketName      string
+	ConfigBucketName     string
+	CostReportSNSTopic   string
+	CostReportBucket     string
 
 	VPCID              string
 	PublicSubnetIDs    []string
@@ -47,30 +51,34 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AWSRegion:           getEnv("AWS_REGION", "ap-northeast-1"),
-		GitHubOrg:           getEnv("RUNS_FLEET_GITHUB_ORG", ""),
-		GitHubWebhookSecret: getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
-		GitHubAppID:         getEnv("RUNS_FLEET_GITHUB_APP_ID", ""),
-		GitHubAppPrivateKey: getEnv("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY", ""),
-		QueueURL:            getEnv("RUNS_FLEET_QUEUE_URL", ""),
-		PoolQueueURL:        getEnv("RUNS_FLEET_POOL_QUEUE_URL", ""),
-		EventsQueueURL:      getEnv("RUNS_FLEET_EVENTS_QUEUE_URL", ""),
-		TerminationQueueURL: getEnv("RUNS_FLEET_TERMINATION_QUEUE_URL", ""),
-		LocksTableName:      getEnv("RUNS_FLEET_LOCKS_TABLE", ""),
-		JobsTableName:       getEnv("RUNS_FLEET_JOBS_TABLE", ""),
-		PoolsTableName:      getEnv("RUNS_FLEET_POOLS_TABLE", ""),
-		CacheBucketName:     getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
-		ConfigBucketName:    getEnv("RUNS_FLEET_CONFIG_BUCKET", ""),
-		VPCID:               getEnv("RUNS_FLEET_VPC_ID", ""),
-		PublicSubnetIDs:     splitAndFilter(getEnv("RUNS_FLEET_PUBLIC_SUBNET_IDS", "")),
-		PrivateSubnetIDs:    splitAndFilter(getEnv("RUNS_FLEET_PRIVATE_SUBNET_IDS", "")),
-		SecurityGroupID:     getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
-		InstanceProfileARN:  getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
-		KeyName:             getEnv("RUNS_FLEET_KEY_NAME", ""),
-		SpotEnabled:         getEnv("RUNS_FLEET_SPOT_ENABLED", "true") == "true",
-		MaxRuntimeMinutes:   maxRuntimeMinutes,
-		LogLevel:            getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
-		LaunchTemplateName:  getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
+		AWSRegion:            getEnv("AWS_REGION", "ap-northeast-1"),
+		GitHubOrg:            getEnv("RUNS_FLEET_GITHUB_ORG", ""),
+		GitHubWebhookSecret:  getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
+		GitHubAppID:          getEnv("RUNS_FLEET_GITHUB_APP_ID", ""),
+		GitHubAppPrivateKey:  getEnv("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY", ""),
+		QueueURL:             getEnv("RUNS_FLEET_QUEUE_URL", ""),
+		PoolQueueURL:         getEnv("RUNS_FLEET_POOL_QUEUE_URL", ""),
+		EventsQueueURL:       getEnv("RUNS_FLEET_EVENTS_QUEUE_URL", ""),
+		TerminationQueueURL:  getEnv("RUNS_FLEET_TERMINATION_QUEUE_URL", ""),
+		HousekeepingQueueURL: getEnv("RUNS_FLEET_HOUSEKEEPING_QUEUE_URL", ""),
+		LocksTableName:       getEnv("RUNS_FLEET_LOCKS_TABLE", ""),
+		JobsTableName:        getEnv("RUNS_FLEET_JOBS_TABLE", ""),
+		PoolsTableName:       getEnv("RUNS_FLEET_POOLS_TABLE", ""),
+		CircuitBreakerTable:  getEnv("RUNS_FLEET_CIRCUIT_BREAKER_TABLE", "runs-fleet-circuit-state"),
+		CacheBucketName:      getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
+		ConfigBucketName:     getEnv("RUNS_FLEET_CONFIG_BUCKET", ""),
+		CostReportSNSTopic:   getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
+		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
+		VPCID:                getEnv("RUNS_FLEET_VPC_ID", ""),
+		PublicSubnetIDs:      splitAndFilter(getEnv("RUNS_FLEET_PUBLIC_SUBNET_IDS", "")),
+		PrivateSubnetIDs:     splitAndFilter(getEnv("RUNS_FLEET_PRIVATE_SUBNET_IDS", "")),
+		SecurityGroupID:      getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
+		InstanceProfileARN:   getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
+		KeyName:              getEnv("RUNS_FLEET_KEY_NAME", ""),
+		SpotEnabled:          getEnv("RUNS_FLEET_SPOT_ENABLED", "true") == "true",
+		MaxRuntimeMinutes:    maxRuntimeMinutes,
+		LogLevel:             getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
+		LaunchTemplateName:   getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 	}
 
 	if err := cfg.Validate(); err != nil {
