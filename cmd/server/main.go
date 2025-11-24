@@ -28,25 +28,27 @@ import (
 	"github.com/google/go-github/v57/github"
 )
 
+const (
+	maxDeleteRetries = 3
+	retryDelay       = 1 * time.Second
+)
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	log.Println("Starting runs-fleet server...")
 
-	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize AWS clients
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
 	if err != nil {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	// Initialize components
 	sqsClient := queue.NewClient(awsCfg, cfg.QueueURL)
 	eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
 	fleetManager := fleet.NewManager(awsCfg, cfg)
@@ -104,14 +106,11 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start worker in background
 	var subnetIndex uint64
 	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, cfg, &subnetIndex)
 
-	// Start pool reconciliation loop
 	go poolManager.ReconcileLoop(ctx)
 
-	// Start event handler loop
 	go eventHandler.Run(ctx)
 
 	go func() {
@@ -227,8 +226,39 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 
 func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
+	fleetCreated := false
+	poisonMessage := false
+
 	defer func() {
-		if err := m.PublishJobDuration(ctx, time.Since(startTime).Seconds()); err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+
+		if fleetCreated {
+			deleteErr := q.DeleteMessage(cleanupCtx, *msg.ReceiptHandle)
+			for attempts := 1; attempts < maxDeleteRetries && deleteErr != nil; attempts++ {
+				time.Sleep(retryDelay)
+				deleteErr = q.DeleteMessage(cleanupCtx, *msg.ReceiptHandle)
+			}
+			if deleteErr != nil {
+				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, deleteErr)
+			}
+
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
+			}
+
+			if metricErr := m.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
+				log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+			}
+		}
+
+		if poisonMessage {
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
+			}
+		}
+
+		if err := m.PublishJobDuration(cleanupCtx, time.Since(startTime).Seconds()); err != nil {
 			log.Printf("Failed to publish job duration metric: %v", err)
 		}
 	}()
@@ -236,6 +266,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *p
 	var job queue.JobMessage
 	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
 		log.Printf("Failed to unmarshal message: %v", err)
+		poisonMessage = true
 		_ = q.DeleteMessage(ctx, *msg.ReceiptHandle)
 		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
 		defer metricCancel()
@@ -261,6 +292,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *p
 		InstanceType: job.InstanceType,
 		SubnetID:     subnetID,
 		Spot:         job.Spot,
+		Pool:         job.Pool,
 	}
 
 	instanceIDs, err := f.CreateFleet(ctx, spec)
@@ -269,16 +301,6 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *p
 		return
 	}
 
+	fleetCreated = true
 	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
-	if err := q.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
-		log.Printf("Failed to delete message: %v", err)
-	}
-	if err := m.PublishQueueDepth(ctx, -1); err != nil {
-		log.Printf("Failed to publish queue depth metric: %v", err)
-	}
-	metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer metricCancel()
-	if metricErr := m.PublishFleetSizeIncrement(metricCtx); metricErr != nil {
-		log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
-	}
 }
