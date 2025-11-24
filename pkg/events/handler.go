@@ -108,6 +108,11 @@ func (h *Handler) Run(ctx context.Context) {
 				msg := msg
 				wg.Add(1)
 				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("panic in processEvent: %v", r)
+						}
+					}()
 					defer wg.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
@@ -134,12 +139,24 @@ func (h *Handler) Run(ctx context.Context) {
 }
 
 func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
-	if msg.Body == nil {
-		log.Printf("received message with nil body")
-		return
-	}
 	if msg.ReceiptHandle == nil {
 		log.Printf("received message with nil receipt handle")
+		return
+	}
+
+	defer func() {
+		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
+			log.Printf("failed to delete event message: %v", err)
+			metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+			defer metricCancel()
+			if metricErr := h.metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
+				log.Printf("failed to publish deletion failure metric: %v", metricErr)
+			}
+		}
+	}()
+
+	if msg.Body == nil {
+		log.Printf("received message with nil body")
 		return
 	}
 
@@ -162,15 +179,6 @@ func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
 
 	if processErr != nil {
 		log.Printf("failed to process event: %v", processErr)
-	}
-
-	if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
-		log.Printf("failed to delete event message: %v", err)
-		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
-		defer metricCancel()
-		if metricErr := h.metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-			log.Printf("failed to publish deletion failure metric: %v", metricErr)
-		}
 	}
 }
 

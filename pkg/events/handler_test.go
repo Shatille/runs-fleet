@@ -207,7 +207,7 @@ func TestProcessEventErrors(t *testing.T) {
 			name:             "Nil Body",
 			eventBody:        nil,
 			receiptHandle:    aws.String("receipt-handle"),
-			expectDeleteCall: false,
+			expectDeleteCall: true,
 		},
 		{
 			name:             "Nil Receipt Handle",
@@ -219,7 +219,7 @@ func TestProcessEventErrors(t *testing.T) {
 			name:             "Malformed JSON",
 			eventBody:        aws.String(`{invalid json}`),
 			receiptHandle:    aws.String("receipt-handle"),
-			expectDeleteCall: false,
+			expectDeleteCall: true,
 		},
 		{
 			name: "Unknown Event Type",
@@ -228,7 +228,7 @@ func TestProcessEventErrors(t *testing.T) {
 				"detail": {}
 			}`),
 			receiptHandle:    aws.String("receipt-handle"),
-			expectDeleteCall: false,
+			expectDeleteCall: true,
 		},
 		{
 			name: "Metrics Failure",
@@ -797,5 +797,97 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPanicRecovery(t *testing.T) {
+	panicCount := 0
+	processCount := 0
+	deletedReceipts := make(map[string]bool)
+	var mu sync.Mutex
+
+	messages := []types.Message{
+		{
+			Body: aws.String(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-panic", "instance-action": "terminate"}
+			}`),
+			ReceiptHandle: aws.String("receipt-panic"),
+		},
+		{
+			Body: aws.String(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-normal", "instance-action": "terminate"}
+			}`),
+			ReceiptHandle: aws.String("receipt-normal"),
+		},
+	}
+
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			processCount++
+			if processCount == 1 {
+				panicCount++
+				panic("test panic in processEvent")
+			}
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if processCount >= 2 {
+					return nil, nil
+				}
+				return messages, nil
+			},
+			DeleteMessageFunc: func(_ context.Context, receiptHandle string) error {
+				mu.Lock()
+				defer mu.Unlock()
+				deletedReceipts[receiptHandle] = true
+				return nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  mockMetrics,
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	finalPanicCount := panicCount
+	finalProcessCount := processCount
+	panicReceiptDeleted := deletedReceipts["receipt-panic"]
+	normalReceiptDeleted := deletedReceipts["receipt-normal"]
+	mu.Unlock()
+
+	if finalPanicCount != 1 {
+		t.Errorf("Expected 1 panic, got %d", finalPanicCount)
+	}
+	if finalProcessCount < 2 {
+		t.Errorf("Expected at least 2 messages processed despite panic, got %d", finalProcessCount)
+	}
+	if !panicReceiptDeleted {
+		t.Error("Expected message with panic to be deleted, but it was not")
+	}
+	if !normalReceiptDeleted {
+		t.Error("Expected normal message to be deleted, but it was not")
 	}
 }
