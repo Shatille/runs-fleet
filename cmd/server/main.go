@@ -23,7 +23,9 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/termination"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/go-github/v57/github"
 )
@@ -54,11 +56,19 @@ func main() {
 	sqsClient := queue.NewClient(awsCfg, cfg.QueueURL)
 	eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
 	fleetManager := fleet.NewManager(awsCfg, cfg)
-	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName)
+	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
 	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher := metrics.NewPublisher(awsCfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
+
+	// Initialize termination handler if queue URL is configured
+	var terminationHandler *termination.Handler
+	if cfg.TerminationQueueURL != "" {
+		terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
+		ssmClient := ssm.NewFromConfig(awsCfg)
+		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
+	}
 
 	mux := http.NewServeMux()
 
@@ -115,6 +125,10 @@ func main() {
 	go poolManager.ReconcileLoop(ctx)
 
 	go eventHandler.Run(ctx)
+
+	if terminationHandler != nil {
+		go terminationHandler.Run(ctx)
+	}
 
 	go func() {
 		log.Printf("Server listening on %s", server.Addr)
@@ -298,7 +312,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 			}
 		}
 
-		if err := m.PublishJobDuration(cleanupCtx, time.Since(startTime).Seconds()); err != nil {
+		if err := m.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
 			log.Printf("Failed to publish job duration metric: %v", err)
 		}
 	}()

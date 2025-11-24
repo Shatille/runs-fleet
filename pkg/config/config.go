@@ -16,9 +16,10 @@ type Config struct {
 	GitHubAppID         string
 	GitHubAppPrivateKey string
 
-	QueueURL         string
-	PoolQueueURL     string
-	EventsQueueURL   string
+	QueueURL            string
+	PoolQueueURL        string
+	EventsQueueURL      string
+	TerminationQueueURL string
 	LocksTableName   string
 	JobsTableName    string
 	PoolsTableName   string
@@ -54,6 +55,7 @@ func Load() (*Config, error) {
 		QueueURL:            getEnv("RUNS_FLEET_QUEUE_URL", ""),
 		PoolQueueURL:        getEnv("RUNS_FLEET_POOL_QUEUE_URL", ""),
 		EventsQueueURL:      getEnv("RUNS_FLEET_EVENTS_QUEUE_URL", ""),
+		TerminationQueueURL: getEnv("RUNS_FLEET_TERMINATION_QUEUE_URL", ""),
 		LocksTableName:      getEnv("RUNS_FLEET_LOCKS_TABLE", ""),
 		JobsTableName:       getEnv("RUNS_FLEET_JOBS_TABLE", ""),
 		PoolsTableName:      getEnv("RUNS_FLEET_POOLS_TABLE", ""),
