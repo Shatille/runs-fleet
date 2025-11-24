@@ -221,14 +221,14 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 
 					processCtx, processCancel := context.WithTimeout(ctx, 30*time.Second)
 					defer processCancel()
-					processMessage(processCtx, q, f, pm, m, msg, cfg, subnetIndex)
+					processMessage(processCtx, q, f, m, msg, cfg, subnetIndex)
 				}()
 			}
 		}
 	}
 }
 
-func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
+func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
