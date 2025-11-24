@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Shavakan/runs-fleet/pkg/config"
 )
 
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
@@ -44,7 +46,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, config.MaxBodySize)
 
 	var req reserveCacheRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -84,7 +86,7 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, config.MaxBodySize)
 
 	var req commitCacheRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

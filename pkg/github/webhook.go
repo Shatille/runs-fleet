@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/google/go-github/v57/github"
 )
 
@@ -51,13 +52,13 @@ func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 
 	defer func() { _ = r.Body.Close() }()
 
-	limitedReader := &io.LimitedReader{R: r.Body, N: 1<<20 + 1}
+	limitedReader := &io.LimitedReader{R: r.Body, N: config.MaxBodySize + 1}
 	payload, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	if len(payload) > 1<<20 {
+	if len(payload) > config.MaxBodySize {
 		return nil, errors.New("request body exceeds 1MB limit")
 	}
 

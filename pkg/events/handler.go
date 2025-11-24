@@ -143,7 +143,7 @@ func (h *Handler) Run(ctx context.Context) {
 					sem <- struct{}{}
 					defer func() { <-sem }()
 
-					processCtx, processCancel := context.WithTimeout(ctx, 30*time.Second)
+					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 					defer processCancel()
 					h.processEvent(processCtx, msg)
 				}()
@@ -173,7 +173,7 @@ func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
 	defer func() {
 		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
 			log.Printf("failed to delete event message: %v", err)
-			metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
 			if metricErr := h.metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
 				log.Printf("failed to publish deletion failure metric: %v", metricErr)
@@ -225,7 +225,7 @@ func (h *Handler) retryWithBackoff(ctx context.Context, operation func(context.C
 			}
 		}
 
-		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+		mctx, mcancel := context.WithTimeout(ctx, config.ShortTimeout)
 		err := operation(mctx)
 		mcancel()
 

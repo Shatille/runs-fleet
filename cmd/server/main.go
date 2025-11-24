@@ -126,7 +126,7 @@ func main() {
 	<-ctx.Done()
 	log.Println("Shutdown signal received, gracefully stopping...")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -219,7 +219,7 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 					sem <- struct{}{}
 					defer func() { <-sem }()
 
-					processCtx, processCancel := context.WithTimeout(ctx, 30*time.Second)
+					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 					defer processCancel()
 					processMessage(processCtx, q, f, m, msg, cfg, subnetIndex)
 				}()
@@ -234,7 +234,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 	poisonMessage := false
 
 	defer func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 		defer cleanupCancel()
 
 		if fleetCreated {
@@ -281,7 +281,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, deleteErr)
 		}
 
-		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 		defer metricCancel()
 		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
 			log.Printf("Failed to publish poison message metric: %v", metricErr)
