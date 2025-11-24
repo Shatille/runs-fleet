@@ -228,6 +228,47 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 	}
 }
 
+func deleteMessageWithRetry(ctx context.Context, q *queue.Client, receiptHandle string) error {
+	err := q.DeleteMessage(ctx, receiptHandle)
+	for attempts := 1; attempts < maxDeleteRetries && err != nil; attempts++ {
+		time.Sleep(retryDelay)
+		err = q.DeleteMessage(ctx, receiptHandle)
+	}
+	return err
+}
+
+func selectSubnet(job *queue.JobMessage, cfg *config.Config, subnetIndex *uint64) string {
+	if job.Private && len(cfg.PrivateSubnetIDs) > 0 {
+		idx := atomic.AddUint64(subnetIndex, 1) - 1
+		return cfg.PrivateSubnetIDs[idx%uint64(len(cfg.PrivateSubnetIDs))]
+	}
+	if len(cfg.PublicSubnetIDs) > 0 {
+		idx := atomic.AddUint64(subnetIndex, 1) - 1
+		return cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
+	}
+	return ""
+}
+
+func createFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.LaunchSpec) ([]string, error) {
+	var instanceIDs []string
+	var err error
+	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
+		if attempt > 0 {
+			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
+			log.Printf("Retrying fleet creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
+			time.Sleep(backoff)
+		}
+
+		instanceIDs, err = f.CreateFleet(ctx, spec)
+		if err == nil {
+			return instanceIDs, nil
+		}
+
+		log.Printf("Fleet creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
+	}
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
+}
+
 func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
@@ -238,13 +279,8 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 		defer cleanupCancel()
 
 		if fleetCreated {
-			deleteErr := q.DeleteMessage(cleanupCtx, *msg.ReceiptHandle)
-			for attempts := 1; attempts < maxDeleteRetries && deleteErr != nil; attempts++ {
-				time.Sleep(retryDelay)
-				deleteErr = q.DeleteMessage(cleanupCtx, *msg.ReceiptHandle)
-			}
-			if deleteErr != nil {
-				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, deleteErr)
+			if err := deleteMessageWithRetry(cleanupCtx, q, *msg.ReceiptHandle); err != nil {
+				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
 			}
 
 			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
@@ -272,13 +308,8 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 		log.Printf("Failed to unmarshal message: %v", err)
 		poisonMessage = true
 
-		deleteErr := q.DeleteMessage(ctx, *msg.ReceiptHandle)
-		for attempts := 1; attempts < maxDeleteRetries && deleteErr != nil; attempts++ {
-			time.Sleep(retryDelay)
-			deleteErr = q.DeleteMessage(ctx, *msg.ReceiptHandle)
-		}
-		if deleteErr != nil {
-			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, deleteErr)
+		if err := deleteMessageWithRetry(ctx, q, *msg.ReceiptHandle); err != nil {
+			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
 		}
 
 		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
@@ -291,42 +322,17 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 
 	log.Printf("Processing job for run %s", job.RunID)
 
-	subnetID := ""
-	if job.Private && len(cfg.PrivateSubnetIDs) > 0 {
-		idx := atomic.AddUint64(subnetIndex, 1) - 1
-		subnetID = cfg.PrivateSubnetIDs[idx%uint64(len(cfg.PrivateSubnetIDs))]
-	} else if len(cfg.PublicSubnetIDs) > 0 {
-		idx := atomic.AddUint64(subnetIndex, 1) - 1
-		subnetID = cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
-	}
-
 	spec := &fleet.LaunchSpec{
 		RunID:        job.RunID,
 		InstanceType: job.InstanceType,
-		SubnetID:     subnetID,
+		SubnetID:     selectSubnet(&job, cfg, subnetIndex),
 		Spot:         job.Spot,
 		Pool:         job.Pool,
 	}
 
-	var instanceIDs []string
-	var err error
-	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
-		if attempt > 0 {
-			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-			log.Printf("Retrying fleet creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
-			time.Sleep(backoff)
-		}
-
-		instanceIDs, err = f.CreateFleet(ctx, spec)
-		if err == nil {
-			break
-		}
-
-		log.Printf("Fleet creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
-	}
-
+	instanceIDs, err := createFleetWithRetry(ctx, f, spec)
 	if err != nil {
-		log.Printf("Failed to create fleet after %d attempts: %v", maxFleetCreateRetries, err)
+		log.Printf("Failed to create fleet: %v", err)
 		return
 	}
 
