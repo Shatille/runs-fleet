@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // S3API defines S3 operations for runner caching.
@@ -47,8 +49,13 @@ func (c *Cache) CheckCache(ctx context.Context, version, arch string) (string, b
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		// Check if it's a not found error
-		return key, false, nil
+		// Check if it's a not found error (cache miss)
+		var notFoundErr *types.NotFound
+		if errors.As(err, &notFoundErr) {
+			return key, false, nil
+		}
+		// Return actual errors (network issues, permission denied, etc.)
+		return key, false, fmt.Errorf("failed to check cache: %w", err)
 	}
 
 	return key, true, nil

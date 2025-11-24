@@ -7,9 +7,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+var memoryCheckWarningOnce sync.Once
 
 const (
 	// DefaultCheckInterval is how often to check resource usage.
@@ -104,10 +107,15 @@ func (s *SafetyMonitor) checkDiskSpace() error {
 }
 
 // checkMemory checks available memory by reading /proc/meminfo.
+// WARNING: This only works on Linux systems. On other platforms, this check is skipped.
 func (s *SafetyMonitor) checkMemory() error {
 	file, err := os.Open("/proc/meminfo")
 	if err != nil {
 		// Non-Linux systems may not have /proc/meminfo
+		// Log warning once to inform operators that memory checking is unavailable
+		memoryCheckWarningOnce.Do(func() {
+			s.logger.Printf("WARNING: Memory check not available on this platform (no /proc/meminfo), skipping memory monitoring")
+		})
 		return nil
 	}
 	defer file.Close()

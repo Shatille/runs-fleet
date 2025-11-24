@@ -18,8 +18,13 @@ import (
 )
 
 // Pricing constants (approximate AWS pricing in USD)
+// NOTE: These prices are hard-coded estimates based on us-east-1 on-demand pricing as of 2024.
+// Actual AWS pricing varies by region, availability zone, and changes over time.
+// For accurate cost tracking, consider integrating with AWS Cost Explorer API or
+// AWS Pricing API (pricing.us-east-1.amazonaws.com) to fetch current prices dynamically.
+// See: https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ce-api.html
 var instancePricing = map[string]float64{
-	// On-demand prices (per hour, us-east-1)
+	// On-demand prices (per hour, us-east-1, approximate)
 	"t4g.micro":   0.0084,
 	"t4g.small":   0.0168,
 	"t4g.medium":  0.0336,
