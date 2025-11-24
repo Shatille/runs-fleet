@@ -3,6 +3,8 @@ package events
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +108,24 @@ func TestProcessEvent(t *testing.T) {
 				m.PublishFleetSizeFunc = func(_ context.Context, size float64) error {
 					if size != 1 {
 						t.Errorf("Expected fleet size change 1, got %f", size)
+					}
+					return nil
+				}
+			},
+		},
+		{
+			name: "State Change - Stopped",
+			eventBody: `{
+				"detail-type": "EC2 Instance State-change Notification",
+				"detail": {
+					"instance-id": "i-1234567890abcdef0",
+					"state": "stopped"
+				}
+			}`,
+			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
+				m.PublishFleetSizeFunc = func(_ context.Context, size float64) error {
+					if size != -1 {
+						t.Errorf("Expected fleet size change -1 for stopped, got %f", size)
 					}
 					return nil
 				}
@@ -280,5 +300,341 @@ func TestHandlerRunContextCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(100 * time.Millisecond):
 		t.Error("Handler did not stop on context cancellation")
+	}
+}
+
+func TestHandlerReceiveMessagesTimeout(t *testing.T) {
+	receiveCallCount := 0
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]types.Message, error) {
+				receiveCallCount++
+				_, ok := ctx.Deadline()
+				if !ok {
+					t.Error("Expected context with deadline, got none")
+				}
+				return nil, nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  &MockMetricsAPI{},
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	if receiveCallCount == 0 {
+		t.Error("ReceiveMessages was never called")
+	}
+}
+
+func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
+	var capturedTime time.Time
+	var capturedDeadline time.Time
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]types.Message, error) {
+				capturedTime = time.Now()
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("Expected context with deadline, got none")
+				}
+				capturedDeadline = deadline
+				return nil, nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  &MockMetricsAPI{},
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	timeoutDuration := capturedDeadline.Sub(capturedTime)
+	if timeoutDuration < 23*time.Second || timeoutDuration > 26*time.Second {
+		t.Errorf("Expected timeout ~25s from call time, got %v", timeoutDuration)
+	}
+}
+
+func TestConcurrentEventProcessing(t *testing.T) {
+	const numMessages = 10
+	const processingDelay = 100 * time.Millisecond
+
+	var processStartTimes []time.Time
+	var mu sync.Mutex
+
+	messages := make([]types.Message, numMessages)
+	for i := 0; i < numMessages; i++ {
+		messages[i] = types.Message{
+			Body: aws.String(fmt.Sprintf(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
+			}`, i)),
+			ReceiptHandle: aws.String(fmt.Sprintf("receipt-%d", i)),
+		}
+	}
+
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			mu.Lock()
+			processStartTimes = append(processStartTimes, time.Now())
+			mu.Unlock()
+			time.Sleep(processingDelay)
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+				return messages, nil
+			},
+			DeleteMessageFunc: func(_ context.Context, _ string) error {
+				return nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  mockMetrics,
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	if len(processStartTimes) != numMessages {
+		t.Fatalf("Expected %d messages processed, got %d", numMessages, len(processStartTimes))
+	}
+
+	firstStart := processStartTimes[0]
+	var concurrentStarts int
+	for _, startTime := range processStartTimes[1:] {
+		if startTime.Sub(firstStart) < processingDelay/2 {
+			concurrentStarts++
+		}
+	}
+
+	if concurrentStarts < 3 {
+		t.Errorf("Expected concurrent processing (at least 3 concurrent), but only %d/%d messages started concurrently", concurrentStarts, numMessages-1)
+	}
+}
+
+func TestBoundedConcurrency(t *testing.T) {
+	const numMessages = 20
+	const maxConcurrency = 5
+	const processingDelay = 50 * time.Millisecond
+
+	var activeTasks int32
+	var maxActive int32
+	var mu sync.Mutex
+
+	messages := make([]types.Message, numMessages)
+	for i := 0; i < numMessages; i++ {
+		messages[i] = types.Message{
+			Body: aws.String(fmt.Sprintf(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
+			}`, i)),
+			ReceiptHandle: aws.String(fmt.Sprintf("receipt-%d", i)),
+		}
+	}
+
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			active := atomic.AddInt32(&activeTasks, 1)
+
+			mu.Lock()
+			if active > maxActive {
+				maxActive = active
+			}
+			mu.Unlock()
+
+			time.Sleep(processingDelay)
+			atomic.AddInt32(&activeTasks, -1)
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+				return messages, nil
+			},
+			DeleteMessageFunc: func(_ context.Context, _ string) error {
+				return nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  mockMetrics,
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	if maxActive > maxConcurrency+1 {
+		t.Errorf("Expected max concurrency ~%d, got %d", maxConcurrency, maxActive)
+	}
+	if maxActive < 2 {
+		t.Error("Expected some concurrency, but processing appears to be sequential")
+	}
+}
+
+func TestMetricsCallsHaveTimeout(t *testing.T) {
+	var capturedCtx context.Context
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(ctx context.Context) error {
+			capturedCtx = ctx
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+				return []types.Message{{
+					Body: aws.String(`{
+						"detail-type": "EC2 Spot Instance Interruption Warning",
+						"detail": {"instance-id": "i-test", "instance-action": "terminate"}
+					}`),
+					ReceiptHandle: aws.String("receipt-test"),
+				}}, nil
+			},
+			DeleteMessageFunc: func(_ context.Context, _ string) error {
+				return nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  mockMetrics,
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	if capturedCtx == nil {
+		t.Fatal("PublishSpotInterruption was never called")
+	}
+
+	_, ok := capturedCtx.Deadline()
+	if !ok {
+		t.Error("Expected metrics call to have deadline, got none")
+	}
+}
+
+func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
+	messages := []types.Message{
+		{
+			Body: aws.String(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-1", "instance-action": "terminate"}
+			}`),
+			ReceiptHandle: aws.String("receipt-1"),
+		},
+		{
+			Body: aws.String(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-2", "instance-action": "terminate"}
+			}`),
+			ReceiptHandle: aws.String("receipt-2"),
+		},
+	}
+
+	callCount := 0
+	var mu sync.Mutex
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			mu.Lock()
+			callCount++
+			isFirst := callCount == 1
+			mu.Unlock()
+
+			if isFirst {
+				time.Sleep(100 * time.Millisecond)
+			}
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+				return messages, nil
+			},
+			DeleteMessageFunc: func(_ context.Context, _ string) error {
+				return nil
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  mockMetrics,
+		config:   &config.Config{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		handler.Run(ctx)
+		done <- true
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	<-done
+
+	if callCount != 2 {
+		t.Errorf("Expected 2 metrics calls, got %d", callCount)
 	}
 }

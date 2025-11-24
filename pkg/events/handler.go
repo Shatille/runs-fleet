@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -78,19 +79,54 @@ func (h *Handler) Run(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	const maxConcurrency = 5
+	sem := make(chan struct{}, maxConcurrency)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			messages, err := h.queueClient.ReceiveMessages(ctx, 10, 20)
+			timeout := 25 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if remaining < timeout {
+					timeout = remaining
+				}
+			}
+			recvCtx, cancel := context.WithTimeout(ctx, timeout)
+			messages, err := h.queueClient.ReceiveMessages(recvCtx, 10, 20)
+			cancel()
 			if err != nil {
 				log.Printf("failed to receive event messages: %v", err)
 				continue
 			}
 
+			var wg sync.WaitGroup
 			for _, msg := range messages {
-				h.processEvent(ctx, msg)
+				msg := msg
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
+					processCtx, processCancel := context.WithTimeout(ctx, 30*time.Second)
+					defer processCancel()
+					h.processEvent(processCtx, msg)
+				}()
+			}
+
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}
@@ -140,7 +176,10 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 	}
 
 	log.Printf("Spot interruption received for instance %s", detail.InstanceID)
-	if err := h.metrics.PublishSpotInterruption(ctx); err != nil {
+
+	mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+	defer mcancel()
+	if err := h.metrics.PublishSpotInterruption(mctx); err != nil {
 		return fmt.Errorf("failed to publish spot interruption metric: %w", err)
 	}
 
@@ -159,14 +198,22 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 	log.Printf("Instance %s changed state to %s", detail.InstanceID, detail.State)
 
 	switch detail.State {
-	case "terminated":
-		if err := h.metrics.PublishFleetSize(ctx, -1); err != nil {
-			return fmt.Errorf("failed to publish fleet size metric for termination: %w", err)
-		}
 	case "running":
-		if err := h.metrics.PublishFleetSize(ctx, 1); err != nil {
+		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+		defer mcancel()
+		if err := h.metrics.PublishFleetSize(mctx, 1); err != nil {
 			return fmt.Errorf("failed to publish fleet size metric for running: %w", err)
 		}
+	case "stopped", "terminated":
+		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+		defer mcancel()
+		if err := h.metrics.PublishFleetSize(mctx, -1); err != nil {
+			return fmt.Errorf("failed to publish fleet size metric for %s: %w", detail.State, err)
+		}
+	case "pending", "stopping", "shutting-down":
+		log.Printf("Ignoring intermediate state %s for instance %s", detail.State, detail.InstanceID)
+	default:
+		log.Printf("Unknown state %s for instance %s", detail.State, detail.InstanceID)
 	}
 	return nil
 }
