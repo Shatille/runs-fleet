@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,13 +24,15 @@ type DynamoDBAPI interface {
 type Client struct {
 	dynamoClient DynamoDBAPI
 	poolsTable   string
+	jobsTable    string
 }
 
-// NewClient creates DynamoDB client for specified pools table.
-func NewClient(cfg aws.Config, poolsTable string) *Client {
+// NewClient creates DynamoDB client for specified pools and jobs tables.
+func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 	return &Client{
 		dynamoClient: dynamodb.NewFromConfig(cfg),
 		poolsTable:   poolsTable,
+		jobsTable:    jobsTable,
 	}
 }
 
@@ -128,4 +131,83 @@ func (c *Client) MarkInstanceTerminating(_ context.Context, instanceID string) e
 // TODO(Phase 4): Implement job-to-instance tracking for spot interruption re-queueing.
 func (c *Client) GetJobByInstance(_ context.Context, instanceID string) (*events.JobInfo, error) {
 	return nil, fmt.Errorf("GetJobByInstance not yet implemented for instance %s", instanceID)
+}
+
+// MarkJobComplete marks a job as complete in DynamoDB with exit status.
+func (c *Client) MarkJobComplete(ctx context.Context, jobID, status string, exitCode, duration int) error {
+	if jobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+	if status == "" {
+		return fmt.Errorf("status cannot be empty")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	update := "SET #status = :status, exit_code = :exit_code, duration_seconds = :duration, completed_at = :completed_at"
+	exprNames := map[string]string{
+		"#status": "status", // status is a reserved word in DynamoDB
+	}
+	exprValues, err := attributevalue.MarshalMap(map[string]interface{}{
+		":status":       status,
+		":exit_code":    exitCode,
+		":duration":     duration,
+		":completed_at": time.Now().Format(time.RFC3339),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal values: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(c.jobsTable),
+		Key:                       key,
+		UpdateExpression:          aws.String(update),
+		ExpressionAttributeNames:  exprNames,
+		ExpressionAttributeValues: exprValues,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update job: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateJobMetrics updates job timing metrics in DynamoDB.
+func (c *Client) UpdateJobMetrics(ctx context.Context, jobID string, startedAt, completedAt time.Time) error {
+	if jobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	update := "SET started_at = :started_at, completed_at = :completed_at"
+	exprValues, err := attributevalue.MarshalMap(map[string]string{
+		":started_at":   startedAt.Format(time.RFC3339),
+		":completed_at": completedAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal values: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(c.jobsTable),
+		Key:                       key,
+		UpdateExpression:          aws.String(update),
+		ExpressionAttributeValues: exprValues,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update job metrics: %w", err)
+	}
+
+	return nil
 }

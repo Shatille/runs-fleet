@@ -46,8 +46,18 @@ func (p *Publisher) PublishFleetSizeDecrement(ctx context.Context) error {
 }
 
 // PublishJobDuration publishes job duration metric.
-func (p *Publisher) PublishJobDuration(ctx context.Context, durationSeconds float64) error {
-	return p.putMetric(ctx, "JobDuration", durationSeconds, types.StandardUnitSeconds)
+func (p *Publisher) PublishJobDuration(ctx context.Context, durationSeconds int) error {
+	return p.putMetric(ctx, "JobDuration", float64(durationSeconds), types.StandardUnitSeconds)
+}
+
+// PublishJobSuccess publishes job success metric.
+func (p *Publisher) PublishJobSuccess(ctx context.Context) error {
+	return p.putMetric(ctx, "JobSuccess", 1, types.StandardUnitCount)
+}
+
+// PublishJobFailure publishes job failure metric.
+func (p *Publisher) PublishJobFailure(ctx context.Context) error {
+	return p.putMetric(ctx, "JobFailure", 1, types.StandardUnitCount)
 }
 
 // PublishSpotInterruption publishes spot interruption metric.
