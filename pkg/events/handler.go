@@ -37,6 +37,7 @@ type JobInfo struct {
 	Private      bool
 	Spot         bool
 	RunnerSpec   string
+	RetryCount   int // Number of times this job has been retried
 }
 
 // MetricsAPI provides CloudWatch metrics publishing.
@@ -286,6 +287,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 	}
 
 	// Re-queue with ForceOnDemand to ensure job completes on retry
+	// Increment RetryCount to track how many times this job has been retried
 	requeueMsg := &queue.JobMessage{
 		JobID:         job.JobID,
 		RunID:         job.RunID,
@@ -294,14 +296,14 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		Private:       job.Private,
 		Spot:          job.Spot,
 		RunnerSpec:    job.RunnerSpec,
-		RetryCount:    1,    // Mark as retry
-		ForceOnDemand: true, // Force on-demand for retries after spot interruption
+		RetryCount:    job.RetryCount + 1, // Increment retry count
+		ForceOnDemand: true,               // Force on-demand for retries after spot interruption
 	}
 	if err := h.queueClient.SendMessage(ctx, requeueMsg); err != nil {
 		return fmt.Errorf("failed to re-queue job %s: %w", job.JobID, err)
 	}
 
-	log.Printf("Successfully re-queued job %s from interrupted instance %s (ForceOnDemand=true)", job.JobID, detail.InstanceID)
+	log.Printf("Successfully re-queued job %s from interrupted instance %s (RetryCount=%d, ForceOnDemand=true)", job.JobID, detail.InstanceID, requeueMsg.RetryCount)
 	return nil
 }
 

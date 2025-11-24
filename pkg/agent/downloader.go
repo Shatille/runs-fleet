@@ -346,6 +346,14 @@ func (d *Downloader) extractRunner(tarballPath, destDir string) error {
 }
 
 // checkDiskSpace verifies sufficient disk space is available.
+//
+// PLATFORM NOTE: Accurate disk space checking is only implemented for Linux.
+// On non-Linux platforms (macOS, Windows), the check uses a stub that assumes
+// sufficient space is available. A warning is logged on first invocation.
+//
+// For production deployments, this agent should run on Linux EC2 instances
+// where accurate disk space checking is available. Running on other platforms
+// is intended for development/testing only.
 func (d *Downloader) checkDiskSpace(path string) error {
 	// Create the directory if it doesn't exist to check its filesystem
 	if err := os.MkdirAll(path, 0755); err != nil {
@@ -353,6 +361,7 @@ func (d *Downloader) checkDiskSpace(path string) error {
 	}
 
 	// Use syscall to get disk space info
+	// NOTE: On non-Linux platforms, statfs returns dummy values (see statfs_other.go)
 	var stat syscallStatfs
 	if err := statfs(path, &stat); err != nil {
 		// If we can't check, proceed anyway

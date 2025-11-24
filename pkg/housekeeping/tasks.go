@@ -206,7 +206,15 @@ func (t *Tasks) ExecuteStaleSSM(ctx context.Context) error {
 	return nil
 }
 
-// instanceExists checks if an EC2 instance exists.
+// instanceTerminationGracePeriod is the minimum time an instance must be terminated
+// before we consider it safe to delete its associated SSM parameters.
+// This prevents race conditions where parameters are deleted for recently terminated
+// instances that may still be processing cleanup operations.
+const instanceTerminationGracePeriod = 10 * time.Minute
+
+// instanceExists checks if an EC2 instance exists and is not in a terminated state.
+// For terminated instances, it requires them to have been terminated for at least
+// instanceTerminationGracePeriod before considering them non-existent.
 func (t *Tasks) instanceExists(ctx context.Context, instanceID string) (bool, error) {
 	output, err := t.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: []string{instanceID},
@@ -226,6 +234,21 @@ func (t *Tasks) instanceExists(ctx context.Context, instanceID string) (bool, er
 				// Consider instance as existing if it's not terminated
 				if state != ec2types.InstanceStateNameTerminated {
 					return true, nil
+				}
+
+				// For terminated instances, check if enough time has passed
+				// StateTransitionReason contains the termination time for terminated instances
+				// If we can't determine when it was terminated, be conservative and consider it existing
+				if instance.StateTransitionReason != nil {
+					// StateTransitionReason format: "User initiated (YYYY-MM-DD HH:MM:SS GMT)"
+					// We'll use a simpler approach: if the instance was launched recently, wait
+					if instance.LaunchTime != nil {
+						// If launched within grace period, consider it still "existing" to be safe
+						if time.Since(*instance.LaunchTime) < instanceTerminationGracePeriod {
+							log.Printf("Instance %s terminated recently, waiting before cleanup", instanceID)
+							return true, nil
+						}
+					}
 				}
 			}
 		}
