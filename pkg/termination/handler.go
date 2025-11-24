@@ -106,7 +106,11 @@ func (h *Handler) Run(ctx context.Context) {
 					defer wg.Done()
 					defer func() { <-sem }()
 
-					if err := h.processMessage(ctx, m); err != nil {
+					// Add timeout to prevent message processing from hanging
+					msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					defer cancel()
+
+					if err := h.processMessage(msgCtx, m); err != nil {
 						log.Printf("Failed to process message: %v", err)
 					}
 				}(msg)

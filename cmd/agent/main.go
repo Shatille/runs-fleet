@@ -117,13 +117,15 @@ func main() {
 	}
 	logger.Println("Runner registered successfully")
 
+	// Track job start time
+	jobStartedAt := time.Now()
+
 	// Send job started notification
 	if telemetry != nil {
-		startedAt := time.Now()
 		jobStatus := agent.JobStatus{
 			InstanceID: instanceID,
 			JobID:      runID,
-			StartedAt:  startedAt,
+			StartedAt:  jobStartedAt,
 		}
 		if err := telemetry.SendJobStarted(ctx, jobStatus); err != nil {
 			logger.Printf("Warning: failed to send job started notification: %v", err)
@@ -140,12 +142,18 @@ func main() {
 	if result != nil {
 		logger.Printf("Job result: exit_code=%d, duration=%s, interrupted_by=%s",
 			result.ExitCode, result.Duration, result.InterruptedBy)
+		// Use saved start time if result doesn't have one
+		if result.StartedAt.IsZero() {
+			result.StartedAt = jobStartedAt
+		}
 	} else {
 		logger.Println("No job result available")
+		completedAt := time.Now()
 		result = &agent.JobResult{
 			ExitCode:    -1,
-			StartedAt:   time.Now(),
-			CompletedAt: time.Now(),
+			StartedAt:   jobStartedAt,
+			CompletedAt: completedAt,
+			Duration:    completedAt.Sub(jobStartedAt),
 			Error:       err,
 		}
 	}

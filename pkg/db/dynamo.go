@@ -169,14 +169,8 @@ func (c *Client) MarkJobComplete(ctx context.Context, jobID, status string, exit
 		UpdateExpression:          aws.String(update),
 		ExpressionAttributeNames:  exprNames,
 		ExpressionAttributeValues: exprValues,
-		ConditionExpression:       aws.String("attribute_exists(job_id)"),
 	})
 	if err != nil {
-		var condErr *types.ConditionalCheckFailedException
-		if errors.As(err, &condErr) {
-			// Job doesn't exist, but this is idempotent - treat as success
-			return nil
-		}
 		return fmt.Errorf("failed to update job: %w", err)
 	}
 

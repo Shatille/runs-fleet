@@ -70,10 +70,54 @@ type CachedState struct {
 
 // NewBreaker creates a new circuit breaker.
 func NewBreaker(cfg aws.Config, tableName string) *Breaker {
-	return &Breaker{
+	b := &Breaker{
 		dynamoClient: dynamodb.NewFromConfig(cfg),
 		tableName:    tableName,
 		cache:        make(map[string]*CachedState),
+	}
+	return b
+}
+
+// StartCacheCleanup starts a background goroutine to periodically clean up expired cache entries.
+// This prevents memory leaks from accumulating cache entries over time.
+func (b *Breaker) StartCacheCleanup(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				b.cleanupExpiredCache()
+			}
+		}
+	}()
+}
+
+// cleanupExpiredCache removes cache entries that have exceeded their TTL.
+func (b *Breaker) cleanupExpiredCache() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	now := time.Now()
+	expiredKeys := make([]string, 0)
+
+	// Find expired entries
+	for key, cached := range b.cache {
+		expiresAt := cached.CachedAt.Add(cached.CacheTTL * 2)
+		if now.After(expiresAt) {
+			expiredKeys = append(expiredKeys, key)
+		}
+	}
+
+	// Remove expired entries
+	for _, key := range expiredKeys {
+		delete(b.cache, key)
+	}
+
+	if len(expiredKeys) > 0 {
+		log.Printf("Circuit breaker: cleaned up %d expired cache entries", len(expiredKeys))
 	}
 }
 
