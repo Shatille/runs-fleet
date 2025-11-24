@@ -4,8 +4,10 @@ package fleet
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
+	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -17,10 +19,16 @@ type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
 }
 
+// CircuitBreaker defines circuit breaker operations.
+type CircuitBreaker interface {
+	CheckCircuit(ctx context.Context, instanceType string) (circuit.CircuitState, error)
+}
+
 // Manager orchestrates EC2 fleet creation for runner instances.
 type Manager struct {
-	ec2Client EC2API
-	config    *config.Config
+	ec2Client      EC2API
+	config         *config.Config
+	circuitBreaker CircuitBreaker
 }
 
 // NewManager creates fleet manager with EC2 client and configuration.
@@ -31,13 +39,20 @@ func NewManager(cfg aws.Config, appConfig *config.Config) *Manager {
 	}
 }
 
+// SetCircuitBreaker sets the circuit breaker for the manager.
+func (m *Manager) SetCircuitBreaker(cb CircuitBreaker) {
+	m.circuitBreaker = cb
+}
+
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
-	RunID        string
-	InstanceType string
-	SubnetID     string
-	Spot         bool
-	Pool         string
+	RunID         string
+	InstanceType  string
+	SubnetID      string
+	Spot          bool
+	Pool          string
+	ForceOnDemand bool // Force on-demand even if spot is preferred (for retries)
+	RetryCount    int  // Number of times this job has been retried
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
@@ -102,8 +117,26 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		},
 	}
 
-	if !spec.Spot || !m.config.SpotEnabled {
+	// Determine if we should use spot or on-demand
+	useSpot := spec.Spot && m.config.SpotEnabled && !spec.ForceOnDemand
+
+	// Check circuit breaker if using spot
+	if useSpot && m.circuitBreaker != nil {
+		state, err := m.circuitBreaker.CheckCircuit(ctx, spec.InstanceType)
+		if err != nil {
+			log.Printf("Warning: failed to check circuit breaker: %v", err)
+			// Continue with spot if we can't check
+		} else if state == circuit.StateOpen {
+			log.Printf("Circuit breaker OPEN for %s, forcing on-demand", spec.InstanceType)
+			useSpot = false
+		}
+	}
+
+	if !useSpot {
 		req.TargetCapacitySpecification.DefaultTargetCapacityType = types.DefaultTargetCapacityTypeOnDemand
+		if spec.ForceOnDemand && spec.RetryCount > 0 {
+			log.Printf("Using on-demand for retry #%d of run %s", spec.RetryCount, spec.RunID)
+		}
 	} else {
 		req.SpotOptions = &types.SpotOptionsRequest{
 			AllocationStrategy: types.SpotAllocationStrategyPriceCapacityOptimized,

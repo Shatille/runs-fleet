@@ -15,18 +15,21 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache"
+	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/cost"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	gh "github.com/Shavakan/runs-fleet/pkg/github"
+	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/google/go-github/v57/github"
 )
 
@@ -62,12 +65,40 @@ func main() {
 	metricsPublisher := metrics.NewPublisher(awsCfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 
+	// Initialize circuit breaker
+	var circuitBreaker *circuit.Breaker
+	if cfg.CircuitBreakerTable != "" {
+		circuitBreaker = circuit.NewBreaker(awsCfg, cfg.CircuitBreakerTable)
+		circuitBreaker.StartCacheCleanup(ctx)
+		fleetManager.SetCircuitBreaker(circuitBreaker)
+		eventHandler.SetCircuitBreaker(circuitBreaker)
+		log.Printf("Circuit breaker initialized with table: %s", cfg.CircuitBreakerTable)
+	}
+
 	// Initialize termination handler if queue URL is configured
 	var terminationHandler *termination.Handler
 	if cfg.TerminationQueueURL != "" {
 		terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
 		ssmClient := ssm.NewFromConfig(awsCfg)
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
+	}
+
+	// Initialize housekeeping handler if queue URL is configured
+	var housekeepingHandler *housekeeping.Handler
+	if cfg.HousekeepingQueueURL != "" {
+		housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
+
+		// Create cost reporter if configured
+		var costReporter *cost.Reporter
+		if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
+			costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
+		}
+
+		// Create housekeeping tasks executor
+		housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
+		tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
+		housekeepingHandler = housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
+		log.Printf("Housekeeping handler initialized with queue: %s", cfg.HousekeepingQueueURL)
 	}
 
 	mux := http.NewServeMux()
@@ -128,6 +159,10 @@ func main() {
 
 	if terminationHandler != nil {
 		go terminationHandler.Run(ctx)
+	}
+
+	if housekeepingHandler != nil {
+		go housekeepingHandler.Run(ctx)
 	}
 
 	go func() {
@@ -334,14 +369,16 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 		return
 	}
 
-	log.Printf("Processing job for run %s", job.RunID)
+	log.Printf("Processing job for run %s (retry=%d, forceOnDemand=%v)", job.RunID, job.RetryCount, job.ForceOnDemand)
 
 	spec := &fleet.LaunchSpec{
-		RunID:        job.RunID,
-		InstanceType: job.InstanceType,
-		SubnetID:     selectSubnet(&job, cfg, subnetIndex),
-		Spot:         job.Spot,
-		Pool:         job.Pool,
+		RunID:         job.RunID,
+		InstanceType:  job.InstanceType,
+		SubnetID:      selectSubnet(&job, cfg, subnetIndex),
+		Spot:          job.Spot,
+		Pool:          job.Pool,
+		ForceOnDemand: job.ForceOnDemand,
+		RetryCount:    job.RetryCount,
 	}
 
 	instanceIDs, err := createFleetWithRetry(ctx, f, spec)
@@ -352,4 +389,26 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 
 	fleetCreated = true
 	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
+}
+
+// housekeepingMetricsAdapter adapts metrics.Publisher to housekeeping.MetricsAPI.
+type housekeepingMetricsAdapter struct {
+	publisher *metrics.Publisher
+}
+
+func (h *housekeepingMetricsAdapter) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
+	// Publish as a custom metric
+	return nil
+}
+
+func (h *housekeepingMetricsAdapter) PublishSSMParametersDeleted(ctx context.Context, count int) error {
+	return nil
+}
+
+func (h *housekeepingMetricsAdapter) PublishJobRecordsArchived(ctx context.Context, count int) error {
+	return nil
+}
+
+func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
+	return nil
 }

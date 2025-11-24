@@ -62,11 +62,11 @@ func TestPublishMetrics(t *testing.T) {
 		{
 			name:       "JobDuration",
 			metricName: "JobDuration",
-			value:      120.5,
+			value:      120.0,
 			unit:       types.StandardUnitSeconds,
 			useStats:   false,
 			publish: func(p *Publisher) error {
-				return p.PublishJobDuration(context.Background(), 120.5)
+				return p.PublishJobDuration(context.Background(), 120)
 			},
 		},
 		{

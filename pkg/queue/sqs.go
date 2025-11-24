@@ -38,13 +38,15 @@ func NewClient(cfg aws.Config, queueURL string) *Client {
 
 // JobMessage represents workflow job configuration for queue transport.
 type JobMessage struct {
-	JobID        string `json:"job_id,omitempty"`
-	RunID        string `json:"run_id"`
-	InstanceType string `json:"instance_type"`
-	Pool         string `json:"pool,omitempty"`
-	Private      bool   `json:"private"`
-	Spot         bool   `json:"spot"`
-	RunnerSpec   string `json:"runner_spec"`
+	JobID         string `json:"job_id,omitempty"`
+	RunID         string `json:"run_id"`
+	InstanceType  string `json:"instance_type"`
+	Pool          string `json:"pool,omitempty"`
+	Private       bool   `json:"private"`
+	Spot          bool   `json:"spot"`
+	RunnerSpec    string `json:"runner_spec"`
+	RetryCount    int    `json:"retry_count,omitempty"`     // Number of times this job has been retried
+	ForceOnDemand bool   `json:"force_on_demand,omitempty"` // Force on-demand for retries after spot interruption
 }
 
 // SendMessage sends job message to SQS FIFO queue with deduplication.
