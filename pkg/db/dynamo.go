@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -115,4 +116,14 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 	}
 
 	return nil
+}
+
+// MarkInstanceTerminating marks an instance as terminating in DynamoDB.
+func (c *Client) MarkInstanceTerminating(_ context.Context, instanceID string) error {
+	return fmt.Errorf("MarkInstanceTerminating not yet implemented for instance %s", instanceID)
+}
+
+// GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
+func (c *Client) GetJobByInstance(_ context.Context, instanceID string) (*events.JobInfo, error) {
+	return nil, fmt.Errorf("GetJobByInstance not yet implemented for instance %s", instanceID)
 }

@@ -12,7 +12,7 @@ func TestLoad(t *testing.T) {
 		os.Clearenv()
 		for _, e := range originalEnv {
 			pair := splitEnv(e)
-			os.Setenv(pair[0], pair[1])
+			_ = os.Setenv(pair[0], pair[1])
 		}
 	}()
 
@@ -24,11 +24,15 @@ func TestLoad(t *testing.T) {
 		{
 			name: "Valid Config",
 			env: map[string]string{
-				"RUNS_FLEET_GITHUB_ORG":            "test-org",
-				"RUNS_FLEET_QUEUE_URL":             "https://sqs.us-east-1.amazonaws.com/123/queue",
-				"RUNS_FLEET_VPC_ID":                "vpc-123",
-				"RUNS_FLEET_PUBLIC_SUBNET_IDS":     "subnet-1,subnet-2",
-				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_ORG":              "test-org",
+				"RUNS_FLEET_QUEUE_URL":               "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                  "vpc-123",
+				"RUNS_FLEET_PUBLIC_SUBNET_IDS":       "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":   "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":           "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY":  "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":       "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":    "arn:aws:iam::123456789:instance-profile/test",
 			},
 			wantErr: false,
 		},
@@ -62,7 +66,7 @@ func TestLoad(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Clearenv()
 			for k, v := range tt.env {
-				os.Setenv(k, v)
+				_ = os.Setenv(k, v)
 			}
 
 			cfg, err := Load()
@@ -84,18 +88,32 @@ func TestLoad(t *testing.T) {
 }
 
 func TestGetEnvInt(t *testing.T) {
-	os.Setenv("TEST_INT", "123")
-	os.Setenv("TEST_BAD_INT", "abc")
-	defer os.Unsetenv("TEST_INT")
-	defer os.Unsetenv("TEST_BAD_INT")
+	_ = os.Setenv("TEST_INT", "123")
+	_ = os.Setenv("TEST_BAD_INT", "abc")
+	defer func() { _ = os.Unsetenv("TEST_INT") }()
+	defer func() { _ = os.Unsetenv("TEST_BAD_INT") }()
 
-	if val := getEnvInt("TEST_INT", 0); val != 123 {
+	val, err := getEnvInt("TEST_INT", 0)
+	if err != nil {
+		t.Errorf("getEnvInt(TEST_INT) unexpected error: %v", err)
+	}
+	if val != 123 {
 		t.Errorf("getEnvInt(TEST_INT) = %d, want 123", val)
 	}
-	if val := getEnvInt("TEST_BAD_INT", 456); val != 456 {
-		t.Errorf("getEnvInt(TEST_BAD_INT) = %d, want 456", val)
+
+	val, err = getEnvInt("TEST_BAD_INT", 456)
+	if err == nil {
+		t.Errorf("getEnvInt(TEST_BAD_INT) expected error for invalid integer, got nil")
 	}
-	if val := getEnvInt("TEST_MISSING", 789); val != 789 {
+	if val != 0 {
+		t.Errorf("getEnvInt(TEST_BAD_INT) = %d, want 0 on error", val)
+	}
+
+	val, err = getEnvInt("TEST_MISSING", 789)
+	if err != nil {
+		t.Errorf("getEnvInt(TEST_MISSING) unexpected error: %v", err)
+	}
+	if val != 789 {
 		t.Errorf("getEnvInt(TEST_MISSING) = %d, want 789", val)
 	}
 }

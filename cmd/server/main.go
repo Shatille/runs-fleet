@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -77,15 +80,21 @@ func main() {
 			return
 		}
 
+		processed := false
 		switch event := payload.(type) {
 		case *github.WorkflowJobEvent:
 			if event.GetAction() == "queued" {
-				handleWorkflowJob(ctx, event, sqsClient, metricsPublisher)
+				handleWorkflowJob(r.Context(), event, sqsClient, metricsPublisher)
+				processed = true
 			}
 		}
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "Job queued\n")
+		if processed {
+			_, _ = fmt.Fprintf(w, "Job queued\n")
+		} else {
+			_, _ = fmt.Fprintf(w, "Event acknowledged\n")
+		}
 	})
 
 	server := &http.Server{
@@ -97,7 +106,8 @@ func main() {
 	}
 
 	// Start worker in background
-	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, cfg)
+	var subnetIndex uint64
+	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, cfg, &subnetIndex)
 
 	// Start pool reconciliation loop
 	go poolManager.ReconcileLoop(ctx)
@@ -135,6 +145,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	}
 
 	msg := &queue.JobMessage{
+		JobID:        fmt.Sprintf("%d", event.GetWorkflowJob().GetID()),
 		RunID:        jobConfig.RunID,
 		InstanceType: jobConfig.InstanceType,
 		Pool:         jobConfig.Pool,
@@ -148,68 +159,114 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 		return
 	}
 
-	m.PublishQueueDepth(ctx, 1) // Increment queue depth (approximate)
+	if err := m.PublishQueueDepth(ctx, 1); err != nil {
+		log.Printf("Failed to publish queue depth metric: %v", err)
+	}
 	log.Printf("Enqueued job for run %s", jobConfig.RunID)
 }
 
-func runWorker(ctx context.Context, q *queue.Client, f *fleet.FleetManager, pm *pools.Manager, m *metrics.Publisher, cfg *config.Config) {
+func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, cfg *config.Config, subnetIndex *uint64) {
 	log.Println("Starting worker loop...")
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+
+	const maxConcurrency = 5
+	sem := make(chan struct{}, maxConcurrency)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			messages, err := q.ReceiveMessages(ctx, 10, 20) // Long polling
+			timeout := 25 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if remaining < timeout {
+					timeout = remaining
+				}
+			}
+			recvCtx, cancel := context.WithTimeout(ctx, timeout)
+			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
+			cancel()
 			if err != nil {
 				log.Printf("Failed to receive messages: %v", err)
 				continue
 			}
 
+			if len(messages) == 0 {
+				jitter := time.Duration(160+rand.Int63n(80)) * time.Millisecond
+				select {
+				case <-time.After(jitter):
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+
+			var wg sync.WaitGroup
 			for _, msg := range messages {
-				processMessage(ctx, q, f, pm, m, msg, cfg)
+				msg := msg
+				wg.Add(1)
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("panic in processMessage: %v", r)
+						}
+					}()
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
+					processCtx, processCancel := context.WithTimeout(ctx, 30*time.Second)
+					defer processCancel()
+					processMessage(processCtx, q, f, pm, m, msg, cfg, subnetIndex)
+				}()
+			}
+
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}
 }
 
-func processMessage(ctx context.Context, q *queue.Client, f *fleet.FleetManager, pm *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config) {
+func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	defer func() {
-		m.PublishJobDuration(ctx, time.Since(startTime).Seconds())
+		if err := m.PublishJobDuration(ctx, time.Since(startTime).Seconds()); err != nil {
+			log.Printf("Failed to publish job duration metric: %v", err)
+		}
 	}()
 
 	var job queue.JobMessage
 	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
 		log.Printf("Failed to unmarshal message: %v", err)
-		// Delete poison message
 		_ = q.DeleteMessage(ctx, *msg.ReceiptHandle)
+		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer metricCancel()
+		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
+			log.Printf("Failed to publish poison message metric: %v", metricErr)
+		}
 		return
 	}
 
 	log.Printf("Processing job for run %s", job.RunID)
 
-	// Try to get from pool if requested
-	if job.Pool != "" {
-		instanceID, err := pm.GetInstance(ctx, job.Pool)
-		if err == nil && instanceID != "" {
-			log.Printf("Claimed instance %s from pool %s for run %s", instanceID, job.Pool, job.RunID)
-			// TODO: Assign job to instance (SSM/GitHub registration)
-			if err := q.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
-				log.Printf("Failed to delete message: %v", err)
-			}
-			m.PublishQueueDepth(ctx, -1) // Decrement queue depth
-			return
-		}
-		log.Printf("Pool %s empty or unavailable, falling back to cold start", job.Pool)
-	}
-
-	// Determine subnet
 	subnetID := ""
-	if len(cfg.PublicSubnetIDs) > 0 {
-		subnetID = cfg.PublicSubnetIDs[0] // Simple round-robin or random could be better
+	if job.Private && len(cfg.PrivateSubnetIDs) > 0 {
+		idx := atomic.AddUint64(subnetIndex, 1) - 1
+		subnetID = cfg.PrivateSubnetIDs[idx%uint64(len(cfg.PrivateSubnetIDs))]
+	} else if len(cfg.PublicSubnetIDs) > 0 {
+		idx := atomic.AddUint64(subnetIndex, 1) - 1
+		subnetID = cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
 	}
 
 	spec := &fleet.LaunchSpec{
@@ -219,9 +276,13 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.FleetManager,
 		Spot:         job.Spot,
 	}
 
-	if err := f.CreateFleet(ctx, spec); err != nil {
+	instanceIDs, err := f.CreateFleet(ctx, spec)
+	if err != nil {
 		log.Printf("Failed to create fleet: %v", err)
-		// Don't delete message so it retries (visibility timeout)
+		return
+	}
+	if len(instanceIDs) == 0 {
+		log.Printf("Fleet created but no instances returned for run %s", job.RunID)
 		return
 	}
 
@@ -229,6 +290,12 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.FleetManager,
 	if err := q.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
 		log.Printf("Failed to delete message: %v", err)
 	}
-	m.PublishQueueDepth(ctx, -1) // Decrement queue depth
-	m.PublishFleetSize(ctx, 1)   // Increment fleet size
+	if err := m.PublishQueueDepth(ctx, -1); err != nil {
+		log.Printf("Failed to publish queue depth metric: %v", err)
+	}
+	metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer metricCancel()
+	if metricErr := m.PublishFleetSizeIncrement(metricCtx); metricErr != nil {
+		log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+	}
 }
