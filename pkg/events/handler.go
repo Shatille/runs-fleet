@@ -169,6 +169,31 @@ func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
 	}
 }
 
+func (h *Handler) retryWithBackoff(ctx context.Context, operation func(context.Context) error) error {
+	backoffs := []time.Duration{100 * time.Millisecond, 500 * time.Millisecond}
+	var lastErr error
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(backoffs[attempt-1]):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
+		err := operation(mctx)
+		mcancel()
+
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
 func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.RawMessage) error {
 	var detail SpotInterruptionDetail
 	if err := json.Unmarshal(detailRaw, &detail); err != nil {
@@ -177,9 +202,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 
 	log.Printf("Spot interruption received for instance %s", detail.InstanceID)
 
-	mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
-	defer mcancel()
-	if err := h.metrics.PublishSpotInterruption(mctx); err != nil {
+	if err := h.retryWithBackoff(ctx, h.metrics.PublishSpotInterruption); err != nil {
 		return fmt.Errorf("failed to publish spot interruption metric: %w", err)
 	}
 
@@ -199,15 +222,15 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 
 	switch detail.State {
 	case "running":
-		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
-		defer mcancel()
-		if err := h.metrics.PublishFleetSize(mctx, 1); err != nil {
+		if err := h.retryWithBackoff(ctx, func(mctx context.Context) error {
+			return h.metrics.PublishFleetSize(mctx, 1)
+		}); err != nil {
 			return fmt.Errorf("failed to publish fleet size metric for running: %w", err)
 		}
 	case "stopped", "terminated":
-		mctx, mcancel := context.WithTimeout(ctx, 3*time.Second)
-		defer mcancel()
-		if err := h.metrics.PublishFleetSize(mctx, -1); err != nil {
+		if err := h.retryWithBackoff(ctx, func(mctx context.Context) error {
+			return h.metrics.PublishFleetSize(mctx, -1)
+		}); err != nil {
 			return fmt.Errorf("failed to publish fleet size metric for %s: %w", detail.State, err)
 		}
 	case "pending", "stopping", "shutting-down":

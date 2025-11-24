@@ -638,3 +638,108 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 		t.Errorf("Expected 2 metrics calls, got %d", callCount)
 	}
 }
+
+func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
+	tests := []struct {
+		name          string
+		failCount     int
+		expectedCalls int
+		expectedDelay time.Duration
+	}{
+		{
+			name:          "Success on first try",
+			failCount:     0,
+			expectedCalls: 1,
+			expectedDelay: 0,
+		},
+		{
+			name:          "Success on second try",
+			failCount:     1,
+			expectedCalls: 2,
+			expectedDelay: 100 * time.Millisecond,
+		},
+		{
+			name:          "Success on third try",
+			failCount:     2,
+			expectedCalls: 3,
+			expectedDelay: 600 * time.Millisecond,
+		},
+		{
+			name:          "Fail all retries",
+			failCount:     3,
+			expectedCalls: 3,
+			expectedDelay: 600 * time.Millisecond,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callCount := 0
+			startTime := time.Now()
+			var mu sync.Mutex
+
+			mockMetrics := &MockMetricsAPI{
+				PublishSpotInterruptionFunc: func(_ context.Context) error {
+					mu.Lock()
+					callCount++
+					currentCall := callCount
+					mu.Unlock()
+
+					if currentCall <= tt.failCount {
+						return fmt.Errorf("cloudwatch throttled")
+					}
+					return nil
+				},
+			}
+
+			handler := &Handler{
+				queueClient: &MockQueueAPI{
+					ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+						return []types.Message{{
+							Body: aws.String(`{
+								"detail-type": "EC2 Spot Instance Interruption Warning",
+								"detail": {"instance-id": "i-test", "instance-action": "terminate"}
+							}`),
+							ReceiptHandle: aws.String("receipt-test"),
+						}}, nil
+					},
+					DeleteMessageFunc: func(_ context.Context, _ string) error {
+						return nil
+					},
+				},
+				dbClient: &MockDBAPI{},
+				metrics:  mockMetrics,
+				config:   &config.Config{},
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			done := make(chan bool)
+			go func() {
+				handler.Run(ctx)
+				done <- true
+			}()
+
+			time.Sleep(2 * time.Second)
+			cancel()
+			<-done
+
+			elapsed := time.Since(startTime)
+
+			mu.Lock()
+			actualCallCount := callCount
+			mu.Unlock()
+
+			if actualCallCount != tt.expectedCalls {
+				t.Errorf("Expected %d calls, got %d", tt.expectedCalls, actualCallCount)
+			}
+
+			if tt.expectedDelay > 0 {
+				if elapsed < tt.expectedDelay {
+					t.Errorf("Expected delay of at least %v, got %v", tt.expectedDelay, elapsed)
+				}
+			}
+		})
+	}
+}
