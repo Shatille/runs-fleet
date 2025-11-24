@@ -94,10 +94,15 @@ type Reporter struct {
 	cwClient      CloudWatchAPI
 	s3Client      S3API
 	snsClient     SNSAPI
-	priceFetcher  *PriceFetcher
+	priceFetcher  PriceFetcherAPI
 	config        *config.Config
 	snsTopicARN   string
 	reportsBucket string
+}
+
+// PriceFetcherAPI defines the interface for fetching instance prices.
+type PriceFetcherAPI interface {
+	GetPrice(ctx context.Context, instanceType string) (float64, error)
 }
 
 // NewReporter creates a new cost reporter.
@@ -108,6 +113,19 @@ func NewReporter(cfg aws.Config, appConfig *config.Config, snsTopicARN, reportsB
 		s3Client:      s3.NewFromConfig(cfg),
 		snsClient:     sns.NewFromConfig(cfg),
 		priceFetcher:  NewPriceFetcher(cfg, cfg.Region),
+		config:        appConfig,
+		snsTopicARN:   snsTopicARN,
+		reportsBucket: reportsBucket,
+	}
+}
+
+// NewReporterWithClients creates a new cost reporter with injected clients for testing.
+func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SNSAPI, priceFetcher PriceFetcherAPI, appConfig *config.Config, snsTopicARN, reportsBucket string) *Reporter {
+	return &Reporter{
+		cwClient:      cwClient,
+		s3Client:      s3Client,
+		snsClient:     snsClient,
+		priceFetcher:  priceFetcher,
 		config:        appConfig,
 		snsTopicARN:   snsTopicARN,
 		reportsBucket: reportsBucket,

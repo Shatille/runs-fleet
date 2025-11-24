@@ -1,35 +1,35 @@
 # Operational Excellence - Task Checklist
 
-**Last Updated:** 2025-11-25
+**Last Updated:** 2025-11-24
 
 ## Phase 1: Circuit Breaker
 
 - [ ] Create DynamoDB table `runs-fleet-circuit-state` in Terraform
-- [ ] Create `pkg/circuit/breaker.go` with CircuitBreaker struct
-- [ ] Implement `RecordInterruption(ctx, instanceType) error`
-- [ ] Implement `CheckCircuit(ctx, instanceType) (CircuitState, error)`
-- [ ] Implement `ResetCircuit(ctx, instanceType) error`
-- [ ] Add background goroutine for auto-reset checking
-- [ ] Integrate with `pkg/fleet/fleet.go` (check before spot)
-- [ ] Integrate with `pkg/events/handler.go` (record interruptions)
-- [ ] Add metrics: CircuitBreakerTriggered, CircuitBreakerOpen
+- [x] Create `pkg/circuit/breaker.go` with CircuitBreaker struct
+- [x] Implement `RecordInterruption(ctx, instanceType) error`
+- [x] Implement `CheckCircuit(ctx, instanceType) (CircuitState, error)`
+- [x] Implement `ResetCircuit(ctx, instanceType) error`
+- [x] Add background goroutine for auto-reset checking
+- [x] Integrate with `pkg/fleet/fleet.go` (check before spot)
+- [x] Integrate with `pkg/events/handler.go` (record interruptions)
+- [x] Add metrics: CircuitBreakerTriggered, CircuitBreakerOpen
 - [ ] Unit tests with mocked DynamoDB
 - [ ] Integration test: Trigger 3 interruptions, verify circuit opens
 
 ## Phase 2: Forced On-Demand Retry
 
-- [ ] Add `RetryCount int` to `pkg/queue/JobMessage`
-- [ ] Add `ForceOnDemand bool` to `pkg/queue/JobMessage`
+- [x] Add `RetryCount int` to `pkg/queue/JobMessage`
+- [x] Add `ForceOnDemand bool` to `pkg/queue/JobMessage`
 - [ ] Update `pkg/github/webhook.go` to parse `retry=` label
-- [ ] Update `pkg/events/handler.go` re-queue logic
-- [ ] Update `pkg/fleet/fleet.go` to check ForceOnDemand flag
+- [x] Update `pkg/events/handler.go` re-queue logic
+- [x] Update `pkg/fleet/fleet.go` to check ForceOnDemand flag
 - [ ] Test: Spot interruption → re-queue with ForceOnDemand=true
 
 ## Phase 3: CloudWatch Dashboard
 
 - [ ] Create `terraform/cloudwatch_dashboard.tf`
 - [ ] Define 12 dashboard widgets (queue, fleet, cost/perf)
-- [ ] Add `CacheHitRate` metric to `pkg/cache/handler.go`
+- [x] Add `CacheHitRate` metric to `pkg/cache/handler.go`
 - [ ] Add `APIErrors` metric to fleet, db, github packages
 - [ ] Deploy dashboard via Terraform
 - [ ] Verify all metrics appear correctly
@@ -45,15 +45,15 @@
 
 ## Phase 5: Daily Cost Reporting
 
-- [ ] Create `pkg/cost/reporter.go`
-- [ ] Implement `CalculateDailyCosts(ctx, date) (*CostBreakdown, error)`
-- [ ] Implement cost calculation for each service (EC2, S3, etc.)
-- [ ] Add pricing map or integrate AWS Pricing API
-- [ ] Generate markdown report
-- [ ] Add CostReportTask to `pkg/housekeeping/tasks.go`
+- [x] Create `pkg/cost/reporter.go`
+- [x] Implement `CalculateDailyCosts(ctx, date) (*CostBreakdown, error)`
+- [x] Implement cost calculation for each service (EC2, S3, etc.)
+- [x] Add pricing map or integrate AWS Pricing API
+- [x] Generate markdown report
+- [x] Add CostReportTask to `pkg/housekeeping/tasks.go`
 - [ ] Create EventBridge rule for daily 9am trigger
-- [ ] Store reports in S3: `runs-fleet-reports/cost/{YYYY}/{MM}/{DD}.md`
-- [ ] Publish to SNS topic
+- [x] Store reports in S3: `runs-fleet-reports/cost/{YYYY}/{MM}/{DD}.md`
+- [x] Publish to SNS topic
 - [ ] Test report accuracy (±20%)
 
 ## Phase 6: SSH Debugging Access
@@ -62,8 +62,8 @@
 - [ ] Add Terraform variables: `ssh_key_name`, `ssh_allowed_cidr`
 - [ ] Update launch templates with key_name
 - [ ] Add SSM policy to IAM instance profile
-- [ ] Document SSH access in README.md
-- [ ] Document Session Manager access in README.md
+- [x] Document SSH access in README.md
+- [x] Document Session Manager access in README.md
 - [ ] Test SSH access from allowed CIDR
 - [ ] Test Session Manager access
 

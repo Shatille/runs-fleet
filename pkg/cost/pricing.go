@@ -48,6 +48,17 @@ func NewPriceFetcher(cfg aws.Config, region string) *PriceFetcher {
 	}
 }
 
+// NewPriceFetcherWithClient creates a new price fetcher with an injected client for testing.
+func NewPriceFetcherWithClient(client PricingAPI, region string) *PriceFetcher {
+	return &PriceFetcher{
+		client:      client,
+		region:      region,
+		cache:       make(map[string]float64),
+		cacheTTL:    24 * time.Hour,
+		useFallback: false,
+	}
+}
+
 // GetPrice returns the hourly on-demand price for an instance type.
 // It first checks the cache, then queries the AWS Pricing API, and falls back
 // to hard-coded prices if the API is unavailable.
