@@ -85,8 +85,9 @@ func main() {
 		switch event := payload.(type) {
 		case *github.WorkflowJobEvent:
 			if event.GetAction() == "queued" {
-				handleWorkflowJob(r.Context(), event, sqsClient, metricsPublisher)
-				processed = true
+				if err := handleWorkflowJob(r.Context(), event, sqsClient, metricsPublisher); err == nil {
+					processed = true
+				}
 			}
 		}
 
@@ -133,13 +134,13 @@ func main() {
 	log.Println("Server stopped")
 }
 
-func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *queue.Client, m *metrics.Publisher) {
+func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *queue.Client, m *metrics.Publisher) error {
 	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
 
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
 	if err != nil {
 		log.Printf("Skipping job (no runs-fleet labels): %v", err)
-		return
+		return nil
 	}
 
 	msg := &queue.JobMessage{
@@ -154,13 +155,14 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 
 	if err := q.SendMessage(ctx, msg); err != nil {
 		log.Printf("Failed to enqueue job: %v", err)
-		return
+		return fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
 		log.Printf("Failed to publish queue depth metric: %v", err)
 	}
 	log.Printf("Enqueued job for run %s", jobConfig.RunID)
+	return nil
 }
 
 func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, cfg *config.Config, subnetIndex *uint64) {
@@ -267,7 +269,16 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *p
 	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
 		log.Printf("Failed to unmarshal message: %v", err)
 		poisonMessage = true
-		_ = q.DeleteMessage(ctx, *msg.ReceiptHandle)
+
+		deleteErr := q.DeleteMessage(ctx, *msg.ReceiptHandle)
+		for attempts := 1; attempts < maxDeleteRetries && deleteErr != nil; attempts++ {
+			time.Sleep(retryDelay)
+			deleteErr = q.DeleteMessage(ctx, *msg.ReceiptHandle)
+		}
+		if deleteErr != nil {
+			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, deleteErr)
+		}
+
 		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
 		defer metricCancel()
 		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
