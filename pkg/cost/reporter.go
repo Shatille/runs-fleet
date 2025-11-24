@@ -94,17 +94,20 @@ type Reporter struct {
 	cwClient      CloudWatchAPI
 	s3Client      S3API
 	snsClient     SNSAPI
+	priceFetcher  *PriceFetcher
 	config        *config.Config
 	snsTopicARN   string
 	reportsBucket string
 }
 
 // NewReporter creates a new cost reporter.
+// It initializes a PriceFetcher to attempt dynamic pricing lookups from AWS Pricing API.
 func NewReporter(cfg aws.Config, appConfig *config.Config, snsTopicARN, reportsBucket string) *Reporter {
 	return &Reporter{
 		cwClient:      cloudwatch.NewFromConfig(cfg),
 		s3Client:      s3.NewFromConfig(cfg),
 		snsClient:     sns.NewFromConfig(cfg),
+		priceFetcher:  NewPriceFetcher(cfg, cfg.Region),
 		config:        appConfig,
 		snsTopicARN:   snsTopicARN,
 		reportsBucket: reportsBucket,
@@ -112,9 +115,10 @@ func NewReporter(cfg aws.Config, appConfig *config.Config, snsTopicARN, reportsB
 }
 
 // GenerateDailyReport generates the daily cost report.
-// NOTE: Costs are estimates based on hard-coded pricing. See instancePricing for details.
+// It attempts to fetch current prices from AWS Pricing API and falls back to
+// hard-coded estimates if the API is unavailable.
 func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
-	log.Println("Generating daily cost report (NOTE: costs are estimates based on hard-coded pricing)...")
+	log.Println("Generating daily cost report...")
 
 	// Calculate time range (previous 24 hours)
 	endTime := time.Now().Truncate(time.Hour)
@@ -282,8 +286,9 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	breakdown.EC2OnDemandHours = onDemandInstances * avgJobHours
 
 	// Use average instance cost (t4g.medium as default)
-	avgHourlyCost := instancePricing["t4g.medium"]
-	if avgHourlyCost == 0 {
+	// Try to get dynamic pricing from AWS Pricing API, fall back to hard-coded
+	avgHourlyCost, err := r.priceFetcher.GetPrice(ctx, "t4g.medium")
+	if err != nil || avgHourlyCost == 0 {
 		avgHourlyCost = 0.0336
 	}
 

@@ -1,6 +1,8 @@
 module github.com/Shavakan/runs-fleet
 
-go 1.23
+go 1.24.0
+
+toolchain go1.24.7
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.40.0
@@ -29,6 +31,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.14 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.14 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.14 // indirect
+	github.com/aws/aws-sdk-go-v2/service/pricing v1.40.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.67.3 // indirect
@@ -38,4 +41,5 @@ require (
 	github.com/aws/smithy-go v1.23.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
 )
