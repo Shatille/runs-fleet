@@ -309,6 +309,18 @@ func (d *Downloader) extractRunner(tarballPath, destDir string) error {
 			}
 			outFile.Close()
 		case tar.TypeSymlink:
+			// Validate symlink target to prevent path traversal attacks
+			// Resolve the symlink target relative to the symlink's directory
+			linkDir := filepath.Dir(targetPath)
+			resolvedTarget := filepath.Join(linkDir, header.Linkname)
+			resolvedTarget = filepath.Clean(resolvedTarget)
+
+			// Ensure the resolved target stays within the destination directory
+			if !strings.HasPrefix(resolvedTarget, filepath.Clean(destDir)+string(os.PathSeparator)) &&
+				resolvedTarget != filepath.Clean(destDir) {
+				return fmt.Errorf("symlink target escapes extraction directory: %s -> %s", header.Name, header.Linkname)
+			}
+
 			if err := os.Symlink(header.Linkname, targetPath); err != nil {
 				// Ignore symlink errors on some systems
 				fmt.Printf("Warning: failed to create symlink: %v\n", err)
