@@ -38,8 +38,9 @@ type MockDBAPI struct{}
 
 // MockMetricsAPI implements MetricsAPI interface
 type MockMetricsAPI struct {
-	PublishSpotInterruptionFunc func(ctx context.Context) error
-	PublishFleetSizeFunc        func(ctx context.Context, size float64) error
+	PublishSpotInterruptionFunc      func(ctx context.Context) error
+	PublishFleetSizeFunc             func(ctx context.Context, size int64) error
+	PublishMessageDeletionFailureFunc func(ctx context.Context) error
 }
 
 func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context) error {
@@ -49,9 +50,16 @@ func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context) error {
 	return nil
 }
 
-func (m *MockMetricsAPI) PublishFleetSize(ctx context.Context, size float64) error {
+func (m *MockMetricsAPI) PublishFleetSize(ctx context.Context, size int64) error {
 	if m.PublishFleetSizeFunc != nil {
 		return m.PublishFleetSizeFunc(ctx, size)
+	}
+	return nil
+}
+
+func (m *MockMetricsAPI) PublishMessageDeletionFailure(ctx context.Context) error {
+	if m.PublishMessageDeletionFailureFunc != nil {
+		return m.PublishMessageDeletionFailureFunc(ctx)
 	}
 	return nil
 }
@@ -87,9 +95,9 @@ func TestProcessEvent(t *testing.T) {
 				}
 			}`,
 			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeFunc = func(_ context.Context, size float64) error {
+				m.PublishFleetSizeFunc = func(_ context.Context, size int64) error {
 					if size != -1 {
-						t.Errorf("Expected fleet size change -1, got %f", size)
+						t.Errorf("Expected fleet size change -1, got %d", size)
 					}
 					return nil
 				}
@@ -105,9 +113,9 @@ func TestProcessEvent(t *testing.T) {
 				}
 			}`,
 			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeFunc = func(_ context.Context, size float64) error {
+				m.PublishFleetSizeFunc = func(_ context.Context, size int64) error {
 					if size != 1 {
-						t.Errorf("Expected fleet size change 1, got %f", size)
+						t.Errorf("Expected fleet size change 1, got %d", size)
 					}
 					return nil
 				}
@@ -123,9 +131,9 @@ func TestProcessEvent(t *testing.T) {
 				}
 			}`,
 			expectMetrics: func(t *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeFunc = func(_ context.Context, size float64) error {
+				m.PublishFleetSizeFunc = func(_ context.Context, size int64) error {
 					if size != -1 {
-						t.Errorf("Expected fleet size change -1 for stopped, got %f", size)
+						t.Errorf("Expected fleet size change -1 for stopped, got %d", size)
 					}
 					return nil
 				}
@@ -153,7 +161,7 @@ func TestProcessEvent(t *testing.T) {
 				}
 			} else {
 				originalFunc := mockMetrics.PublishFleetSizeFunc
-				mockMetrics.PublishFleetSizeFunc = func(ctx context.Context, size float64) error {
+				mockMetrics.PublishFleetSizeFunc = func(ctx context.Context, size int64) error {
 					called = true
 					if originalFunc != nil {
 						return originalFunc(ctx, size)
@@ -233,7 +241,7 @@ func TestProcessEventErrors(t *testing.T) {
 			}`),
 			receiptHandle:    aws.String("receipt-handle"),
 			metricsError:     fmt.Errorf("cloudwatch throttled"),
-			expectDeleteCall: false,
+			expectDeleteCall: true,
 		},
 	}
 
@@ -244,7 +252,7 @@ func TestProcessEventErrors(t *testing.T) {
 				PublishSpotInterruptionFunc: func(_ context.Context) error {
 					return tt.metricsError
 				},
-				PublishFleetSizeFunc: func(_ context.Context, _ float64) error {
+				PublishFleetSizeFunc: func(_ context.Context, _ int64) error {
 					return tt.metricsError
 				},
 			}
@@ -272,6 +280,47 @@ func TestProcessEventErrors(t *testing.T) {
 				t.Errorf("DeleteMessage called = %v, want %v", deleteCalled, tt.expectDeleteCall)
 			}
 		})
+	}
+}
+
+func TestDeleteMessageFailureMetric(t *testing.T) {
+	metricCalled := false
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			return nil
+		},
+		PublishMessageDeletionFailureFunc: func(_ context.Context) error {
+			metricCalled = true
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			DeleteMessageFunc: func(_ context.Context, _ string) error {
+				return fmt.Errorf("deletion failed")
+			},
+		},
+		dbClient: &MockDBAPI{},
+		metrics:  mockMetrics,
+		config:   &config.Config{},
+	}
+
+	msg := types.Message{
+		Body: aws.String(`{
+			"detail-type": "EC2 Spot Instance Interruption Warning",
+			"detail": {
+				"instance-id": "i-test",
+				"instance-action": "terminate"
+			}
+		}`),
+		ReceiptHandle: aws.String("receipt-test"),
+	}
+
+	handler.processEvent(context.Background(), msg)
+
+	if !metricCalled {
+		t.Error("Expected PublishMessageDeletionFailure to be called on deletion failure")
 	}
 }
 
@@ -644,31 +693,31 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 		name          string
 		failCount     int
 		expectedCalls int
-		expectedDelay time.Duration
+		minDelay      time.Duration
 	}{
 		{
 			name:          "Success on first try",
 			failCount:     0,
 			expectedCalls: 1,
-			expectedDelay: 0,
+			minDelay:      0,
 		},
 		{
 			name:          "Success on second try",
 			failCount:     1,
 			expectedCalls: 2,
-			expectedDelay: 100 * time.Millisecond,
+			minDelay:      100 * time.Millisecond,
 		},
 		{
 			name:          "Success on third try",
 			failCount:     2,
 			expectedCalls: 3,
-			expectedDelay: 600 * time.Millisecond,
+			minDelay:      600 * time.Millisecond,
 		},
 		{
 			name:          "Fail all retries",
 			failCount:     3,
 			expectedCalls: 3,
-			expectedDelay: 600 * time.Millisecond,
+			minDelay:      600 * time.Millisecond,
 		},
 	}
 
@@ -677,6 +726,7 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			callCount := 0
 			startTime := time.Now()
 			var mu sync.Mutex
+			messageReturned := false
 
 			mockMetrics := &MockMetricsAPI{
 				PublishSpotInterruptionFunc: func(_ context.Context) error {
@@ -695,6 +745,12 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			handler := &Handler{
 				queueClient: &MockQueueAPI{
 					ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+						mu.Lock()
+						defer mu.Unlock()
+						if messageReturned {
+							return nil, nil
+						}
+						messageReturned = true
 						return []types.Message{{
 							Body: aws.String(`{
 								"detail-type": "EC2 Spot Instance Interruption Warning",
@@ -735,9 +791,9 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 				t.Errorf("Expected %d calls, got %d", tt.expectedCalls, actualCallCount)
 			}
 
-			if tt.expectedDelay > 0 {
-				if elapsed < tt.expectedDelay {
-					t.Errorf("Expected delay of at least %v, got %v", tt.expectedDelay, elapsed)
+			if tt.minDelay > 0 {
+				if elapsed < tt.minDelay {
+					t.Errorf("Expected delay of at least %v, got %v", tt.minDelay, elapsed)
 				}
 			}
 		})

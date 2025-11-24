@@ -43,7 +43,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      5.0,
 			unit:       types.StandardUnitCount,
 			publish: func(p *Publisher) error {
-				return p.PublishFleetSize(context.Background(), 5.0)
+				return p.PublishFleetSize(context.Background(), 5)
 			},
 		},
 		{
@@ -62,6 +62,15 @@ func TestPublishMetrics(t *testing.T) {
 			unit:       types.StandardUnitCount,
 			publish: func(p *Publisher) error {
 				return p.PublishSpotInterruption(context.Background())
+			},
+		},
+		{
+			name:       "MessageDeletionFailures",
+			metricName: "MessageDeletionFailures",
+			value:      1.0,
+			unit:       types.StandardUnitCount,
+			publish: func(p *Publisher) error {
+				return p.PublishMessageDeletionFailure(context.Background())
 			},
 		},
 	}

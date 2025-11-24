@@ -36,8 +36,8 @@ func (p *Publisher) PublishQueueDepth(ctx context.Context, depth float64) error 
 }
 
 // PublishFleetSize publishes fleet size metric.
-func (p *Publisher) PublishFleetSize(ctx context.Context, size float64) error {
-	return p.putMetric(ctx, "FleetSize", size, types.StandardUnitCount)
+func (p *Publisher) PublishFleetSize(ctx context.Context, size int64) error {
+	return p.putMetric(ctx, "FleetSize", float64(size), types.StandardUnitCount)
 }
 
 // PublishJobDuration publishes job duration metric.
@@ -48,6 +48,11 @@ func (p *Publisher) PublishJobDuration(ctx context.Context, durationSeconds floa
 // PublishSpotInterruption publishes spot interruption metric.
 func (p *Publisher) PublishSpotInterruption(ctx context.Context) error {
 	return p.putMetric(ctx, "SpotInterruptions", 1, types.StandardUnitCount)
+}
+
+// PublishMessageDeletionFailure publishes message deletion failure metric.
+func (p *Publisher) PublishMessageDeletionFailure(ctx context.Context) error {
+	return p.putMetric(ctx, "MessageDeletionFailures", 1, types.StandardUnitCount)
 }
 
 func (p *Publisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {

@@ -27,7 +27,8 @@ type DBAPI interface {
 // MetricsAPI provides CloudWatch metrics publishing.
 type MetricsAPI interface {
 	PublishSpotInterruption(ctx context.Context) error
-	PublishFleetSize(ctx context.Context, size float64) error
+	PublishFleetSize(ctx context.Context, size int64) error
+	PublishMessageDeletionFailure(ctx context.Context) error
 }
 
 // Handler processes EventBridge events from SQS queue.
@@ -161,22 +162,30 @@ func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
 
 	if processErr != nil {
 		log.Printf("failed to process event: %v", processErr)
-		return
 	}
 
 	if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
 		log.Printf("failed to delete event message: %v", err)
+		metricCtx, metricCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer metricCancel()
+		if metricErr := h.metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
+			log.Printf("failed to publish deletion failure metric: %v", metricErr)
+		}
 	}
 }
 
 func (h *Handler) retryWithBackoff(ctx context.Context, operation func(context.Context) error) error {
-	backoffs := []time.Duration{100 * time.Millisecond, 500 * time.Millisecond}
+	backoffs := []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
 	var lastErr error
 
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
+			backoffIdx := attempt - 1
+			if backoffIdx >= len(backoffs) {
+				backoffIdx = len(backoffs) - 1
+			}
 			select {
-			case <-time.After(backoffs[attempt-1]):
+			case <-time.After(backoffs[backoffIdx]):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
