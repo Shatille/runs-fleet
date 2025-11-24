@@ -29,8 +29,10 @@ import (
 )
 
 const (
-	maxDeleteRetries = 3
-	retryDelay       = 1 * time.Second
+	maxDeleteRetries      = 3
+	retryDelay            = 1 * time.Second
+	maxFleetCreateRetries = 3
+	fleetRetryBaseDelay   = 2 * time.Second
 )
 
 func main() {
@@ -306,9 +308,25 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, _ *p
 		Pool:         job.Pool,
 	}
 
-	instanceIDs, err := f.CreateFleet(ctx, spec)
+	var instanceIDs []string
+	var err error
+	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
+		if attempt > 0 {
+			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
+			log.Printf("Retrying fleet creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
+			time.Sleep(backoff)
+		}
+
+		instanceIDs, err = f.CreateFleet(ctx, spec)
+		if err == nil {
+			break
+		}
+
+		log.Printf("Fleet creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
+	}
+
 	if err != nil {
-		log.Printf("Failed to create fleet: %v", err)
+		log.Printf("Failed to create fleet after %d attempts: %v", maxFleetCreateRetries, err)
 		return
 	}
 
