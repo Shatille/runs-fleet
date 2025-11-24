@@ -49,11 +49,11 @@ Fargate service that orchestrates the entire runner lifecycle.
 - `GET /health` - Health check for ECS
 
 **Queue Processors:**
-- Main queue: Job requests (FIFO)
-- Pool queue: Batch processing for warm pool jobs
-- Housekeeping queue: Cleanup tasks
-- Termination queue: Instance shutdown handling
-- Events queue: EventBridge events (spot interruptions, cost reports)
+- Main queue: Job requests (FIFO) ✅
+- Pool queue: Batch processing for warm pool jobs ✅
+- Events queue: EventBridge events (spot interruptions, cost reports) ✅
+- Housekeeping queue: Cleanup tasks 🚧 *Planned*
+- Termination queue: Instance shutdown handling 🚧 *Planned*
 
 ### Agent (`cmd/agent/`)
 
@@ -117,11 +117,13 @@ Lightweight binary that runs on EC2 instances to bootstrap the GitHub Actions ru
 - Region detection
 - Credential management
 
-### `internal/`
-- Shared utilities
-- DynamoDB state management (locks, job tracking)
+### `pkg/db/`
+- DynamoDB state management (pool configuration)
+- Database client abstraction
+
+### `pkg/metrics/`
 - CloudWatch metrics publishing
-- Logging infrastructure
+- Performance tracking
 
 ## Job Label Format
 
@@ -153,11 +155,11 @@ Managed via Terraform in `shavakan-terraform/terraform/runs-fleet/`:
 
 ### AWS Resources
 - **SQS Queues** (FIFO + dead letter queues)
-  - Main queue (job requests)
-  - Pool queue (batch processing)
-  - Housekeeping queue (cleanup)
-  - Termination queue (shutdown notifications)
-  - Events queue (EventBridge events)
+  - Main queue (job requests) ✅
+  - Pool queue (batch processing) ✅
+  - Events queue (EventBridge events) ✅
+  - Housekeeping queue (cleanup) 🚧 *Planned*
+  - Termination queue (shutdown notifications) 🚧 *Planned*
 - **DynamoDB Tables**
   - Locks table (distributed locking)
   - Workflow jobs table (job state tracking, GSI for next-check queries)
@@ -201,8 +203,7 @@ Managed via Terraform in `shavakan-terraform/terraform/runs-fleet/`:
 9. Agent fetches config from SSM, registers with GitHub
 10. GitHub assigns job to runner, workflow executes
 11. Agent self-terminates instance after job completion
-12. EventBridge notifies server of termination
-13. Housekeeping queue removes SSM parameter, updates metrics
+12. EventBridge notifies server of termination 🚧 *Planned: Housekeeping queue cleanup*
 
 ### Warm Pool Job Flow
 1. GitHub sends webhook with `pool=default` label (or dependabot job)
@@ -427,34 +428,44 @@ RUNS_FLEET_LOG_LEVEL=info
 
 ## Roadmap
 
-**Phase 1: Cold-Start MVP (1 week)**
+**Phase 1: Cold-Start MVP** ✅ Complete
 - [x] Architecture design
-- [ ] GitHub webhook receiver
-- [ ] Job label parser
-- [ ] SQS queue processor
-- [ ] EC2 fleet orchestrator (spot + on-demand)
-- [ ] Agent binary (bootstrap + self-terminate)
-- [ ] Basic Terraform infrastructure
+- [x] GitHub webhook receiver
+- [x] Job label parser
+- [x] SQS queue processor
+- [x] EC2 fleet orchestrator (spot + on-demand)
+- [x] Agent binary skeleton (registration/execution pending)
+- [x] Basic Terraform infrastructure
 
-**Phase 2: Warm Pools (1 week)**
-- [ ] Pool reconciliation loop
-- [ ] Hot pool management
-- [ ] Stopped pool management
-- [ ] Batch instance operations
-- [ ] Pool configuration in DynamoDB
+**Phase 2: Warm Pools** ✅ Complete
+- [x] Pool reconciliation loop
+- [x] Hot pool management
+- [x] Stopped pool management
+- [x] Batch instance operations
+- [x] Pool configuration in DynamoDB
 
-**Phase 3: S3 Cache Layer (1 week)**
-- [ ] GitHub Actions cache protocol implementation
-- [ ] Pre-signed URL generation
-- [ ] Cache key/version management
-- [ ] Lifecycle policies
+**Phase 3: S3 Cache Layer** ✅ Complete
+- [x] GitHub Actions cache protocol implementation
+- [x] Pre-signed URL generation
+- [x] Cache key/version management
+- [x] Lifecycle policies
 
-**Phase 4: Production Hardening (1 week)**
-- [ ] Comprehensive error handling
-- [ ] CloudWatch metrics + alarms
-- [ ] Spot interruption handling
-- [ ] Cost reporting
-- [ ] Integration tests
+**Phase 4: Production Hardening** ✅ Complete
+- [x] Comprehensive error handling
+- [x] CloudWatch metrics + alarms
+- [x] Spot interruption handling
+- [x] Cost reporting
+- [x] Integration tests
+
+**Phase 5: Concurrent Processing** ✅ Complete
+- [x] Graceful shutdown handling
+- [x] Subnet rotation for private instances
+- [x] Concurrent message processing
+
+**Known Limitations:**
+- Agent binary has placeholder implementation (no actual GitHub runner download/registration)
+- Termination queue documented but not implemented
+- Housekeeping queue documented but not implemented
 
 ## License
 

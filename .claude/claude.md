@@ -240,9 +240,15 @@ Compare to GitHub hosted runners: $80/month
 
 ## Roadmap Status
 
-Phase 1 (Cold-Start MVP): In progress
-Phase 2 (Warm Pools): Not started
-Phase 3 (S3 Cache): Not started
-Phase 4 (Production Hardening): Not started
+Phase 1 (Cold-Start MVP): ✅ Complete
+Phase 2 (Warm Pools): ✅ Complete
+Phase 3 (S3 Cache): ✅ Complete
+Phase 4 (Production Hardening): ✅ Complete
+Phase 5 (Concurrent Processing): ✅ Complete
+
+**Known Limitations:**
+- Agent binary: Placeholder implementation (no GitHub runner download/registration)
+- Termination queue: Documented but not implemented
+- Housekeeping queue: Documented but not implemented
 
 See README.md for detailed roadmap.
