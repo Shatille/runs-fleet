@@ -6,6 +6,8 @@ bin/
 *.dylib
 runs-fleet-server
 runs-fleet-agent
+server
+agent
 
 # Test binary
 *.test
