@@ -2,7 +2,6 @@ package pools
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -64,74 +63,5 @@ func TestReconcileLoop(t *testing.T) {
 	case <-done:
 	case <-timeoutCtx.Done():
 		t.Error("ReconcileLoop did not stop after context cancellation")
-	}
-}
-
-func TestGetInstance(t *testing.T) {
-	tests := []struct {
-		name           string
-		poolName       string
-		mockDB         *MockDBClient
-		wantInstanceID string
-		wantErr        bool
-	}{
-		{
-			name:           "Empty Pool Name",
-			poolName:       "",
-			mockDB:         &MockDBClient{},
-			wantInstanceID: "",
-			wantErr:        true,
-		},
-		{
-			name:     "Pool Exists But No Instance Available",
-			poolName: "default-pool",
-			mockDB: &MockDBClient{
-				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
-					return &db.PoolConfig{
-						PoolName:       "default-pool",
-						DesiredRunning: 5,
-						DesiredStopped: 2,
-					}, nil
-				},
-			},
-			wantInstanceID: "",
-			wantErr:        true, // Now returns ErrNoInstanceAvailable
-		},
-		{
-			name:     "Pool Not Found",
-			poolName: "unknown-pool",
-			mockDB: &MockDBClient{
-				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
-					return nil, nil
-				},
-			},
-			wantInstanceID: "",
-			wantErr:        true,
-		},
-		{
-			name:     "DB Error",
-			poolName: "error-pool",
-			mockDB: &MockDBClient{
-				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
-					return nil, fmt.Errorf("db error")
-				},
-			},
-			wantInstanceID: "",
-			wantErr:        true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			manager := NewManager(tt.mockDB, &MockFleetAPI{}, &config.Config{})
-			got, err := manager.GetInstance(context.Background(), tt.poolName)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetInstance() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.wantInstanceID {
-				t.Errorf("GetInstance() = %v, want %v", got, tt.wantInstanceID)
-			}
-		})
 	}
 }

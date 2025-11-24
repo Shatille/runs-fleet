@@ -3,8 +3,6 @@ package pools
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -13,9 +11,6 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
 )
-
-// ErrNoInstanceAvailable indicates no warm pool instance is available for assignment.
-var ErrNoInstanceAvailable = errors.New("no instance available in pool")
 
 // DBClient defines DynamoDB operations for pool configuration.
 type DBClient interface {
@@ -44,32 +39,6 @@ func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *M
 		fleetManager: fleetManager,
 		config:       cfg,
 	}
-}
-
-// GetInstance attempts to get an instance from the warm pool.
-// Returns instance ID if available, or ErrNoInstanceAvailable to trigger cold start.
-func (m *Manager) GetInstance(ctx context.Context, poolName string) (string, error) {
-	if poolName == "" {
-		return "", fmt.Errorf("pool name is required")
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	poolConfig, err := m.dbClient.GetPoolConfig(ctx, poolName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get pool config: %w", err)
-	}
-
-	if poolConfig == nil {
-		return "", fmt.Errorf("pool %s not found", poolName)
-	}
-
-	log.Printf("Checked pool %s: DesiredRunning=%d, DesiredStopped=%d",
-		poolName, poolConfig.DesiredRunning, poolConfig.DesiredStopped)
-
-	// Placeholder: Always returns ErrNoInstanceAvailable to force cold start until Phase 3.
-	return "", ErrNoInstanceAvailable
 }
 
 // ReconcileLoop runs periodically to maintain pool size.
