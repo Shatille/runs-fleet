@@ -26,6 +26,7 @@ func TestPublishMetrics(t *testing.T) {
 		metricName string
 		value      float64
 		unit       types.StandardUnit
+		useStats   bool
 		publish    func(p *Publisher) error
 	}{
 		{
@@ -33,6 +34,7 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "QueueDepth",
 			value:      10.0,
 			unit:       types.StandardUnitCount,
+			useStats:   true,
 			publish: func(p *Publisher) error {
 				return p.PublishQueueDepth(context.Background(), 10.0)
 			},
@@ -42,6 +44,7 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "FleetSizeIncrement",
 			value:      1.0,
 			unit:       types.StandardUnitCount,
+			useStats:   false,
 			publish: func(p *Publisher) error {
 				return p.PublishFleetSizeIncrement(context.Background())
 			},
@@ -51,6 +54,7 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "FleetSizeDecrement",
 			value:      1.0,
 			unit:       types.StandardUnitCount,
+			useStats:   false,
 			publish: func(p *Publisher) error {
 				return p.PublishFleetSizeDecrement(context.Background())
 			},
@@ -60,6 +64,7 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "JobDuration",
 			value:      120.5,
 			unit:       types.StandardUnitSeconds,
+			useStats:   false,
 			publish: func(p *Publisher) error {
 				return p.PublishJobDuration(context.Background(), 120.5)
 			},
@@ -69,6 +74,7 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "SpotInterruptions",
 			value:      1.0,
 			unit:       types.StandardUnitCount,
+			useStats:   false,
 			publish: func(p *Publisher) error {
 				return p.PublishSpotInterruption(context.Background())
 			},
@@ -78,6 +84,7 @@ func TestPublishMetrics(t *testing.T) {
 			metricName: "MessageDeletionFailures",
 			value:      1.0,
 			unit:       types.StandardUnitCount,
+			useStats:   false,
 			publish: func(p *Publisher) error {
 				return p.PublishMessageDeletionFailure(context.Background())
 			},
@@ -98,8 +105,29 @@ func TestPublishMetrics(t *testing.T) {
 					if *datum.MetricName != tt.metricName {
 						t.Errorf("MetricName = %s, want %s", *datum.MetricName, tt.metricName)
 					}
-					if *datum.Value != tt.value {
-						t.Errorf("Value = %f, want %f", *datum.Value, tt.value)
+					if tt.useStats {
+						if datum.StatisticValues == nil {
+							t.Errorf("StatisticValues is nil, want non-nil")
+						} else {
+							if *datum.StatisticValues.Sum != tt.value {
+								t.Errorf("StatisticValues.Sum = %f, want %f", *datum.StatisticValues.Sum, tt.value)
+							}
+							if *datum.StatisticValues.SampleCount != 1 {
+								t.Errorf("StatisticValues.SampleCount = %f, want 1", *datum.StatisticValues.SampleCount)
+							}
+							if *datum.StatisticValues.Minimum != tt.value {
+								t.Errorf("StatisticValues.Minimum = %f, want %f", *datum.StatisticValues.Minimum, tt.value)
+							}
+							if *datum.StatisticValues.Maximum != tt.value {
+								t.Errorf("StatisticValues.Maximum = %f, want %f", *datum.StatisticValues.Maximum, tt.value)
+							}
+						}
+					} else {
+						if datum.Value == nil {
+							t.Errorf("Value is nil, want %f", tt.value)
+						} else if *datum.Value != tt.value {
+							t.Errorf("Value = %f, want %f", *datum.Value, tt.value)
+						}
 					}
 					if datum.Unit != tt.unit {
 						t.Errorf("Unit = %v, want %v", datum.Unit, tt.unit)

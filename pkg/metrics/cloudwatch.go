@@ -32,7 +32,7 @@ func NewPublisher(cfg aws.Config) *Publisher {
 
 // PublishQueueDepth publishes queue depth metric.
 func (p *Publisher) PublishQueueDepth(ctx context.Context, depth float64) error {
-	return p.putMetric(ctx, "QueueDepth", depth, types.StandardUnitCount)
+	return p.putGaugeMetric(ctx, "QueueDepth", depth, types.StandardUnitCount)
 }
 
 // PublishFleetSizeIncrement publishes fleet size increment metric.
@@ -69,6 +69,29 @@ func (p *Publisher) putMetric(ctx context.Context, name string, value float64, u
 				Value:      aws.Float64(value),
 				Unit:       unit,
 				Timestamp:  aws.Time(time.Now()),
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish metric %s: %w", name, err)
+	}
+	return nil
+}
+
+func (p *Publisher) putGaugeMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
+	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+		Namespace: aws.String(p.namespace),
+		MetricData: []types.MetricDatum{
+			{
+				MetricName: aws.String(name),
+				StatisticValues: &types.StatisticSet{
+					SampleCount: aws.Float64(1),
+					Sum:         aws.Float64(value),
+					Minimum:     aws.Float64(value),
+					Maximum:     aws.Float64(value),
+				},
+				Unit:      unit,
+				Timestamp: aws.Time(time.Now()),
 			},
 		},
 	})
