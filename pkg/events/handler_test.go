@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
@@ -17,6 +18,7 @@ import (
 type MockQueueAPI struct {
 	ReceiveMessagesFunc func(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error)
 	DeleteMessageFunc   func(ctx context.Context, receiptHandle string) error
+	SendMessageFunc     func(ctx context.Context, job *queue.JobMessage) error
 }
 
 func (m *MockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
@@ -33,8 +35,32 @@ func (m *MockQueueAPI) DeleteMessage(ctx context.Context, receiptHandle string) 
 	return nil
 }
 
+func (m *MockQueueAPI) SendMessage(ctx context.Context, job *queue.JobMessage) error {
+	if m.SendMessageFunc != nil {
+		return m.SendMessageFunc(ctx, job)
+	}
+	return nil
+}
+
 // MockDBAPI implements DBAPI interface
-type MockDBAPI struct{}
+type MockDBAPI struct {
+	MarkInstanceTerminatingFunc func(ctx context.Context, instanceID string) error
+	GetJobByInstanceFunc        func(ctx context.Context, instanceID string) (*JobInfo, error)
+}
+
+func (m *MockDBAPI) MarkInstanceTerminating(ctx context.Context, instanceID string) error {
+	if m.MarkInstanceTerminatingFunc != nil {
+		return m.MarkInstanceTerminatingFunc(ctx, instanceID)
+	}
+	return nil
+}
+
+func (m *MockDBAPI) GetJobByInstance(ctx context.Context, instanceID string) (*JobInfo, error) {
+	if m.GetJobByInstanceFunc != nil {
+		return m.GetJobByInstanceFunc(ctx, instanceID)
+	}
+	return nil, nil
+}
 
 // MockMetricsAPI implements MetricsAPI interface
 type MockMetricsAPI struct {
@@ -889,5 +915,269 @@ func TestPanicRecovery(t *testing.T) {
 	}
 	if !normalReceiptDeleted {
 		t.Error("Expected normal message to be deleted, but it was not")
+	}
+}
+
+func TestSpotInterruptionHandling(t *testing.T) {
+	tests := []struct {
+		name              string
+		instanceID        string
+		job               *JobInfo
+		dbMarkErr         error
+		dbGetErr          error
+		queueSendErr      error
+		expectMarkCalled  bool
+		expectGetCalled   bool
+		expectQueueCalled bool
+		expectError       bool
+	}{
+		{
+			name:       "Successful job re-queue",
+			instanceID: "i-test123",
+			job: &JobInfo{
+				JobID:        "job-123",
+				RunID:        "run-456",
+				InstanceType: "t4g.medium",
+				Pool:         "default",
+				Private:      false,
+				Spot:         true,
+				RunnerSpec:   "2cpu-linux-arm64",
+			},
+			expectMarkCalled:  true,
+			expectGetCalled:   true,
+			expectQueueCalled: true,
+			expectError:       false,
+		},
+		{
+			name:              "No job found - skip re-queue",
+			instanceID:        "i-nojob",
+			job:               nil,
+			expectMarkCalled:  true,
+			expectGetCalled:   true,
+			expectQueueCalled: false,
+			expectError:       false,
+		},
+		{
+			name:       "Invalid job data - empty JobID",
+			instanceID: "i-emptyjobid",
+			job: &JobInfo{
+				JobID:  "",
+				RunID:  "run-valid",
+				Spot:   true,
+			},
+			expectMarkCalled:  true,
+			expectGetCalled:   true,
+			expectQueueCalled: false,
+			expectError:       false,
+		},
+		{
+			name:       "Invalid job data - empty RunID",
+			instanceID: "i-emptyrunid",
+			job: &JobInfo{
+				JobID:  "job-valid",
+				RunID:  "",
+				Spot:   true,
+			},
+			expectMarkCalled:  true,
+			expectGetCalled:   true,
+			expectQueueCalled: false,
+			expectError:       false,
+		},
+		{
+			name:             "DB mark failure",
+			instanceID:       "i-dbfail",
+			dbMarkErr:        fmt.Errorf("dynamodb unavailable"),
+			expectMarkCalled: true,
+			expectGetCalled:  false,
+			expectError:      true,
+		},
+		{
+			name:              "DB get failure",
+			instanceID:        "i-getfail",
+			dbGetErr:          fmt.Errorf("query failed"),
+			expectMarkCalled:  true,
+			expectGetCalled:   true,
+			expectQueueCalled: false,
+			expectError:       true,
+		},
+		{
+			name:       "Queue send failure",
+			instanceID: "i-queuefail",
+			job: &JobInfo{
+				JobID:  "job-fail",
+				RunID:  "run-fail",
+				Spot:   true,
+			},
+			queueSendErr:      fmt.Errorf("sqs throttled"),
+			expectMarkCalled:  true,
+			expectGetCalled:   true,
+			expectQueueCalled: true,
+			expectError:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			markCalled := false
+			getCalled := false
+			queueCalled := false
+
+			mockDB := &MockDBAPI{
+				MarkInstanceTerminatingFunc: func(_ context.Context, instanceID string) error {
+					markCalled = true
+					if instanceID != tt.instanceID {
+						t.Errorf("Expected instanceID %s, got %s", tt.instanceID, instanceID)
+					}
+					return tt.dbMarkErr
+				},
+				GetJobByInstanceFunc: func(_ context.Context, instanceID string) (*JobInfo, error) {
+					getCalled = true
+					if instanceID != tt.instanceID {
+						t.Errorf("Expected instanceID %s, got %s", tt.instanceID, instanceID)
+					}
+					return tt.job, tt.dbGetErr
+				},
+			}
+
+			mockQueue := &MockQueueAPI{
+				SendMessageFunc: func(_ context.Context, job *queue.JobMessage) error {
+					queueCalled = true
+					if tt.job != nil {
+						if job.JobID != tt.job.JobID {
+							t.Errorf("Expected JobID %s, got %s", tt.job.JobID, job.JobID)
+						}
+						if job.RunID != tt.job.RunID {
+							t.Errorf("Expected RunID %s, got %s", tt.job.RunID, job.RunID)
+						}
+					}
+					return tt.queueSendErr
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+			}
+
+			mockMetrics := &MockMetricsAPI{
+				PublishSpotInterruptionFunc: func(_ context.Context) error {
+					return nil
+				},
+			}
+
+			handler := &Handler{
+				queueClient: mockQueue,
+				dbClient:    mockDB,
+				metrics:     mockMetrics,
+				config:      &config.Config{},
+			}
+
+			eventBody := fmt.Sprintf(`{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {
+					"instance-id": "%s",
+					"instance-action": "terminate"
+				}
+			}`, tt.instanceID)
+
+			msg := types.Message{
+				Body:          aws.String(eventBody),
+				ReceiptHandle: aws.String("receipt-test"),
+			}
+
+			handler.processEvent(context.Background(), msg)
+
+			if markCalled != tt.expectMarkCalled {
+				t.Errorf("MarkInstanceTerminating called = %v, want %v", markCalled, tt.expectMarkCalled)
+			}
+			if getCalled != tt.expectGetCalled {
+				t.Errorf("GetJobByInstance called = %v, want %v", getCalled, tt.expectGetCalled)
+			}
+			if queueCalled != tt.expectQueueCalled {
+				t.Errorf("SendMessage called = %v, want %v", queueCalled, tt.expectQueueCalled)
+			}
+		})
+	}
+}
+
+func TestSpotInterruptionJobRequeueContent(t *testing.T) {
+	expectedJob := &JobInfo{
+		JobID:        "job-abc",
+		RunID:        "run-xyz",
+		InstanceType: "c7g.xlarge",
+		Pool:         "heavy-builds",
+		Private:      true,
+		Spot:         true,
+		RunnerSpec:   "4cpu-linux-arm64",
+	}
+
+	var capturedMessage *queue.JobMessage
+	mockDB := &MockDBAPI{
+		MarkInstanceTerminatingFunc: func(_ context.Context, _ string) error {
+			return nil
+		},
+		GetJobByInstanceFunc: func(_ context.Context, _ string) (*JobInfo, error) {
+			return expectedJob, nil
+		},
+	}
+
+	mockQueue := &MockQueueAPI{
+		SendMessageFunc: func(_ context.Context, job *queue.JobMessage) error {
+			capturedMessage = job
+			return nil
+		},
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			return nil
+		},
+	}
+
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			return nil
+		},
+	}
+
+	handler := &Handler{
+		queueClient: mockQueue,
+		dbClient:    mockDB,
+		metrics:     mockMetrics,
+		config:      &config.Config{},
+	}
+
+	msg := types.Message{
+		Body: aws.String(`{
+			"detail-type": "EC2 Spot Instance Interruption Warning",
+			"detail": {
+				"instance-id": "i-interrupted",
+				"instance-action": "terminate"
+			}
+		}`),
+		ReceiptHandle: aws.String("receipt-test"),
+	}
+
+	handler.processEvent(context.Background(), msg)
+
+	if capturedMessage == nil {
+		t.Fatal("Expected SendMessage to be called, but it was not")
+	}
+
+	if capturedMessage.JobID != expectedJob.JobID {
+		t.Errorf("JobID: expected %s, got %s", expectedJob.JobID, capturedMessage.JobID)
+	}
+	if capturedMessage.RunID != expectedJob.RunID {
+		t.Errorf("RunID: expected %s, got %s", expectedJob.RunID, capturedMessage.RunID)
+	}
+	if capturedMessage.InstanceType != expectedJob.InstanceType {
+		t.Errorf("InstanceType: expected %s, got %s", expectedJob.InstanceType, capturedMessage.InstanceType)
+	}
+	if capturedMessage.Pool != expectedJob.Pool {
+		t.Errorf("Pool: expected %s, got %s", expectedJob.Pool, capturedMessage.Pool)
+	}
+	if capturedMessage.Private != expectedJob.Private {
+		t.Errorf("Private: expected %v, got %v", expectedJob.Private, capturedMessage.Private)
+	}
+	if capturedMessage.Spot != expectedJob.Spot {
+		t.Errorf("Spot: expected %v, got %v", expectedJob.Spot, capturedMessage.Spot)
+	}
+	if capturedMessage.RunnerSpec != expectedJob.RunnerSpec {
+		t.Errorf("RunnerSpec: expected %s, got %s", expectedJob.RunnerSpec, capturedMessage.RunnerSpec)
 	}
 }

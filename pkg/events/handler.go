@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
@@ -17,11 +18,24 @@ import (
 type QueueAPI interface {
 	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error)
 	DeleteMessage(ctx context.Context, receiptHandle string) error
+	SendMessage(ctx context.Context, job *queue.JobMessage) error
 }
 
 // DBAPI provides database operations for event processing.
 type DBAPI interface {
-	// Add methods as needed by Handler
+	MarkInstanceTerminating(ctx context.Context, instanceID string) error
+	GetJobByInstance(ctx context.Context, instanceID string) (*JobInfo, error)
+}
+
+// JobInfo represents job details stored in DynamoDB.
+type JobInfo struct {
+	JobID        string
+	RunID        string
+	InstanceType string
+	Pool         string
+	Private      bool
+	Spot         bool
+	RunnerSpec   string
 }
 
 // MetricsAPI provides CloudWatch metrics publishing.
@@ -223,9 +237,38 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to publish spot interruption metric: %w", err)
 	}
 
-	// TODO(CRITICAL): Mark instance as terminating in DB - Required for Phase 4 spot recovery
-	// TODO(CRITICAL): Re-queue job if running on this instance - Required for Phase 4 spot recovery
-	// See: https://github.com/Shavakan/runs-fleet/issues/TBD
+	if err := h.dbClient.MarkInstanceTerminating(ctx, detail.InstanceID); err != nil {
+		return fmt.Errorf("failed to mark instance as terminating: %w", err)
+	}
+
+	job, err := h.dbClient.GetJobByInstance(ctx, detail.InstanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get job for instance: %w", err)
+	}
+	if job == nil {
+		log.Printf("No job found for instance %s, skipping re-queue", detail.InstanceID)
+		return nil
+	}
+
+	if job.JobID == "" || job.RunID == "" {
+		log.Printf("Invalid job data for instance %s (JobID=%s, RunID=%s), skipping re-queue", detail.InstanceID, job.JobID, job.RunID)
+		return nil
+	}
+
+	requeueMsg := &queue.JobMessage{
+		JobID:        job.JobID,
+		RunID:        job.RunID,
+		InstanceType: job.InstanceType,
+		Pool:         job.Pool,
+		Private:      job.Private,
+		Spot:         job.Spot,
+		RunnerSpec:   job.RunnerSpec,
+	}
+	if err := h.queueClient.SendMessage(ctx, requeueMsg); err != nil {
+		return fmt.Errorf("failed to re-queue job %s: %w", job.JobID, err)
+	}
+
+	log.Printf("Successfully re-queued job %s from interrupted instance %s", job.JobID, detail.InstanceID)
 	return nil
 }
 
