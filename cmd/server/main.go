@@ -66,12 +66,10 @@ func main() {
 	metricsPublisher := metrics.NewPublisher(awsCfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 
-	// Initialize EC2 client for pool manager (Sprint 4: Pool Scheduling)
 	ec2Client := ec2.NewFromConfig(awsCfg)
 	poolManager.SetEC2Client(ec2Client)
 	log.Println("Pool manager initialized with EC2 client for reconciliation")
 
-	// Initialize circuit breaker
 	var circuitBreaker *circuit.Breaker
 	if cfg.CircuitBreakerTable != "" {
 		circuitBreaker = circuit.NewBreaker(awsCfg, cfg.CircuitBreakerTable)
@@ -81,7 +79,6 @@ func main() {
 		log.Printf("Circuit breaker initialized with table: %s", cfg.CircuitBreakerTable)
 	}
 
-	// Initialize termination handler if queue URL is configured
 	var terminationHandler *termination.Handler
 	if cfg.TerminationQueueURL != "" {
 		terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
@@ -89,18 +86,15 @@ func main() {
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
 	}
 
-	// Initialize housekeeping handler if queue URL is configured
 	var housekeepingHandler *housekeeping.Handler
 	if cfg.HousekeepingQueueURL != "" {
 		housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
 
-		// Create cost reporter if configured
 		var costReporter *cost.Reporter
 		if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
 			costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
 		}
 
-		// Create housekeeping tasks executor
 		housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
 		tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
 		housekeepingHandler = housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)

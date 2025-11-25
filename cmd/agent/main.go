@@ -26,7 +26,6 @@ func main() {
 	logger := &stdLogger{}
 	logger.Println("Starting runs-fleet agent...")
 
-	// Set up panic recovery
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Printf("PANIC: Agent crashed: %v", r)
@@ -38,7 +37,6 @@ func main() {
 
 	ctx := context.Background()
 
-	// Get required environment variables
 	runID := os.Getenv("RUNS_FLEET_RUN_ID")
 	if runID == "" {
 		log.Fatal("RUNS_FLEET_RUN_ID environment variable is required")
@@ -62,13 +60,11 @@ func main() {
 	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, region=%s, max_runtime=%dm",
 		runID, instanceID, region, maxRuntimeMinutes)
 
-	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	// Initialize components
 	var cacheClient agent.CacheClient
 	if configBucket != "" {
 		cacheClient = agent.NewCache(cfg, configBucket)
@@ -117,10 +113,8 @@ func main() {
 	}
 	logger.Println("Runner registered successfully")
 
-	// Track job start time
 	jobStartedAt := time.Now()
 
-	// Send job started notification
 	if telemetry != nil {
 		jobStatus := agent.JobStatus{
 			InstanceID: instanceID,
@@ -161,12 +155,10 @@ func main() {
 	// Phase 4: Cleanup and termination
 	logger.Println("Phase 4: Cleaning up and terminating...")
 
-	// Clean up runner directory
 	if err := cleanup.CleanupRunner(ctx, runnerPath); err != nil {
 		logger.Printf("Warning: cleanup failed: %v", err)
 	}
 
-	// Prepare job status for termination notification
 	jobStatus := agent.JobStatus{
 		InstanceID:      instanceID,
 		JobID:           runID,
@@ -181,7 +173,6 @@ func main() {
 		jobStatus.Error = result.Error.Error()
 	}
 
-	// Terminate instance
 	if err := terminator.TerminateInstance(ctx, instanceID, jobStatus); err != nil {
 		logger.Printf("Failed to terminate instance: %v", err)
 		// If termination fails, rely on max runtime timeout

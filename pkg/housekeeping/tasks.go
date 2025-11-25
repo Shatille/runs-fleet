@@ -138,7 +138,6 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 func (t *Tasks) ExecuteStaleSSM(ctx context.Context) error {
 	log.Println("Executing stale SSM parameter cleanup...")
 
-	// Get all runner config parameters
 	path := "/runs-fleet/runners/"
 	var nextToken *string
 	var deletedCount int
@@ -168,7 +167,6 @@ func (t *Tasks) ExecuteStaleSSM(ctx context.Context) error {
 			}
 			instanceID := parts[3]
 
-			// Check if instance still exists
 			exists, err := t.instanceExists(ctx, instanceID)
 			if err != nil {
 				log.Printf("Warning: failed to check instance %s: %v", instanceID, err)
@@ -176,7 +174,6 @@ func (t *Tasks) ExecuteStaleSSM(ctx context.Context) error {
 			}
 
 			if !exists {
-				// Delete the parameter
 				_, err := t.ssmClient.DeleteParameter(ctx, &ssm.DeleteParameterInput{
 					Name: param.Name,
 				})
@@ -220,7 +217,6 @@ func (t *Tasks) instanceExists(ctx context.Context, instanceID string) (bool, er
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		// Check if it's a "not found" error
 		if strings.Contains(err.Error(), "InvalidInstanceID") {
 			return false, nil
 		}

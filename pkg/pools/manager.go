@@ -121,16 +121,13 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		return fmt.Errorf("pool config not found")
 	}
 
-	// Get current schedule-based desired counts
 	desiredRunning, desiredStopped := m.getScheduledDesiredCounts(poolConfig)
 
-	// Query actual instances in the pool
 	instances, err := m.getPoolInstances(ctx, poolName)
 	if err != nil {
 		return fmt.Errorf("failed to get pool instances: %w", err)
 	}
 
-	// Count current state
 	var running, stopped int
 	for _, inst := range instances {
 		switch inst.State {
@@ -144,12 +141,9 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	log.Printf("Pool %s: desired running=%d stopped=%d, actual running=%d stopped=%d",
 		poolName, desiredRunning, desiredStopped, running, stopped)
 
-	// Reconcile running instances
 	if running < desiredRunning {
-		// Need more running instances
 		deficit := desiredRunning - running
 
-		// First, try to start stopped instances
 		stoppedInstances := m.filterByState(instances, "stopped")
 		toStart := min(deficit, len(stoppedInstances))
 		if toStart > 0 {
@@ -164,7 +158,6 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			}
 		}
 
-		// If still need more, create new instances
 		if deficit > 0 {
 			for i := 0; i < deficit; i++ {
 				spec := &fleet.LaunchSpec{
@@ -186,10 +179,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		// First, check idle instances (those without assigned jobs)
 		idleInstances := m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
 
-		// Stop idle instances up to the excess count
 		toStop := min(excess, len(idleInstances))
 		if toStop > 0 && stopped < desiredStopped {
-			// Stop instances to meet desired stopped count
 			canStop := min(toStop, desiredStopped-stopped)
 			instanceIDs := make([]string, canStop)
 			for i := 0; i < canStop; i++ {
@@ -201,7 +192,6 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			excess -= canStop
 		}
 
-		// Terminate remaining excess
 		if excess > 0 {
 			// Sort by launch time (oldest first)
 			toTerminate := min(excess, len(idleInstances))
@@ -217,9 +207,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 	}
 
-	// Reconcile stopped instances
 	if stopped > desiredStopped {
-		// Terminate excess stopped instances
 		excess := stopped - desiredStopped
 		stoppedInstances := m.filterByState(instances, "stopped")
 		toTerminate := min(excess, len(stoppedInstances))
@@ -234,7 +222,6 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 	}
 
-	// Update pool state in DynamoDB
 	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {
 		log.Printf("Failed to update pool state: %v", err)
 	}
@@ -265,7 +252,6 @@ func (m *Manager) getScheduledDesiredCounts(poolConfig *db.PoolConfig) (running,
 
 // scheduleMatches checks if a schedule applies to the current time.
 func (m *Manager) scheduleMatches(schedule db.PoolSchedule, hour int, day time.Weekday) bool {
-	// Check day of week
 	if len(schedule.DaysOfWeek) > 0 {
 		dayMatch := false
 		for _, d := range schedule.DaysOfWeek {
@@ -279,7 +265,6 @@ func (m *Manager) scheduleMatches(schedule db.PoolSchedule, hour int, day time.W
 		}
 	}
 
-	// Check hour range
 	if schedule.StartHour <= schedule.EndHour {
 		// Normal range (e.g., 9-17)
 		return hour >= schedule.StartHour && hour < schedule.EndHour

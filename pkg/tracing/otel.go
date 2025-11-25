@@ -69,7 +69,6 @@ func Init(ctx context.Context, cfg *Config) (*Provider, error) {
 
 	log.Printf("Initializing OpenTelemetry tracing with endpoint: %s", cfg.Endpoint)
 
-	// Create OTLP exporter
 	client := otlptracegrpc.NewClient(
 		otlptracegrpc.WithEndpoint(cfg.Endpoint),
 		otlptracegrpc.WithInsecure(), // Use insecure for local development
@@ -79,7 +78,6 @@ func Init(ctx context.Context, cfg *Config) (*Provider, error) {
 		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
 	}
 
-	// Create resource with service information
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
@@ -91,7 +89,6 @@ func Init(ctx context.Context, cfg *Config) (*Provider, error) {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// Create sampler
 	var sampler sdktrace.Sampler
 	if cfg.SamplingRatio >= 1.0 {
 		sampler = sdktrace.AlwaysSample()
@@ -101,14 +98,12 @@ func Init(ctx context.Context, cfg *Config) (*Provider, error) {
 		sampler = sdktrace.TraceIDRatioBased(cfg.SamplingRatio)
 	}
 
-	// Create trace provider
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
 	)
 
-	// Set global provider and propagator
 	otel.SetTracerProvider(provider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
