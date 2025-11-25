@@ -1,7 +1,6 @@
 package cost_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -475,9 +474,4 @@ func TestReporter_ReportContainsDisclaimer(t *testing.T) {
 	if !strings.Contains(capturedBody, "DISCLAIMER") || !strings.Contains(capturedBody, "estimates") {
 		t.Error("Report should contain disclaimer about estimated costs")
 	}
-}
-
-// Helper function to create an io.ReadCloser from bytes
-func newReadCloser(data []byte) io.ReadCloser {
-	return io.NopCloser(bytes.NewReader(data))
 }
