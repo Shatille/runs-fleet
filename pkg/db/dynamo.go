@@ -18,6 +18,7 @@ import (
 type DynamoDBAPI interface {
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
 }
 
 // Client provides DynamoDB operations for pool configuration and state.
@@ -36,12 +37,28 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 	}
 }
 
+// PoolSchedule defines time-based pool sizing for cost optimization.
+type PoolSchedule struct {
+	Name           string `dynamodbav:"name"`
+	StartHour      int    `dynamodbav:"start_hour"`      // 0-23
+	EndHour        int    `dynamodbav:"end_hour"`        // 0-23
+	DaysOfWeek     []int  `dynamodbav:"days_of_week"`    // 0=Sunday, 1=Monday, etc.
+	DesiredRunning int    `dynamodbav:"desired_running"` // Desired running instances during this schedule
+	DesiredStopped int    `dynamodbav:"desired_stopped"` // Desired stopped instances during this schedule
+}
+
 // PoolConfig represents pool configuration from DynamoDB.
 type PoolConfig struct {
-	PoolName       string `dynamodbav:"pool_name"`
-	InstanceType   string `dynamodbav:"instance_type"`
-	DesiredRunning int    `dynamodbav:"desired_running"`
-	DesiredStopped int    `dynamodbav:"desired_stopped"`
+	PoolName           string         `dynamodbav:"pool_name"`
+	InstanceType       string         `dynamodbav:"instance_type"`
+	DesiredRunning     int            `dynamodbav:"desired_running"`
+	DesiredStopped     int            `dynamodbav:"desired_stopped"`
+	IdleTimeoutMinutes int            `dynamodbav:"idle_timeout_minutes,omitempty"`
+	Schedules          []PoolSchedule `dynamodbav:"schedules,omitempty"`
+	// Environment isolation
+	Environment string `dynamodbav:"environment,omitempty"` // dev, staging, prod
+	// Multi-region support
+	Region string `dynamodbav:"region,omitempty"` // AWS region for this pool
 }
 
 // GetPoolConfig retrieves pool configuration from DynamoDB.
@@ -75,6 +92,36 @@ func (c *Client) GetPoolConfig(ctx context.Context, poolName string) (*PoolConfi
 	}
 
 	return &config, nil
+}
+
+// ListPools returns all pool names from DynamoDB.
+func (c *Client) ListPools(ctx context.Context) ([]string, error) {
+	if c.poolsTable == "" {
+		return nil, fmt.Errorf("pools table not configured")
+	}
+
+	input := &dynamodb.ScanInput{
+		TableName:            aws.String(c.poolsTable),
+		ProjectionExpression: aws.String("pool_name"),
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan pools table: %w", err)
+	}
+
+	var pools []string
+	for _, item := range output.Items {
+		if name, ok := item["pool_name"]; ok {
+			var poolName string
+			if err := attributevalue.Unmarshal(name, &poolName); err != nil {
+				continue
+			}
+			pools = append(pools, poolName)
+		}
+	}
+
+	return pools, nil
 }
 
 // UpdatePoolState updates the current state of the pool (e.g., running/stopped counts).
@@ -116,6 +163,48 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 			return fmt.Errorf("pool %s does not exist", poolName)
 		}
 		return fmt.Errorf("failed to update item: %w", err)
+	}
+
+	return nil
+}
+
+// SavePoolConfig saves or updates a pool configuration in DynamoDB.
+func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
+	if config == nil {
+		return fmt.Errorf("pool config cannot be nil")
+	}
+	if config.PoolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+
+	item, err := attributevalue.MarshalMap(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal pool config: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: config.PoolName},
+		},
+		UpdateExpression: aws.String(
+			"SET instance_type = :it, desired_running = :dr, desired_stopped = :ds, " +
+				"idle_timeout_minutes = :itm, schedules = :sc, environment = :env, #region = :reg"),
+		ExpressionAttributeNames: map[string]string{
+			"#region": "region", // region is a reserved word
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":it":  item["instance_type"],
+			":dr":  item["desired_running"],
+			":ds":  item["desired_stopped"],
+			":itm": item["idle_timeout_minutes"],
+			":sc":  item["schedules"],
+			":env": item["environment"],
+			":reg": item["region"],
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save pool config: %w", err)
 	}
 
 	return nil

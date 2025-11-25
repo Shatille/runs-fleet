@@ -12,6 +12,7 @@ import (
 type MockDynamoDBAPI struct {
 	GetItemFunc    func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItemFunc func(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	ScanFunc       func(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
 }
 
 func (m *MockDynamoDBAPI) GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -26,6 +27,13 @@ func (m *MockDynamoDBAPI) UpdateItem(ctx context.Context, params *dynamodb.Updat
 		return m.UpdateItemFunc(ctx, params, optFns...)
 	}
 	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func (m *MockDynamoDBAPI) Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	if m.ScanFunc != nil {
+		return m.ScanFunc(ctx, params, optFns...)
+	}
+	return &dynamodb.ScanOutput{}, nil
 }
 
 func TestGetPoolConfig(t *testing.T) {

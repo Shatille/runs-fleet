@@ -28,6 +28,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/google/go-github/v57/github"
@@ -64,6 +65,11 @@ func main() {
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher := metrics.NewPublisher(awsCfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
+
+	// Initialize EC2 client for pool manager (Sprint 4: Pool Scheduling)
+	ec2Client := ec2.NewFromConfig(awsCfg)
+	poolManager.SetEC2Client(ec2Client)
+	log.Println("Pool manager initialized with EC2 client for reconciliation")
 
 	// Initialize circuit breaker
 	var circuitBreaker *circuit.Breaker
@@ -202,6 +208,11 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 		Private:      jobConfig.Private,
 		Spot:         jobConfig.Spot,
 		RunnerSpec:   jobConfig.RunnerSpec,
+		// Sprint 4 features
+		Region:      jobConfig.Region,      // Phase 3: Multi-region support
+		Environment: jobConfig.Environment, // Phase 6: Per-stack environments
+		OS:          jobConfig.OS,          // Phase 4: Windows support
+		Arch:        jobConfig.Arch,        // Phase 4: Architecture support
 	}
 
 	if err := q.SendMessage(ctx, msg); err != nil {
@@ -212,7 +223,8 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
 		log.Printf("Failed to publish queue depth metric: %v", err)
 	}
-	log.Printf("Enqueued job for run %s", jobConfig.RunID)
+	log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s)",
+		jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
 	return nil
 }
 
@@ -270,7 +282,7 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 
 					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 					defer processCancel()
-					processMessage(processCtx, q, f, m, msg, cfg, subnetIndex)
+					processMessage(processCtx, q, f, pm, m, msg, cfg, subnetIndex)
 				}()
 			}
 		}
@@ -318,7 +330,7 @@ func createFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.Lau
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
-func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
+func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
@@ -369,7 +381,8 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 		return
 	}
 
-	log.Printf("Processing job for run %s (retry=%d, forceOnDemand=%v)", job.RunID, job.RetryCount, job.ForceOnDemand)
+	log.Printf("Processing job for run %s (retry=%d, forceOnDemand=%v, os=%s, region=%s, env=%s)",
+		job.RunID, job.RetryCount, job.ForceOnDemand, job.OS, job.Region, job.Environment)
 
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
@@ -379,6 +392,11 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 		Pool:          job.Pool,
 		ForceOnDemand: job.ForceOnDemand,
 		RetryCount:    job.RetryCount,
+		// Sprint 4 features
+		Region:      job.Region,      // Phase 3: Multi-region support
+		Environment: job.Environment, // Phase 6: Per-stack environments
+		OS:          job.OS,          // Phase 4: Windows support
+		Arch:        job.Arch,        // Phase 4: Architecture support
 	}
 
 	instanceIDs, err := createFleetWithRetry(ctx, f, spec)
@@ -388,6 +406,12 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, m *m
 	}
 
 	fleetCreated = true
+
+	// Mark instances as busy for idle timeout tracking
+	for _, instanceID := range instanceIDs {
+		pm.MarkInstanceBusy(instanceID)
+	}
+
 	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
 }
 

@@ -51,14 +51,21 @@ type LaunchSpec struct {
 	SubnetID      string
 	Spot          bool
 	Pool          string
-	ForceOnDemand bool // Force on-demand even if spot is preferred (for retries)
-	RetryCount    int  // Number of times this job has been retried
+	ForceOnDemand bool   // Force on-demand even if spot is preferred (for retries)
+	RetryCount    int    // Number of times this job has been retried
+	Region        string // Target AWS region (Phase 3: Multi-region)
+	Environment   string // Environment tag (Phase 6: Per-stack environments)
+	OS            string // Operating system: linux, windows (Phase 4: Windows support)
+	Arch          string // Architecture: x64, arm64
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
+	// Select appropriate launch template based on OS
+	launchTemplateName := m.selectLaunchTemplate(spec)
+
 	launchTemplate := &types.FleetLaunchTemplateSpecificationRequest{
-		LaunchTemplateName: aws.String(m.config.LaunchTemplateName),
+		LaunchTemplateName: aws.String(launchTemplateName),
 		Version:            aws.String("$Latest"),
 	}
 
@@ -71,23 +78,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 
 	targetCapacity := int32(1)
 
-	tags := []types.Tag{
-		{
-			Key:   aws.String("runs-fleet:run-id"),
-			Value: aws.String(spec.RunID),
-		},
-		{
-			Key:   aws.String("runs-fleet:managed"),
-			Value: aws.String("true"),
-		},
-	}
-
-	if spec.Pool != "" {
-		tags = append(tags, types.Tag{
-			Key:   aws.String("runs-fleet:pool"),
-			Value: aws.String(spec.Pool),
-		})
-	}
+	tags := m.buildTags(spec)
 
 	req := &ec2.CreateFleetInput{
 		LaunchTemplateConfigs: []types.FleetLaunchTemplateConfigRequest{
@@ -170,4 +161,97 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	}
 
 	return instanceIDs, nil
+}
+
+// selectLaunchTemplate returns the appropriate launch template based on OS.
+func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
+	baseName := m.config.LaunchTemplateName
+	if baseName == "" {
+		baseName = "runs-fleet-runner"
+	}
+
+	// Windows instances use a separate launch template
+	if spec.OS == "windows" {
+		return baseName + "-windows"
+	}
+
+	return baseName
+}
+
+// buildTags creates the tag set for the fleet resources.
+func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
+	tags := []types.Tag{
+		{
+			Key:   aws.String("runs-fleet:run-id"),
+			Value: aws.String(spec.RunID),
+		},
+		{
+			Key:   aws.String("runs-fleet:managed"),
+			Value: aws.String("true"),
+		},
+	}
+
+	if spec.Pool != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:pool"),
+			Value: aws.String(spec.Pool),
+		})
+	}
+
+	// Add OS tag for Windows instances
+	if spec.OS != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:os"),
+			Value: aws.String(spec.OS),
+		})
+	}
+
+	// Add architecture tag
+	if spec.Arch != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:arch"),
+			Value: aws.String(spec.Arch),
+		})
+	}
+
+	// Add region tag for multi-region support (Phase 3)
+	if spec.Region != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:region"),
+			Value: aws.String(spec.Region),
+		})
+	}
+
+	// Add environment tag for per-stack environments (Phase 6)
+	if spec.Environment != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:environment"),
+			Value: aws.String(spec.Environment),
+		})
+		// Also add standard AWS Environment tag for cost tracking
+		tags = append(tags, types.Tag{
+			Key:   aws.String("Environment"),
+			Value: aws.String(spec.Environment),
+		})
+	}
+
+	return tags
+}
+
+// WindowsInstanceTypes returns the list of supported Windows instance types.
+var WindowsInstanceTypes = map[string]bool{
+	"t3.medium":   true,
+	"t3.large":    true,
+	"t3.xlarge":   true,
+	"m6i.large":   true,
+	"m6i.xlarge":  true,
+	"m6i.2xlarge": true,
+	"c6i.large":   true,
+	"c6i.xlarge":  true,
+	"c6i.2xlarge": true,
+}
+
+// IsValidWindowsInstanceType checks if an instance type supports Windows.
+func IsValidWindowsInstanceType(instanceType string) bool {
+	return WindowsInstanceTypes[instanceType]
 }
