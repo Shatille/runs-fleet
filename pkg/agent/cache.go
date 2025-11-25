@@ -40,8 +40,8 @@ func (c *Cache) cacheKey(version, arch string) string {
 }
 
 // CheckCache checks if a runner binary is cached in S3.
-// Returns the S3 key, whether it exists, and any error.
-func (c *Cache) CheckCache(ctx context.Context, version, arch string) (string, bool, error) {
+// Returns whether it exists, the S3 key, and any error.
+func (c *Cache) CheckCache(ctx context.Context, version, arch string) (bool, string, error) {
 	key := c.cacheKey(version, arch)
 
 	_, err := c.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -52,13 +52,13 @@ func (c *Cache) CheckCache(ctx context.Context, version, arch string) (string, b
 		// Check if it's a not found error (cache miss)
 		var notFoundErr *types.NotFound
 		if errors.As(err, &notFoundErr) {
-			return key, false, nil
+			return false, key, nil
 		}
 		// Return actual errors (network issues, permission denied, etc.)
-		return key, false, fmt.Errorf("failed to check cache: %w", err)
+		return false, key, fmt.Errorf("failed to check cache: %w", err)
 	}
 
-	return key, true, nil
+	return true, key, nil
 }
 
 // GetCachedRunner downloads a cached runner binary from S3.
@@ -72,7 +72,9 @@ func (c *Cache) GetCachedRunner(ctx context.Context, version, arch, destPath str
 	if err != nil {
 		return fmt.Errorf("failed to get cached runner: %w", err)
 	}
-	defer output.Body.Close()
+	defer func() {
+		_ = output.Body.Close()
+	}()
 
 	// Create destination directory
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -84,7 +86,9 @@ func (c *Cache) GetCachedRunner(ctx context.Context, version, arch, destPath str
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	// Copy content
 	if _, err := io.Copy(file, output.Body); err != nil {
@@ -102,7 +106,9 @@ func (c *Cache) CacheRunner(ctx context.Context, version, arch, localPath string
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	_, err = c.s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucketName),
@@ -115,4 +121,14 @@ func (c *Cache) CacheRunner(ctx context.Context, version, arch, localPath string
 	}
 
 	return nil
+}
+
+// DownloadFromCache wraps GetCachedRunner for CacheClient interface compatibility.
+func (c *Cache) DownloadFromCache(ctx context.Context, version, arch, destPath string) error {
+	return c.GetCachedRunner(ctx, version, arch, destPath)
+}
+
+// UploadToCache wraps CacheRunner for CacheClient interface compatibility.
+func (c *Cache) UploadToCache(ctx context.Context, version, arch, sourcePath string) error {
+	return c.CacheRunner(ctx, version, arch, sourcePath)
 }
