@@ -77,12 +77,36 @@ type JobConfig struct {
 	Private      bool
 	Spot         bool
 	RunnerSpec   string
+	Region       string // Multi-region support (Phase 3)
+	Environment  string // Per-stack environment support (Phase 6)
+	OS           string // Operating system (linux, windows)
+	Arch         string // Architecture (x64, arm64)
+}
+
+// DefaultRunnerSpecs maps runner spec names to EC2 instance types.
+var DefaultRunnerSpecs = map[string]string{
+	// Linux ARM64
+	"2cpu-linux-arm64": "t4g.medium",
+	"4cpu-linux-arm64": "c7g.xlarge",
+	"8cpu-linux-arm64": "c7g.2xlarge",
+	// Linux x64
+	"2cpu-linux-x64": "t3.medium",
+	"4cpu-linux-x64": "c6i.xlarge",
+	"8cpu-linux-x64": "c6i.2xlarge",
+	// Windows x64 (Phase 4)
+	"2cpu-windows-x64": "t3.medium",
+	"4cpu-windows-x64": "m6i.xlarge",
+	"8cpu-windows-x64": "m6i.2xlarge",
 }
 
 // ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
 func ParseLabels(labels []string) (*JobConfig, error) {
-	config := &JobConfig{
-		Spot: true,
+	cfg := &JobConfig{
+		Spot:        true,
+		OS:          "linux",
+		Arch:        "arm64",
+		Environment: "", // Default: no specific environment
+		Region:      "", // Default: use primary region
 	}
 
 	var runsFleetLabel string
@@ -102,8 +126,8 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		return nil, errors.New("invalid runs-fleet label format")
 	}
 
-	config.RunID = parts[0]
-	if config.RunID == "" {
+	cfg.RunID = parts[0]
+	if cfg.RunID == "" {
 		return nil, errors.New("empty run-id in label")
 	}
 
@@ -116,31 +140,76 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 
 		switch key {
 		case "runner":
-			config.RunnerSpec = value
-			switch {
-			case strings.HasPrefix(value, "2cpu-linux-arm64"):
-				config.InstanceType = "t4g.medium"
-			case strings.HasPrefix(value, "4cpu-linux-arm64"):
-				config.InstanceType = "c7g.xlarge"
-			case strings.HasPrefix(value, "4cpu-linux-x64"):
-				config.InstanceType = "c6i.xlarge"
-			case strings.HasPrefix(value, "8cpu-linux-arm64"):
-				config.InstanceType = "c7g.2xlarge"
-			default:
-				config.InstanceType = "t4g.medium"
-			}
+			cfg.RunnerSpec = value
+			cfg.InstanceType = resolveInstanceType(value)
+			cfg.OS, cfg.Arch = parseRunnerOSArch(value)
 		case "pool":
-			config.Pool = value
+			cfg.Pool = value
 		case "private":
-			config.Private = value == "true"
+			cfg.Private = value == "true"
 		case "spot":
-			config.Spot = value != "false"
+			cfg.Spot = value != "false"
+		case "region":
+			// Multi-region support (Phase 3)
+			cfg.Region = value
+		case "env":
+			// Per-stack environment support (Phase 6)
+			if value == "dev" || value == "staging" || value == "prod" {
+				cfg.Environment = value
+			}
 		}
 	}
 
-	if config.RunnerSpec == "" {
+	if cfg.RunnerSpec == "" {
 		return nil, errors.New("missing runner key in runs-fleet label")
 	}
 
-	return config, nil
+	return cfg, nil
+}
+
+// resolveInstanceType maps a runner spec to an EC2 instance type.
+func resolveInstanceType(runnerSpec string) string {
+	if instanceType, ok := DefaultRunnerSpecs[runnerSpec]; ok {
+		return instanceType
+	}
+
+	// Fallback parsing for unknown specs
+	switch {
+	case strings.HasPrefix(runnerSpec, "2cpu-linux-arm64"):
+		return "t4g.medium"
+	case strings.HasPrefix(runnerSpec, "4cpu-linux-arm64"):
+		return "c7g.xlarge"
+	case strings.HasPrefix(runnerSpec, "4cpu-linux-x64"):
+		return "c6i.xlarge"
+	case strings.HasPrefix(runnerSpec, "8cpu-linux-arm64"):
+		return "c7g.2xlarge"
+	case strings.HasPrefix(runnerSpec, "8cpu-linux-x64"):
+		return "c6i.2xlarge"
+	case strings.Contains(runnerSpec, "windows"):
+		return "m6i.xlarge" // Default Windows instance
+	default:
+		return "t4g.medium" // Default fallback
+	}
+}
+
+// parseRunnerOSArch extracts OS and architecture from runner spec.
+func parseRunnerOSArch(runnerSpec string) (os, arch string) {
+	os = "linux"
+	arch = "arm64"
+
+	if strings.Contains(runnerSpec, "windows") {
+		os = "windows"
+	}
+	if strings.Contains(runnerSpec, "x64") {
+		arch = "x64"
+	} else if strings.Contains(runnerSpec, "arm64") {
+		arch = "arm64"
+	}
+
+	return os, arch
+}
+
+// IsWindowsRunner returns true if the runner spec is for Windows.
+func IsWindowsRunner(runnerSpec string) bool {
+	return strings.Contains(runnerSpec, "windows")
 }

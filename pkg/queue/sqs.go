@@ -47,6 +47,17 @@ type JobMessage struct {
 	RunnerSpec    string `json:"runner_spec"`
 	RetryCount    int    `json:"retry_count,omitempty"`     // Number of times this job has been retried
 	ForceOnDemand bool   `json:"force_on_demand,omitempty"` // Force on-demand for retries after spot interruption
+	// Multi-region support (Phase 3)
+	Region string `json:"region,omitempty"`
+	// Per-stack environment support (Phase 6)
+	Environment string `json:"environment,omitempty"`
+	// Windows support (Phase 4)
+	OS   string `json:"os,omitempty"`   // linux, windows
+	Arch string `json:"arch,omitempty"` // x64, arm64
+	// OpenTelemetry tracing (Phase 5)
+	TraceID  string `json:"trace_id,omitempty"`
+	SpanID   string `json:"span_id,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
 }
 
 // SendMessage sends job message to SQS FIFO queue with deduplication.
@@ -75,6 +86,28 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 		MessageDeduplicationId: aws.String(dedupID),
 	}
 
+	// Add trace context as message attributes if present
+	if job.TraceID != "" {
+		input.MessageAttributes = map[string]types.MessageAttributeValue{
+			"TraceID": {
+				DataType:    aws.String("String"),
+				StringValue: aws.String(job.TraceID),
+			},
+		}
+		if job.SpanID != "" {
+			input.MessageAttributes["SpanID"] = types.MessageAttributeValue{
+				DataType:    aws.String("String"),
+				StringValue: aws.String(job.SpanID),
+			}
+		}
+		if job.ParentID != "" {
+			input.MessageAttributes["ParentID"] = types.MessageAttributeValue{
+				DataType:    aws.String("String"),
+				StringValue: aws.String(job.ParentID),
+			}
+		}
+	}
+
 	_, err = c.sqsClient.SendMessage(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to send message to SQS: %w", err)
@@ -87,11 +120,12 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 // VisibilityTimeout is set to 60 seconds to allow for message processing and retry logic.
 func (c *Client) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
 	input := &sqs.ReceiveMessageInput{
-		QueueUrl:            aws.String(c.queueURL),
-		MaxNumberOfMessages: maxMessages,
-		WaitTimeSeconds:     waitTimeSeconds,
-		VisibilityTimeout:   int32(60),
-		AttributeNames:      []types.QueueAttributeName{types.QueueAttributeNameAll},
+		QueueUrl:              aws.String(c.queueURL),
+		MaxNumberOfMessages:   maxMessages,
+		WaitTimeSeconds:       waitTimeSeconds,
+		VisibilityTimeout:     int32(60),
+		AttributeNames:        []types.QueueAttributeName{types.QueueAttributeNameAll},
+		MessageAttributeNames: []string{"All"}, // Include message attributes for trace context
 	}
 
 	output, err := c.sqsClient.ReceiveMessage(ctx, input)
@@ -112,4 +146,23 @@ func (c *Client) DeleteMessage(ctx context.Context, receiptHandle string) error 
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 	return nil
+}
+
+// ExtractTraceContext extracts trace context from SQS message attributes.
+func ExtractTraceContext(msg types.Message) (traceID, spanID, parentID string) {
+	if msg.MessageAttributes == nil {
+		return "", "", ""
+	}
+
+	if attr, ok := msg.MessageAttributes["TraceID"]; ok && attr.StringValue != nil {
+		traceID = *attr.StringValue
+	}
+	if attr, ok := msg.MessageAttributes["SpanID"]; ok && attr.StringValue != nil {
+		spanID = *attr.StringValue
+	}
+	if attr, ok := msg.MessageAttributes["ParentID"]; ok && attr.StringValue != nil {
+		parentID = *attr.StringValue
+	}
+
+	return traceID, spanID, parentID
 }
