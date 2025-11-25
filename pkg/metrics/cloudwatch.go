@@ -70,6 +70,81 @@ func (p *Publisher) PublishMessageDeletionFailure(ctx context.Context) error {
 	return p.putMetric(ctx, "MessageDeletionFailures", 1, types.StandardUnitCount)
 }
 
+// PublishCacheHit publishes cache hit metric.
+func (p *Publisher) PublishCacheHit(ctx context.Context) error {
+	return p.putMetric(ctx, "CacheHits", 1, types.StandardUnitCount)
+}
+
+// PublishCacheMiss publishes cache miss metric.
+func (p *Publisher) PublishCacheMiss(ctx context.Context) error {
+	return p.putMetric(ctx, "CacheMisses", 1, types.StandardUnitCount)
+}
+
+// PublishOrphanedInstancesTerminated publishes orphaned instances terminated metric.
+func (p *Publisher) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
+	return p.putMetric(ctx, "OrphanedInstancesTerminated", float64(count), types.StandardUnitCount)
+}
+
+// PublishSSMParametersDeleted publishes SSM parameters deleted metric.
+func (p *Publisher) PublishSSMParametersDeleted(ctx context.Context, count int) error {
+	return p.putMetric(ctx, "SSMParametersDeleted", float64(count), types.StandardUnitCount)
+}
+
+// PublishJobRecordsArchived publishes job records archived metric.
+func (p *Publisher) PublishJobRecordsArchived(ctx context.Context, count int) error {
+	return p.putMetric(ctx, "JobRecordsArchived", float64(count), types.StandardUnitCount)
+}
+
+// PublishPoolUtilization publishes pool utilization metric with pool name dimension.
+func (p *Publisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
+	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+		Namespace: aws.String(p.namespace),
+		MetricData: []types.MetricDatum{
+			{
+				MetricName: aws.String("PoolUtilization"),
+				Value:      aws.Float64(utilization),
+				Unit:       types.StandardUnitPercent,
+				Timestamp:  aws.Time(time.Now()),
+				Dimensions: []types.Dimension{
+					{
+						Name:  aws.String("PoolName"),
+						Value: aws.String(poolName),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish pool utilization metric for %s: %w", poolName, err)
+	}
+	return nil
+}
+
+// PublishCircuitBreakerTriggered publishes circuit breaker triggered metric.
+func (p *Publisher) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error {
+	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+		Namespace: aws.String(p.namespace),
+		MetricData: []types.MetricDatum{
+			{
+				MetricName: aws.String("CircuitBreakerTriggered"),
+				Value:      aws.Float64(1),
+				Unit:       types.StandardUnitCount,
+				Timestamp:  aws.Time(time.Now()),
+				Dimensions: []types.Dimension{
+					{
+						Name:  aws.String("InstanceType"),
+						Value: aws.String(instanceType),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish circuit breaker triggered metric for %s: %w", instanceType, err)
+	}
+	return nil
+}
+
 func (p *Publisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),

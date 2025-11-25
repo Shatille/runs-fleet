@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,14 +11,26 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 )
 
+// CacheMetrics defines the interface for publishing cache metrics.
+type CacheMetrics interface {
+	PublishCacheHit(ctx context.Context) error
+	PublishCacheMiss(ctx context.Context) error
+}
+
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
 type Handler struct {
-	server *Server
+	server  *Server
+	metrics CacheMetrics
 }
 
 // NewHandler creates a new cache handler.
 func NewHandler(server *Server) *Handler {
 	return &Handler{server: server}
+}
+
+// NewHandlerWithMetrics creates a new cache handler with metrics support.
+func NewHandlerWithMetrics(server *Server, metrics CacheMetrics) *Handler {
+	return &Handler{server: server, metrics: metrics}
 }
 
 type reserveCacheRequest struct {
@@ -135,6 +148,12 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		log.Printf("Cache miss: keys=%v version=%s", keys, version)
+		// Publish cache miss metric
+		if h.metrics != nil {
+			if err := h.metrics.PublishCacheMiss(r.Context()); err != nil {
+				log.Printf("Failed to publish cache miss metric: %v", err)
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -147,6 +166,12 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Cache hit: cacheKey=%s keys=%v version=%s", cacheKey, keys, version)
+	// Publish cache hit metric
+	if h.metrics != nil {
+		if err := h.metrics.PublishCacheHit(r.Context()); err != nil {
+			log.Printf("Failed to publish cache hit metric: %v", err)
+		}
+	}
 
 	resp := getCacheResponse{
 		ArchiveLocation: downloadURL,

@@ -108,7 +108,7 @@ func main() {
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})
 
-	cacheHandler := cache.NewHandler(cacheServer)
+	cacheHandler := cache.NewHandlerWithMetrics(cacheServer, metricsPublisher)
 	cacheHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
@@ -397,18 +397,17 @@ type housekeepingMetricsAdapter struct {
 }
 
 func (h *housekeepingMetricsAdapter) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
-	// Publish as a custom metric
-	return nil
+	return h.publisher.PublishOrphanedInstancesTerminated(ctx, count)
 }
 
 func (h *housekeepingMetricsAdapter) PublishSSMParametersDeleted(ctx context.Context, count int) error {
-	return nil
+	return h.publisher.PublishSSMParametersDeleted(ctx, count)
 }
 
 func (h *housekeepingMetricsAdapter) PublishJobRecordsArchived(ctx context.Context, count int) error {
-	return nil
+	return h.publisher.PublishJobRecordsArchived(ctx, count)
 }
 
 func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
-	return nil
+	return h.publisher.PublishPoolUtilization(ctx, poolName, utilization)
 }

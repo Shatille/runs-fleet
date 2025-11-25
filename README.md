@@ -403,6 +403,71 @@ RUNS_FLEET_LOG_LEVEL=info
 - Fleet errors >5 in 5 minutes (EC2 API failures)
 - Spot interruption rate >20% (consider on-demand)
 
+## Debugging Access
+
+### SSH Access
+
+Runner instances can be accessed via SSH for debugging purposes. This requires Terraform infrastructure configuration:
+
+**Prerequisites:**
+1. SSH security group rule allowing port 22 from your IP (configured in Terraform)
+2. EC2 key pair specified in launch template
+3. Instance running in public subnet (or via bastion host)
+
+**Connect via SSH:**
+```bash
+# Find the instance IP from the job logs or AWS console
+ssh -i ~/.ssh/your-key.pem ec2-user@<instance-public-ip>
+
+# For debugging a running job, check the runner directory
+ls -la /home/ec2-user/actions-runner/
+cat /home/ec2-user/actions-runner/_diag/Runner_*.log
+```
+
+### AWS Systems Manager Session Manager
+
+For instances in private subnets or when SSH is not configured, use AWS Systems Manager Session Manager:
+
+**Prerequisites:**
+- IAM instance profile with SSM permissions (AmazonSSMManagedInstanceCore policy)
+- SSM agent installed and running on the instance (pre-installed on Amazon Linux 2)
+
+**Connect via Session Manager:**
+```bash
+# Using AWS CLI
+aws ssm start-session --target <instance-id> --region <region>
+
+# Or via AWS Console:
+# 1. Navigate to EC2 > Instances
+# 2. Select the runner instance
+# 3. Click "Connect" > "Session Manager"
+```
+
+**Advantages of Session Manager:**
+- No need for SSH keys or bastion hosts
+- Works with private subnet instances
+- All sessions are logged to CloudWatch/S3
+- IAM-based access control
+- No inbound security group rules required
+
+**Debugging commands:**
+```bash
+# Check agent status
+systemctl status runs-fleet-agent
+
+# View agent logs
+journalctl -u runs-fleet-agent -f
+
+# View runner configuration
+cat /etc/runs-fleet/config.json
+
+# Check disk space
+df -h
+
+# View running processes
+ps aux | grep runner
+```
+
 ## Security
 
 **GitHub webhook validation:**
@@ -462,10 +527,30 @@ RUNS_FLEET_LOG_LEVEL=info
 - [x] Subnet rotation for private instances
 - [x] Concurrent message processing
 
+**Phase 6: Agent Implementation** ✅ Complete
+- [x] Runner binary download with S3 caching
+- [x] SSM-based runner registration with GitHub
+- [x] Job execution with graceful SIGTERM shutdown
+- [x] Safety monitoring (max runtime, disk space, memory)
+- [x] Telemetry and self-termination
+
+**Phase 7: Queue Processors** ✅ Complete
+- [x] Termination handler for job completion tracking
+- [x] Housekeeping tasks (orphaned cleanup, stale SSM, old job archival)
+- [x] Pool auditing and metrics
+- [x] Scheduled cleanup via EventBridge
+
+**Phase 8: Operational Excellence** ✅ Complete
+- [x] Circuit breaker for spot interruption protection
+- [x] Forced on-demand retry after interruptions
+- [x] Daily cost reporting with markdown output
+- [x] Cache hit/miss metrics
+- [x] Housekeeping metrics (orphaned instances, SSM cleanup, pool utilization)
+
 **Known Limitations:**
-- Agent binary has placeholder implementation (no actual GitHub runner download/registration)
-- Termination queue documented but not implemented
-- Housekeeping queue documented but not implemented
+- CloudWatch Dashboard and Alarms require Terraform infrastructure configuration
+- SSH debugging access requires Terraform security group configuration
+- EventBridge rule for daily cost reports requires Terraform configuration
 
 ## License
 
