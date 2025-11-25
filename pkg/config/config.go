@@ -41,6 +41,9 @@ type Config struct {
 	MaxRuntimeMinutes  int
 	LogLevel           string
 	LaunchTemplateName string
+
+	CoordinatorEnabled bool
+	InstanceID         string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -79,6 +82,8 @@ func Load() (*Config, error) {
 		MaxRuntimeMinutes:    maxRuntimeMinutes,
 		LogLevel:             getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
 		LaunchTemplateName:   getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
+		CoordinatorEnabled:   getEnv("RUNS_FLEET_COORDINATOR_ENABLED", "false") == "true",
+		InstanceID:           getEnv("RUNS_FLEET_INSTANCE_ID", ""),
 	}
 
 	if err := cfg.Validate(); err != nil {

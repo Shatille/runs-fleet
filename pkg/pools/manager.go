@@ -36,6 +36,11 @@ type EC2API interface {
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 }
 
+// Coordinator defines distributed coordination operations.
+type Coordinator interface {
+	IsLeader() bool
+}
+
 // PoolInstance represents an EC2 instance in a pool.
 type PoolInstance struct {
 	InstanceID   string
@@ -51,6 +56,7 @@ type Manager struct {
 	dbClient      DBClient
 	fleetManager  FleetAPI
 	ec2Client     EC2API
+	coordinator   Coordinator
 	config        *config.Config
 	instanceIdle  map[string]time.Time // Tracks when instances became idle
 	poolInstances map[string][]string  // Cache of instance IDs per pool
@@ -72,6 +78,11 @@ func (m *Manager) SetEC2Client(ec2Client EC2API) {
 	m.ec2Client = ec2Client
 }
 
+// SetCoordinator sets the coordinator for leader election.
+func (m *Manager) SetCoordinator(coordinator Coordinator) {
+	m.coordinator = coordinator
+}
+
 // ReconcileLoop runs periodically to maintain pool size.
 func (m *Manager) ReconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
@@ -91,6 +102,10 @@ func (m *Manager) ReconcileLoop(ctx context.Context) {
 }
 
 func (m *Manager) reconcile(ctx context.Context) {
+	if m.coordinator != nil && !m.coordinator.IsLeader() {
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
