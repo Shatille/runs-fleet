@@ -34,6 +34,7 @@ type RunnerConfig struct {
 	Labels      []string `json:"labels"`
 	RunnerGroup string   `json:"runner_group,omitempty"`
 	JobID       string   `json:"job_id,omitempty"`
+	CacheToken  string   `json:"cache_token,omitempty"`
 }
 
 // Registrar handles runner registration with GitHub.
@@ -159,7 +160,7 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *RunnerConfig, ru
 }
 
 // SetRunnerEnvironment sets environment variables for the runner.
-func (r *Registrar) SetRunnerEnvironment(runnerPath string, cacheURL string) error {
+func (r *Registrar) SetRunnerEnvironment(runnerPath string, cacheURL string, cacheToken string) error {
 	envFile := filepath.Join(runnerPath, ".env")
 
 	envVars := []string{
@@ -168,6 +169,10 @@ func (r *Registrar) SetRunnerEnvironment(runnerPath string, cacheURL string) err
 
 	if cacheURL != "" {
 		envVars = append(envVars, fmt.Sprintf("ACTIONS_CACHE_URL=%s", cacheURL))
+	}
+
+	if cacheToken != "" {
+		envVars = append(envVars, fmt.Sprintf("ACTIONS_CACHE_TOKEN=%s", cacheToken))
 	}
 
 	content := strings.Join(envVars, "\n") + "\n"

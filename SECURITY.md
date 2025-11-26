@@ -1,58 +1,64 @@
 # Security Considerations
 
-## Critical: Cache API Authentication (MUST FIX BEFORE PRODUCTION)
+## Cache API Authentication
 
-**Status:** ⚠️ NOT IMPLEMENTED
-**Priority:** CRITICAL
-**Tracked in:** Phase 4 - Production Hardening
+**Status:** ✅ IMPLEMENTED
+**Implementation:** HMAC-based token authentication
 
-### Issue
+### Overview
 
-Cache endpoints (`/_apis/artifactcache/*` and `/_artifacts/*`) currently have **zero authentication**. This allows:
+Cache endpoints (`/_apis/artifactcache/*` and `/_artifacts/*`) are protected by HMAC-based token authentication when `RUNS_FLEET_CACHE_SECRET` is configured.
 
-1. **Cache poisoning** - Attackers can upload malicious artifacts
-2. **Data exfiltration** - Anyone can download cached artifacts
-3. **Resource exhaustion** - Unlimited uploads to S3
-4. **Cost attacks** - Abuse S3 storage/bandwidth
+### How It Works
 
-### Required Implementation
+1. **Token Generation**: When creating a runner config, the server generates an HMAC-SHA256 token:
+   ```
+   token = HMAC-SHA256(secret, job_id + ":" + instance_id)
+   ```
 
-Add authentication middleware before exposing cache endpoints. Options:
+2. **Token Distribution**: The token is included in the runner config stored in SSM, alongside the JIT token.
 
-#### Option 1: GitHub JIT Tokens (Recommended)
-- Validate `Authorization: Bearer <token>` header
-- Verify token with GitHub API
-- Ensure token scope matches repository/org
+3. **Token Validation**: Cache requests must include the token via:
+   - `X-Cache-Token` header (preferred), OR
+   - `Authorization: Bearer <token>` header
 
-#### Option 2: Shared Secret
-- Generate per-runner secrets in SSM
-- Validate `X-Cache-Token` header
-- Simpler but less secure than JIT tokens
+4. **Server Validation**: The cache handler validates tokens against registered active jobs.
 
-#### Option 3: Network Isolation
-- Deploy cache endpoints on private subnet
-- Only accessible from runner instances
-- Requires VPC peering/PrivateLink
+### Configuration
 
-### Implementation Checklist
+Enable cache authentication by setting:
+```bash
+RUNS_FLEET_CACHE_SECRET=<your-secret-key>
+```
 
-- [ ] Add authentication middleware to cache handler
-- [ ] Validate tokens against GitHub API or shared secret store
-- [ ] Add rate limiting per repository/org
-- [ ] Log authentication failures with request metadata
-- [ ] Add metrics for auth success/failure rates
-- [ ] Update README with authentication configuration
-- [ ] Add integration tests with auth enabled
+**Important:** Generate a strong random secret (32+ characters recommended):
+```bash
+openssl rand -hex 32
+```
 
-### Temporary Mitigation
+### Security Properties
 
-Until authentication is implemented:
+- **Unforgeable**: Tokens cannot be generated without knowledge of the server secret
+- **Job-scoped**: Each token is tied to a specific job/instance combination
+- **Ephemeral**: Tokens are valid only while the job is active
+- **Zero AWS Cost**: Validation is pure computation (no API calls)
+- **Stateless**: Works across server restarts (token store rebuilt on job registration)
 
-1. **Do NOT expose cache endpoints publicly**
-2. Deploy server in private subnet with Security Group restrictions
-3. Use VPC endpoints for GitHub webhook traffic only
-4. Monitor S3 bucket for unexpected objects
-5. Set aggressive S3 lifecycle policies (7-day retention)
+### Backwards Compatibility
+
+If `RUNS_FLEET_CACHE_SECRET` is not set:
+- Authentication is **disabled** (warning logged at startup)
+- All cache requests are allowed (legacy behavior)
+- A warning is logged: `WARNING: Cache authentication disabled`
+
+### Remaining Recommendations
+
+While authentication is now implemented, consider these additional hardening measures:
+
+1. **Network Isolation**: Deploy in private subnet for defense-in-depth
+2. **Rate Limiting**: Add rate limiting per token (not yet implemented)
+3. **Audit Logging**: Log all cache operations to CloudWatch (partial)
+4. **S3 Lifecycle**: Set aggressive retention policies (7-day recommended)
 
 ## Other Security Items
 

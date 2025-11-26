@@ -139,7 +139,7 @@ func main() {
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})
 
-	cacheHandler := cache.NewHandlerWithMetrics(cacheServer, metricsPublisher)
+	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
 
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {

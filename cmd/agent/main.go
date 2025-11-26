@@ -114,6 +114,12 @@ func main() {
 	}
 	logger.Println("Runner registered successfully")
 
+	// Set runner environment variables (cache URL and auth token)
+	cacheURL := os.Getenv("RUNS_FLEET_CACHE_URL")
+	if err := registrar.SetRunnerEnvironment(runnerPath, cacheURL, runnerConfig.CacheToken); err != nil {
+		logger.Printf("Warning: failed to set runner environment: %v", err)
+	}
+
 	jobStartedAt := time.Now()
 
 	if telemetry != nil {

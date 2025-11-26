@@ -165,6 +165,9 @@ RUNS_FLEET_INSTANCE_PROFILE_ARN=arn:aws:iam::...:instance-profile/runs-fleet-run
 # Behavior
 RUNS_FLEET_SPOT_ENABLED=true
 RUNS_FLEET_MAX_RUNTIME_MINUTES=360
+
+# Security (recommended)
+RUNS_FLEET_CACHE_SECRET=<random-secret>  # Enables cache API authentication
 ```
 
 See `.envrc.example` for complete list.
