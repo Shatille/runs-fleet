@@ -17,6 +17,12 @@ import (
 	"github.com/google/go-github/v57/github"
 )
 
+// Architecture constants.
+const (
+	ArchARM64 = "arm64"
+	ArchX64   = "x64"
+)
+
 // ValidateSignature verifies GitHub webhook HMAC-SHA256 signature against the expected secret.
 func ValidateSignature(payload []byte, signatureHeader string, secret string) error {
 	if secret == "" {
@@ -126,7 +132,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	cfg := &JobConfig{
 		Spot:        true,
 		OS:          "linux",
-		Arch:        "arm64",
+		Arch:        ArchARM64,
 		Environment: "", // Default: no specific environment
 		Region:      "", // Default: use primary region
 	}
@@ -197,7 +203,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 
 		case "arch":
 			// Architecture override (e.g., arch=arm64 or arch=x64)
-			if value == "arm64" || value == "x64" {
+			if value == ArchARM64 || value == ArchX64 {
 				cfg.Arch = value
 			}
 
@@ -234,42 +240,42 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 
 // parseRange parses an integer range like "4" or "4+16" into min and max values.
 // Returns an error if the values cannot be parsed as integers.
-func parseRange(s string) (min, max int, err error) {
+func parseRange(s string) (minVal, maxVal int, err error) {
 	if s == "" {
 		return 0, 0, nil
 	}
 	parts := strings.SplitN(s, "+", 2)
-	min, err = strconv.Atoi(parts[0])
+	minVal, err = strconv.Atoi(parts[0])
 	if err != nil {
 		return 0, 0, fmt.Errorf("invalid cpu min value %q: %w", parts[0], err)
 	}
 	if len(parts) == 2 {
-		max, err = strconv.Atoi(parts[1])
+		maxVal, err = strconv.Atoi(parts[1])
 		if err != nil {
 			return 0, 0, fmt.Errorf("invalid cpu max value %q: %w", parts[1], err)
 		}
 	}
-	return min, max, nil
+	return minVal, maxVal, nil
 }
 
 // parseRangeFloat parses a float range like "8" or "8+32" into min and max values.
 // Returns an error if the values cannot be parsed as floats.
-func parseRangeFloat(s string) (min, max float64, err error) {
+func parseRangeFloat(s string) (minVal, maxVal float64, err error) {
 	if s == "" {
 		return 0, 0, nil
 	}
 	parts := strings.SplitN(s, "+", 2)
-	min, err = strconv.ParseFloat(parts[0], 64)
+	minVal, err = strconv.ParseFloat(parts[0], 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("invalid ram min value %q: %w", parts[0], err)
 	}
 	if len(parts) == 2 {
-		max, err = strconv.ParseFloat(parts[1], 64)
+		maxVal, err = strconv.ParseFloat(parts[1], 64)
 		if err != nil {
 			return 0, 0, fmt.Errorf("invalid ram max value %q: %w", parts[1], err)
 		}
 	}
-	return min, max, nil
+	return minVal, maxVal, nil
 }
 
 // resolveFlexibleSpec resolves instance types from flexible CPU/RAM/family specifications.
@@ -345,15 +351,15 @@ func resolveInstanceType(runnerSpec string) string {
 // parseRunnerOSArch extracts OS and architecture from runner spec.
 func parseRunnerOSArch(runnerSpec string) (os, arch string) {
 	os = "linux"
-	arch = "arm64"
+	arch = ArchARM64
 
 	if strings.Contains(runnerSpec, "windows") {
 		os = "windows"
 	}
-	if strings.Contains(runnerSpec, "x64") {
-		arch = "x64"
-	} else if strings.Contains(runnerSpec, "arm64") {
-		arch = "arm64"
+	if strings.Contains(runnerSpec, ArchX64) {
+		arch = ArchX64
+	} else if strings.Contains(runnerSpec, ArchARM64) {
+		arch = ArchARM64
 	}
 
 	return os, arch

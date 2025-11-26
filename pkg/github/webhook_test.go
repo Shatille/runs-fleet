@@ -301,6 +301,7 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 	}
 }
 
+//nolint:dupl // Similar structure to TestParseRangeFloat but tests different types
 func TestParseRange(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -320,23 +321,24 @@ func TestParseRange(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			min, max, err := parseRange(tt.input)
+			gotMin, gotMax, err := parseRange(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseRange(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
-				if min != tt.wantMin {
-					t.Errorf("parseRange(%q) min = %d, want %d", tt.input, min, tt.wantMin)
+				if gotMin != tt.wantMin {
+					t.Errorf("parseRange(%q) min = %d, want %d", tt.input, gotMin, tt.wantMin)
 				}
-				if max != tt.wantMax {
-					t.Errorf("parseRange(%q) max = %d, want %d", tt.input, max, tt.wantMax)
+				if gotMax != tt.wantMax {
+					t.Errorf("parseRange(%q) max = %d, want %d", tt.input, gotMax, tt.wantMax)
 				}
 			}
 		})
 	}
 }
 
+//nolint:dupl // Similar structure to TestParseRange but tests different types
 func TestParseRangeFloat(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -356,17 +358,17 @@ func TestParseRangeFloat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			min, max, err := parseRangeFloat(tt.input)
+			gotMin, gotMax, err := parseRangeFloat(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseRangeFloat(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
-				if min != tt.wantMin {
-					t.Errorf("parseRangeFloat(%q) min = %f, want %f", tt.input, min, tt.wantMin)
+				if gotMin != tt.wantMin {
+					t.Errorf("parseRangeFloat(%q) min = %f, want %f", tt.input, gotMin, tt.wantMin)
 				}
-				if max != tt.wantMax {
-					t.Errorf("parseRangeFloat(%q) max = %f, want %f", tt.input, max, tt.wantMax)
+				if gotMax != tt.wantMax {
+					t.Errorf("parseRangeFloat(%q) max = %f, want %f", tt.input, gotMax, tt.wantMax)
 				}
 			}
 		})
