@@ -14,7 +14,6 @@ linters:
     - bodyclose
     - errorlint
     - revive
-    - shadow
   settings:
     govet:
       enable:
