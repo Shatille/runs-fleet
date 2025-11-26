@@ -34,8 +34,8 @@ const (
 	TaskCostReport TaskType = "cost_report"
 )
 
-// HousekeepingMessage represents a housekeeping task message.
-type HousekeepingMessage struct {
+// Message represents a housekeeping task message.
+type Message struct {
 	TaskType  TaskType        `json:"task_type"`
 	Timestamp time.Time       `json:"timestamp"`
 	Params    json.RawMessage `json:"params,omitempty"`
@@ -102,7 +102,7 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 		return fmt.Errorf("message body is nil")
 	}
 
-	var hkMsg HousekeepingMessage
+	var hkMsg Message
 	if err := json.Unmarshal([]byte(*msg.Body), &hkMsg); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}

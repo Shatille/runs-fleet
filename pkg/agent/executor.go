@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -127,7 +128,8 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		result.Duration = result.CompletedAt.Sub(result.StartedAt)
 
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
 				result.ExitCode = exitErr.ExitCode()
 			} else {
 				result.ExitCode = -1
@@ -145,7 +147,7 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 
 		// Send SIGTERM to process group
 		if cmd.Process != nil {
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		}
 
 		// Wait for graceful shutdown with timeout
@@ -156,7 +158,8 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 			result.Duration = result.CompletedAt.Sub(result.StartedAt)
 
 			if err != nil {
-				if exitErr, ok := err.(*exec.ExitError); ok {
+				var exitErr *exec.ExitError
+				if errors.As(err, &exitErr) {
 					result.ExitCode = exitErr.ExitCode()
 				} else {
 					result.ExitCode = -1
@@ -169,7 +172,7 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 			// Force kill
 			e.logger.Println("Graceful shutdown timeout, force killing runner...")
 			if cmd.Process != nil {
-				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			}
 			<-doneChan
 			wg.Wait()
@@ -186,14 +189,14 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		result.InterruptedBy = interruptedBy
 
 		if cmd.Process != nil {
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		}
 
 		select {
 		case <-doneChan:
 		case <-time.After(GracefulShutdownTimeout):
 			if cmd.Process != nil {
-				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			}
 			<-doneChan
 		}

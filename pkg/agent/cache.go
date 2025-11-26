@@ -77,8 +77,8 @@ func (c *Cache) GetCachedRunner(ctx context.Context, version, arch, destPath str
 	}()
 
 	// Create destination directory
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+	if mkdirErr := os.MkdirAll(filepath.Dir(destPath), 0755); mkdirErr != nil {
+		return fmt.Errorf("failed to create directory: %w", mkdirErr)
 	}
 
 	// Create destination file

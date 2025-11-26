@@ -22,16 +22,16 @@ const (
 	CooldownPeriod = 30 * time.Minute
 )
 
-// CircuitState represents the state of a circuit breaker.
-type CircuitState string
+// State represents the state of a circuit breaker.
+type State string
 
 const (
 	// StateClosed means spot instances are allowed
-	StateClosed CircuitState = "closed"
+	StateClosed State = "closed"
 	// StateOpen means spot instances are blocked, use on-demand
-	StateOpen CircuitState = "open"
+	StateOpen State = "open"
 	// StateHalfOpen means testing if spot is stable again
-	StateHalfOpen CircuitState = "half-open"
+	StateHalfOpen State = "half-open"
 )
 
 // DynamoDBAPI defines DynamoDB operations for circuit breaker state.
@@ -41,8 +41,8 @@ type DynamoDBAPI interface {
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 }
 
-// CircuitRecord represents circuit breaker state in DynamoDB.
-type CircuitRecord struct {
+// Record represents circuit breaker state in DynamoDB.
+type Record struct {
 	InstanceType        string `dynamodbav:"instance_type"`
 	State               string `dynamodbav:"state"`
 	InterruptionCount   int    `dynamodbav:"interruption_count"`
@@ -63,7 +63,7 @@ type Breaker struct {
 
 // CachedState represents cached circuit state.
 type CachedState struct {
-	State    CircuitState
+	State    State
 	CachedAt time.Time
 	CacheTTL time.Duration
 }
@@ -133,7 +133,7 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 
 	// Initialize if new
 	if record == nil {
-		record = &CircuitRecord{
+		record = &Record{
 			InstanceType:        instanceType,
 			State:               string(StateClosed),
 			InterruptionCount:   0,
@@ -185,7 +185,7 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 }
 
 // CheckCircuit checks the current circuit state for an instance type.
-func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (CircuitState, error) {
+func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (State, error) {
 	// Check cache first
 	b.mu.RLock()
 	cached, exists := b.cache[instanceType]
@@ -206,7 +206,7 @@ func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (Circui
 		return StateClosed, nil
 	}
 
-	state := CircuitState(record.State)
+	state := State(record.State)
 
 	// Check for auto-reset
 	if state == StateOpen && record.AutoResetAt != "" {
@@ -242,7 +242,7 @@ func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (Circui
 
 // ResetCircuit manually resets the circuit breaker for an instance type.
 func (b *Breaker) ResetCircuit(ctx context.Context, instanceType string) error {
-	record := &CircuitRecord{
+	record := &Record{
 		InstanceType:        instanceType,
 		State:               string(StateClosed),
 		InterruptionCount:   0,
@@ -266,7 +266,7 @@ func (b *Breaker) ResetCircuit(ctx context.Context, instanceType string) error {
 }
 
 // getRecord retrieves circuit breaker state from DynamoDB.
-func (b *Breaker) getRecord(ctx context.Context, instanceType string) (*CircuitRecord, error) {
+func (b *Breaker) getRecord(ctx context.Context, instanceType string) (*Record, error) {
 	key, err := attributevalue.MarshalMap(map[string]string{
 		"instance_type": instanceType,
 	})
@@ -286,7 +286,7 @@ func (b *Breaker) getRecord(ctx context.Context, instanceType string) (*CircuitR
 		return nil, nil
 	}
 
-	var record CircuitRecord
+	var record Record
 	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal item: %w", err)
 	}
@@ -295,7 +295,7 @@ func (b *Breaker) getRecord(ctx context.Context, instanceType string) (*CircuitR
 }
 
 // putRecord saves circuit breaker state to DynamoDB.
-func (b *Breaker) putRecord(ctx context.Context, record *CircuitRecord) error {
+func (b *Breaker) putRecord(ctx context.Context, record *Record) error {
 	item, err := attributevalue.MarshalMap(record)
 	if err != nil {
 		return fmt.Errorf("failed to marshal record: %w", err)

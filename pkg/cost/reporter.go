@@ -70,8 +70,8 @@ type SNSAPI interface {
 	Publish(ctx context.Context, params *sns.PublishInput, optFns ...func(*sns.Options)) (*sns.PublishOutput, error)
 }
 
-// CostBreakdown represents cost breakdown by service.
-type CostBreakdown struct {
+// Breakdown represents cost breakdown by service.
+type Breakdown struct {
 	Date              string
 	TotalCost         float64
 	EC2SpotCost       float64
@@ -192,8 +192,8 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 }
 
 // getCostMetrics retrieves cost-related metrics from CloudWatch.
-func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.Time) (*CostBreakdown, error) {
-	breakdown := &CostBreakdown{}
+func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.Time) (*Breakdown, error) {
+	breakdown := &Breakdown{}
 
 	// Define metrics to query
 	queries := []cwtypes.MetricDataQuery{
@@ -346,7 +346,7 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 }
 
 // generateMarkdownReport generates a markdown report from the cost breakdown.
-func (r *Reporter) generateMarkdownReport(b *CostBreakdown) string {
+func (r *Reporter) generateMarkdownReport(b *Breakdown) string {
 	var buf bytes.Buffer
 
 	buf.WriteString("# runs-fleet Daily Cost Report\n\n")
