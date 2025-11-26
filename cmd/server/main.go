@@ -27,6 +27,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -132,6 +133,23 @@ func main() {
 		log.Printf("Housekeeping handler initialized with queue: %s", cfg.HousekeepingQueueURL)
 	}
 
+	// Initialize runner manager for SSM configuration
+	var runnerManager *runner.Manager
+	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
+		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey, cfg.GitHubOrg)
+		if err != nil {
+			log.Fatalf("Failed to create GitHub client: %v", err)
+		}
+		runnerManager = runner.NewManager(awsCfg, githubClient, runner.Config{
+			Org:         cfg.GitHubOrg,
+			CacheSecret: cfg.CacheSecret,
+			CacheURL:    cfg.CacheURL,
+		})
+		log.Println("Runner manager initialized for SSM configuration")
+	} else {
+		log.Println("WARNING: Runner manager not initialized - GitHub App credentials not configured")
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -182,7 +200,7 @@ func main() {
 	}
 
 	var subnetIndex uint64
-	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, cfg, &subnetIndex)
+	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, cfg, &subnetIndex)
 
 	go poolManager.ReconcileLoop(ctx)
 
@@ -264,7 +282,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	return nil
 }
 
-func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, cfg *config.Config, subnetIndex *uint64) {
+func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, cfg *config.Config, subnetIndex *uint64) {
 	log.Println("Starting worker loop...")
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -318,7 +336,7 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 
 					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 					defer processCancel()
-					processMessage(processCtx, q, f, pm, m, msg, cfg, subnetIndex)
+					processMessage(processCtx, q, f, pm, m, rm, msg, cfg, subnetIndex)
 				}()
 			}
 		}
@@ -366,7 +384,7 @@ func createFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.Lau
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
-func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
+func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
@@ -443,6 +461,22 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 	}
 
 	fleetCreated = true
+
+	// Prepare runner config in SSM for each instance
+	if rm != nil {
+		for _, instanceID := range instanceIDs {
+			prepareReq := runner.PrepareRunnerRequest{
+				InstanceID: instanceID,
+				JobID:      job.JobID,
+				RunID:      job.RunID,
+				Labels:     []string{fmt.Sprintf("runs-fleet=%s", job.RunID), fmt.Sprintf("runner=%s", job.InstanceType)},
+			}
+			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
+				log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
+				// Continue anyway - the instance might still work if manually configured
+			}
+		}
+	}
 
 	// Mark instances as busy for idle timeout tracking
 	for _, instanceID := range instanceIDs {

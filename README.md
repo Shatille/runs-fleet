@@ -168,6 +168,7 @@ RUNS_FLEET_MAX_RUNTIME_MINUTES=360
 
 # Security (recommended)
 RUNS_FLEET_CACHE_SECRET=<random-secret>  # Enables cache API authentication
+RUNS_FLEET_CACHE_URL=http://server:8080  # URL for runners to access cache API
 ```
 
 See `.envrc.example` for complete list.
