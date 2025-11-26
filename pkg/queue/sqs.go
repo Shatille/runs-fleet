@@ -54,6 +54,8 @@ type JobMessage struct {
 	// Windows support (Phase 4)
 	OS   string `json:"os,omitempty"`   // linux, windows
 	Arch string `json:"arch,omitempty"` // x64, arm64
+	// Flexible instance selection (Phase 10)
+	InstanceTypes []string `json:"instance_types,omitempty"` // Multiple instance types for spot diversification
 	// OpenTelemetry tracing (Phase 5)
 	TraceID  string `json:"trace_id,omitempty"`
 	SpanID   string `json:"span_id,omitempty"`

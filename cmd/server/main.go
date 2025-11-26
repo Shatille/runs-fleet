@@ -207,6 +207,8 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 		Environment: jobConfig.Environment, // Phase 6: Per-stack environments
 		OS:          jobConfig.OS,          // Phase 4: Windows support
 		Arch:        jobConfig.Arch,        // Phase 4: Architecture support
+		// Flexible instance selection (Phase 10)
+		InstanceTypes: jobConfig.InstanceTypes,
 	}
 
 	if err := q.SendMessage(ctx, msg); err != nil {
@@ -217,8 +219,13 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
 		log.Printf("Failed to publish queue depth metric: %v", err)
 	}
-	log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s)",
-		jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
+	if len(jobConfig.InstanceTypes) > 1 {
+		log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s, instanceTypes=%d)",
+			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment, len(jobConfig.InstanceTypes))
+	} else {
+		log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s)",
+			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
+	}
 	return nil
 }
 
@@ -381,6 +388,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
+		InstanceTypes: job.InstanceTypes, // Flexible instance selection (Phase 10)
 		SubnetID:      selectSubnet(&job, cfg, subnetIndex),
 		Spot:          job.Spot,
 		Pool:          job.Pool,
