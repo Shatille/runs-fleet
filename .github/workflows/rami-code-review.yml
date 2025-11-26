@@ -1,0 +1,16 @@
+name: Rami Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Rami Review
+        run: |
+          curl -s -X POST https://rami.shavakan.com/api/review \
+            -H "Content-Type: application/json" \
+            -d '{"pr_url": "${{ github.event.pull_request.html_url }}"}'
