@@ -11,8 +11,8 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 )
 
-// CacheMetrics defines the interface for publishing cache metrics.
-type CacheMetrics interface {
+// Metrics defines the interface for publishing cache metrics.
+type Metrics interface {
 	PublishCacheHit(ctx context.Context) error
 	PublishCacheMiss(ctx context.Context) error
 }
@@ -20,7 +20,7 @@ type CacheMetrics interface {
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
 type Handler struct {
 	server  *Server
-	metrics CacheMetrics
+	metrics Metrics
 }
 
 // NewHandler creates a new cache handler.
@@ -29,7 +29,7 @@ func NewHandler(server *Server) *Handler {
 }
 
 // NewHandlerWithMetrics creates a new cache handler with metrics support.
-func NewHandlerWithMetrics(server *Server, metrics CacheMetrics) *Handler {
+func NewHandlerWithMetrics(server *Server, metrics Metrics) *Handler {
 	return &Handler{server: server, metrics: metrics}
 }
 

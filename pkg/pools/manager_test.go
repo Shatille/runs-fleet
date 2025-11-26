@@ -52,7 +52,7 @@ func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) 
 
 func TestReconcileLoop(t *testing.T) {
 	mockDB := &MockDBClient{
-		ListPoolsFunc: func(ctx context.Context) ([]string, error) {
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{}, nil
 		},
 	}

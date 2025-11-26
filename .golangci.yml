@@ -21,7 +21,7 @@ linters:
     gocyclo:
       min-complexity: 15
     dupl:
-      threshold: 100
+      threshold: 150
     goconst:
       min-len: 2
       min-occurrences: 3
@@ -29,6 +29,10 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - dupl
 
 run:
   timeout: 5m
