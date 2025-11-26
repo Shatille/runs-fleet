@@ -29,11 +29,18 @@ func TestGenerateCacheToken(t *testing.T) {
 			wantEmpty:  true,
 		},
 		{
-			name:       "generates different tokens for different jobs",
+			name:       "returns empty for empty jobID",
 			secret:     "my-secret-key",
-			jobID:      "job-456",
+			jobID:      "",
 			instanceID: "i-abc123",
-			wantEmpty:  false,
+			wantEmpty:  true,
+		},
+		{
+			name:       "returns empty for empty instanceID",
+			secret:     "my-secret-key",
+			jobID:      "job-123",
+			instanceID: "",
+			wantEmpty:  true,
 		},
 	}
 
@@ -78,6 +85,81 @@ func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
 	}
 }
 
+func TestGenerateCacheToken_Format(t *testing.T) {
+	token := GenerateCacheToken("secret", "job-123", "i-abc")
+
+	// Token should be in format: base64.hmac
+	if token == "" {
+		t.Fatal("token should not be empty")
+	}
+
+	// Should contain exactly one dot
+	dotCount := 0
+	for _, c := range token {
+		if c == '.' {
+			dotCount++
+		}
+	}
+	if dotCount != 1 {
+		t.Errorf("token should contain exactly one dot, got %d", dotCount)
+	}
+}
+
+func TestParseCacheToken(t *testing.T) {
+	tests := []struct {
+		name           string
+		token          string
+		wantJobID      string
+		wantInstanceID string
+		wantOK         bool
+	}{
+		{
+			name:           "valid token",
+			token:          GenerateCacheToken("secret", "job-123", "i-abc"),
+			wantJobID:      "job-123",
+			wantInstanceID: "i-abc",
+			wantOK:         true,
+		},
+		{
+			name:   "missing dot",
+			token:  "nodot",
+			wantOK: false,
+		},
+		{
+			name:   "invalid base64",
+			token:  "!!!invalid!!!.signature",
+			wantOK: false,
+		},
+		{
+			name:   "missing colon in payload",
+			token:  "bm9jb2xvbg.signature", // "nocolon" in base64
+			wantOK: false,
+		},
+		{
+			name:   "empty token",
+			token:  "",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jobID, instanceID, ok := ParseCacheToken(tt.token)
+			if ok != tt.wantOK {
+				t.Errorf("ParseCacheToken() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if tt.wantOK {
+				if jobID != tt.wantJobID {
+					t.Errorf("jobID = %q, want %q", jobID, tt.wantJobID)
+				}
+				if instanceID != tt.wantInstanceID {
+					t.Errorf("instanceID = %q, want %q", instanceID, tt.wantInstanceID)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateCacheToken(t *testing.T) {
 	secret := "my-secret-key"
 	jobID := "job-123"
@@ -85,66 +167,58 @@ func TestValidateCacheToken(t *testing.T) {
 	validToken := GenerateCacheToken(secret, jobID, instanceID)
 
 	tests := []struct {
-		name       string
-		secret     string
-		token      string
-		jobID      string
-		instanceID string
-		want       bool
+		name   string
+		secret string
+		token  string
+		want   bool
 	}{
 		{
-			name:       "valid token",
-			secret:     secret,
-			token:      validToken,
-			jobID:      jobID,
-			instanceID: instanceID,
-			want:       true,
+			name:   "valid token",
+			secret: secret,
+			token:  validToken,
+			want:   true,
 		},
 		{
-			name:       "invalid token",
-			secret:     secret,
-			token:      "invalid-token",
-			jobID:      jobID,
-			instanceID: instanceID,
-			want:       false,
+			name:   "invalid signature",
+			secret: secret,
+			token:  "am9iLTEyMzppLWFiYzEyMw.invalidsignature",
+			want:   false,
 		},
 		{
-			name:       "empty secret",
-			secret:     "",
-			token:      validToken,
-			jobID:      jobID,
-			instanceID: instanceID,
-			want:       false,
+			name:   "wrong secret",
+			secret: "different-secret",
+			token:  validToken,
+			want:   false,
 		},
 		{
-			name:       "empty token",
-			secret:     secret,
-			token:      "",
-			jobID:      jobID,
-			instanceID: instanceID,
-			want:       false,
+			name:   "empty secret",
+			secret: "",
+			token:  validToken,
+			want:   false,
 		},
 		{
-			name:       "wrong job ID",
-			secret:     secret,
-			token:      validToken,
-			jobID:      "different-job",
-			instanceID: instanceID,
-			want:       false,
+			name:   "empty token",
+			secret: secret,
+			token:  "",
+			want:   false,
 		},
 		{
-			name:       "wrong instance ID",
-			secret:     secret,
-			token:      validToken,
-			jobID:      jobID,
-			instanceID: "different-instance",
-			want:       false,
+			name:   "malformed token - no dot",
+			secret: secret,
+			token:  "nodot",
+			want:   false,
+		},
+		{
+			name:   "malformed token - invalid base64",
+			secret: secret,
+			token:  "!!!.signature",
+			want:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ValidateCacheToken(tt.secret, tt.token, tt.jobID, tt.instanceID)
+			got := ValidateCacheToken(tt.secret, tt.token)
 			if got != tt.want {
 				t.Errorf("ValidateCacheToken() = %v, want %v", got, tt.want)
 			}
@@ -152,46 +226,9 @@ func TestValidateCacheToken(t *testing.T) {
 	}
 }
 
-func TestHMACTokenStore(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-
-	// Initially no tokens registered
-	if _, valid := store.ValidateToken("any-token"); valid {
-		t.Error("expected invalid for unregistered token")
-	}
-
-	// Register a token
-	store.RegisterToken("token-123", "job-456")
-	if jobID, valid := store.ValidateToken("token-123"); !valid || jobID != "job-456" {
-		t.Errorf("expected valid token with jobID job-456, got valid=%v, jobID=%s", valid, jobID)
-	}
-
-	// Unregister the token
-	store.UnregisterToken("token-123")
-	if _, valid := store.ValidateToken("token-123"); valid {
-		t.Error("expected invalid after unregistering")
-	}
-}
-
-func TestHMACTokenStore_EmptyValues(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-
-	// Empty token should not be registered
-	store.RegisterToken("", "job-123")
-	if _, valid := store.ValidateToken(""); valid {
-		t.Error("empty token should not be valid")
-	}
-
-	// Empty job ID should not be registered
-	store.RegisterToken("token-123", "")
-	if _, valid := store.ValidateToken("token-123"); valid {
-		t.Error("token with empty job ID should not be registered")
-	}
-}
-
 func TestAuthMiddleware_Disabled(t *testing.T) {
 	// Empty secret disables auth
-	middleware := NewAuthMiddleware("", nil)
+	middleware := NewAuthMiddleware("")
 
 	if middleware.IsEnabled() {
 		t.Error("middleware should be disabled with empty secret")
@@ -217,8 +254,7 @@ func TestAuthMiddleware_Disabled(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-	middleware := NewAuthMiddleware("test-secret", store)
+	middleware := NewAuthMiddleware("test-secret")
 
 	if !middleware.IsEnabled() {
 		t.Error("middleware should be enabled with secret")
@@ -242,8 +278,7 @@ func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-	middleware := NewAuthMiddleware("test-secret", store)
+	middleware := NewAuthMiddleware("test-secret")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -264,9 +299,11 @@ func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-	store.RegisterToken("valid-token", "job-123")
-	middleware := NewAuthMiddleware("test-secret", store)
+	secret := "test-secret"
+	middleware := NewAuthMiddleware(secret)
+
+	// Generate a valid token
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -275,7 +312,7 @@ func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, "valid-token")
+	req.Header.Set(CacheTokenHeader, validToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -288,9 +325,11 @@ func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_BearerToken(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-	store.RegisterToken("bearer-token", "job-123")
-	middleware := NewAuthMiddleware("test-secret", store)
+	secret := "test-secret"
+	middleware := NewAuthMiddleware(secret)
+
+	// Generate a valid token
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -299,7 +338,7 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer bearer-token")
+	req.Header.Set("Authorization", "Bearer "+validToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -312,9 +351,11 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
-	store := NewHMACTokenStore("test-secret")
-	store.RegisterToken("x-cache-token", "job-123")
-	middleware := NewAuthMiddleware("test-secret", store)
+	secret := "test-secret"
+	middleware := NewAuthMiddleware(secret)
+
+	// Generate a valid token
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -324,7 +365,7 @@ func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
 
 	// X-Cache-Token should take precedence over Authorization header
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, "x-cache-token")
+	req.Header.Set(CacheTokenHeader, validToken)
 	req.Header.Set("Authorization", "Bearer invalid-bearer")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -334,5 +375,30 @@ func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddleware_WrongSecret(t *testing.T) {
+	// Server has one secret
+	middleware := NewAuthMiddleware("server-secret")
+
+	// Token generated with different secret
+	wrongToken := GenerateCacheToken("different-secret", "job-123", "i-abc")
+
+	called := false
+	handler := middleware.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(CacheTokenHeader, wrongToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if called {
+		t.Error("handler should not be called with token from wrong secret")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rec.Code)
 	}
 }

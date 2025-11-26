@@ -19,10 +19,9 @@ type Metrics interface {
 
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
 type Handler struct {
-	server     *Server
-	metrics    Metrics
-	auth       *AuthMiddleware
-	tokenStore *HMACTokenStore
+	server  *Server
+	metrics Metrics
+	auth    *AuthMiddleware
 }
 
 // NewHandler creates a new cache handler.
@@ -36,39 +35,21 @@ func NewHandlerWithMetrics(server *Server, metrics Metrics) *Handler {
 }
 
 // NewHandlerWithAuth creates a new cache handler with authentication and metrics.
+// Authentication is stateless - no token registration required on the server.
 func NewHandlerWithAuth(server *Server, metrics Metrics, cacheSecret string) *Handler {
-	var tokenStore *HMACTokenStore
 	var auth *AuthMiddleware
 
 	if cacheSecret != "" {
-		tokenStore = NewHMACTokenStore(cacheSecret)
-		auth = NewAuthMiddleware(cacheSecret, tokenStore)
-		log.Println("Cache authentication enabled")
+		auth = NewAuthMiddleware(cacheSecret)
+		log.Println("Cache authentication enabled (stateless HMAC)")
 	} else {
 		log.Println("WARNING: Cache authentication disabled - RUNS_FLEET_CACHE_SECRET not set")
 	}
 
 	return &Handler{
-		server:     server,
-		metrics:    metrics,
-		auth:       auth,
-		tokenStore: tokenStore,
-	}
-}
-
-// RegisterToken registers a cache token for an active job.
-// This should be called when creating a runner config.
-func (h *Handler) RegisterToken(token, jobID string) {
-	if h.tokenStore != nil {
-		h.tokenStore.RegisterToken(token, jobID)
-	}
-}
-
-// UnregisterToken removes a cache token when a job completes.
-// This should be called when cleaning up a job.
-func (h *Handler) UnregisterToken(token string) {
-	if h.tokenStore != nil {
-		h.tokenStore.UnregisterToken(token)
+		server:  server,
+		metrics: metrics,
+		auth:    auth,
 	}
 }
 

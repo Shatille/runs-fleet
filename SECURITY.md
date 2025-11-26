@@ -11,9 +11,11 @@ Cache endpoints (`/_apis/artifactcache/*` and `/_artifacts/*`) are protected by 
 
 ### How It Works
 
-1. **Token Generation**: When creating a runner config, the server generates an HMAC-SHA256 token:
+1. **Token Generation**: When creating a runner config, generate a self-contained HMAC token:
    ```
-   token = HMAC-SHA256(secret, job_id + ":" + instance_id)
+   payload = base64url(job_id + ":" + instance_id)
+   signature = HMAC-SHA256(secret, job_id + ":" + instance_id)
+   token = payload + "." + hex(signature)
    ```
 
 2. **Token Distribution**: The token is included in the runner config stored in SSM, alongside the JIT token.
@@ -22,7 +24,10 @@ Cache endpoints (`/_apis/artifactcache/*` and `/_artifacts/*`) are protected by 
    - `X-Cache-Token` header (preferred), OR
    - `Authorization: Bearer <token>` header
 
-4. **Server Validation**: The cache handler validates tokens against registered active jobs.
+4. **Server Validation**: The cache handler:
+   - Parses the token to extract the payload
+   - Recomputes the HMAC signature
+   - Compares signatures (no state/lookup required)
 
 ### Configuration
 
@@ -42,7 +47,8 @@ openssl rand -hex 32
 - **Job-scoped**: Each token is tied to a specific job/instance combination
 - **Ephemeral**: Tokens are valid only while the job is active
 - **Zero AWS Cost**: Validation is pure computation (no API calls)
-- **Stateless**: Works across server restarts (token store rebuilt on job registration)
+- **Fully Stateless**: Server needs no token storage - validation is pure HMAC recomputation
+- **Multi-instance Safe**: Works across multiple server instances without shared state
 
 ### Backwards Compatibility
 

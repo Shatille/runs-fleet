@@ -3,6 +3,7 @@ package cache
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"log"
 	"net/http"
@@ -14,85 +15,88 @@ const (
 	CacheTokenHeader = "X-Cache-Token"
 )
 
-// GenerateCacheToken creates an HMAC-SHA256 token for cache authentication.
-// The token is derived from the secret and job/instance identifiers, making it
-// unforgeable without knowledge of the secret and tied to a specific job.
+// GenerateCacheToken creates a self-contained HMAC token for cache authentication.
+// Token format: base64url(job_id:instance_id).hmac_hex
+// This allows stateless validation - the server can extract the payload and verify the signature.
 func GenerateCacheToken(secret, jobID, instanceID string) string {
-	if secret == "" {
+	if secret == "" || jobID == "" || instanceID == "" {
 		return ""
 	}
 
+	// Create payload
+	payload := jobID + ":" + instanceID
+	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))
+
+	// Create HMAC signature
 	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(jobID + ":" + instanceID))
-	return hex.EncodeToString(h.Sum(nil))
+	h.Write([]byte(payload))
+	signature := hex.EncodeToString(h.Sum(nil))
+
+	return encodedPayload + "." + signature
 }
 
-// ValidateCacheToken verifies that the provided token matches the expected HMAC.
-// Returns true if the token is valid, false otherwise.
-func ValidateCacheToken(secret, token, jobID, instanceID string) bool {
+// ParseCacheToken extracts job_id and instance_id from a self-contained token.
+// Returns empty strings if token is malformed.
+func ParseCacheToken(token string) (jobID, instanceID string, ok bool) {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", "", false
+	}
+
+	payload := string(payloadBytes)
+	colonIdx := strings.Index(payload, ":")
+	if colonIdx == -1 {
+		return "", "", false
+	}
+
+	return payload[:colonIdx], payload[colonIdx+1:], true
+}
+
+// ValidateCacheToken verifies that the provided token has a valid HMAC signature.
+// This is stateless - it extracts the payload from the token and recomputes the HMAC.
+func ValidateCacheToken(secret, token string) bool {
 	if secret == "" || token == "" {
 		return false
 	}
 
-	expected := GenerateCacheToken(secret, jobID, instanceID)
-	return hmac.Equal([]byte(token), []byte(expected))
-}
-
-// TokenStore provides an interface for looking up job/instance info from a token.
-// This allows the auth middleware to validate tokens without storing them.
-type TokenStore interface {
-	// ValidateToken checks if the token is valid and returns the associated job ID.
-	// Returns empty string if token is invalid.
-	ValidateToken(token string) (jobID string, valid bool)
-}
-
-// HMACTokenStore validates tokens using HMAC computation.
-// It maintains a mapping of active tokens to their job IDs for validation.
-type HMACTokenStore struct {
-	secret string
-	// activeTokens maps token -> jobID for active jobs
-	// This is populated when jobs are created and cleaned up when jobs complete
-	activeTokens map[string]string
-}
-
-// NewHMACTokenStore creates a new HMAC-based token store.
-func NewHMACTokenStore(secret string) *HMACTokenStore {
-	return &HMACTokenStore{
-		secret:       secret,
-		activeTokens: make(map[string]string),
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return false
 	}
-}
 
-// RegisterToken adds a token for an active job.
-func (s *HMACTokenStore) RegisterToken(token, jobID string) {
-	if token != "" && jobID != "" {
-		s.activeTokens[token] = jobID
+	encodedPayload := parts[0]
+	providedSignature := parts[1]
+
+	// Decode payload
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		return false
 	}
-}
 
-// UnregisterToken removes a token when a job completes.
-func (s *HMACTokenStore) UnregisterToken(token string) {
-	delete(s.activeTokens, token)
-}
+	// Recompute HMAC
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(payloadBytes)
+	expectedSignature := hex.EncodeToString(h.Sum(nil))
 
-// ValidateToken checks if the token is registered and returns the job ID.
-func (s *HMACTokenStore) ValidateToken(token string) (string, bool) {
-	jobID, ok := s.activeTokens[token]
-	return jobID, ok
+	return hmac.Equal([]byte(providedSignature), []byte(expectedSignature))
 }
 
 // AuthMiddleware wraps an http.Handler to require cache token authentication.
+// This is completely stateless - no token registration required.
 type AuthMiddleware struct {
-	store   TokenStore
 	secret  string
 	enabled bool
 }
 
 // NewAuthMiddleware creates authentication middleware for cache endpoints.
 // If secret is empty, authentication is disabled (for backwards compatibility).
-func NewAuthMiddleware(secret string, store TokenStore) *AuthMiddleware {
+func NewAuthMiddleware(secret string) *AuthMiddleware {
 	return &AuthMiddleware{
-		store:   store,
 		secret:  secret,
 		enabled: secret != "",
 	}
@@ -121,12 +125,10 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		if m.store != nil {
-			if _, valid := m.store.ValidateToken(token); !valid {
-				log.Printf("Cache auth failed: invalid token from %s", r.RemoteAddr)
-				http.Error(w, "Unauthorized: invalid cache token", http.StatusUnauthorized)
-				return
-			}
+		if !ValidateCacheToken(m.secret, token) {
+			log.Printf("Cache auth failed: invalid token from %s", r.RemoteAddr)
+			http.Error(w, "Unauthorized: invalid cache token", http.StatusUnauthorized)
+			return
 		}
 
 		next.ServeHTTP(w, r)
