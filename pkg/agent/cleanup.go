@@ -96,7 +96,7 @@ func (c *Cleanup) CleanupTempFiles(ctx context.Context) error {
 }
 
 // CleanupLogs removes old log files.
-func (c *Cleanup) CleanupLogs(ctx context.Context, runnerPath string, maxAge int) error {
+func (c *Cleanup) CleanupLogs(ctx context.Context, runnerPath string, _ int) error {
 	// Check if context is cancelled
 	select {
 	case <-ctx.Done():

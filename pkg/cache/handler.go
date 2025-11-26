@@ -11,8 +11,8 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 )
 
-// CacheMetrics defines the interface for publishing cache metrics.
-type CacheMetrics interface {
+// Metrics defines the interface for publishing cache metrics.
+type Metrics interface {
 	PublishCacheHit(ctx context.Context) error
 	PublishCacheMiss(ctx context.Context) error
 }
@@ -20,7 +20,7 @@ type CacheMetrics interface {
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
 type Handler struct {
 	server  *Server
-	metrics CacheMetrics
+	metrics Metrics
 }
 
 // NewHandler creates a new cache handler.
@@ -29,7 +29,7 @@ func NewHandler(server *Server) *Handler {
 }
 
 // NewHandlerWithMetrics creates a new cache handler with metrics support.
-func NewHandlerWithMetrics(server *Server, metrics CacheMetrics) *Handler {
+func NewHandlerWithMetrics(server *Server, metrics Metrics) *Handler {
 	return &Handler{server: server, metrics: metrics}
 }
 
@@ -150,8 +150,8 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Cache miss: keys=%v version=%s", keys, version)
 		// Publish cache miss metric
 		if h.metrics != nil {
-			if err := h.metrics.PublishCacheMiss(r.Context()); err != nil {
-				log.Printf("Failed to publish cache miss metric: %v", err)
+			if metricErr := h.metrics.PublishCacheMiss(r.Context()); metricErr != nil {
+				log.Printf("Failed to publish cache miss metric: %v", metricErr)
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)

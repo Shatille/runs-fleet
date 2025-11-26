@@ -21,7 +21,7 @@ type EC2API interface {
 
 // CircuitBreaker defines circuit breaker operations.
 type CircuitBreaker interface {
-	CheckCircuit(ctx context.Context, instanceType string) (circuit.CircuitState, error)
+	CheckCircuit(ctx context.Context, instanceType string) (circuit.State, error)
 }
 
 // Manager orchestrates EC2 fleet creation for runner instances.

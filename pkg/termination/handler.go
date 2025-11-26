@@ -39,8 +39,8 @@ type SSMAPI interface {
 	DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error)
 }
 
-// TerminationMessage represents a termination notification from an agent.
-type TerminationMessage struct {
+// Message represents a termination notification from an agent.
+type Message struct {
 	InstanceID      string    `json:"instance_id"`
 	JobID           string    `json:"job_id"`
 	Status          string    `json:"status"` // started, success, failure, timeout, interrupted
@@ -125,7 +125,7 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 		return fmt.Errorf("message body is nil")
 	}
 
-	var termMsg TerminationMessage
+	var termMsg Message
 	if err := json.Unmarshal([]byte(*msg.Body), &termMsg); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
@@ -155,7 +155,7 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 }
 
 // validateMessage validates required fields in termination message.
-func (h *Handler) validateMessage(msg *TerminationMessage) error {
+func (h *Handler) validateMessage(msg *Message) error {
 	if msg.InstanceID == "" {
 		return fmt.Errorf("instance_id is required")
 	}
@@ -169,7 +169,7 @@ func (h *Handler) validateMessage(msg *TerminationMessage) error {
 }
 
 // processTermination handles the termination notification.
-func (h *Handler) processTermination(ctx context.Context, msg *TerminationMessage) error {
+func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	// Only process completion messages (not "started" messages)
 	if msg.Status == "started" {
 		log.Printf("Ignoring job started message: job_id=%s", msg.JobID)
