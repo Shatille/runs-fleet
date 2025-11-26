@@ -150,7 +150,7 @@ func (c *HTTPClientGitHub) GetFileContent(ctx context.Context, owner, repo, path
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch file: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("file not found: %s", path)

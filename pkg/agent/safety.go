@@ -118,7 +118,7 @@ func (s *SafetyMonitor) checkMemory() error {
 		})
 		return nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	var memAvailable int64 = -1

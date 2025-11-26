@@ -106,7 +106,8 @@ func main() {
 		return
 	}
 
-	if err := registrar.RegisterRunner(ctx, runnerConfig, runnerPath); err != nil {
+	err = registrar.RegisterRunner(ctx, runnerConfig, runnerPath)
+	if err != nil {
 		logger.Printf("Failed to register runner: %v", err)
 		terminateWithError(ctx, terminator, instanceID, runID, "registration_failed", err)
 		return
@@ -121,8 +122,8 @@ func main() {
 			JobID:      runID,
 			StartedAt:  jobStartedAt,
 		}
-		if err := telemetry.SendJobStarted(ctx, jobStatus); err != nil {
-			logger.Printf("Warning: failed to send job started notification: %v", err)
+		if sendErr := telemetry.SendJobStarted(ctx, jobStatus); sendErr != nil {
+			logger.Printf("Warning: failed to send job started notification: %v", sendErr)
 		}
 	}
 

@@ -368,10 +368,10 @@ func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
 			poolName = v.Value
 		}
 		if v, ok := item["desired_running"].(*types.AttributeValueMemberN); ok {
-			fmt.Sscanf(v.Value, "%d", &desiredRunning)
+			_, _ = fmt.Sscanf(v.Value, "%d", &desiredRunning)
 		}
 		if v, ok := item["current_running"].(*types.AttributeValueMemberN); ok {
-			fmt.Sscanf(v.Value, "%d", &currentRunning)
+			_, _ = fmt.Sscanf(v.Value, "%d", &currentRunning)
 		}
 
 		if poolName == "" || desiredRunning == 0 {

@@ -150,8 +150,8 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Cache miss: keys=%v version=%s", keys, version)
 		// Publish cache miss metric
 		if h.metrics != nil {
-			if err := h.metrics.PublishCacheMiss(r.Context()); err != nil {
-				log.Printf("Failed to publish cache miss metric: %v", err)
+			if metricErr := h.metrics.PublishCacheMiss(r.Context()); metricErr != nil {
+				log.Printf("Failed to publish cache miss metric: %v", metricErr)
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
