@@ -13,4 +13,7 @@ jobs:
         run: |
           curl -s -X POST https://rami.shavakan.com/api/review \
             -H "Content-Type: application/json" \
-            -d '{"pr_url": "${{ github.event.pull_request.html_url }}"}'
+            -d '{
+              "pr_url": "${{ github.event.pull_request.html_url }}",
+              "github_token": "${{ secrets.GITHUB_TOKEN }}"
+            }'
