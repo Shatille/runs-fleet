@@ -306,22 +306,32 @@ func TestParseRange(t *testing.T) {
 		input   string
 		wantMin int
 		wantMax int
+		wantErr bool
 	}{
-		{"4", 4, 0},
-		{"4+16", 4, 16},
-		{"2+8", 2, 8},
-		{"0", 0, 0},
-		{"", 0, 0},
+		{"4", 4, 0, false},
+		{"4+16", 4, 16, false},
+		{"2+8", 2, 8, false},
+		{"0", 0, 0, false},
+		{"", 0, 0, false},
+		{"abc", 0, 0, true},
+		{"4+abc", 0, 0, true},
+		{"abc+16", 0, 0, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			min, max := parseRange(tt.input)
-			if min != tt.wantMin {
-				t.Errorf("parseRange(%q) min = %d, want %d", tt.input, min, tt.wantMin)
+			min, max, err := parseRange(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseRange(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
 			}
-			if max != tt.wantMax {
-				t.Errorf("parseRange(%q) max = %d, want %d", tt.input, max, tt.wantMax)
+			if !tt.wantErr {
+				if min != tt.wantMin {
+					t.Errorf("parseRange(%q) min = %d, want %d", tt.input, min, tt.wantMin)
+				}
+				if max != tt.wantMax {
+					t.Errorf("parseRange(%q) max = %d, want %d", tt.input, max, tt.wantMax)
+				}
 			}
 		})
 	}
@@ -332,22 +342,65 @@ func TestParseRangeFloat(t *testing.T) {
 		input   string
 		wantMin float64
 		wantMax float64
+		wantErr bool
 	}{
-		{"8", 8, 0},
-		{"8+32", 8, 32},
-		{"16.5+64", 16.5, 64},
-		{"0", 0, 0},
-		{"", 0, 0},
+		{"8", 8, 0, false},
+		{"8+32", 8, 32, false},
+		{"16.5+64", 16.5, 64, false},
+		{"0", 0, 0, false},
+		{"", 0, 0, false},
+		{"abc", 0, 0, true},
+		{"8+abc", 0, 0, true},
+		{"abc+32", 0, 0, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			min, max := parseRangeFloat(tt.input)
-			if min != tt.wantMin {
-				t.Errorf("parseRangeFloat(%q) min = %f, want %f", tt.input, min, tt.wantMin)
+			min, max, err := parseRangeFloat(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseRangeFloat(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
 			}
-			if max != tt.wantMax {
-				t.Errorf("parseRangeFloat(%q) max = %f, want %f", tt.input, max, tt.wantMax)
+			if !tt.wantErr {
+				if min != tt.wantMin {
+					t.Errorf("parseRangeFloat(%q) min = %f, want %f", tt.input, min, tt.wantMin)
+				}
+				if max != tt.wantMax {
+					t.Errorf("parseRangeFloat(%q) max = %f, want %f", tt.input, max, tt.wantMax)
+				}
+			}
+		})
+	}
+}
+
+func TestParseLabels_InvalidValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+	}{
+		{
+			name:   "Invalid CPU value",
+			labels: []string{"runs-fleet=12345/cpu=abc/arch=arm64"},
+		},
+		{
+			name:   "Invalid CPU max value",
+			labels: []string{"runs-fleet=12345/cpu=4+abc/arch=arm64"},
+		},
+		{
+			name:   "Invalid RAM value",
+			labels: []string{"runs-fleet=12345/ram=abc/arch=arm64"},
+		},
+		{
+			name:   "Invalid RAM max value",
+			labels: []string{"runs-fleet=12345/ram=8+abc/arch=arm64"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseLabels(tt.labels)
+			if err == nil {
+				t.Errorf("ParseLabels() expected error for invalid input, got nil")
 			}
 		})
 	}

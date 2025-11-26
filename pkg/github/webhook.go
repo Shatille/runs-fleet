@@ -173,14 +173,20 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		case "cpu":
 			// Flexible CPU spec (e.g., cpu=4 or cpu=4+16)
 			hasFlexibleSpec = true
-			cpuMin, cpuMax := parseRange(value)
+			cpuMin, cpuMax, err := parseRange(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid cpu label: %w", err)
+			}
 			cfg.CPUMin = cpuMin
 			cfg.CPUMax = cpuMax
 
 		case "ram":
 			// Flexible RAM spec (e.g., ram=8 or ram=8+32)
 			hasFlexibleSpec = true
-			ramMin, ramMax := parseRangeFloat(value)
+			ramMin, ramMax, err := parseRangeFloat(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid ram label: %w", err)
+			}
 			cfg.RAMMin = ramMin
 			cfg.RAMMax = ramMax
 
@@ -227,23 +233,43 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 }
 
 // parseRange parses an integer range like "4" or "4+16" into min and max values.
-func parseRange(s string) (min, max int) {
-	parts := strings.SplitN(s, "+", 2)
-	min, _ = strconv.Atoi(parts[0])
-	if len(parts) == 2 {
-		max, _ = strconv.Atoi(parts[1])
+// Returns an error if the values cannot be parsed as integers.
+func parseRange(s string) (min, max int, err error) {
+	if s == "" {
+		return 0, 0, nil
 	}
-	return min, max
+	parts := strings.SplitN(s, "+", 2)
+	min, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid cpu min value %q: %w", parts[0], err)
+	}
+	if len(parts) == 2 {
+		max, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid cpu max value %q: %w", parts[1], err)
+		}
+	}
+	return min, max, nil
 }
 
 // parseRangeFloat parses a float range like "8" or "8+32" into min and max values.
-func parseRangeFloat(s string) (min, max float64) {
-	parts := strings.SplitN(s, "+", 2)
-	min, _ = strconv.ParseFloat(parts[0], 64)
-	if len(parts) == 2 {
-		max, _ = strconv.ParseFloat(parts[1], 64)
+// Returns an error if the values cannot be parsed as floats.
+func parseRangeFloat(s string) (min, max float64, err error) {
+	if s == "" {
+		return 0, 0, nil
 	}
-	return min, max
+	parts := strings.SplitN(s, "+", 2)
+	min, err = strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid ram min value %q: %w", parts[0], err)
+	}
+	if len(parts) == 2 {
+		max, err = strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid ram max value %q: %w", parts[1], err)
+		}
+	}
+	return min, max, nil
 }
 
 // resolveFlexibleSpec resolves instance types from flexible CPU/RAM/family specifications.
