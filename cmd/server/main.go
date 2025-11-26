@@ -17,6 +17,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/coordinator"
 	"github.com/Shavakan/runs-fleet/pkg/cost"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/events"
@@ -28,6 +29,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -40,6 +42,16 @@ const (
 	maxFleetCreateRetries = 3
 	fleetRetryBaseDelay   = 2 * time.Second
 )
+
+type stdLogger struct{}
+
+func (l *stdLogger) Printf(format string, v ...interface{}) {
+	log.Printf(format, v...)
+}
+
+func (l *stdLogger) Println(v ...interface{}) {
+	log.Println(v...)
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -65,6 +77,25 @@ func main() {
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher := metrics.NewPublisher(awsCfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
+
+	var coord coordinator.Coordinator
+	logger := &stdLogger{}
+	if cfg.CoordinatorEnabled && cfg.InstanceID != "" && cfg.LocksTableName != "" {
+		dynamoClient := dynamodb.NewFromConfig(awsCfg)
+		coordCfg := coordinator.DefaultConfig(cfg.InstanceID)
+		coordCfg.LockTableName = cfg.LocksTableName
+		coord = coordinator.NewDynamoDBCoordinator(coordCfg, dynamoClient, logger)
+		log.Printf("Distributed coordinator enabled: instance_id=%s, table=%s", cfg.InstanceID, cfg.LocksTableName)
+	} else {
+		coord = coordinator.NewNoOpCoordinator(logger)
+		log.Println("Distributed coordinator disabled (no-op coordinator)")
+	}
+
+	if err := coord.Start(ctx); err != nil {
+		log.Fatalf("Failed to start coordinator: %v", err)
+	}
+
+	poolManager.SetCoordinator(coord)
 
 	ec2Client := ec2.NewFromConfig(awsCfg)
 	poolManager.SetEC2Client(ec2Client)
@@ -177,6 +208,10 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
+
+	if err := coord.Stop(shutdownCtx); err != nil {
+		log.Printf("Coordinator shutdown failed: %v", err)
+	}
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("Server shutdown failed: %v", err)

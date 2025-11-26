@@ -35,7 +35,45 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/cache/` - S3-backed GitHub Actions cache protocol
 - `pkg/queue/` - SQS message processing (FIFO, batch, DLQ)
 - `pkg/config/` - Config from env vars, AWS client initialization
-- `internal/` - Shared utilities (DynamoDB state, metrics, logging)
+- `pkg/db/` - DynamoDB state management
+- `pkg/metrics/` - CloudWatch metrics publishing
+- `pkg/housekeeping/` - Cleanup tasks (orphaned instances, stale SSM, old jobs)
+- `pkg/termination/` - Instance termination notifications
+- `pkg/events/` - EventBridge event processing (spot interruptions)
+- `pkg/cost/` - Cost reporting and pricing calculations
+- `pkg/coordinator/` - Distributed leader election (DynamoDB-based)
+
+## Distributed Locking
+
+**Purpose**: Enable multi-instance Fargate deployments with leader election.
+
+**Implementation**: DynamoDB-based leader election with 60s lease, 20s heartbeat.
+
+**Protected operations:**
+- Pool convergence (runs on leader only, every 60s)
+
+**Configuration:**
+```bash
+# Enable coordinator
+RUNS_FLEET_COORDINATOR_ENABLED=true
+
+# Set unique instance ID (required for multi-instance)
+RUNS_FLEET_INSTANCE_ID=$(hostname)
+
+# Specify DynamoDB locks table (default: runs-fleet-locks)
+RUNS_FLEET_LOCKS_TABLE=runs-fleet-locks
+```
+
+**Behavior:**
+- Single leader executes background tasks (pool convergence)
+- Automatic failover on leader failure (max 60s)
+- No-op coordinator for local development (always leader)
+- Cost: ~$0.18-0.20/month for DynamoDB operations
+
+**Leader election parameters:**
+- Lease duration: 60 seconds
+- Heartbeat interval: 20 seconds
+- Retry interval: 30 seconds
 
 ## Job Labels
 
@@ -105,6 +143,8 @@ Critical env vars:
 - `RUNS_FLEET_*_BUCKET` - S3 buckets
 - `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_*_SUBNET_IDS` - Network config
 - `RUNS_FLEET_SPOT_ENABLED` - Enable spot instances (default: true)
+- `RUNS_FLEET_COORDINATOR_ENABLED` - Enable distributed locking (default: false)
+- `RUNS_FLEET_INSTANCE_ID` - Unique instance identifier for leader election
 
 ## Development Commands
 
@@ -133,7 +173,7 @@ terraform apply
 **Error handling:**
 - Wrap errors with context: `fmt.Errorf("failed to create fleet: %w", err)`
 - Return errors up stack, handle at service boundary
-- Log errors with structured fields (use internal/logging)
+- Log errors with structured fields
 
 **AWS SDK:**
 - Clients initialized in `pkg/config/config.go`
@@ -148,7 +188,7 @@ terraform apply
 - DLQ after 3 receive attempts
 
 **Metrics:**
-- Publish to CloudWatch via internal/metrics
+- Publish to CloudWatch via pkg/metrics
 - Namespace: `RunsFleet`
 - Dimensions: `Environment=production`, `Service=orchestrator`
 
@@ -229,6 +269,13 @@ Target: ~$55-65/month for 100 jobs/day @ 10 min avg runtime
 
 Compare to GitHub hosted runners: $80/month
 
+**Cost reporting caveats (pkg/cost/):**
+- Hard-coded pricing for 3 instance families only (t4g, c7g, m7g)
+- 70% spot discount is fixed assumption
+- Regional price variations not included
+- Data transfer and S3 request costs excluded
+- Estimates only, not exact billing
+
 ## Security
 
 - Webhook HMAC-SHA256 validation
@@ -245,10 +292,5 @@ Phase 2 (Warm Pools): ✅ Complete
 Phase 3 (S3 Cache): ✅ Complete
 Phase 4 (Production Hardening): ✅ Complete
 Phase 5 (Concurrent Processing): ✅ Complete
-
-**Known Limitations:**
-- Agent binary: Placeholder implementation (no GitHub runner download/registration)
-- Termination queue: Documented but not implemented
-- Housekeeping queue: Documented but not implemented
 
 See README.md for detailed roadmap.
