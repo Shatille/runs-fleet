@@ -17,7 +17,7 @@ env:
 jobs:
   release:
     name: Create Release
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: stable
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
