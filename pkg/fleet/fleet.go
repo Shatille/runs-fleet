@@ -47,7 +47,8 @@ func (m *Manager) SetCircuitBreaker(cb CircuitBreaker) {
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
 	RunID         string
-	InstanceType  string
+	InstanceType  string   // Primary instance type (used if InstanceTypes is empty)
+	InstanceTypes []string // Multiple instance types for spot diversification (Phase 10)
 	SubnetID      string
 	Spot          bool
 	Pool          string
@@ -60,6 +61,8 @@ type LaunchSpec struct {
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
+// When multiple instance types are specified and spot is enabled, EC2 Fleet
+// will select from the pool with the best price-capacity balance.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
 	// Select appropriate launch template based on OS
 	launchTemplateName := m.selectLaunchTemplate(spec)
@@ -69,12 +72,8 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		Version:            aws.String("$Latest"),
 	}
 
-	overrides := []types.FleetLaunchTemplateOverridesRequest{
-		{
-			InstanceType: types.InstanceType(spec.InstanceType),
-			SubnetId:     aws.String(spec.SubnetID),
-		},
-	}
+	// Build overrides for instance type diversification
+	overrides := m.buildInstanceOverrides(spec)
 
 	targetCapacity := int32(1)
 
@@ -111,14 +110,18 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	// Determine if we should use spot or on-demand
 	useSpot := spec.Spot && m.config.SpotEnabled && !spec.ForceOnDemand
 
-	// Check circuit breaker if using spot
+	// Check circuit breaker if using spot (check primary instance type)
 	if useSpot && m.circuitBreaker != nil {
-		state, err := m.circuitBreaker.CheckCircuit(ctx, spec.InstanceType)
+		primaryType := spec.InstanceType
+		if len(spec.InstanceTypes) > 0 {
+			primaryType = spec.InstanceTypes[0]
+		}
+		state, err := m.circuitBreaker.CheckCircuit(ctx, primaryType)
 		if err != nil {
 			log.Printf("Warning: failed to check circuit breaker: %v", err)
 			// Continue with spot if we can't check
 		} else if state == circuit.StateOpen {
-			log.Printf("Circuit breaker OPEN for %s, forcing on-demand", spec.InstanceType)
+			log.Printf("Circuit breaker OPEN for %s, forcing on-demand", primaryType)
 			useSpot = false
 		}
 	}
@@ -128,9 +131,19 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		if spec.ForceOnDemand && spec.RetryCount > 0 {
 			log.Printf("Using on-demand for retry #%d of run %s", spec.RetryCount, spec.RunID)
 		}
+		// For on-demand, use only the primary instance type
+		req.LaunchTemplateConfigs[0].Overrides = []types.FleetLaunchTemplateOverridesRequest{
+			{
+				InstanceType: types.InstanceType(m.getPrimaryInstanceType(spec)),
+				SubnetId:     aws.String(spec.SubnetID),
+			},
+		}
 	} else {
 		req.SpotOptions = &types.SpotOptionsRequest{
 			AllocationStrategy: types.SpotAllocationStrategyPriceCapacityOptimized,
+		}
+		if len(spec.InstanceTypes) > 1 {
+			log.Printf("Using %d instance types for spot diversification: %v", len(overrides), m.getInstanceTypeNames(overrides))
 		}
 	}
 
@@ -254,4 +267,47 @@ var WindowsInstanceTypes = map[string]bool{
 // IsValidWindowsInstanceType checks if an instance type supports Windows.
 func IsValidWindowsInstanceType(instanceType string) bool {
 	return WindowsInstanceTypes[instanceType]
+}
+
+// buildInstanceOverrides creates launch template overrides for instance type diversification.
+// When multiple instance types are specified, this enables EC2 Fleet to select from a
+// larger pool of instances, improving spot availability.
+func (m *Manager) buildInstanceOverrides(spec *LaunchSpec) []types.FleetLaunchTemplateOverridesRequest {
+	instanceTypes := spec.InstanceTypes
+	if len(instanceTypes) == 0 {
+		instanceTypes = []string{spec.InstanceType}
+	}
+
+	// Limit to 20 instance types (EC2 Fleet maximum per launch template config)
+	const maxOverrides = 20
+	if len(instanceTypes) > maxOverrides {
+		instanceTypes = instanceTypes[:maxOverrides]
+	}
+
+	overrides := make([]types.FleetLaunchTemplateOverridesRequest, len(instanceTypes))
+	for i, instType := range instanceTypes {
+		overrides[i] = types.FleetLaunchTemplateOverridesRequest{
+			InstanceType: types.InstanceType(instType),
+			SubnetId:     aws.String(spec.SubnetID),
+		}
+	}
+
+	return overrides
+}
+
+// getPrimaryInstanceType returns the primary instance type to use.
+func (m *Manager) getPrimaryInstanceType(spec *LaunchSpec) string {
+	if len(spec.InstanceTypes) > 0 {
+		return spec.InstanceTypes[0]
+	}
+	return spec.InstanceType
+}
+
+// getInstanceTypeNames extracts instance type names from overrides for logging.
+func (m *Manager) getInstanceTypeNames(overrides []types.FleetLaunchTemplateOverridesRequest) []string {
+	names := make([]string, len(overrides))
+	for i, o := range overrides {
+		names[i] = string(o.InstanceType)
+	}
+	return names
 }
