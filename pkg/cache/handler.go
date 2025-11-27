@@ -21,6 +21,7 @@ type Metrics interface {
 type Handler struct {
 	server  *Server
 	metrics Metrics
+	auth    *AuthMiddleware
 }
 
 // NewHandler creates a new cache handler.
@@ -31,6 +32,30 @@ func NewHandler(server *Server) *Handler {
 // NewHandlerWithMetrics creates a new cache handler with metrics support.
 func NewHandlerWithMetrics(server *Server, metrics Metrics) *Handler {
 	return &Handler{server: server, metrics: metrics}
+}
+
+// NewHandlerWithAuth creates a new cache handler with authentication and metrics.
+// Authentication is stateless - no token registration required on the server.
+func NewHandlerWithAuth(server *Server, metrics Metrics, cacheSecret string) *Handler {
+	var auth *AuthMiddleware
+
+	if cacheSecret != "" {
+		auth = NewAuthMiddleware(cacheSecret)
+		log.Println("Cache authentication enabled (stateless HMAC)")
+	} else {
+		log.Println("WARNING: Cache authentication disabled - RUNS_FLEET_CACHE_SECRET not set")
+	}
+
+	return &Handler{
+		server:  server,
+		metrics: metrics,
+		auth:    auth,
+	}
+}
+
+// IsAuthEnabled returns whether cache authentication is enabled.
+func (h *Handler) IsAuthEnabled() bool {
+	return h.auth != nil && h.auth.IsEnabled()
 }
 
 type reserveCacheRequest struct {
@@ -207,21 +232,30 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 }
 
 // RegisterRoutes registers all cache API routes with the HTTP mux.
+// If authentication is enabled, all cache endpoints require a valid token.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /_apis/artifactcache/caches", h.ReserveCacheEntry)
-	mux.HandleFunc("GET /_apis/artifactcache/cache", h.GetCacheEntry)
+	// Helper to wrap handlers with auth middleware if enabled
+	wrap := func(handler http.HandlerFunc) http.Handler {
+		if h.auth != nil {
+			return h.auth.WrapFunc(handler)
+		}
+		return handler
+	}
 
-	mux.HandleFunc("/_apis/artifactcache/caches/", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("POST /_apis/artifactcache/caches", wrap(h.ReserveCacheEntry))
+	mux.Handle("GET /_apis/artifactcache/cache", wrap(h.GetCacheEntry))
+
+	mux.Handle("/_apis/artifactcache/caches/", wrap(func(w http.ResponseWriter, r *http.Request) {
 		cacheID := strings.TrimPrefix(r.URL.Path, "/_apis/artifactcache/caches/")
 		if r.Method == http.MethodPatch {
 			h.CommitCacheEntry(w, r, cacheID)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 
-	mux.HandleFunc("/_artifacts/", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/_artifacts/", wrap(func(w http.ResponseWriter, r *http.Request) {
 		cacheID := strings.TrimPrefix(r.URL.Path, "/_artifacts/")
 		h.DownloadCacheArtifact(w, r, cacheID)
-	})
+	}))
 }

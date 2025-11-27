@@ -44,6 +44,9 @@ type Config struct {
 
 	CoordinatorEnabled bool
 	InstanceID         string
+
+	CacheSecret string
+	CacheURL    string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -84,6 +87,8 @@ func Load() (*Config, error) {
 		LaunchTemplateName:   getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		CoordinatorEnabled:   getEnv("RUNS_FLEET_COORDINATOR_ENABLED", "false") == "true",
 		InstanceID:           getEnv("RUNS_FLEET_INSTANCE_ID", ""),
+		CacheSecret:          getEnv("RUNS_FLEET_CACHE_SECRET", ""),
+		CacheURL:             getEnv("RUNS_FLEET_CACHE_URL", ""),
 	}
 
 	if err := cfg.Validate(); err != nil {
