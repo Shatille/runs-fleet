@@ -18,8 +18,8 @@ type SSMAPI interface {
 	DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error)
 }
 
-// Config holds configuration for the runner manager.
-type Config struct {
+// ManagerConfig holds configuration for the runner manager.
+type ManagerConfig struct {
 	Org         string
 	CacheSecret string
 	CacheURL    string
@@ -29,11 +29,11 @@ type Config struct {
 type Manager struct {
 	github    *GitHubClient
 	ssmClient SSMAPI
-	config    Config
+	config    ManagerConfig
 }
 
 // NewManager creates a new runner manager.
-func NewManager(awsCfg aws.Config, githubClient *GitHubClient, config Config) *Manager {
+func NewManager(awsCfg aws.Config, githubClient *GitHubClient, config ManagerConfig) *Manager {
 	return &Manager{
 		github:    githubClient,
 		ssmClient: ssm.NewFromConfig(awsCfg),
@@ -41,8 +41,8 @@ func NewManager(awsCfg aws.Config, githubClient *GitHubClient, config Config) *M
 	}
 }
 
-// RunnerConfig represents the configuration stored in SSM for a runner.
-type RunnerConfig struct {
+// Config represents the configuration stored in SSM for a runner.
+type Config struct {
 	Org         string   `json:"org"`
 	Repo        string   `json:"repo,omitempty"`
 	JITToken    string   `json:"jit_token"`
@@ -81,7 +81,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	}
 
 	// Build runner config
-	config := RunnerConfig{
+	config := Config{
 		Org:        m.config.Org,
 		JITToken:   jitToken,
 		Labels:     req.Labels,

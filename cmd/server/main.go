@@ -140,7 +140,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create GitHub client: %v", err)
 		}
-		runnerManager = runner.NewManager(awsCfg, githubClient, runner.Config{
+		runnerManager = runner.NewManager(awsCfg, githubClient, runner.ManagerConfig{
 			Org:         cfg.GitHubOrg,
 			CacheSecret: cfg.CacheSecret,
 			CacheURL:    cfg.CacheURL,

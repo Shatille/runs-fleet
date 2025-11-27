@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const testSecret = "test-secret"
+
 func TestGenerateCacheToken(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -58,7 +60,7 @@ func TestGenerateCacheToken(t *testing.T) {
 }
 
 func TestGenerateCacheToken_Deterministic(t *testing.T) {
-	secret := "test-secret"
+	secret := testSecret
 	jobID := "job-123"
 	instanceID := "i-abc123"
 
@@ -71,7 +73,7 @@ func TestGenerateCacheToken_Deterministic(t *testing.T) {
 }
 
 func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
-	secret := "test-secret"
+	secret := testSecret
 
 	token1 := GenerateCacheToken(secret, "job-1", "i-abc")
 	token2 := GenerateCacheToken(secret, "job-2", "i-abc")
@@ -254,7 +256,7 @@ func TestAuthMiddleware_Disabled(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
-	middleware := NewAuthMiddleware("test-secret")
+	middleware := NewAuthMiddleware(testSecret)
 
 	if !middleware.IsEnabled() {
 		t.Error("middleware should be enabled with secret")
@@ -278,7 +280,7 @@ func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
-	middleware := NewAuthMiddleware("test-secret")
+	middleware := NewAuthMiddleware(testSecret)
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -299,7 +301,7 @@ func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
-	secret := "test-secret"
+	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
 	// Generate a valid token
@@ -325,7 +327,7 @@ func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_BearerToken(t *testing.T) {
-	secret := "test-secret"
+	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
 	// Generate a valid token
@@ -351,7 +353,7 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
-	secret := "test-secret"
+	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
 	// Generate a valid token
