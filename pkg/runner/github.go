@@ -67,7 +67,7 @@ func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, erro
 func (c *GitHubClient) generateJWT() (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"iat": now.Unix(),
+		"iat": now.Add(-60 * time.Second).Unix(), // 60s buffer for clock skew
 		"exp": now.Add(10 * time.Minute).Unix(),
 		"iss": c.appID,
 	}
