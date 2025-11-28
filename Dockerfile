@@ -3,7 +3,7 @@
 
 # Stage 1: Build Go binaries
 # Use BUILDPLATFORM to run Go compiler natively (not under QEMU)
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
 ARG TARGETARCH
 ARG VERSION=dev
