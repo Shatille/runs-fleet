@@ -11,7 +11,8 @@ const (
 	MessageReceiveTimeout = 25 * time.Second
 
 	// MessageProcessTimeout for processing individual messages
-	MessageProcessTimeout = 30 * time.Second
+	// Set to 90s to accommodate synchronous EC2 Fleet creation (FleetTypeInstant)
+	MessageProcessTimeout = 90 * time.Second
 
 	// CleanupTimeout for deferred cleanup operations
 	CleanupTimeout = 5 * time.Second

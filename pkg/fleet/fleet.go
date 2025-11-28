@@ -90,10 +90,10 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 			TotalTargetCapacity:       &targetCapacity,
 			DefaultTargetCapacityType: types.DefaultTargetCapacityTypeSpot,
 		},
-		Type: types.FleetTypeRequest,
+		Type: types.FleetTypeInstant,
 		TagSpecifications: []types.TagSpecification{
 			{
-				ResourceType: types.ResourceTypeFleet,
+				ResourceType: types.ResourceTypeInstance,
 				Tags:         tags,
 			},
 		},

@@ -119,13 +119,14 @@ func (c *Client) SendMessage(ctx context.Context, job *JobMessage) error {
 }
 
 // ReceiveMessages retrieves messages from queue with long polling.
-// VisibilityTimeout is set to 60 seconds to allow for message processing and retry logic.
+// VisibilityTimeout set to 120s to exceed MessageProcessTimeout (90s) and prevent
+// duplicate processing during synchronous EC2 Fleet creation.
 func (c *Client) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
 	input := &sqs.ReceiveMessageInput{
 		QueueUrl:              aws.String(c.queueURL),
 		MaxNumberOfMessages:   maxMessages,
 		WaitTimeSeconds:       waitTimeSeconds,
-		VisibilityTimeout:     int32(60),
+		VisibilityTimeout:     int32(120),
 		AttributeNames:        []types.QueueAttributeName{types.QueueAttributeNameAll},
 		MessageAttributeNames: []string{"All"}, // Include message attributes for trace context
 	}
