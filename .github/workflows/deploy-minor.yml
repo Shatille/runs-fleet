@@ -8,6 +8,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
 permissions:
   id-token: write
   contents: read
@@ -22,9 +26,6 @@ env:
 jobs:
   build-and-deploy:
     runs-on: runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64
-    concurrency:
-      group: deploy-${{ github.event.inputs.custom_version || 'minor' }}
-      cancel-in-progress: true
 
     steps:
       - name: Checkout code
