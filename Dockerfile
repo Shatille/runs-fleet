@@ -1,29 +1,37 @@
 # Multi-stage build for runs-fleet server and agent
+# Optimized for cross-compilation with buildx
 
 # Stage 1: Build Go binaries
-FROM golang:1.25-alpine AS builder
+# Use BUILDPLATFORM to run Go compiler natively (not under QEMU)
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+
+ARG TARGETARCH
+ARG VERSION=dev
 
 WORKDIR /build
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
-# Copy go mod files
+# Copy go mod files first for better layer caching
 COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
 COPY . .
 
-# Build server binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
+# Build server binary for target architecture (cross-compile)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+    -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-server ./cmd/server
 
-# Build agent binaries for multiple architectures
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
+# Build agent binaries for both architectures
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-agent-linux-amd64 ./cmd/agent
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+    -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-agent-linux-arm64 ./cmd/agent
 
 # Stage 2: Final runtime image
