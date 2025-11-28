@@ -250,6 +250,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	msg := &queue.JobMessage{
 		JobID:        fmt.Sprintf("%d", event.GetWorkflowJob().GetID()),
 		RunID:        jobConfig.RunID,
+		Repo:         event.GetRepo().GetFullName(), // owner/repo for repo-level registration
 		InstanceType: jobConfig.InstanceType,
 		Pool:         jobConfig.Pool,
 		Private:      jobConfig.Private,
@@ -469,6 +470,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 				InstanceID: instanceID,
 				JobID:      job.JobID,
 				RunID:      job.RunID,
+				Repo:       job.Repo,
 				Labels:     []string{fmt.Sprintf("runs-fleet=%s", job.RunID), fmt.Sprintf("runner=%s", job.InstanceType)},
 			}
 			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {

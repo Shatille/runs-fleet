@@ -40,6 +40,7 @@ func NewClient(cfg aws.Config, queueURL string) *Client {
 type JobMessage struct {
 	JobID         string `json:"job_id,omitempty"`
 	RunID         string `json:"run_id"`
+	Repo          string `json:"repo,omitempty"` // owner/repo format for repo-level runner registration
 	InstanceType  string `json:"instance_type"`
 	Pool          string `json:"pool,omitempty"`
 	Private       bool   `json:"private"`

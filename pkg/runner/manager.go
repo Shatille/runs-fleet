@@ -58,6 +58,7 @@ type PrepareRunnerRequest struct {
 	InstanceID string
 	JobID      string
 	RunID      string
+	Repo       string // owner/repo format for repo-level registration
 	Labels     []string
 }
 
@@ -69,7 +70,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 
 	// Get JIT token from GitHub
 	log.Printf("Getting JIT token for runner %s", runnerName)
-	jitToken, err := m.github.GetRegistrationToken(ctx)
+	jitToken, err := m.github.GetRegistrationToken(ctx, req.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get JIT token: %w", err)
 	}
