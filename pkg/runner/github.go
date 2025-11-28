@@ -6,8 +6,10 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -155,29 +157,38 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (s
 		return "", fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
 	}
 	org := parts[0]
-	repoName := parts[1]
 
 	token, err := c.getInstallationToken(ctx, org)
 	if err != nil {
 		return "", err
 	}
 
-	client := github.NewClient(c.httpClient).WithAuthToken(token)
-
-	// Try org-level registration first
-	regToken, _, err := client.Actions.CreateOrganizationRegistrationToken(ctx, org)
-	if err == nil {
-		return regToken.GetToken(), nil
+	// Use raw HTTP for org-level registration (bypassing go-github for debugging)
+	url := fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", org)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
 
-	// Fall back to repo-level registration
-	if repoName != "" {
-		regToken, _, err = client.Actions.CreateRegistrationToken(ctx, org, repoName)
-		if err != nil {
-			return "", fmt.Errorf("failed to create registration token for %s/%s (tried org and repo): %w", org, repoName, err)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusCreated {
+		var result struct {
+			Token string `json:"token"`
 		}
-		return regToken.GetToken(), nil
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("failed to decode response: %w", err)
+		}
+		return result.Token, nil
 	}
 
-	return "", fmt.Errorf("failed to create org registration token for %s: %w", org, err)
+	// Read error body for debugging
+	body, _ := io.ReadAll(resp.Body)
+	return "", fmt.Errorf("failed to create org registration token for %s: status=%d body=%s", org, resp.StatusCode, string(body))
 }
