@@ -12,7 +12,7 @@ env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: runs-fleet
   ECS_CLUSTER: shavakan
-  ECS_SERVICE: shavakan-runs-fleet-server
+  ECS_SERVICE: runs-fleet-server
   S3_CONFIG_BUCKET: shavakan-runs-fleet-config
 
 jobs:
@@ -125,7 +125,7 @@ jobs:
         run: |
           # Get current task definition
           TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition shavakan-runs-fleet-server \
+            --task-definition runs-fleet-server \
             --query 'taskDefinition' \
             --output json)
 

@@ -16,12 +16,12 @@ env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: runs-fleet
   ECS_CLUSTER: shavakan
-  ECS_SERVICE: shavakan-runs-fleet-server
+  ECS_SERVICE: runs-fleet-server
   S3_CONFIG_BUCKET: shavakan-runs-fleet-config
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     concurrency:
       group: deploy-${{ github.event.inputs.custom_version || 'minor' }}
       cancel-in-progress: true
@@ -95,24 +95,20 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build and push Docker image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --push \
+          docker build \
             --build-arg VERSION=$IMAGE_TAG \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            --cache-from type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            --cache-to type=inline \
             .
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
