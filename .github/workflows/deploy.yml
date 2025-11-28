@@ -21,7 +21,7 @@ env:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64
 
     steps:
       - name: Checkout code
@@ -77,36 +77,29 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build and push Docker image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
-          docker buildx build \
-            --platform linux/arm64 \
-            --push \
+          docker build \
             --build-arg VERSION=$IMAGE_TAG \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             .
 
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Extract agent binaries from Docker image
         env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
-          docker buildx build \
-            --platform linux/arm64 \
-            --load \
-            --build-arg VERSION=$IMAGE_TAG \
-            --tag temp-image \
-            .
-          CONTAINER_ID=$(docker create temp-image)
+          CONTAINER_ID=$(docker create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG)
           docker cp $CONTAINER_ID:/app/agent-linux-amd64 ./agent-linux-amd64
           docker cp $CONTAINER_ID:/app/agent-linux-arm64 ./agent-linux-arm64
           docker rm $CONTAINER_ID
