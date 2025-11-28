@@ -93,15 +93,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		Type: types.FleetTypeRequest,
 		TagSpecifications: []types.TagSpecification{
 			{
-				ResourceType: types.ResourceTypeInstance,
-				Tags:         tags,
-			},
-			{
-				ResourceType: types.ResourceTypeVolume,
-				Tags:         tags,
-			},
-			{
-				ResourceType: types.ResourceTypeNetworkInterface,
+				ResourceType: types.ResourceTypeFleet,
 				Tags:         tags,
 			},
 		},
