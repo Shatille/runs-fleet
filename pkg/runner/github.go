@@ -80,6 +80,7 @@ func (c *GitHubClient) generateJWT() (string, error) {
 
 // getInstallationToken gets an installation access token for the specified org.
 // It tries org-level first, then falls back to user-level for personal accounts.
+// Uses raw HTTP with Bearer prefix for JWT auth (go-github's WithAuthToken uses token prefix).
 func (c *GitHubClient) getInstallationToken(ctx context.Context, org string) (string, error) {
 	if org == "" {
 		return "", fmt.Errorf("org is required")
@@ -90,26 +91,78 @@ func (c *GitHubClient) getInstallationToken(ctx context.Context, org string) (st
 		return "", fmt.Errorf("failed to generate JWT: %w", err)
 	}
 
-	// Create client with JWT auth
-	client := github.NewClient(c.httpClient).WithAuthToken(jwt)
-
-	// Try org installation first
-	installation, _, err := client.Apps.FindOrganizationInstallation(ctx, org)
+	// Find installation for org (using Bearer auth for JWT)
+	url := fmt.Sprintf("https://api.github.com/orgs/%s/installation", org)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		// Fall back to user installation for personal accounts
-		installation, _, err = client.Apps.FindUserInstallation(ctx, org)
+		return "", fmt.Errorf("failed to create installation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to find installation: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Fall back to user installation if org not found
+	if resp.StatusCode == http.StatusNotFound {
+		url = fmt.Sprintf("https://api.github.com/users/%s/installation", org)
+		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
-			return "", fmt.Errorf("failed to find installation for %s (tried org and user): %w", org, err)
+			return "", fmt.Errorf("failed to create user installation request: %w", err)
 		}
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to find user installation: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
 	}
 
-	// Get installation token
-	token, _, err := client.Apps.CreateInstallationToken(ctx, installation.GetID(), nil)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to find installation for %s: status=%d body=%s", org, resp.StatusCode, string(body))
+	}
+
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&installation); decodeErr != nil {
+		return "", fmt.Errorf("failed to decode installation: %w", decodeErr)
+	}
+
+	// Create installation token
+	url = fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installation.ID)
+	req, err = http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create token request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err = c.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to create installation token: %w", err)
 	}
+	defer func() { _ = resp.Body.Close() }()
 
-	return token.GetToken(), nil
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to create installation token: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("failed to decode token response: %w", err)
+	}
+
+	return tokenResp.Token, nil
 }
 
 // GetJITConfig gets a Just-In-Time runner configuration for registering a runner.
@@ -163,7 +216,7 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (s
 		return "", err
 	}
 
-	// Use raw HTTP for org-level registration (bypassing go-github for debugging)
+	// Create org-level registration token
 	url := fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", org)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
