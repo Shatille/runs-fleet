@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -65,14 +66,22 @@ type PrepareRunnerRequest struct {
 // PrepareRunner creates the SSM parameter with runner configuration.
 // This should be called after the EC2 instance is created but before it boots.
 func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) error {
+	// Extract org from repo string (owner/repo format)
+	org := m.config.Org
+	if req.Repo != "" {
+		if parts := strings.SplitN(req.Repo, "/", 2); len(parts) == 2 {
+			org = parts[0]
+		}
+	}
+
 	// Generate runner name
 	runnerName := fmt.Sprintf("runs-fleet-%s", req.InstanceID)
 
-	// Get JIT token from GitHub
-	log.Printf("Getting JIT token for runner %s", runnerName)
+	// Get registration token from GitHub
+	log.Printf("Getting registration token for runner %s (org=%s, repo=%s)", runnerName, org, req.Repo)
 	jitToken, err := m.github.GetRegistrationToken(ctx, req.Repo)
 	if err != nil {
-		return fmt.Errorf("failed to get JIT token: %w", err)
+		return fmt.Errorf("failed to get registration token: %w", err)
 	}
 
 	// Generate cache token
@@ -81,9 +90,10 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		cacheToken = cache.GenerateCacheToken(m.config.CacheSecret, req.JobID, req.InstanceID)
 	}
 
-	// Build runner config
+	// Build runner config with dynamic org from repo
 	config := Config{
-		Org:        m.config.Org,
+		Org:        org,
+		Repo:       req.Repo,
 		JITToken:   jitToken,
 		Labels:     req.Labels,
 		JobID:      req.JobID,
