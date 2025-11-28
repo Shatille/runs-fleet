@@ -102,10 +102,10 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *RunnerConfig, ru
 		return fmt.Errorf("config.sh not found: %w", err)
 	}
 
-	// Build registration URL
+	// Build registration URL (config.Repo is full org/repo format)
 	var repoURL string
 	if config.Repo != "" {
-		repoURL = fmt.Sprintf("https://github.com/%s/%s", config.Org, config.Repo)
+		repoURL = fmt.Sprintf("https://github.com/%s", config.Repo)
 	} else {
 		repoURL = fmt.Sprintf("https://github.com/%s", config.Org)
 	}
