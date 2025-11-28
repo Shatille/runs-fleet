@@ -122,12 +122,35 @@ jobs:
           aws s3 cp ./agent-linux-arm64 \
             s3://${{ env.S3_CONFIG_BUCKET }}/agents/runs-fleet-agent-linux-arm64
 
-      - name: Update ECS service
+      - name: Update ECS task definition and service
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
+          # Get current task definition
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition shavakan-runs-fleet-server \
+            --query 'taskDefinition' \
+            --output json)
+
+          # Update image tag in container definition
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
+            --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          # Register new task definition
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "Registered new task definition: $NEW_TASK_ARN"
+
+          # Update service with new task definition
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE }} \
-            --force-new-deployment \
+            --task-definition "$NEW_TASK_ARN" \
             --region ${{ env.AWS_REGION }}
 
       - name: Wait for deployment to complete
