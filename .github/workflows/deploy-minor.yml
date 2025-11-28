@@ -1,8 +1,12 @@
-name: Deploy
+name: Deploy (Minor Version)
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      custom_version:
+        description: 'Custom version (optional, e.g., v1.2.0). Leave empty to auto-bump minor.'
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -19,7 +23,7 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
+      group: deploy-${{ github.event.inputs.custom_version || 'minor' }}
       cancel-in-progress: true
 
     steps:
@@ -36,34 +40,49 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Get latest version from ECR
+      - name: Get or calculate version from ECR
         id: get_version
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          ECR_OUTPUT=$(aws ecr describe-images \
-            --repository-name $ECR_REPOSITORY \
-            --region $AWS_REGION \
-            --query 'imageDetails[*].imageTags[]' \
-            --output text) || {
-            echo "Failed to query ECR repository"
-            exit 1
+          validate_version() {
+            if ! [[ $1 =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version format '$1'. Must be semantic version (e.g., 1.2.3 or v1.2.3)"
+              exit 1
+            fi
           }
 
-          LATEST_TAG=$(echo "$ECR_OUTPUT" | tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
-
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No existing version tags found, starting with v0.0.1"
-            NEW_VERSION="v0.0.1"
+          if [ -n "${{ github.event.inputs.custom_version }}" ]; then
+            NEW_VERSION="${{ github.event.inputs.custom_version }}"
+            validate_version "$NEW_VERSION"
+            if [[ ! $NEW_VERSION =~ ^v ]]; then
+              NEW_VERSION="v${NEW_VERSION}"
+            fi
+            echo "Using custom version: $NEW_VERSION"
           else
-            echo "Latest ECR tag: $LATEST_TAG"
-            VERSION=${LATEST_TAG#v}
-            MAJOR=$(echo $VERSION | cut -d. -f1)
-            MINOR=$(echo $VERSION | cut -d. -f2)
-            PATCH=$(echo $VERSION | cut -d. -f3)
+            ECR_OUTPUT=$(aws ecr describe-images \
+              --repository-name $ECR_REPOSITORY \
+              --region $AWS_REGION \
+              --query 'imageDetails[*].imageTags[]' \
+              --output text) || {
+              echo "Failed to query ECR repository"
+              exit 1
+            }
 
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+            LATEST_TAG=$(echo "$ECR_OUTPUT" | tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+
+            if [ -z "$LATEST_TAG" ]; then
+              echo "No existing version tags found, starting with v0.1.0"
+              NEW_VERSION="v0.1.0"
+            else
+              echo "Latest ECR tag: $LATEST_TAG"
+              VERSION=${LATEST_TAG#v}
+              MAJOR=$(echo $VERSION | cut -d. -f1)
+              MINOR=$(echo $VERSION | cut -d. -f2)
+
+              NEW_MINOR=$((MINOR + 1))
+              NEW_VERSION="v${MAJOR}.${NEW_MINOR}.0"
+            fi
           fi
 
           # Race condition protection
@@ -162,7 +181,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
-          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployment Summary (Minor Release)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`$IMAGE_TAG\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: \`${{ steps.build-image.outputs.image }}\`" >> $GITHUB_STEP_SUMMARY
