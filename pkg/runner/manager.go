@@ -113,10 +113,9 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	log.Printf("Storing runner config in SSM: %s", paramPath)
 
 	_, err = m.ssmClient.PutParameter(ctx, &ssm.PutParameterInput{
-		Name:      aws.String(paramPath),
-		Value:     aws.String(string(configJSON)),
-		Type:      types.ParameterTypeSecureString,
-		Overwrite: aws.Bool(true),
+		Name:  aws.String(paramPath),
+		Value: aws.String(string(configJSON)),
+		Type:  types.ParameterTypeSecureString,
 		Tags: []types.Tag{
 			{
 				Key:   aws.String("runs-fleet:managed"),
