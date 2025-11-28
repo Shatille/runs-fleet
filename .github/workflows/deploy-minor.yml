@@ -21,7 +21,7 @@ env:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-24.04-arm
+    runs-on: runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64
     concurrency:
       group: deploy-${{ github.event.inputs.custom_version || 'minor' }}
       cancel-in-progress: true
