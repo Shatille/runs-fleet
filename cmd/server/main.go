@@ -470,7 +470,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 				JobID:      job.JobID,
 				RunID:      job.RunID,
 				Repo:       job.Repo,
-				Labels:     []string{fmt.Sprintf("runs-fleet=%s", job.RunID), fmt.Sprintf("runner=%s", job.InstanceType)},
+				Labels:     []string{fmt.Sprintf("runs-fleet=%s", job.RunID), fmt.Sprintf("runner=%s", job.RunnerSpec)},
 			}
 			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
 				log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
