@@ -11,7 +11,6 @@ import (
 type Config struct {
 	AWSRegion string
 
-	GitHubOrg           string
 	GitHubWebhookSecret string
 	GitHubAppID         string
 	GitHubAppPrivateKey string
@@ -57,9 +56,8 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AWSRegion:            getEnv("AWS_REGION", "ap-northeast-1"),
-		GitHubOrg:            getEnv("RUNS_FLEET_GITHUB_ORG", ""),
-		GitHubWebhookSecret:  getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
+		AWSRegion:           getEnv("AWS_REGION", "ap-northeast-1"),
+		GitHubWebhookSecret: getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
 		GitHubAppID:          getEnv("RUNS_FLEET_GITHUB_APP_ID", ""),
 		GitHubAppPrivateKey:  getEnv("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY", ""),
 		QueueURL:             getEnv("RUNS_FLEET_QUEUE_URL", ""),
@@ -100,9 +98,6 @@ func Load() (*Config, error) {
 
 // Validate checks that all required configuration fields are present and valid.
 func (c *Config) Validate() error {
-	if c.GitHubOrg == "" {
-		return fmt.Errorf("RUNS_FLEET_GITHUB_ORG is required")
-	}
 	if c.GitHubWebhookSecret == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_WEBHOOK_SECRET is required")
 	}

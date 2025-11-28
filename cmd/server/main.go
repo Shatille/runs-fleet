@@ -136,12 +136,11 @@ func main() {
 	// Initialize runner manager for SSM configuration
 	var runnerManager *runner.Manager
 	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
-		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey, cfg.GitHubOrg)
+		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 		if err != nil {
 			log.Fatalf("Failed to create GitHub client: %v", err)
 		}
 		runnerManager = runner.NewManager(awsCfg, githubClient, runner.ManagerConfig{
-			Org:         cfg.GitHubOrg,
 			CacheSecret: cfg.CacheSecret,
 			CacheURL:    cfg.CacheURL,
 		})

@@ -134,7 +134,6 @@ Instance specs:
 
 Critical env vars:
 - `AWS_REGION` - ap-northeast-1
-- `RUNS_FLEET_GITHUB_ORG` - GitHub org
 - `RUNS_FLEET_GITHUB_APP_ID`, `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` - GitHub App auth
 - `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` - HMAC signature validation
 - `RUNS_FLEET_QUEUE_URL` - Main SQS queue

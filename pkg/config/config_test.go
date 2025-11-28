@@ -23,7 +23,6 @@ func TestLoad(t *testing.T) {
 		{
 			name: "Valid Config",
 			env: map[string]string{
-				"RUNS_FLEET_GITHUB_ORG":             "test-org",
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
 				"RUNS_FLEET_PUBLIC_SUBNET_IDS":      "subnet-1,subnet-2",
@@ -36,26 +35,28 @@ func TestLoad(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "Missing GitHub Org",
-			env: map[string]string{
-				"RUNS_FLEET_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/queue",
-				"RUNS_FLEET_VPC_ID":    "vpc-123",
-			},
-			wantErr: true,
-		},
-		{
 			name: "Missing Queue URL",
 			env: map[string]string{
-				"RUNS_FLEET_GITHUB_ORG": "test-org",
-				"RUNS_FLEET_VPC_ID":     "vpc-123",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_PUBLIC_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 			},
 			wantErr: true,
 		},
 		{
 			name: "Missing VPC ID",
 			env: map[string]string{
-				"RUNS_FLEET_GITHUB_ORG": "test-org",
-				"RUNS_FLEET_QUEUE_URL":  "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_PUBLIC_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 			},
 			wantErr: true,
 		},
@@ -75,9 +76,6 @@ func TestLoad(t *testing.T) {
 			}
 
 			if !tt.wantErr {
-				if cfg.GitHubOrg != tt.env["RUNS_FLEET_GITHUB_ORG"] {
-					t.Errorf("GitHubOrg = %v, want %v", cfg.GitHubOrg, tt.env["RUNS_FLEET_GITHUB_ORG"])
-				}
 				if len(cfg.PublicSubnetIDs) != 2 {
 					t.Errorf("PublicSubnetIDs length = %v, want 2", len(cfg.PublicSubnetIDs))
 				}

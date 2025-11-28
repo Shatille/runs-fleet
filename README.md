@@ -139,7 +139,6 @@ Required environment variables:
 
 ```bash
 # GitHub
-RUNS_FLEET_GITHUB_ORG=Shavakan
 RUNS_FLEET_GITHUB_APP_ID=<app-id>
 RUNS_FLEET_GITHUB_APP_PRIVATE_KEY=<key>
 RUNS_FLEET_GITHUB_WEBHOOK_SECRET=<secret>

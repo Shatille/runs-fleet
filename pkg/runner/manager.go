@@ -21,7 +21,6 @@ type SSMAPI interface {
 
 // ManagerConfig holds configuration for the runner manager.
 type ManagerConfig struct {
-	Org         string
 	CacheSecret string
 	CacheURL    string
 }
@@ -66,13 +65,15 @@ type PrepareRunnerRequest struct {
 // PrepareRunner creates the SSM parameter with runner configuration.
 // This should be called after the EC2 instance is created but before it boots.
 func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) error {
-	// Extract org from repo string (owner/repo format)
-	org := m.config.Org
-	if req.Repo != "" {
-		if parts := strings.SplitN(req.Repo, "/", 2); len(parts) == 2 {
-			org = parts[0]
-		}
+	// Extract org from repo string (owner/repo format, required)
+	if req.Repo == "" {
+		return fmt.Errorf("repo is required (owner/repo format)")
 	}
+	parts := strings.SplitN(req.Repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("invalid repo format, expected owner/repo: %s", req.Repo)
+	}
+	org := parts[0]
 
 	// Generate runner name
 	runnerName := fmt.Sprintf("runs-fleet-%s", req.InstanceID)

@@ -21,13 +21,12 @@ import (
 type GitHubClient struct {
 	appID      int64
 	privateKey *rsa.PrivateKey
-	defaultOrg string // fallback org if not specified in request
 	httpClient *http.Client
 }
 
 // NewGitHubClient creates a new GitHub client for runner operations.
 // privateKeyBase64 should be the base64-encoded PEM private key.
-func NewGitHubClient(appID string, privateKeyBase64 string, org string) (*GitHubClient, error) {
+func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, error) {
 	id, err := strconv.ParseInt(appID, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid app ID: %w", err)
@@ -60,7 +59,6 @@ func NewGitHubClient(appID string, privateKeyBase64 string, org string) (*GitHub
 	return &GitHubClient{
 		appID:      id,
 		privateKey: key,
-		defaultOrg: org,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
@@ -82,7 +80,7 @@ func (c *GitHubClient) generateJWT() (string, error) {
 // It tries org-level first, then falls back to user-level for personal accounts.
 func (c *GitHubClient) getInstallationToken(ctx context.Context, org string) (string, error) {
 	if org == "" {
-		org = c.defaultOrg
+		return "", fmt.Errorf("org is required")
 	}
 
 	jwt, err := c.generateJWT()
@@ -117,7 +115,7 @@ func (c *GitHubClient) getInstallationToken(ctx context.Context, org string) (st
 // The org parameter specifies which organization to register the runner for.
 func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName string, labels []string) (string, error) {
 	if org == "" {
-		org = c.defaultOrg
+		return "", fmt.Errorf("org is required")
 	}
 
 	token, err := c.getInstallationToken(ctx, org)
@@ -148,16 +146,16 @@ func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName 
 // installation token and registration token requests.
 // Tries org-level registration first, falls back to repo-level registration.
 func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (string, error) {
-	// Extract org from repo string
-	org := c.defaultOrg
-	var repoName string
-	if repo != "" {
-		parts := strings.SplitN(repo, "/", 2)
-		if len(parts) == 2 {
-			org = parts[0]
-			repoName = parts[1]
-		}
+	// Extract org from repo string (required)
+	if repo == "" {
+		return "", fmt.Errorf("repo is required (owner/repo format)")
 	}
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+	}
+	org := parts[0]
+	repoName := parts[1]
 
 	token, err := c.getInstallationToken(ctx, org)
 	if err != nil {
