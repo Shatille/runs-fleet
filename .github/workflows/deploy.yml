@@ -4,9 +4,18 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 env:
@@ -17,12 +26,61 @@ env:
   S3_CONFIG_BUCKET: shavakan-runs-fleet-config
 
 jobs:
-  deploy:
-    name: Build and Deploy
+  version:
+    name: Bump Version
     runs-on: ubuntu-latest
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version
+        id: bump
+        run: |
+          CURRENT_VERSION=$(cat VERSION | tr -d '\n')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          BUMP_TYPE="${{ github.event.inputs.bump_type || 'patch' }}"
+
+          if [ "$BUMP_TYPE" = "minor" ]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "$NEW_VERSION" > VERSION
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Bumped version: $CURRENT_VERSION -> $NEW_VERSION ($BUMP_TYPE)"
+
+      - name: Commit and tag version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add VERSION
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.tag }}"
+          git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.tag }}"
+          git push origin main --tags
+
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -41,49 +99,49 @@ jobs:
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          # Build and push with git SHA tag
           docker buildx build \
             --platform linux/amd64 \
             --push \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --build-arg VERSION=$VERSION \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$TAG \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             --cache-from type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:latest \
             --cache-to type=inline \
             .
 
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$TAG" >> $GITHUB_OUTPUT
 
       - name: Extract agent binaries from Docker image
         env:
           IMAGE: ${{ steps.build-image.outputs.image }}
         run: |
-          # Create temporary container
           CONTAINER_ID=$(docker create $IMAGE)
-
-          # Extract agent binaries
           docker cp $CONTAINER_ID:/app/agent-linux-amd64 ./agent-linux-amd64
           docker cp $CONTAINER_ID:/app/agent-linux-arm64 ./agent-linux-arm64
-
-          # Cleanup
           docker rm $CONTAINER_ID
 
       - name: Upload agent binaries to S3
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          # Upload with version tag
+          # Upload with version
           aws s3 cp ./agent-linux-amd64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/${{ github.sha }}/agent-linux-amd64
+            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$TAG/runs-fleet-agent-linux-amd64
 
           aws s3 cp ./agent-linux-arm64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/${{ github.sha }}/agent-linux-arm64
+            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$TAG/runs-fleet-agent-linux-arm64
 
           # Upload as latest
           aws s3 cp ./agent-linux-amd64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/latest/agent-linux-amd64
+            s3://${{ env.S3_CONFIG_BUCKET }}/agents/runs-fleet-agent-linux-amd64
 
           aws s3 cp ./agent-linux-arm64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/latest/agent-linux-arm64
+            s3://${{ env.S3_CONFIG_BUCKET }}/agents/runs-fleet-agent-linux-arm64
 
       - name: Update ECS service
         run: |
@@ -101,14 +159,17 @@ jobs:
             --region ${{ env.AWS_REGION }}
 
       - name: Deployment summary
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           echo "### Deployment Summary :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`$TAG\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: \`${{ steps.build-image.outputs.image }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Cluster**: \`${{ env.ECS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Service**: \`${{ env.ECS_SERVICE }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Region**: \`${{ env.AWS_REGION }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Agent binaries uploaded to:" >> $GITHUB_STEP_SUMMARY
-          echo "- \`s3://${{ env.S3_CONFIG_BUCKET }}/agents/${{ github.sha }}/\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`s3://${{ env.S3_CONFIG_BUCKET }}/agents/latest/\`" >> $GITHUB_STEP_SUMMARY
+          echo "Agent binaries:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`s3://${{ env.S3_CONFIG_BUCKET }}/agents/$TAG/\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`s3://${{ env.S3_CONFIG_BUCKET }}/agents/runs-fleet-agent-linux-*\` (latest)" >> $GITHUB_STEP_SUMMARY
