@@ -90,3 +90,16 @@ jobs:
           name: binaries
           path: bin/
           retention-days: 7
+
+  test-self-hosted:
+    name: Test Self-Hosted Runner
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify runner
+        run: |
+          echo "Running on self-hosted runner"
+          uname -a
+          echo "Success!"
