@@ -21,7 +21,7 @@ env:
 
 jobs:
   build-and-deploy:
-    runs-on: runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -36,6 +36,17 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
 
       - name: Get latest version from ECR
         id: get_version
@@ -83,26 +94,22 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
-          docker build \
+          docker buildx build \
+            --platform linux/arm64 \
             --build-arg VERSION=$IMAGE_TAG \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            --push \
             .
-
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Extract agent binaries from Docker image
+      - name: Build agent binaries
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
         run: |
-          CONTAINER_ID=$(docker create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG)
-          docker cp $CONTAINER_ID:/app/agent-linux-amd64 ./agent-linux-amd64
-          docker cp $CONTAINER_ID:/app/agent-linux-arm64 ./agent-linux-arm64
-          docker rm $CONTAINER_ID
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=$IMAGE_TAG" -o agent-linux-amd64 ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-X main.version=$IMAGE_TAG" -o agent-linux-arm64 ./cmd/agent
 
       - name: Upload agent binaries to S3
         env:
