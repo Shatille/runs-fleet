@@ -78,91 +78,113 @@ func (c *GitHubClient) generateJWT() (string, error) {
 	return token.SignedString(c.privateKey)
 }
 
-// getInstallationToken gets an installation access token for the specified org.
+// installationInfo holds installation token and account type.
+type installationInfo struct {
+	Token string
+	IsOrg bool // true for Organization, false for User
+}
+
+// getInstallationInfo gets an installation access token and account type.
 // It tries org-level first, then falls back to user-level for personal accounts.
 // Uses raw HTTP with Bearer prefix for JWT auth (go-github's WithAuthToken uses token prefix).
-func (c *GitHubClient) getInstallationToken(ctx context.Context, org string) (string, error) {
-	if org == "" {
-		return "", fmt.Errorf("org is required")
+func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
+	if owner == "" {
+		return nil, fmt.Errorf("owner is required")
 	}
 
 	jwt, err := c.generateJWT()
 	if err != nil {
-		return "", fmt.Errorf("failed to generate JWT: %w", err)
+		return nil, fmt.Errorf("failed to generate JWT: %w", err)
 	}
 
 	// Find installation for org (using Bearer auth for JWT)
-	url := fmt.Sprintf("https://api.github.com/orgs/%s/installation", org)
+	url := fmt.Sprintf("https://api.github.com/orgs/%s/installation", owner)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create installation request: %w", err)
+		return nil, fmt.Errorf("failed to create installation request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to find installation: %w", err)
+		return nil, fmt.Errorf("failed to find installation: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Fall back to user installation if org not found
 	if resp.StatusCode == http.StatusNotFound {
-		url = fmt.Sprintf("https://api.github.com/users/%s/installation", org)
+		_ = resp.Body.Close() // Close first response before reassigning
+
+		url = fmt.Sprintf("https://api.github.com/users/%s/installation", owner)
 		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
-			return "", fmt.Errorf("failed to create user installation request: %w", err)
+			return nil, fmt.Errorf("failed to create user installation request: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+jwt)
 		req.Header.Set("Accept", "application/vnd.github+json")
 
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("failed to find user installation: %w", err)
+			return nil, fmt.Errorf("failed to find user installation: %w", err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to find installation for %s: status=%d body=%s", org, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("failed to find installation for %s: status=%d body=%s", owner, resp.StatusCode, string(body))
 	}
 
 	var installation struct {
-		ID int64 `json:"id"`
+		ID      int64 `json:"id"`
+		Account struct {
+			Type string `json:"type"`
+		} `json:"account"`
 	}
 	if decodeErr := json.NewDecoder(resp.Body).Decode(&installation); decodeErr != nil {
-		return "", fmt.Errorf("failed to decode installation: %w", decodeErr)
+		return nil, fmt.Errorf("failed to decode installation: %w", decodeErr)
 	}
+
+	isOrg := installation.Account.Type == "Organization"
 
 	// Create installation token
 	url = fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installation.ID)
 	req, err = http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create token request: %w", err)
+		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err = c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to create installation token: %w", err)
+		return nil, fmt.Errorf("failed to create installation token: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to create installation token: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("failed to create installation token: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("failed to decode token response: %w", err)
+		return nil, fmt.Errorf("failed to decode token response: %w", err)
 	}
 
-	return tokenResp.Token, nil
+	return &installationInfo{Token: tokenResp.Token, IsOrg: isOrg}, nil
+}
+
+// getInstallationToken is a convenience wrapper that returns just the token.
+func (c *GitHubClient) getInstallationToken(ctx context.Context, owner string) (string, error) {
+	info, err := c.getInstallationInfo(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	return info.Token, nil
 }
 
 // GetJITConfig gets a Just-In-Time runner configuration for registering a runner.
@@ -196,38 +218,49 @@ func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName 
 	return jitConfig.GetEncodedJITConfig(), nil
 }
 
-// GetRegistrationToken gets a registration token.
-// Extracts org from repo string (owner/repo format) and uses it for both
-// installation token and registration token requests.
-// Tries org-level registration first, falls back to repo-level registration.
-func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (string, error) {
-	// Extract org from repo string (required)
+// RegistrationResult contains the registration token and account type.
+type RegistrationResult struct {
+	Token string
+	IsOrg bool // true for Organization, false for User (personal account)
+}
+
+// GetRegistrationToken gets a registration token for GitHub Actions runners.
+// For organizations, uses org-level endpoint. For personal accounts, uses repo-level.
+// Extracts owner from repo string (owner/repo format) for installation token.
+func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
+	// Extract owner from repo string (required)
 	if repo == "" {
-		return "", fmt.Errorf("repo is required (owner/repo format)")
+		return nil, fmt.Errorf("repo is required (owner/repo format)")
 	}
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
 	}
-	org := parts[0]
+	owner := parts[0]
 
-	token, err := c.getInstallationToken(ctx, org)
+	info, err := c.getInstallationInfo(ctx, owner)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	// Create org-level registration token
-	url := fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", org)
+	// Use org-level endpoint for organizations, repo-level for personal accounts
+	var url string
+	if info.IsOrg {
+		url = fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", owner)
+	} else {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/registration-token", repo)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Authorization", "token "+info.Token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to execute request: %w", err)
+		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -236,12 +269,12 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (s
 			Token string `json:"token"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return "", fmt.Errorf("failed to decode response: %w", err)
+			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
-		return result.Token, nil
+		return &RegistrationResult{Token: result.Token, IsOrg: info.IsOrg}, nil
 	}
 
 	// Read error body for debugging
 	body, _ := io.ReadAll(resp.Body)
-	return "", fmt.Errorf("failed to create org registration token for %s: status=%d body=%s", org, resp.StatusCode, string(body))
+	return nil, fmt.Errorf("failed to create registration token for %s: status=%d body=%s", repo, resp.StatusCode, string(body))
 }

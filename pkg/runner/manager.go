@@ -51,6 +51,7 @@ type Config struct {
 	JobID       string   `json:"job_id,omitempty"`
 	CacheToken  string   `json:"cache_token,omitempty"`
 	CacheURL    string   `json:"cache_url,omitempty"`
+	IsOrg       bool     `json:"is_org"`
 }
 
 // PrepareRunnerRequest contains parameters for preparing a runner.
@@ -78,9 +79,9 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	// Generate runner name
 	runnerName := fmt.Sprintf("runs-fleet-%s", req.InstanceID)
 
-	// Get registration token from GitHub
+	// Get registration token from GitHub (returns token and whether owner is an org)
 	log.Printf("Getting registration token for runner %s (org=%s, repo=%s)", runnerName, org, req.Repo)
-	jitToken, err := m.github.GetRegistrationToken(ctx, req.Repo)
+	regResult, err := m.github.GetRegistrationToken(ctx, req.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get registration token: %w", err)
 	}
@@ -95,11 +96,12 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	config := Config{
 		Org:        org,
 		Repo:       req.Repo,
-		JITToken:   jitToken,
+		JITToken:   regResult.Token,
 		Labels:     req.Labels,
 		JobID:      req.JobID,
 		CacheToken: cacheToken,
 		CacheURL:   m.config.CacheURL,
+		IsOrg:      regResult.IsOrg,
 	}
 
 	// Serialize to JSON
