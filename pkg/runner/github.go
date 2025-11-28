@@ -135,20 +135,23 @@ func (c *GitHubClient) GetJITConfig(ctx context.Context, runnerName string, labe
 }
 
 // GetRegistrationToken gets a registration token.
-// If repo is provided (owner/repo format), uses repo-level registration for personal accounts.
-// Otherwise uses org-level registration.
+// Tries org-level registration first (works for orgs with self-hosted runners permission),
+// falls back to repo-level registration (works for personal accounts or apps with admin permission).
 func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (string, error) {
 	token, err := c.getInstallationToken(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	// Create client with installation token
 	client := github.NewClient(c.httpClient).WithAuthToken(token)
 
-	var regToken *github.RegistrationToken
+	// Try org-level registration first
+	regToken, _, err := client.Actions.CreateOrganizationRegistrationToken(ctx, c.org)
+	if err == nil {
+		return regToken.GetToken(), nil
+	}
 
-	// Use repo-level registration if repo is provided
+	// Fall back to repo-level registration
 	if repo != "" {
 		parts := strings.SplitN(repo, "/", 2)
 		if len(parts) != 2 {
@@ -157,15 +160,10 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (s
 		owner, repoName := parts[0], parts[1]
 		regToken, _, err = client.Actions.CreateRegistrationToken(ctx, owner, repoName)
 		if err != nil {
-			return "", fmt.Errorf("failed to create repo registration token for %s: %w", repo, err)
+			return "", fmt.Errorf("failed to create registration token (tried org and repo): %w", err)
 		}
-	} else {
-		// Try org-level registration
-		regToken, _, err = client.Actions.CreateOrganizationRegistrationToken(ctx, c.org)
-		if err != nil {
-			return "", fmt.Errorf("failed to create org registration token: %w", err)
-		}
+		return regToken.GetToken(), nil
 	}
 
-	return regToken.GetToken(), nil
+	return "", fmt.Errorf("failed to create org registration token: %w", err)
 }
