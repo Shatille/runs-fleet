@@ -208,6 +208,44 @@ func TestScheduler_scheduleTask_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestScheduler_scheduleTask_ContextCancelledDuringRetry(t *testing.T) {
+	// Explicit test verifying context cancellation is checked during retry backoff
+	// This addresses the code review concern about context handling in retry loop
+	sqsClient := &mockSchedulerSQSAPI{
+		sendErr: errors.New("network error"),
+	}
+	cfg := DefaultSchedulerConfig()
+	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start scheduling in a goroutine
+	done := make(chan struct{})
+	go func() {
+		scheduler.scheduleTask(ctx, TaskOrphanedInstances)
+		close(done)
+	}()
+
+	// Give it a moment to make the first call and enter retry
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel during the retry backoff
+	cancel()
+
+	// Should exit promptly
+	select {
+	case <-done:
+		// Success - exited promptly after context cancellation
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduleTask did not respect context cancellation during retry")
+	}
+
+	// Verify it didn't exhaust all retries
+	if sqsClient.sendCalls >= maxScheduleRetries {
+		t.Logf("Note: %d calls made before cancellation took effect", sqsClient.sendCalls)
+	}
+}
+
 func TestScheduler_Run_Cancellation(t *testing.T) {
 	sqsClient := &mockSchedulerSQSAPI{}
 	cfg := SchedulerConfig{

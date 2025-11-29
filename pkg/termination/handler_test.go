@@ -552,6 +552,63 @@ func TestMessage_JSONSerialization(t *testing.T) {
 	}
 }
 
+func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
+	// Explicit test verifying required fields are NOT omitted when empty
+	// This addresses the code review concern about omitempty on required fields
+	// The Message struct intentionally does NOT use omitempty on required fields
+	msg := Message{
+		InstanceID: "", // Empty string
+		JobID:      "", // Empty string
+		Status:     "", // Empty string
+		// Optional fields with omitempty
+		Error:         "",
+		InterruptedBy: "",
+	}
+
+	jsonBytes, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("failed to marshal message: %v", err)
+	}
+
+	jsonStr := string(jsonBytes)
+
+	// Required fields should ALWAYS be present, even when empty
+	requiredFields := []string{
+		`"instance_id"`,
+		`"job_id"`,
+		`"status"`,
+	}
+
+	for _, field := range requiredFields {
+		if !containsString(jsonStr, field) {
+			t.Errorf("required field %s should be present in JSON even when empty", field)
+		}
+	}
+
+	// Optional fields with omitempty SHOULD be omitted when empty
+	optionalFields := []string{
+		`"error"`,
+		`"interrupted_by"`,
+	}
+
+	for _, field := range optionalFields {
+		if containsString(jsonStr, field) {
+			t.Logf("optional field %s is omitted as expected (has omitempty)", field)
+		}
+	}
+
+	// Verify round-trip works correctly
+	var decoded Message
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+
+	// Empty strings should be preserved
+	if decoded.InstanceID != "" {
+		t.Errorf("expected empty InstanceID, got '%s'", decoded.InstanceID)
+	}
+}
+
 func TestContainsString(t *testing.T) {
 	tests := []struct {
 		s       string

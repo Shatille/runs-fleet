@@ -191,6 +191,66 @@ func TestManager_CleanupRunner_SSMError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from SSM")
 	}
+
+	// Verify the error message is propagated correctly
+	// This explicitly tests that SSM errors are not silently swallowed
+	// The error is wrapped with context, so check it contains the original error
+	if !contains(err.Error(), "ssm delete error") {
+		t.Errorf("expected error to contain 'ssm delete error', got '%s'", err.Error())
+	}
+}
+
+func TestManager_CleanupRunner_SSMErrorHandling(t *testing.T) {
+	// Explicit test verifying SSM delete parameter errors are properly handled
+	// and returned to the caller for appropriate error handling/logging
+	tests := []struct {
+		name      string
+		deleteErr error
+		wantErr   bool
+	}{
+		{
+			name:      "network error",
+			deleteErr: errors.New("network timeout"),
+			wantErr:   true,
+		},
+		{
+			name:      "access denied",
+			deleteErr: errors.New("AccessDeniedException"),
+			wantErr:   true,
+		},
+		{
+			name:      "parameter not found should error",
+			deleteErr: errors.New("ParameterNotFound"),
+			wantErr:   true,
+		},
+		{
+			name:      "success case",
+			deleteErr: nil,
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockSSM := &mockSSMAPI{
+				deleteErr: tt.deleteErr,
+			}
+			manager := &Manager{
+				ssmClient: mockSSM,
+				config:    ManagerConfig{},
+			}
+
+			err := manager.CleanupRunner(context.Background(), "i-12345")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CleanupRunner() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			// Verify SSM delete was called
+			if mockSSM.deleteCalls != 1 {
+				t.Errorf("expected 1 delete call, got %d", mockSSM.deleteCalls)
+			}
+		})
+	}
 }
 
 func TestConfig_Structure(t *testing.T) {
