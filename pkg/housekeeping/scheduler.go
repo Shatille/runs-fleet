@@ -15,6 +15,11 @@ type SchedulerSQSAPI interface {
 	SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
+// SchedulerMetrics defines metrics operations for the scheduler.
+type SchedulerMetrics interface {
+	PublishSchedulingFailure(ctx context.Context, taskType string) error
+}
+
 // SchedulerConfig holds configuration for the housekeeping scheduler.
 type SchedulerConfig struct {
 	// OrphanedInstancesInterval is how often to run orphaned instance cleanup.
@@ -54,6 +59,7 @@ type Scheduler struct {
 	sqsClient SchedulerSQSAPI
 	queueURL  string
 	config    SchedulerConfig
+	metrics   SchedulerMetrics
 }
 
 // NewScheduler creates a new housekeeping scheduler.
@@ -63,6 +69,11 @@ func NewScheduler(cfg aws.Config, queueURL string, schedulerCfg SchedulerConfig)
 		queueURL:  queueURL,
 		config:    schedulerCfg,
 	}
+}
+
+// SetMetrics sets the metrics publisher for alerting on scheduling failures.
+func (s *Scheduler) SetMetrics(m SchedulerMetrics) {
+	s.metrics = m
 }
 
 // Run starts the scheduler loop.
@@ -138,7 +149,6 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				log.Printf("Context cancelled while scheduling task %s: %v", taskType, ctx.Err())
 				return
 			}
 			log.Printf("Retrying to schedule housekeeping task %s (attempt %d/%d)", taskType, attempt+1, maxScheduleRetries)
@@ -156,5 +166,12 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 		log.Printf("Failed to schedule housekeeping task %s (attempt %d/%d): %v", taskType, attempt+1, maxScheduleRetries, err)
 	}
 
-	log.Printf("Failed to schedule housekeeping task %s after %d attempts: %v", taskType, maxScheduleRetries, lastErr)
+	log.Printf("ALERT: Failed to schedule housekeeping task %s after %d attempts: %v", taskType, maxScheduleRetries, lastErr)
+
+	// Publish metric for alerting if context wasn't cancelled
+	if ctx.Err() == nil && s.metrics != nil {
+		if metricErr := s.metrics.PublishSchedulingFailure(ctx, string(taskType)); metricErr != nil {
+			log.Printf("Failed to publish scheduling failure metric: %v", metricErr)
+		}
+	}
 }

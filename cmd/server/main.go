@@ -135,6 +135,7 @@ func main() {
 		// Create scheduler to periodically trigger housekeeping tasks
 		schedulerCfg := housekeeping.DefaultSchedulerConfig()
 		housekeepingScheduler = housekeeping.NewScheduler(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
+		housekeepingScheduler.SetMetrics(metricsPublisher)
 
 		log.Printf("Housekeeping handler and scheduler initialized with queue: %s", cfg.HousekeepingQueueURL)
 	}
