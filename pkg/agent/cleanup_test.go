@@ -72,6 +72,47 @@ func TestCleanup_CleanupRunner_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestCleanup_CleanupRunner_ContextCancelledWithRealDir(t *testing.T) {
+	// Create a real directory structure to verify context cancellation
+	// is properly handled even with existing paths
+	tmpDir, err := os.MkdirTemp("", "cleanup-ctx-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	// Create subdirectories that CleanupRunner would try to remove
+	workDir := filepath.Join(tmpDir, "_work")
+	if mkdirErr := os.MkdirAll(workDir, 0755); mkdirErr != nil {
+		t.Fatalf("failed to create work dir: %v", mkdirErr)
+	}
+
+	logger := &mockLogger{}
+	cleanup := NewCleanup(logger)
+
+	// Cancel context before calling CleanupRunner
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Verify context error is returned
+	cleanupErr := cleanup.CleanupRunner(ctx, tmpDir)
+	if cleanupErr == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if !errors.Is(cleanupErr, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", cleanupErr)
+	}
+
+	// Verify directory was NOT removed (cleanup was aborted)
+	if _, statErr := os.Stat(tmpDir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			t.Error("directory should still exist after context cancellation")
+		} else {
+			t.Fatalf("unexpected error checking directory: %v", statErr)
+		}
+	}
+}
+
 func TestCleanup_CleanupRunner_NonExistent(t *testing.T) {
 	logger := &mockLogger{}
 	cleanup := NewCleanup(logger)

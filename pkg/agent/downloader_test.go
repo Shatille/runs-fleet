@@ -86,6 +86,10 @@ func TestDownloadRunner_CacheHit(t *testing.T) {
 	if cache.checkCalls != 1 {
 		t.Errorf("expected 1 cache check call, got %d", cache.checkCalls)
 	}
+	// Verify download from cache was attempted on cache hit
+	if cache.downloadCalls != 1 {
+		t.Errorf("expected 1 download call on cache hit, got %d", cache.downloadCalls)
+	}
 }
 
 func TestVerifyChecksum_Success(t *testing.T) {
