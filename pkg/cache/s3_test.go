@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -14,7 +15,8 @@ import (
 
 // MockS3API implements S3API interface
 type MockS3API struct {
-	HeadObjectFunc func(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	HeadObjectFunc    func(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	ListObjectsV2Func func(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
 func (m *MockS3API) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
@@ -22,6 +24,13 @@ func (m *MockS3API) HeadObject(ctx context.Context, params *s3.HeadObjectInput, 
 		return m.HeadObjectFunc(ctx, params, optFns...)
 	}
 	return &s3.HeadObjectOutput{}, nil
+}
+
+func (m *MockS3API) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	if m.ListObjectsV2Func != nil {
+		return m.ListObjectsV2Func(ctx, params, optFns...)
+	}
+	return &s3.ListObjectsV2Output{Contents: []types.Object{}}, nil
 }
 
 // MockPresignAPI implements PresignAPI interface
@@ -252,25 +261,6 @@ func TestGetCacheEntry(t *testing.T) {
 			found:   false,
 			wantErr: true,
 		},
-		{
-			name:    "Fallback key hit - primary misses, secondary hits",
-			keys:    []string{"primary-key", "fallback-key"},
-			version: "v1",
-			mockS3: &MockS3API{
-				HeadObjectFunc: func(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-					if *params.Key == "caches/v1/primary-key" {
-						return nil, &types.NoSuchKey{Message: aws.String("not found")}
-					}
-					if *params.Key == "caches/v1/fallback-key" {
-						return &s3.HeadObjectOutput{}, nil
-					}
-					return nil, fmt.Errorf("unexpected key: %s", *params.Key)
-				},
-			},
-			wantKey: "caches/v1/fallback-key",
-			found:   true,
-			wantErr: false,
-		},
 	}
 
 	for _, tt := range tests {
@@ -292,6 +282,254 @@ func TestGetCacheEntry(t *testing.T) {
 				t.Errorf("GetCacheEntry() key = %v, want %v", key, tt.wantKey)
 			}
 		})
+	}
+}
+
+func TestGetCacheEntry_RestoreKeyPrefixMatching(t *testing.T) {
+	now := aws.Time(timeNow())
+
+	tests := []struct {
+		name    string
+		keys    []string
+		version string
+		mockS3  *MockS3API
+		wantKey string
+		found   bool
+	}{
+		{
+			name:    "Restore key prefix matching - finds most recent",
+			keys:    []string{"node-modules-abc123", "node-modules-"},
+			version: "v1",
+			mockS3: &MockS3API{
+				HeadObjectFunc: func(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					return nil, &types.NotFound{Message: aws.String("not found")}
+				},
+				ListObjectsV2Func: func(_ context.Context, params *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+					if *params.Prefix == "caches/v1/node-modules-" {
+						return &s3.ListObjectsV2Output{
+							Contents: []types.Object{
+								{Key: aws.String("caches/v1/node-modules-old"), LastModified: aws.Time(now.Add(-24 * 60 * 60 * 1e9))},
+								{Key: aws.String("caches/v1/node-modules-recent"), LastModified: now},
+							},
+						}, nil
+					}
+					return &s3.ListObjectsV2Output{}, nil
+				},
+			},
+			wantKey: "caches/v1/node-modules-recent",
+			found:   true,
+		},
+		{
+			name:    "Restore key prefix matching - no matches",
+			keys:    []string{"node-modules-abc123", "node-modules-"},
+			version: "v1",
+			mockS3: &MockS3API{
+				HeadObjectFunc: func(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					return nil, &types.NotFound{Message: aws.String("not found")}
+				},
+				ListObjectsV2Func: func(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+					return &s3.ListObjectsV2Output{Contents: []types.Object{}}, nil
+				},
+			},
+			wantKey: "",
+			found:   false,
+		},
+		{
+			name:    "Primary key hit - no prefix matching needed",
+			keys:    []string{"node-modules-exact", "node-modules-"},
+			version: "v1",
+			mockS3: &MockS3API{
+				HeadObjectFunc: func(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					if *params.Key == "caches/v1/node-modules-exact" {
+						return &s3.HeadObjectOutput{}, nil
+					}
+					return nil, &types.NotFound{Message: aws.String("not found")}
+				},
+			},
+			wantKey: "caches/v1/node-modules-exact",
+			found:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				s3Client:        tt.mockS3,
+				cacheBucketName: "test-bucket",
+			}
+
+			key, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
+			if err != nil {
+				t.Errorf("GetCacheEntry() unexpected error = %v", err)
+				return
+			}
+			if found != tt.found {
+				t.Errorf("GetCacheEntry() found = %v, want %v", found, tt.found)
+			}
+			if key != tt.wantKey {
+				t.Errorf("GetCacheEntry() key = %v, want %v", key, tt.wantKey)
+			}
+		})
+	}
+}
+
+func timeNow() time.Time {
+	return time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+}
+
+func TestGetCacheEntry_WithScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		scope   string
+		keys    []string
+		version string
+		mockS3  *MockS3API
+		wantKey string
+		found   bool
+	}{
+		{
+			name:    "Cache hit with scope",
+			scope:   "myorg/myrepo",
+			keys:    []string{"cache-key"},
+			version: "v1",
+			mockS3: &MockS3API{
+				HeadObjectFunc: func(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					expectedKey := "caches/myorg/myrepo/v1/cache-key"
+					if *params.Key != expectedKey {
+						t.Errorf("Key = %s, want %s", *params.Key, expectedKey)
+					}
+					return &s3.HeadObjectOutput{}, nil
+				},
+			},
+			wantKey: "caches/myorg/myrepo/v1/cache-key",
+			found:   true,
+		},
+		{
+			name:    "Cache hit with org-only scope",
+			scope:   "myorg",
+			keys:    []string{"shared-cache"},
+			version: "v1",
+			mockS3: &MockS3API{
+				HeadObjectFunc: func(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					expectedKey := "caches/myorg/v1/shared-cache"
+					if *params.Key != expectedKey {
+						t.Errorf("Key = %s, want %s", *params.Key, expectedKey)
+					}
+					return &s3.HeadObjectOutput{}, nil
+				},
+			},
+			wantKey: "caches/myorg/v1/shared-cache",
+			found:   true,
+		},
+		{
+			name:    "Cache miss with scope",
+			scope:   "myorg/myrepo",
+			keys:    []string{"missing-key"},
+			version: "v1",
+			mockS3: &MockS3API{
+				HeadObjectFunc: func(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					return nil, &types.NotFound{Message: aws.String("not found")}
+				},
+			},
+			wantKey: "",
+			found:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				s3Client:        tt.mockS3,
+				cacheBucketName: "test-bucket",
+				defaultScope:    tt.scope,
+			}
+
+			key, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
+			if err != nil {
+				t.Errorf("GetCacheEntry() unexpected error = %v", err)
+				return
+			}
+			if found != tt.found {
+				t.Errorf("GetCacheEntry() found = %v, want %v", found, tt.found)
+			}
+			if key != tt.wantKey {
+				t.Errorf("GetCacheEntry() key = %v, want %v", key, tt.wantKey)
+			}
+		})
+	}
+}
+
+func TestCreateCacheEntry_WithScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		scope   string
+		key     string
+		version string
+		want    string
+	}{
+		{
+			name:    "Entry with repo scope",
+			scope:   "myorg/myrepo",
+			key:     "cache-key",
+			version: "v1",
+			want:    "caches/myorg/myrepo/v1/cache-key",
+		},
+		{
+			name:    "Entry with org scope",
+			scope:   "myorg",
+			key:     "shared-cache",
+			version: "v1",
+			want:    "caches/myorg/v1/shared-cache",
+		},
+		{
+			name:    "Entry without scope",
+			scope:   "",
+			key:     "cache-key",
+			version: "v1",
+			want:    "caches/v1/cache-key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				cacheBucketName: "test-bucket",
+				defaultScope:    tt.scope,
+			}
+
+			got, err := server.CreateCacheEntry(context.Background(), tt.key, tt.version)
+			if err != nil {
+				t.Errorf("CreateCacheEntry() unexpected error = %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("CreateCacheEntry() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithScope(t *testing.T) {
+	original := &Server{
+		cacheBucketName: "test-bucket",
+		defaultScope:    "",
+	}
+
+	scoped := original.WithScope("myorg/myrepo")
+
+	// Original should be unchanged
+	if original.defaultScope != "" {
+		t.Errorf("Original server scope should be empty, got %q", original.defaultScope)
+	}
+
+	// Scoped should have the scope
+	if scoped.defaultScope != "myorg/myrepo" {
+		t.Errorf("Scoped server scope should be 'myorg/myrepo', got %q", scoped.defaultScope)
+	}
+
+	// Both should share the same bucket name
+	if scoped.cacheBucketName != original.cacheBucketName {
+		t.Errorf("Scoped server bucket should match original")
 	}
 }
 

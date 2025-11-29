@@ -58,6 +58,16 @@ func (h *Handler) IsAuthEnabled() bool {
 	return h.auth != nil && h.auth.IsEnabled()
 }
 
+// scopedServer returns a server scoped to the repository from the request context.
+// If no scope is present in the context, returns the original server.
+func (h *Handler) scopedServer(r *http.Request) *Server {
+	scope := ScopeFromContext(r.Context())
+	if scope != "" {
+		return h.server.WithScope(scope)
+	}
+	return h.server
+}
+
 type reserveCacheRequest struct {
 	Key     string `json:"key"`
 	Version string `json:"version"`
@@ -92,13 +102,14 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey, err := h.server.CreateCacheEntry(r.Context(), req.Key, req.Version)
+	server := h.scopedServer(r)
+	cacheKey, err := server.CreateCacheEntry(r.Context(), req.Key, req.Version)
 	if err != nil {
 		http.Error(w, "Invalid cache parameters", http.StatusBadRequest)
 		return
 	}
 
-	uploadURL, err := h.server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodPut)
+	uploadURL, err := server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodPut)
 	if err != nil {
 		log.Printf("Failed to generate upload URL for key=%s: %v", cacheKey, err)
 		http.Error(w, "Failed to generate upload URL", http.StatusInternalServerError)
@@ -110,7 +121,8 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 		CacheKey: cacheKey,
 	}
 
-	log.Printf("Reserved cache entry: key=%s version=%s cacheId=%d", req.Key, req.Version, resp.CacheID)
+	scope := ScopeFromContext(r.Context())
+	log.Printf("Reserved cache entry: key=%s version=%s cacheId=%d scope=%s", req.Key, req.Version, resp.CacheID, scope)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", uploadURL)
@@ -133,13 +145,15 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 		return
 	}
 
-	if err := h.server.CommitCacheEntry(r.Context(), cacheID); err != nil {
+	server := h.scopedServer(r)
+	if err := server.CommitCacheEntry(r.Context(), cacheID); err != nil {
 		log.Printf("Failed to commit cache entry cacheId=%s size=%d: %v", cacheID, req.Size, err)
 		http.Error(w, "Failed to commit cache entry", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Committed cache entry: cacheId=%s size=%d", cacheID, req.Size)
+	scope := ScopeFromContext(r.Context())
+	log.Printf("Committed cache entry: cacheId=%s size=%d scope=%s", cacheID, req.Size, scope)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -163,16 +177,18 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	server := h.scopedServer(r)
+	scope := ScopeFromContext(r.Context())
 	keys := strings.Split(keysParam, ",")
-	cacheKey, found, err := h.server.GetCacheEntry(r.Context(), keys, version)
+	cacheKey, found, err := server.GetCacheEntry(r.Context(), keys, version)
 	if err != nil {
-		log.Printf("Failed to check cache entry keys=%v version=%s: %v", keys, version, err)
+		log.Printf("Failed to check cache entry keys=%v version=%s scope=%s: %v", keys, version, scope, err)
 		http.Error(w, "Failed to check cache entry", http.StatusInternalServerError)
 		return
 	}
 
 	if !found {
-		log.Printf("Cache miss: keys=%v version=%s", keys, version)
+		log.Printf("Cache miss: keys=%v version=%s scope=%s", keys, version, scope)
 		// Publish cache miss metric
 		if h.metrics != nil {
 			if metricErr := h.metrics.PublishCacheMiss(r.Context()); metricErr != nil {
@@ -183,14 +199,14 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	downloadURL, err := h.server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodGet)
+	downloadURL, err := server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodGet)
 	if err != nil {
 		log.Printf("Failed to generate download URL for cacheKey=%s: %v", cacheKey, err)
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Cache hit: cacheKey=%s keys=%v version=%s", cacheKey, keys, version)
+	log.Printf("Cache hit: cacheKey=%s keys=%v version=%s scope=%s", cacheKey, keys, version, scope)
 	// Publish cache hit metric
 	if h.metrics != nil {
 		if err := h.metrics.PublishCacheHit(r.Context()); err != nil {
@@ -220,14 +236,16 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	downloadURL, err := h.server.GeneratePresignedURL(r.Context(), cacheID, http.MethodGet)
+	server := h.scopedServer(r)
+	downloadURL, err := server.GeneratePresignedURL(r.Context(), cacheID, http.MethodGet)
 	if err != nil {
 		log.Printf("Failed to generate download URL for cacheId=%s: %v", cacheID, err)
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Redirecting to download URL: cacheId=%s", cacheID)
+	scope := ScopeFromContext(r.Context())
+	log.Printf("Redirecting to download URL: cacheId=%s scope=%s", cacheID, scope)
 	http.Redirect(w, r, downloadURL, http.StatusTemporaryRedirect)
 }
 

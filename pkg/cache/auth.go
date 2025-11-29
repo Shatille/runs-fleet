@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,21 +11,30 @@ import (
 	"strings"
 )
 
+// contextKey is a custom type for context keys to avoid collisions.
+type contextKey string
+
+const (
+	// scopeContextKey is the context key for cache scope.
+	scopeContextKey contextKey = "cache_scope"
+)
+
 const (
 	// CacheTokenHeader is the HTTP header used to pass the cache authentication token.
 	CacheTokenHeader = "X-Cache-Token"
 )
 
 // GenerateCacheToken creates a self-contained HMAC token for cache authentication.
-// Token format: base64url(job_id:instance_id).hmac_hex
+// Token format: base64url(job_id:instance_id:scope).hmac_hex
 // This allows stateless validation - the server can extract the payload and verify the signature.
-func GenerateCacheToken(secret, jobID, instanceID string) string {
+// The scope parameter should be in "org/repo" format for repository-scoped caching.
+func GenerateCacheToken(secret, jobID, instanceID, scope string) string {
 	if secret == "" || jobID == "" || instanceID == "" {
 		return ""
 	}
 
-	// Create payload
-	payload := jobID + ":" + instanceID
+	// Create payload with optional scope
+	payload := jobID + ":" + instanceID + ":" + scope
 	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))
 
 	// Create HMAC signature
@@ -35,26 +45,33 @@ func GenerateCacheToken(secret, jobID, instanceID string) string {
 	return encodedPayload + "." + signature
 }
 
-// ParseCacheToken extracts job_id and instance_id from a self-contained token.
+// ParseCacheToken extracts job_id, instance_id, and scope from a self-contained token.
 // Returns empty strings if token is malformed.
-func ParseCacheToken(token string) (jobID, instanceID string, ok bool) {
+// Scope may be empty for backwards compatibility with older tokens.
+func ParseCacheToken(token string) (jobID, instanceID, scope string, ok bool) {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	payload := string(payloadBytes)
-	colonIdx := strings.Index(payload, ":")
-	if colonIdx == -1 {
-		return "", "", false
+	payloadParts := strings.SplitN(payload, ":", 3)
+	if len(payloadParts) < 2 {
+		return "", "", "", false
 	}
 
-	return payload[:colonIdx], payload[colonIdx+1:], true
+	jobID = payloadParts[0]
+	instanceID = payloadParts[1]
+	if len(payloadParts) > 2 {
+		scope = payloadParts[2]
+	}
+
+	return jobID, instanceID, scope, true
 }
 
 // ValidateCacheToken verifies that the provided token has a valid HMAC signature.
@@ -103,6 +120,7 @@ func NewAuthMiddleware(secret string) *AuthMiddleware {
 }
 
 // Wrap returns an http.Handler that validates the cache token before calling the next handler.
+// If valid, it extracts the scope from the token and stores it in the request context.
 func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !m.enabled {
@@ -131,8 +149,24 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
+		// Extract scope from token and add to context
+		_, _, scope, ok := ParseCacheToken(token)
+		if ok && scope != "" {
+			ctx := context.WithValue(r.Context(), scopeContextKey, scope)
+			r = r.WithContext(ctx)
+		}
+
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ScopeFromContext extracts the cache scope from a request context.
+// Returns empty string if no scope was set.
+func ScopeFromContext(ctx context.Context) string {
+	if scope, ok := ctx.Value(scopeContextKey).(string); ok {
+		return scope
+	}
+	return ""
 }
 
 // WrapFunc is a convenience method for wrapping http.HandlerFunc.
