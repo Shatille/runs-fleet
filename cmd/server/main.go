@@ -119,6 +119,7 @@ func main() {
 	}
 
 	var housekeepingHandler *housekeeping.Handler
+	var housekeepingScheduler *housekeeping.Scheduler
 	if cfg.HousekeepingQueueURL != "" {
 		housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
 
@@ -130,7 +131,12 @@ func main() {
 		housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
 		tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
 		housekeepingHandler = housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
-		log.Printf("Housekeeping handler initialized with queue: %s", cfg.HousekeepingQueueURL)
+
+		// Create scheduler to periodically trigger housekeeping tasks
+		schedulerCfg := housekeeping.DefaultSchedulerConfig()
+		housekeepingScheduler = housekeeping.NewScheduler(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
+
+		log.Printf("Housekeeping handler and scheduler initialized with queue: %s", cfg.HousekeepingQueueURL)
 	}
 
 	// Initialize runner manager for SSM configuration
@@ -211,6 +217,10 @@ func main() {
 
 	if housekeepingHandler != nil {
 		go housekeepingHandler.Run(ctx)
+	}
+
+	if housekeepingScheduler != nil {
+		go housekeepingScheduler.Run(ctx)
 	}
 
 	go func() {
