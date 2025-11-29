@@ -19,6 +19,8 @@ type DynamoDBAPI interface {
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 }
 
 // Client provides DynamoDB operations for pool configuration and state.
@@ -35,6 +37,24 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 		poolsTable:   poolsTable,
 		jobsTable:    jobsTable,
 	}
+}
+
+// GSI name for querying jobs by instance ID.
+const jobsByInstanceIndex = "jobs-by-instance"
+
+// jobRecord represents a job stored in DynamoDB.
+type jobRecord struct {
+	JobID        string `dynamodbav:"job_id"`
+	RunID        string `dynamodbav:"run_id"`
+	InstanceID   string `dynamodbav:"instance_id"`
+	InstanceType string `dynamodbav:"instance_type"`
+	Pool         string `dynamodbav:"pool"`
+	Private      bool   `dynamodbav:"private"`
+	Spot         bool   `dynamodbav:"spot"`
+	RunnerSpec   string `dynamodbav:"runner_spec"`
+	RetryCount   int    `dynamodbav:"retry_count"`
+	Status       string `dynamodbav:"status"`
+	CreatedAt    string `dynamodbav:"created_at"`
 }
 
 // PoolSchedule defines time-based pool sizing for cost optimization.
@@ -217,9 +237,115 @@ func (c *Client) MarkInstanceTerminating(_ context.Context, instanceID string) e
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
-// TODO(Phase 4): Implement job-to-instance tracking for spot interruption re-queueing.
-func (c *Client) GetJobByInstance(_ context.Context, instanceID string) (*events.JobInfo, error) {
-	return nil, fmt.Errorf("GetJobByInstance not yet implemented for instance %s", instanceID)
+// Queries the jobs-by-instance GSI to find running jobs associated with the instance.
+func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error) {
+	if instanceID == "" {
+		return nil, fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	// Query the GSI to find jobs for this instance
+	output, err := c.dynamoClient.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(c.jobsTable),
+		IndexName:              aws.String(jobsByInstanceIndex),
+		KeyConditionExpression: aws.String("instance_id = :iid"),
+		// Only get running jobs (not completed ones)
+		FilterExpression: aws.String("#status = :running"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":iid":     &types.AttributeValueMemberS{Value: instanceID},
+			":running": &types.AttributeValueMemberS{Value: "running"},
+		},
+		Limit: aws.Int32(1), // We only expect one running job per instance
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query jobs by instance: %w", err)
+	}
+
+	if len(output.Items) == 0 {
+		return nil, nil // No running job found for this instance
+	}
+
+	var record jobRecord
+	if err := attributevalue.UnmarshalMap(output.Items[0], &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
+	}
+
+	return &events.JobInfo{
+		JobID:        record.JobID,
+		RunID:        record.RunID,
+		InstanceType: record.InstanceType,
+		Pool:         record.Pool,
+		Private:      record.Private,
+		Spot:         record.Spot,
+		RunnerSpec:   record.RunnerSpec,
+		RetryCount:   record.RetryCount,
+	}, nil
+}
+
+// JobRecord contains job information for storage.
+type JobRecord struct {
+	JobID        string
+	RunID        string
+	InstanceID   string
+	InstanceType string
+	Pool         string
+	Private      bool
+	Spot         bool
+	RunnerSpec   string
+	RetryCount   int
+}
+
+// SaveJob creates or updates a job record in DynamoDB.
+// The job is stored with status "running" and can be queried by instance_id via the GSI.
+func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
+	if job == nil {
+		return fmt.Errorf("job record cannot be nil")
+	}
+	if job.JobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+	if job.InstanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	record := jobRecord{
+		JobID:        job.JobID,
+		RunID:        job.RunID,
+		InstanceID:   job.InstanceID,
+		InstanceType: job.InstanceType,
+		Pool:         job.Pool,
+		Private:      job.Private,
+		Spot:         job.Spot,
+		RunnerSpec:   job.RunnerSpec,
+		RetryCount:   job.RetryCount,
+		Status:       "running",
+		CreatedAt:    time.Now().Format(time.RFC3339),
+	}
+
+	item, err := attributevalue.MarshalMap(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job record: %w", err)
+	}
+
+	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(c.jobsTable),
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save job record: %w", err)
+	}
+
+	return nil
 }
 
 // MarkJobComplete marks a job as complete in DynamoDB with exit status.
