@@ -143,7 +143,7 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 
 	body, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("Failed to marshal housekeeping message: %v", err)
+		log.Printf("Failed to marshal housekeeping message for task %s: %v", taskType, err)
 		return
 	}
 
