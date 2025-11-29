@@ -109,7 +109,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// scheduleTask sends a housekeeping task message to the queue.
+const (
+	// maxScheduleRetries is the maximum number of retry attempts for scheduling a task.
+	maxScheduleRetries = 3
+	// baseRetryDelay is the initial delay before the first retry.
+	baseRetryDelay = 1 * time.Second
+)
+
+// scheduleTask sends a housekeeping task message to the queue with retry logic.
 func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 	msg := Message{
 		TaskType:  taskType,
@@ -122,14 +129,32 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 		return
 	}
 
-	_, err = s.sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:    aws.String(s.queueURL),
-		MessageBody: aws.String(string(body)),
-	})
-	if err != nil {
-		log.Printf("Failed to schedule housekeeping task %s: %v", taskType, err)
-		return
+	// Retry with exponential backoff
+	var lastErr error
+	for attempt := 0; attempt < maxScheduleRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s...
+			backoff := baseRetryDelay * time.Duration(1<<uint(attempt-1))
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				log.Printf("Context cancelled while scheduling task %s: %v", taskType, ctx.Err())
+				return
+			}
+			log.Printf("Retrying to schedule housekeeping task %s (attempt %d/%d)", taskType, attempt+1, maxScheduleRetries)
+		}
+
+		_, err = s.sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
+			QueueUrl:    aws.String(s.queueURL),
+			MessageBody: aws.String(string(body)),
+		})
+		if err == nil {
+			log.Printf("Scheduled housekeeping task: %s", taskType)
+			return
+		}
+		lastErr = err
+		log.Printf("Failed to schedule housekeeping task %s (attempt %d/%d): %v", taskType, attempt+1, maxScheduleRetries, err)
 	}
 
-	log.Printf("Scheduled housekeeping task: %s", taskType)
+	log.Printf("Failed to schedule housekeeping task %s after %d attempts: %v", taskType, maxScheduleRetries, lastErr)
 }
