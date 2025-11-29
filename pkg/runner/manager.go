@@ -86,10 +86,10 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		return fmt.Errorf("failed to get registration token: %w", err)
 	}
 
-	// Generate cache token
+	// Generate cache token with repository scope for cache isolation
 	cacheToken := ""
 	if m.config.CacheSecret != "" {
-		cacheToken = cache.GenerateCacheToken(m.config.CacheSecret, req.JobID, req.InstanceID)
+		cacheToken = cache.GenerateCacheToken(m.config.CacheSecret, req.JobID, req.InstanceID, req.Repo)
 	}
 
 	// Build runner config with dynamic org from repo

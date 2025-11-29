@@ -7,6 +7,7 @@ import (
 )
 
 const testSecret = "test-secret"
+const testScope = "org/repo"
 
 func TestGenerateCacheToken(t *testing.T) {
 	tests := []struct {
@@ -14,6 +15,7 @@ func TestGenerateCacheToken(t *testing.T) {
 		secret     string
 		jobID      string
 		instanceID string
+		scope      string
 		wantEmpty  bool
 	}{
 		{
@@ -21,6 +23,15 @@ func TestGenerateCacheToken(t *testing.T) {
 			secret:     "my-secret-key",
 			jobID:      "job-123",
 			instanceID: "i-abc123",
+			scope:      "org/repo",
+			wantEmpty:  false,
+		},
+		{
+			name:       "generates token with empty scope",
+			secret:     "my-secret-key",
+			jobID:      "job-123",
+			instanceID: "i-abc123",
+			scope:      "",
 			wantEmpty:  false,
 		},
 		{
@@ -28,6 +39,7 @@ func TestGenerateCacheToken(t *testing.T) {
 			secret:     "",
 			jobID:      "job-123",
 			instanceID: "i-abc123",
+			scope:      "org/repo",
 			wantEmpty:  true,
 		},
 		{
@@ -35,6 +47,7 @@ func TestGenerateCacheToken(t *testing.T) {
 			secret:     "my-secret-key",
 			jobID:      "",
 			instanceID: "i-abc123",
+			scope:      "org/repo",
 			wantEmpty:  true,
 		},
 		{
@@ -42,13 +55,14 @@ func TestGenerateCacheToken(t *testing.T) {
 			secret:     "my-secret-key",
 			jobID:      "job-123",
 			instanceID: "",
+			scope:      "org/repo",
 			wantEmpty:  true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			token := GenerateCacheToken(tt.secret, tt.jobID, tt.instanceID)
+			token := GenerateCacheToken(tt.secret, tt.jobID, tt.instanceID, tt.scope)
 			if tt.wantEmpty && token != "" {
 				t.Errorf("expected empty token, got %q", token)
 			}
@@ -63,9 +77,10 @@ func TestGenerateCacheToken_Deterministic(t *testing.T) {
 	secret := testSecret
 	jobID := "job-123"
 	instanceID := "i-abc123"
+	scope := testScope
 
-	token1 := GenerateCacheToken(secret, jobID, instanceID)
-	token2 := GenerateCacheToken(secret, jobID, instanceID)
+	token1 := GenerateCacheToken(secret, jobID, instanceID, scope)
+	token2 := GenerateCacheToken(secret, jobID, instanceID, scope)
 
 	if token1 != token2 {
 		t.Errorf("tokens should be deterministic: %q != %q", token1, token2)
@@ -74,10 +89,12 @@ func TestGenerateCacheToken_Deterministic(t *testing.T) {
 
 func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
 	secret := testSecret
+	scope := testScope
 
-	token1 := GenerateCacheToken(secret, "job-1", "i-abc")
-	token2 := GenerateCacheToken(secret, "job-2", "i-abc")
-	token3 := GenerateCacheToken(secret, "job-1", "i-xyz")
+	token1 := GenerateCacheToken(secret, "job-1", "i-abc", scope)
+	token2 := GenerateCacheToken(secret, "job-2", "i-abc", scope)
+	token3 := GenerateCacheToken(secret, "job-1", "i-xyz", scope)
+	token4 := GenerateCacheToken(secret, "job-1", "i-abc", "other/repo")
 
 	if token1 == token2 {
 		t.Error("different job IDs should produce different tokens")
@@ -85,10 +102,13 @@ func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
 	if token1 == token3 {
 		t.Error("different instance IDs should produce different tokens")
 	}
+	if token1 == token4 {
+		t.Error("different scopes should produce different tokens")
+	}
 }
 
 func TestGenerateCacheToken_Format(t *testing.T) {
-	token := GenerateCacheToken("secret", "job-123", "i-abc")
+	token := GenerateCacheToken("secret", "job-123", "i-abc", "org/repo")
 
 	// Token should be in format: base64.hmac
 	if token == "" {
@@ -113,13 +133,23 @@ func TestParseCacheToken(t *testing.T) {
 		token          string
 		wantJobID      string
 		wantInstanceID string
+		wantScope      string
 		wantOK         bool
 	}{
 		{
-			name:           "valid token",
-			token:          GenerateCacheToken("secret", "job-123", "i-abc"),
+			name:           "valid token with scope",
+			token:          GenerateCacheToken("secret", "job-123", "i-abc", "org/repo"),
 			wantJobID:      "job-123",
 			wantInstanceID: "i-abc",
+			wantScope:      "org/repo",
+			wantOK:         true,
+		},
+		{
+			name:           "valid token with empty scope",
+			token:          GenerateCacheToken("secret", "job-123", "i-abc", ""),
+			wantJobID:      "job-123",
+			wantInstanceID: "i-abc",
+			wantScope:      "",
 			wantOK:         true,
 		},
 		{
@@ -146,7 +176,7 @@ func TestParseCacheToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jobID, instanceID, ok := ParseCacheToken(tt.token)
+			jobID, instanceID, scope, ok := ParseCacheToken(tt.token)
 			if ok != tt.wantOK {
 				t.Errorf("ParseCacheToken() ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -157,6 +187,9 @@ func TestParseCacheToken(t *testing.T) {
 				if instanceID != tt.wantInstanceID {
 					t.Errorf("instanceID = %q, want %q", instanceID, tt.wantInstanceID)
 				}
+				if scope != tt.wantScope {
+					t.Errorf("scope = %q, want %q", scope, tt.wantScope)
+				}
 			}
 		})
 	}
@@ -166,7 +199,8 @@ func TestValidateCacheToken(t *testing.T) {
 	secret := "my-secret-key"
 	jobID := "job-123"
 	instanceID := "i-abc123"
-	validToken := GenerateCacheToken(secret, jobID, instanceID)
+	scope := testScope
+	validToken := GenerateCacheToken(secret, jobID, instanceID, scope)
 
 	tests := []struct {
 		name   string
@@ -305,7 +339,7 @@ func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 	middleware := NewAuthMiddleware(secret)
 
 	// Generate a valid token
-	validToken := GenerateCacheToken(secret, "job-123", "i-abc")
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "org/repo")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -331,7 +365,7 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 	middleware := NewAuthMiddleware(secret)
 
 	// Generate a valid token
-	validToken := GenerateCacheToken(secret, "job-123", "i-abc")
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "org/repo")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -357,7 +391,7 @@ func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
 	middleware := NewAuthMiddleware(secret)
 
 	// Generate a valid token
-	validToken := GenerateCacheToken(secret, "job-123", "i-abc")
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "org/repo")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -385,7 +419,7 @@ func TestAuthMiddleware_WrongSecret(t *testing.T) {
 	middleware := NewAuthMiddleware("server-secret")
 
 	// Token generated with different secret
-	wrongToken := GenerateCacheToken("different-secret", "job-123", "i-abc")
+	wrongToken := GenerateCacheToken("different-secret", "job-123", "i-abc", "org/repo")
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -402,5 +436,51 @@ func TestAuthMiddleware_WrongSecret(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
+	}
+}
+
+func TestAuthMiddleware_ScopeInContext(t *testing.T) {
+	secret := testSecret
+	middleware := NewAuthMiddleware(secret)
+
+	// Generate a valid token with scope
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "myorg/myrepo")
+
+	var capturedScope string
+	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedScope = ScopeFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(CacheTokenHeader, validToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if capturedScope != "myorg/myrepo" {
+		t.Errorf("expected scope 'myorg/myrepo', got %q", capturedScope)
+	}
+}
+
+func TestScopeFromContext_NoScope(t *testing.T) {
+	secret := testSecret
+	middleware := NewAuthMiddleware(secret)
+
+	// Generate a valid token with empty scope
+	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "")
+
+	var capturedScope string
+	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedScope = ScopeFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(CacheTokenHeader, validToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if capturedScope != "" {
+		t.Errorf("expected empty scope, got %q", capturedScope)
 	}
 }
