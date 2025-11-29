@@ -24,6 +24,7 @@ type GitHubClient struct {
 	appID      int64
 	privateKey *rsa.PrivateKey
 	httpClient *http.Client
+	baseURL    string // API base URL, defaults to https://api.github.com
 }
 
 // NewGitHubClient creates a new GitHub client for runner operations.
@@ -62,6 +63,7 @@ func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, erro
 		appID:      id,
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL:    "https://api.github.com",
 	}, nil
 }
 
@@ -98,7 +100,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	}
 
 	// Find installation for org (using Bearer auth for JWT)
-	url := fmt.Sprintf("https://api.github.com/orgs/%s/installation", owner)
+	url := fmt.Sprintf("%s/orgs/%s/installation", c.baseURL, owner)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create installation request: %w", err)
@@ -116,7 +118,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	if resp.StatusCode == http.StatusNotFound {
 		_ = resp.Body.Close() // Close first response before reassigning
 
-		url = fmt.Sprintf("https://api.github.com/users/%s/installation", owner)
+		url = fmt.Sprintf("%s/users/%s/installation", c.baseURL, owner)
 		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create user installation request: %w", err)
@@ -149,7 +151,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	isOrg := installation.Account.Type == "Organization"
 
 	// Create installation token
-	url = fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installation.ID)
+	url = fmt.Sprintf("%s/app/installations/%d/access_tokens", c.baseURL, installation.ID)
 	req, err = http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
@@ -218,14 +220,14 @@ func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName 
 	return jitConfig.GetEncodedJITConfig(), nil
 }
 
-// RegistrationResult contains the registration token and account type.
+// RegistrationResult contains the registration token.
 type RegistrationResult struct {
 	Token string
-	IsOrg bool // true for Organization, false for User (personal account)
+	IsOrg bool // Deprecated: always false since repo-level registration is always used
 }
 
 // GetRegistrationToken gets a registration token for GitHub Actions runners.
-// For organizations, uses org-level endpoint. For personal accounts, uses repo-level.
+// Always uses repo-level endpoint to ensure runners only pick up jobs from the specific repository.
 // Extracts owner from repo string (owner/repo format) for installation token.
 func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
 	// Extract owner from repo string (required)
@@ -243,13 +245,11 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 		return nil, err
 	}
 
-	// Use org-level endpoint for organizations, repo-level for personal accounts
-	var url string
-	if info.IsOrg {
-		url = fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", owner)
-	} else {
-		url = fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/registration-token", repo)
-	}
+	// Always use repo-level endpoint to ensure runners only pick up jobs
+	// from the specific repository. Org-level registration allows runners
+	// to pick up jobs from ANY repo in the org, causing job misassignment.
+	// See: https://docs.github.com/en/rest/actions/self-hosted-runners#create-a-registration-token-for-a-repository
+	url := fmt.Sprintf("%s/repos/%s/actions/runners/registration-token", c.baseURL, repo)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
@@ -271,7 +271,7 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
-		return &RegistrationResult{Token: result.Token, IsOrg: info.IsOrg}, nil
+		return &RegistrationResult{Token: result.Token, IsOrg: false}, nil
 	}
 
 	// Read error body for debugging

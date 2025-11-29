@@ -189,12 +189,13 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
 			})
-		case "/orgs/myorg/actions/runners/registration-token":
+		case "/repos/myorg/myrepo/actions/runners/registration-token":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "AABB123",
 			})
 		default:
+			t.Logf("unexpected request path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -204,15 +205,19 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
+	client.baseURL = server.URL
 
-	// Verify client was created
-	if client == nil {
-		t.Fatal("expected client to be created")
+	result, err := client.GetRegistrationToken(context.Background(), "myorg/myrepo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Note: In production, this would use the real GitHub API
-	// For this test, we're validating the request/response structure
-	// Real integration tests would need a mock or test double
+	if result.Token != "AABB123" {
+		t.Errorf("expected token 'AABB123', got '%s'", result.Token)
+	}
+	if result.IsOrg {
+		t.Error("expected IsOrg to be false for repo-level registration")
+	}
 }
 
 func TestGitHubClient_GetJITConfig_EmptyOrg(t *testing.T) {
@@ -310,17 +315,25 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// This test validates the structure and error handling
-	// Full integration would require mocking the http client
 	client, err := NewGitHubClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
+	client.baseURL = server.URL
 
 	// Test with empty owner
 	_, err = client.getInstallationToken(context.Background(), "")
 	if err == nil {
 		t.Error("expected error for empty owner")
+	}
+
+	// Test successful token retrieval
+	token, err := client.getInstallationToken(context.Background(), "testorg")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "ghs_test_token" {
+		t.Errorf("expected token 'ghs_test_token', got '%s'", token)
 	}
 }
 
@@ -345,20 +358,34 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_user_token",
 			})
+		case "/repos/myuser/myrepo/actions/runners/registration-token":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"token": "user_reg_token",
+			})
 		default:
+			t.Logf("unexpected request path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	// Note: This test validates the API contract
-	// Actual fallback behavior requires integration testing
 	client, err := NewGitHubClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
+	client.baseURL = server.URL
 
-	if client == nil {
-		t.Fatal("expected client to be created")
+	// Test that user installation fallback works
+	result, err := client.GetRegistrationToken(context.Background(), "myuser/myrepo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Token != "user_reg_token" {
+		t.Errorf("expected token 'user_reg_token', got '%s'", result.Token)
+	}
+	if result.IsOrg {
+		t.Error("expected IsOrg to be false for user account")
 	}
 }
