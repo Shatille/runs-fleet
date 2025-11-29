@@ -15,7 +15,7 @@ type mockGitHubAPI struct {
 	calls   int
 }
 
-func (m *mockGitHubAPI) GetFileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+func (m *mockGitHubAPI) GetFileContent(_ context.Context, _, _, _, _ string) ([]byte, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -38,7 +38,7 @@ func newMockDBAPI() *mockDBAPI {
 	}
 }
 
-func (m *mockDBAPI) SavePoolConfig(ctx context.Context, config *db.PoolConfig) error {
+func (m *mockDBAPI) SavePoolConfig(_ context.Context, config *db.PoolConfig) error {
 	m.saveCalls++
 	if m.saveErr != nil {
 		return m.saveErr
@@ -47,7 +47,7 @@ func (m *mockDBAPI) SavePoolConfig(ctx context.Context, config *db.PoolConfig) e
 	return nil
 }
 
-func (m *mockDBAPI) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
+func (m *mockDBAPI) GetPoolConfig(_ context.Context, poolName string) (*db.PoolConfig, error) {
 	m.getCalls++
 	if m.getErr != nil {
 		return nil, m.getErr

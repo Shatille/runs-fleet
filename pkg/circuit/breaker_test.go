@@ -28,7 +28,7 @@ func newMockDynamoDB() *mockDynamoDB {
 	}
 }
 
-func (m *mockDynamoDB) GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+func (m *mockDynamoDB) GetItem(_ context.Context, params *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.getCalls++
@@ -52,7 +52,7 @@ func (m *mockDynamoDB) GetItem(ctx context.Context, params *dynamodb.GetItemInpu
 	return &dynamodb.GetItemOutput{Item: item}, nil
 }
 
-func (m *mockDynamoDB) PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+func (m *mockDynamoDB) PutItem(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.putCalls++
@@ -72,7 +72,7 @@ func (m *mockDynamoDB) PutItem(ctx context.Context, params *dynamodb.PutItemInpu
 	return &dynamodb.PutItemOutput{}, nil
 }
 
-func (m *mockDynamoDB) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+func (m *mockDynamoDB) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	return &dynamodb.UpdateItemOutput{}, nil
 }
 
@@ -537,7 +537,7 @@ func TestCleanupExpiredCache(t *testing.T) {
 	}
 }
 
-func TestStartCacheCleanup(t *testing.T) {
+func TestStartCacheCleanup(_ *testing.T) {
 	b := &Breaker{
 		dynamoClient: newMockDynamoDB(),
 		tableName:    "test-table",

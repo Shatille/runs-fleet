@@ -19,7 +19,7 @@ type mockSSMAPI struct {
 	lastPutVal  string
 }
 
-func (m *mockSSMAPI) PutParameter(ctx context.Context, params *ssm.PutParameterInput, optFns ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
+func (m *mockSSMAPI) PutParameter(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
 	m.putCalls++
 	if params.Name != nil {
 		m.lastPutName = *params.Name
@@ -33,7 +33,7 @@ func (m *mockSSMAPI) PutParameter(ctx context.Context, params *ssm.PutParameterI
 	return &ssm.PutParameterOutput{}, nil
 }
 
-func (m *mockSSMAPI) DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
+func (m *mockSSMAPI) DeleteParameter(_ context.Context, _ *ssm.DeleteParameterInput, _ ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
 	m.deleteCalls++
 	if m.deleteErr != nil {
 		return nil, m.deleteErr
@@ -48,7 +48,7 @@ type mockGitHubClientForManager struct {
 	isOrg    bool
 }
 
-func (m *mockGitHubClientForManager) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
+func (m *mockGitHubClientForManager) GetRegistrationToken(_ context.Context, _ string) (*RegistrationResult, error) {
 	if m.regErr != nil {
 		return nil, m.regErr
 	}

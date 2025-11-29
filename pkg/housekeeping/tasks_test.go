@@ -25,7 +25,7 @@ type mockEC2API struct {
 	terminatedIDs  []string
 }
 
-func (m *mockEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+func (m *mockEC2API) DescribeInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 	m.describeCalls++
 	if m.describeErr != nil {
 		return nil, m.describeErr
@@ -35,7 +35,7 @@ func (m *mockEC2API) DescribeInstances(ctx context.Context, params *ec2.Describe
 	}, nil
 }
 
-func (m *mockEC2API) TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+func (m *mockEC2API) TerminateInstances(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
 	m.terminateCalls++
 	m.terminatedIDs = params.InstanceIds
 	if m.terminateErr != nil {
@@ -54,7 +54,7 @@ type mockTaskSSMAPI struct {
 	deletedParams  []string
 }
 
-func (m *mockTaskSSMAPI) GetParametersByPath(ctx context.Context, params *ssm.GetParametersByPathInput, optFns ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
+func (m *mockTaskSSMAPI) GetParametersByPath(_ context.Context, _ *ssm.GetParametersByPathInput, _ ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
 	m.getCalls++
 	if m.getErr != nil {
 		return nil, m.getErr
@@ -64,7 +64,7 @@ func (m *mockTaskSSMAPI) GetParametersByPath(ctx context.Context, params *ssm.Ge
 	}, nil
 }
 
-func (m *mockTaskSSMAPI) DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
+func (m *mockTaskSSMAPI) DeleteParameter(_ context.Context, params *ssm.DeleteParameterInput, _ ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
 	m.deleteCalls++
 	if params.Name != nil {
 		m.deletedParams = append(m.deletedParams, *params.Name)
@@ -86,7 +86,7 @@ type mockTaskDynamoDBAPI struct {
 	batchCalls    int
 }
 
-func (m *mockTaskDynamoDBAPI) Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+func (m *mockTaskDynamoDBAPI) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 	m.queryCalls++
 	if m.queryErr != nil {
 		return nil, m.queryErr
@@ -96,7 +96,7 @@ func (m *mockTaskDynamoDBAPI) Query(ctx context.Context, params *dynamodb.QueryI
 	}, nil
 }
 
-func (m *mockTaskDynamoDBAPI) BatchWriteItem(ctx context.Context, params *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
+func (m *mockTaskDynamoDBAPI) BatchWriteItem(_ context.Context, _ *dynamodb.BatchWriteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
 	m.batchCalls++
 	if m.batchWriteErr != nil {
 		return nil, m.batchWriteErr
@@ -104,7 +104,7 @@ func (m *mockTaskDynamoDBAPI) BatchWriteItem(ctx context.Context, params *dynamo
 	return &dynamodb.BatchWriteItemOutput{}, nil
 }
 
-func (m *mockTaskDynamoDBAPI) Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+func (m *mockTaskDynamoDBAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 	m.scanCalls++
 	if m.scanErr != nil {
 		return nil, m.scanErr
@@ -123,22 +123,22 @@ type mockTaskMetricsAPI struct {
 	err              error
 }
 
-func (m *mockTaskMetricsAPI) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
+func (m *mockTaskMetricsAPI) PublishOrphanedInstancesTerminated(_ context.Context, count int) error {
 	m.orphanedCount = count
 	return m.err
 }
 
-func (m *mockTaskMetricsAPI) PublishSSMParametersDeleted(ctx context.Context, count int) error {
+func (m *mockTaskMetricsAPI) PublishSSMParametersDeleted(_ context.Context, count int) error {
 	m.ssmCount = count
 	return m.err
 }
 
-func (m *mockTaskMetricsAPI) PublishJobRecordsArchived(ctx context.Context, count int) error {
+func (m *mockTaskMetricsAPI) PublishJobRecordsArchived(_ context.Context, count int) error {
 	m.jobCount = count
 	return m.err
 }
 
-func (m *mockTaskMetricsAPI) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
+func (m *mockTaskMetricsAPI) PublishPoolUtilization(_ context.Context, poolName string, utilization float64) error {
 	if m.poolUtilizations == nil {
 		m.poolUtilizations = make(map[string]float64)
 	}
@@ -152,7 +152,7 @@ type mockCostReporter struct {
 	calls int
 }
 
-func (m *mockCostReporter) GenerateDailyReport(ctx context.Context) error {
+func (m *mockCostReporter) GenerateDailyReport(_ context.Context) error {
 	m.calls++
 	return m.err
 }

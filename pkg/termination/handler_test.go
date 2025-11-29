@@ -12,6 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
+// Test constants to satisfy goconst
+const (
+	testReceiptTermination = "test-receipt"
+	testStatusSuccess      = "success"
+)
+
 // mockQueueAPI implements QueueAPI for testing.
 type mockQueueAPI struct {
 	messages      []types.Message
@@ -22,7 +28,7 @@ type mockQueueAPI struct {
 	deleteReceipt string
 }
 
-func (m *mockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
+func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
 	m.receiveCalls++
 	if m.receiveErr != nil {
 		return nil, m.receiveErr
@@ -30,7 +36,7 @@ func (m *mockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, w
 	return m.messages, nil
 }
 
-func (m *mockQueueAPI) DeleteMessage(ctx context.Context, receiptHandle string) error {
+func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) error {
 	m.deleteCalls++
 	m.deleteReceipt = receiptHandle
 	return m.deleteErr
@@ -46,14 +52,14 @@ type mockDBAPI struct {
 	lastStatus       string
 }
 
-func (m *mockDBAPI) MarkJobComplete(ctx context.Context, jobID, status string, exitCode, duration int) error {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID, status string, _, _ int) error {
 	m.completeCalls++
 	m.lastJobID = jobID
 	m.lastStatus = status
 	return m.markCompleteErr
 }
 
-func (m *mockDBAPI) UpdateJobMetrics(ctx context.Context, jobID string, startedAt, completedAt time.Time) error {
+func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ string, _, _ time.Time) error {
 	m.metricsCalls++
 	return m.updateMetricsErr
 }
@@ -69,18 +75,18 @@ type mockMetricsAPI struct {
 	lastDuration  int
 }
 
-func (m *mockMetricsAPI) PublishJobDuration(ctx context.Context, duration int) error {
+func (m *mockMetricsAPI) PublishJobDuration(_ context.Context, duration int) error {
 	m.durationCalls++
 	m.lastDuration = duration
 	return m.durationErr
 }
 
-func (m *mockMetricsAPI) PublishJobSuccess(ctx context.Context) error {
+func (m *mockMetricsAPI) PublishJobSuccess(_ context.Context) error {
 	m.successCalls++
 	return m.successErr
 }
 
-func (m *mockMetricsAPI) PublishJobFailure(ctx context.Context) error {
+func (m *mockMetricsAPI) PublishJobFailure(_ context.Context) error {
 	m.failureCalls++
 	return m.failureErr
 }
@@ -92,7 +98,7 @@ type mockSSMAPI struct {
 	deletedName string
 }
 
-func (m *mockSSMAPI) DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
+func (m *mockSSMAPI) DeleteParameter(_ context.Context, params *ssm.DeleteParameterInput, _ ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
 	m.deleteCalls++
 	if params.Name != nil {
 		m.deletedName = *params.Name
@@ -145,7 +151,7 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceiptTermination
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -163,8 +169,8 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	if db.lastJobID != "job-123" {
 		t.Errorf("expected job ID 'job-123', got '%s'", db.lastJobID)
 	}
-	if db.lastStatus != "success" {
-		t.Errorf("expected status 'success', got '%s'", db.lastStatus)
+	if db.lastStatus != testStatusSuccess {
+		t.Errorf("expected status '%s', got '%s'", testStatusSuccess, db.lastStatus)
 	}
 
 	if metrics.successCalls != 1 {
@@ -202,7 +208,7 @@ func TestHandler_processMessage_Failure(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceiptTermination
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -234,7 +240,7 @@ func TestHandler_processMessage_Started(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceiptTermination
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -442,7 +448,7 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceiptTermination
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,

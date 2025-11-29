@@ -57,7 +57,7 @@ func TestNewDownloader_NilCache(t *testing.T) {
 	}
 }
 
-func TestDownloadRunner_UnsupportedArch(t *testing.T) {
+func TestDownloadRunner_UnsupportedArch(_ *testing.T) {
 	// This test validates the architecture check logic
 	d := NewDownloader(nil)
 
@@ -174,9 +174,9 @@ func TestAsset_Structure(t *testing.T) {
 	}
 }
 
-func TestFetchLatestRelease_ServerError(t *testing.T) {
+func TestFetchLatestRelease_ServerError(_ *testing.T) {
 	// Create a test server that returns an error
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -186,7 +186,7 @@ func TestFetchLatestRelease_ServerError(t *testing.T) {
 }
 
 func TestDownloadFile_ServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
@@ -202,7 +202,7 @@ func TestDownloadFile_ServerError(t *testing.T) {
 
 func TestDownloadFile_Success(t *testing.T) {
 	content := []byte("test file content")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(content)
 	}))
@@ -228,7 +228,7 @@ func TestDownloadFile_Success(t *testing.T) {
 }
 
 func TestDownloadFile_ContextCancelled(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		// Simulate slow response
 		select {}
 	}))

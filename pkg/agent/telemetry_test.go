@@ -11,6 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+// Test status constants to satisfy goconst
+const (
+	testStatusSuccess = "success"
+	testStatusFailure = "failure"
+)
+
 // mockTelemetrySQSAPI implements TelemetrySQSAPI for testing.
 type mockTelemetrySQSAPI struct {
 	mu        sync.Mutex
@@ -20,7 +26,7 @@ type mockTelemetrySQSAPI struct {
 	failCount int // Number of times to fail before succeeding
 }
 
-func (m *mockTelemetrySQSAPI) SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+func (m *mockTelemetrySQSAPI) SendMessage(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sendCalls++
@@ -44,14 +50,14 @@ type mockLogger struct {
 	messages []string
 }
 
-func (m *mockLogger) Printf(format string, v ...interface{}) {
+func (m *mockLogger) Printf(format string, _ ...interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// We just collect the messages for verification
 	m.messages = append(m.messages, format)
 }
 
-func (m *mockLogger) Println(v ...interface{}) {
+func (m *mockLogger) Println(_ ...interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, "println")
@@ -143,8 +149,8 @@ func TestTelemetry_SendJobCompleted_Success(t *testing.T) {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if decoded.Status != "success" {
-		t.Errorf("expected status 'success', got '%s'", decoded.Status)
+	if decoded.Status != testStatusSuccess {
+		t.Errorf("expected status '%s', got '%s'", testStatusSuccess, decoded.Status)
 	}
 }
 
@@ -174,8 +180,8 @@ func TestTelemetry_SendJobCompleted_Failure(t *testing.T) {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if decoded.Status != "failure" {
-		t.Errorf("expected status 'failure', got '%s'", decoded.Status)
+	if decoded.Status != testStatusFailure {
+		t.Errorf("expected status '%s', got '%s'", testStatusFailure, decoded.Status)
 	}
 }
 
@@ -266,8 +272,8 @@ func TestTelemetry_SendJobFailure(t *testing.T) {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if decoded.Status != "failure" {
-		t.Errorf("expected status 'failure', got '%s'", decoded.Status)
+	if decoded.Status != testStatusFailure {
+		t.Errorf("expected status '%s', got '%s'", testStatusFailure, decoded.Status)
 	}
 }
 
@@ -350,12 +356,11 @@ func TestTelemetry_SendMessage_ContextCancelled(t *testing.T) {
 		JobID:      "job-123",
 	}
 
-	err := telemetry.SendJobStarted(ctx, status)
-	// Should return context error
-	if err != context.Canceled {
-		// First call might succeed before context check
-		// The important thing is it doesn't retry indefinitely
-	}
+	_ = telemetry.SendJobStarted(ctx, status)
+	// The call may return context.Canceled or succeed before context check.
+	// The important verification is that it doesn't retry indefinitely,
+	// which is implicitly verified by the test completing.
+	t.Log("Context cancellation test completed - verified no infinite retry")
 }
 
 func TestTelemetry_SendWithTimeout(t *testing.T) {
@@ -388,7 +393,7 @@ func TestJobStatus_Structure(t *testing.T) {
 	status := JobStatus{
 		InstanceID:      "i-12345",
 		JobID:           "job-123",
-		Status:          "success",
+		Status:          testStatusSuccess,
 		ExitCode:        0,
 		DurationSeconds: 120,
 		StartedAt:       now.Add(-2 * time.Minute),
@@ -403,8 +408,8 @@ func TestJobStatus_Structure(t *testing.T) {
 	if status.JobID != "job-123" {
 		t.Errorf("expected JobID 'job-123', got '%s'", status.JobID)
 	}
-	if status.Status != "success" {
-		t.Errorf("expected Status 'success', got '%s'", status.Status)
+	if status.Status != testStatusSuccess {
+		t.Errorf("expected Status '%s', got '%s'", testStatusSuccess, status.Status)
 	}
 	if status.ExitCode != 0 {
 		t.Errorf("expected ExitCode 0, got %d", status.ExitCode)
@@ -425,7 +430,7 @@ func TestJobStatus_JSONSerialization(t *testing.T) {
 	status := JobStatus{
 		InstanceID:      "i-12345",
 		JobID:           "job-123",
-		Status:          "success",
+		Status:          testStatusSuccess,
 		ExitCode:        0,
 		DurationSeconds: 120,
 		StartedAt:       now.Add(-2 * time.Minute),

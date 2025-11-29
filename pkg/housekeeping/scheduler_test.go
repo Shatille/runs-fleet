@@ -20,7 +20,7 @@ type mockSchedulerSQSAPI struct {
 	sendCalls   int
 }
 
-func (m *mockSchedulerSQSAPI) SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+func (m *mockSchedulerSQSAPI) SendMessage(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sendCalls++
@@ -47,7 +47,7 @@ type mockSchedulerMetrics struct {
 	err      error
 }
 
-func (m *mockSchedulerMetrics) PublishSchedulingFailure(ctx context.Context, taskType string) error {
+func (m *mockSchedulerMetrics) PublishSchedulingFailure(_ context.Context, taskType string) error {
 	m.failures = append(m.failures, taskType)
 	return m.err
 }

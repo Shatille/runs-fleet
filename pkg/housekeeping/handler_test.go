@@ -11,6 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+// Test constants to satisfy goconst
+const testReceipt = "test-receipt"
+
 // mockQueueAPI implements QueueAPI for testing.
 type mockQueueAPI struct {
 	messages      []types.Message
@@ -21,7 +24,7 @@ type mockQueueAPI struct {
 	deleteReceipt string
 }
 
-func (m *mockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
+func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
 	m.receiveCalls++
 	if m.receiveErr != nil {
 		return nil, m.receiveErr
@@ -29,7 +32,7 @@ func (m *mockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, w
 	return m.messages, nil
 }
 
-func (m *mockQueueAPI) DeleteMessage(ctx context.Context, receiptHandle string) error {
+func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) error {
 	m.deleteCalls++
 	m.deleteReceipt = receiptHandle
 	return m.deleteErr
@@ -49,27 +52,27 @@ type mockTaskExecutor struct {
 	costCall     int
 }
 
-func (m *mockTaskExecutor) ExecuteOrphanedInstances(ctx context.Context) error {
+func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
 	m.orphanedCall++
 	return m.orphanedErr
 }
 
-func (m *mockTaskExecutor) ExecuteStaleSSM(ctx context.Context) error {
+func (m *mockTaskExecutor) ExecuteStaleSSM(_ context.Context) error {
 	m.ssmCall++
 	return m.ssmErr
 }
 
-func (m *mockTaskExecutor) ExecuteOldJobs(ctx context.Context) error {
+func (m *mockTaskExecutor) ExecuteOldJobs(_ context.Context) error {
 	m.jobsCall++
 	return m.jobsErr
 }
 
-func (m *mockTaskExecutor) ExecutePoolAudit(ctx context.Context) error {
+func (m *mockTaskExecutor) ExecutePoolAudit(_ context.Context) error {
 	m.poolCall++
 	return m.poolErr
 }
 
-func (m *mockTaskExecutor) ExecuteCostReport(ctx context.Context) error {
+func (m *mockTaskExecutor) ExecuteCostReport(_ context.Context) error {
 	m.costCall++
 	return m.costErr
 }
@@ -104,7 +107,7 @@ func TestHandler_ProcessMessage_OrphanedInstances(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -133,7 +136,7 @@ func TestHandler_ProcessMessage_StaleSSM(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -162,7 +165,7 @@ func TestHandler_ProcessMessage_OldJobs(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -191,7 +194,7 @@ func TestHandler_ProcessMessage_PoolAudit(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -220,7 +223,7 @@ func TestHandler_ProcessMessage_CostReport(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -282,7 +285,7 @@ func TestHandler_ProcessMessage_UnknownTaskType(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,
@@ -368,7 +371,7 @@ func TestHandler_ProcessMessage_DeleteError(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 	bodyStr := string(body)
-	receipt := "test-receipt"
+	receipt := testReceipt
 
 	sqsMsg := types.Message{
 		Body:          &bodyStr,

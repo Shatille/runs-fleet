@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// Test constants to satisfy goconst
+const testOwner = "myorg"
+
 func TestPushEvent_GetModifiedFiles(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -246,7 +249,7 @@ func TestHTTPClientGitHub_GetFileContent_NoToken(t *testing.T) {
 }
 
 func TestHTTPClientGitHub_GetFileContent_NotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
@@ -264,7 +267,7 @@ func TestHTTPClientGitHub_GetFileContent_NotFound(t *testing.T) {
 }
 
 func TestHTTPClientGitHub_GetFileContent_ServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -282,7 +285,7 @@ func TestHTTPClientGitHub_GetFileContent_ServerError(t *testing.T) {
 }
 
 func TestHTTPClientGitHub_GetFileContent_ContextCancelled(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// This won't be called if context is cancelled
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -305,13 +308,13 @@ func TestHTTPClientGitHub_GetFileContent_ContextCancelled(t *testing.T) {
 
 func TestRepoInfo(t *testing.T) {
 	info := RepoInfo{
-		Owner:    OwnerInfo{Login: "myorg"},
+		Owner:    OwnerInfo{Login: testOwner},
 		Name:     "myrepo",
-		FullName: "myorg/myrepo",
+		FullName: testOwner + "/myrepo",
 	}
 
-	if info.Owner.Login != "myorg" {
-		t.Errorf("expected owner login 'myorg', got '%s'", info.Owner.Login)
+	if info.Owner.Login != testOwner {
+		t.Errorf("expected owner login '%s', got '%s'", testOwner, info.Owner.Login)
 	}
 	if info.Name != "myrepo" {
 		t.Errorf("expected name 'myrepo', got '%s'", info.Name)

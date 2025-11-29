@@ -172,7 +172,7 @@ func TestSafetyMonitor_check_LowTimeWarning(t *testing.T) {
 	}
 }
 
-func TestSafetyMonitor_checkDiskSpace(t *testing.T) {
+func TestSafetyMonitor_checkDiskSpace(_ *testing.T) {
 	logger := &mockLogger{}
 	monitor := NewSafetyMonitor(1*time.Hour, logger)
 
@@ -183,7 +183,7 @@ func TestSafetyMonitor_checkDiskSpace(t *testing.T) {
 	_ = err
 }
 
-func TestSafetyMonitor_checkMemory(t *testing.T) {
+func TestSafetyMonitor_checkMemory(_ *testing.T) {
 	logger := &mockLogger{}
 	monitor := NewSafetyMonitor(1*time.Hour, logger)
 
@@ -206,7 +206,7 @@ func TestConstants(t *testing.T) {
 	}
 }
 
-func TestSafetyMonitor_Monitor_PeriodicCheck(t *testing.T) {
+func TestSafetyMonitor_Monitor_PeriodicCheck(_ *testing.T) {
 	logger := &mockLogger{}
 	monitor := NewSafetyMonitor(1*time.Hour, logger)
 	monitor.checkInterval = 50 * time.Millisecond
