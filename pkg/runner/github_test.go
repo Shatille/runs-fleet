@@ -175,9 +175,8 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 
 	// Create a test server that simulates GitHub API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/orgs/myorg/installation":
-			// Return installation info
+		switch r.URL.Path {
+		case "/orgs/myorg/installation":
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 123,
@@ -185,14 +184,12 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 					"type": "Organization",
 				},
 			})
-		case r.URL.Path == "/app/installations/123/access_tokens":
-			// Return installation token
+		case "/app/installations/123/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
 			})
-		case r.URL.Path == "/orgs/myorg/actions/runners/registration-token":
-			// Return registration token
+		case "/orgs/myorg/actions/runners/registration-token":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "AABB123",
@@ -293,8 +290,8 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/orgs/testorg/installation":
+		switch r.URL.Path {
+		case "/orgs/testorg/installation":
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 123,
@@ -302,7 +299,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 					"type": "Organization",
 				},
 			})
-		case r.URL.Path == "/app/installations/123/access_tokens":
+		case "/app/installations/123/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
@@ -332,12 +329,10 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 
 	// Create a test server that simulates a personal account (no org)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/orgs/myuser/installation":
-			// Org not found - return 404 to trigger fallback
+		switch r.URL.Path {
+		case "/orgs/myuser/installation":
 			w.WriteHeader(http.StatusNotFound)
-		case r.URL.Path == "/users/myuser/installation":
-			// User installation found
+		case "/users/myuser/installation":
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 456,
@@ -345,7 +340,7 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 					"type": "User",
 				},
 			})
-		case r.URL.Path == "/app/installations/456/access_tokens":
+		case "/app/installations/456/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_user_token",
