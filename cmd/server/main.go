@@ -477,12 +477,13 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 	// Prepare runner config in SSM for each instance
 	if rm != nil {
 		for _, instanceID := range instanceIDs {
+			label := buildRunnerLabel(&job)
 			prepareReq := runner.PrepareRunnerRequest{
 				InstanceID: instanceID,
 				JobID:      job.JobID,
 				RunID:      job.RunID,
 				Repo:       job.Repo,
-				Labels:     []string{fmt.Sprintf("runs-fleet=%s/runner=%s", job.RunID, job.RunnerSpec)},
+				Labels:     []string{label},
 			}
 			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
 				log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
@@ -497,6 +498,22 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 	}
 
 	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
+}
+
+// buildRunnerLabel reconstructs the runs-fleet label from job components.
+// The label must exactly match the workflow's runs-on value for GitHub to match runners to jobs.
+func buildRunnerLabel(job *queue.JobMessage) string {
+	label := fmt.Sprintf("runs-fleet=%s/runner=%s", job.RunID, job.RunnerSpec)
+	if job.Pool != "" {
+		label += fmt.Sprintf("/pool=%s", job.Pool)
+	}
+	if job.Private {
+		label += "/private=true"
+	}
+	if !job.Spot {
+		label += "/spot=false"
+	}
+	return label
 }
 
 // housekeepingMetricsAdapter adapts metrics.Publisher to housekeeping.MetricsAPI.
