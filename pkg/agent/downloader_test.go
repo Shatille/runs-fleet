@@ -22,7 +22,7 @@ type mockCacheClient struct {
 	uploadCalls  int
 }
 
-func (m *mockCacheClient) CheckCache(ctx context.Context, version, arch string) (bool, string, error) {
+func (m *mockCacheClient) CheckCache(_ context.Context, _, _ string) (bool, string, error) {
 	m.checkCalls++
 	if m.checkErr != nil {
 		return false, "", m.checkErr
@@ -30,12 +30,12 @@ func (m *mockCacheClient) CheckCache(ctx context.Context, version, arch string) 
 	return m.cacheHit, "cached-path", nil
 }
 
-func (m *mockCacheClient) DownloadFromCache(ctx context.Context, version, arch, destPath string) error {
+func (m *mockCacheClient) DownloadFromCache(_ context.Context, _, _, _ string) error {
 	m.downloadCalls++
 	return m.downloadErr
 }
 
-func (m *mockCacheClient) UploadToCache(ctx context.Context, version, arch, sourcePath string) error {
+func (m *mockCacheClient) UploadToCache(_ context.Context, _, _, _ string) error {
 	m.uploadCalls++
 	return m.uploadErr
 }
@@ -94,17 +94,17 @@ func TestVerifyChecksum_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	content := []byte("test content for checksum")
-	if _, err := tmpFile.Write(content); err != nil {
-		t.Fatalf("failed to write content: %v", err)
+	if _, writeErr := tmpFile.Write(content); writeErr != nil {
+		t.Fatalf("failed to write content: %v", writeErr)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// Calculate expected checksum
 	hasher := sha256.New()
-	hasher.Write(content)
+	_, _ = hasher.Write(content)
 	expectedChecksum := hex.EncodeToString(hasher.Sum(nil))
 
 	err = VerifyChecksum(tmpFile.Name(), expectedChecksum)
@@ -118,13 +118,13 @@ func TestVerifyChecksum_Mismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	content := []byte("test content")
-	if _, err := tmpFile.Write(content); err != nil {
-		t.Fatalf("failed to write content: %v", err)
+	if _, writeErr := tmpFile.Write(content); writeErr != nil {
+		t.Fatalf("failed to write content: %v", writeErr)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	wrongChecksum := "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -192,7 +192,7 @@ func TestDownloadFile_ServerError(t *testing.T) {
 	defer server.Close()
 
 	tmpFile := filepath.Join(os.TempDir(), "download-test")
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	err := downloadFile(context.Background(), server.URL, tmpFile)
 	if err == nil {
@@ -204,12 +204,12 @@ func TestDownloadFile_Success(t *testing.T) {
 	content := []byte("test file content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer server.Close()
 
 	tmpFile := filepath.Join(os.TempDir(), "download-test-success")
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	err := downloadFile(context.Background(), server.URL, tmpFile)
 	if err != nil {
@@ -238,7 +238,7 @@ func TestDownloadFile_ContextCancelled(t *testing.T) {
 	cancel() // Cancel immediately
 
 	tmpFile := filepath.Join(os.TempDir(), "download-test-cancelled")
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	err := downloadFile(ctx, server.URL, tmpFile)
 	if err == nil {

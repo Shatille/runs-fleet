@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,22 +25,22 @@ func TestCleanup_CleanupRunner_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create subdirectories
 	workDir := filepath.Join(tmpDir, "_work")
 	diagDir := filepath.Join(tmpDir, "_diag")
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		t.Fatalf("failed to create work dir: %v", err)
+	if mkdirErr := os.MkdirAll(workDir, 0755); mkdirErr != nil {
+		t.Fatalf("failed to create work dir: %v", mkdirErr)
 	}
-	if err := os.MkdirAll(diagDir, 0755); err != nil {
-		t.Fatalf("failed to create diag dir: %v", err)
+	if mkdirErr := os.MkdirAll(diagDir, 0755); mkdirErr != nil {
+		t.Fatalf("failed to create diag dir: %v", mkdirErr)
 	}
 
 	// Create some files
 	testFile := filepath.Join(workDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+	if writeErr := os.WriteFile(testFile, []byte("test"), 0644); writeErr != nil {
+		t.Fatalf("failed to create test file: %v", writeErr)
 	}
 
 	logger := &mockLogger{}
@@ -64,7 +65,7 @@ func TestCleanup_CleanupRunner_ContextCancelled(t *testing.T) {
 	cancel() // Cancel immediately
 
 	err := cleanup.CleanupRunner(ctx, "/some/path")
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
@@ -117,7 +118,7 @@ func TestCleanup_CleanupTempFiles_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create isolated temp dir: %v", err)
 	}
-	defer os.RemoveAll(isolatedTmpDir)
+	defer func() { _ = os.RemoveAll(isolatedTmpDir) }()
 
 	logger := &mockLogger{}
 	cleanup := NewCleanup(logger)
@@ -131,8 +132,8 @@ func TestCleanup_CleanupTempFiles_Success(t *testing.T) {
 	}
 
 	for _, f := range testFiles {
-		if err := os.WriteFile(f, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file %s: %v", f, err)
+		if writeErr := os.WriteFile(f, []byte("test"), 0644); writeErr != nil {
+			t.Fatalf("failed to create test file %s: %v", f, writeErr)
 		}
 	}
 
@@ -145,7 +146,7 @@ func TestCleanup_CleanupTempFiles_Success(t *testing.T) {
 
 	// Clean up our isolated test files
 	for _, f := range testFiles {
-		os.Remove(f)
+		_ = os.Remove(f)
 	}
 }
 
@@ -157,7 +158,7 @@ func TestCleanup_CleanupTempFiles_ContextCancelled(t *testing.T) {
 	cancel() // Cancel immediately
 
 	err := cleanup.CleanupTempFiles(ctx)
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
@@ -168,18 +169,18 @@ func TestCleanup_CleanupLogs_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create diag directory with log files
 	diagDir := filepath.Join(tmpDir, "_diag")
-	if err := os.MkdirAll(diagDir, 0755); err != nil {
-		t.Fatalf("failed to create diag dir: %v", err)
+	if mkdirErr := os.MkdirAll(diagDir, 0755); mkdirErr != nil {
+		t.Fatalf("failed to create diag dir: %v", mkdirErr)
 	}
 
 	// Create log files
 	logFile := filepath.Join(diagDir, "runner.log")
-	if err := os.WriteFile(logFile, []byte("log content"), 0644); err != nil {
-		t.Fatalf("failed to create log file: %v", err)
+	if writeErr := os.WriteFile(logFile, []byte("log content"), 0644); writeErr != nil {
+		t.Fatalf("failed to create log file: %v", writeErr)
 	}
 
 	logger := &mockLogger{}
@@ -191,7 +192,7 @@ func TestCleanup_CleanupLogs_Success(t *testing.T) {
 	}
 
 	// Verify log file was removed
-	if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+	if _, statErr := os.Stat(logFile); !os.IsNotExist(statErr) {
 		t.Error("expected log file to be removed")
 	}
 }
@@ -215,7 +216,7 @@ func TestCleanup_CleanupLogs_ContextCancelled(t *testing.T) {
 	cancel() // Cancel immediately
 
 	err := cleanup.CleanupLogs(ctx, "/some/path", 0)
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
@@ -226,18 +227,18 @@ func TestCleanup_CleanupLogs_NonLogFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create diag directory
 	diagDir := filepath.Join(tmpDir, "_diag")
-	if err := os.MkdirAll(diagDir, 0755); err != nil {
-		t.Fatalf("failed to create diag dir: %v", err)
+	if mkdirErr := os.MkdirAll(diagDir, 0755); mkdirErr != nil {
+		t.Fatalf("failed to create diag dir: %v", mkdirErr)
 	}
 
 	// Create a non-log file
 	nonLogFile := filepath.Join(diagDir, "data.txt")
-	if err := os.WriteFile(nonLogFile, []byte("data"), 0644); err != nil {
-		t.Fatalf("failed to create non-log file: %v", err)
+	if writeErr := os.WriteFile(nonLogFile, []byte("data"), 0644); writeErr != nil {
+		t.Fatalf("failed to create non-log file: %v", writeErr)
 	}
 
 	logger := &mockLogger{}

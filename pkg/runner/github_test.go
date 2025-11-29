@@ -179,7 +179,7 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 		case r.URL.Path == "/orgs/myorg/installation":
 			// Return installation info
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 123,
 				"account": map[string]interface{}{
 					"type": "Organization",
@@ -188,13 +188,13 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 		case r.URL.Path == "/app/installations/123/access_tokens":
 			// Return installation token
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
 			})
 		case r.URL.Path == "/orgs/myorg/actions/runners/registration-token":
 			// Return registration token
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "AABB123",
 			})
 		default:
@@ -296,7 +296,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 		switch {
 		case r.URL.Path == "/orgs/testorg/installation":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 123,
 				"account": map[string]interface{}{
 					"type": "Organization",
@@ -304,7 +304,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 			})
 		case r.URL.Path == "/app/installations/123/access_tokens":
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
 			})
 		default:
@@ -339,7 +339,7 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 		case r.URL.Path == "/users/myuser/installation":
 			// User installation found
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 456,
 				"account": map[string]interface{}{
 					"type": "User",
@@ -347,7 +347,7 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 			})
 		case r.URL.Path == "/app/installations/456/access_tokens":
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_user_token",
 			})
 		default:
