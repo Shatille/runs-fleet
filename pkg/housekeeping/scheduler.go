@@ -62,13 +62,20 @@ type Scheduler struct {
 	metrics   SchedulerMetrics
 }
 
-// NewScheduler creates a new housekeeping scheduler.
-func NewScheduler(cfg aws.Config, queueURL string, schedulerCfg SchedulerConfig) *Scheduler {
+// NewScheduler creates a new housekeeping scheduler with an SQS client interface.
+// This constructor accepts the interface for better testability.
+func NewScheduler(sqsClient SchedulerSQSAPI, queueURL string, schedulerCfg SchedulerConfig) *Scheduler {
 	return &Scheduler{
-		sqsClient: sqs.NewFromConfig(cfg),
+		sqsClient: sqsClient,
 		queueURL:  queueURL,
 		config:    schedulerCfg,
 	}
+}
+
+// NewSchedulerFromConfig creates a new housekeeping scheduler using AWS config.
+// This is a convenience constructor for production use.
+func NewSchedulerFromConfig(cfg aws.Config, queueURL string, schedulerCfg SchedulerConfig) *Scheduler {
+	return NewScheduler(sqs.NewFromConfig(cfg), queueURL, schedulerCfg)
 }
 
 // SetMetrics sets the metrics publisher for alerting on scheduling failures.
