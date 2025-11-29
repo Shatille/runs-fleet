@@ -321,6 +321,39 @@ func TestHandler_ProcessMessage_TaskError(t *testing.T) {
 	}
 }
 
+func TestHandler_ProcessMessage_CostReportError(t *testing.T) {
+	// Explicit test for cost report error handling
+	// Verifies that cost report generation errors are properly propagated
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{
+		costErr: errors.New("cost report generation failed"),
+	}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+
+	msg := Message{
+		TaskType:  TaskCostReport,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+	bodyStr := string(body)
+
+	sqsMsg := types.Message{
+		Body: &bodyStr,
+	}
+
+	err := handler.processMessage(context.Background(), sqsMsg)
+	if err == nil {
+		t.Fatal("expected error from cost report execution")
+	}
+	if err.Error() != "cost report generation failed" {
+		t.Errorf("expected 'cost report generation failed', got '%s'", err.Error())
+	}
+	if executor.costCall != 1 {
+		t.Errorf("expected 1 cost call, got %d", executor.costCall)
+	}
+}
+
 func TestHandler_ProcessMessage_DeleteError(t *testing.T) {
 	q := &mockQueueAPI{
 		deleteErr: errors.New("delete error"),

@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewCleanup(t *testing.T) {
@@ -110,15 +112,22 @@ func TestCleanup_removeDirectory_Success(t *testing.T) {
 }
 
 func TestCleanup_CleanupTempFiles_Success(t *testing.T) {
+	// Create an isolated temp directory for this test to avoid race conditions
+	isolatedTmpDir, err := os.MkdirTemp("", "cleanup-tempfiles-test-*")
+	if err != nil {
+		t.Fatalf("failed to create isolated temp dir: %v", err)
+	}
+	defer os.RemoveAll(isolatedTmpDir)
+
 	logger := &mockLogger{}
 	cleanup := NewCleanup(logger)
 
-	// Create some temp files matching patterns
-	tmpDir := os.TempDir()
+	// Create test files in isolated directory with unique prefixes
+	testPrefix := fmt.Sprintf("test-%d-", time.Now().UnixNano())
 	testFiles := []string{
-		filepath.Join(tmpDir, "actions-runner-test.tar.gz"),
-		filepath.Join(tmpDir, "download-test"),
-		filepath.Join(tmpDir, "cache-test"),
+		filepath.Join(isolatedTmpDir, testPrefix+"actions-runner-test.tar.gz"),
+		filepath.Join(isolatedTmpDir, testPrefix+"download-test"),
+		filepath.Join(isolatedTmpDir, testPrefix+"cache-test"),
 	}
 
 	for _, f := range testFiles {
@@ -127,16 +136,16 @@ func TestCleanup_CleanupTempFiles_Success(t *testing.T) {
 		}
 	}
 
-	// Clean up on test completion
-	defer func() {
-		for _, f := range testFiles {
-			os.Remove(f)
-		}
-	}()
-
-	err := cleanup.CleanupTempFiles(context.Background())
+	// Note: CleanupTempFiles cleans the system temp directory, not our isolated one
+	// This test verifies the function runs without error
+	err = cleanup.CleanupTempFiles(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Clean up our isolated test files
+	for _, f := range testFiles {
+		os.Remove(f)
 	}
 }
 
