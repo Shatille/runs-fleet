@@ -36,10 +36,20 @@ func (c *Cleanup) CleanupRunner(ctx context.Context, runnerPath string) error {
 		c.logger.Printf("Warning: failed to remove work directory: %v", err)
 	}
 
+	// Check context before continuing
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	// Remove diag directory (runner diagnostics)
 	diagDir := filepath.Join(runnerPath, "_diag")
 	if err := c.removeDirectory(diagDir); err != nil {
 		c.logger.Printf("Warning: failed to remove diag directory: %v", err)
+	}
+
+	// Check context before final removal
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	// Remove runner directory
