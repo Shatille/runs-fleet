@@ -7,6 +7,7 @@ import (
 )
 
 const testSecret = "test-secret"
+const testScope = "org/repo"
 
 func TestGenerateCacheToken(t *testing.T) {
 	tests := []struct {
@@ -76,7 +77,7 @@ func TestGenerateCacheToken_Deterministic(t *testing.T) {
 	secret := testSecret
 	jobID := "job-123"
 	instanceID := "i-abc123"
-	scope := "org/repo"
+	scope := testScope
 
 	token1 := GenerateCacheToken(secret, jobID, instanceID, scope)
 	token2 := GenerateCacheToken(secret, jobID, instanceID, scope)
@@ -88,7 +89,7 @@ func TestGenerateCacheToken_Deterministic(t *testing.T) {
 
 func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
 	secret := testSecret
-	scope := "org/repo"
+	scope := testScope
 
 	token1 := GenerateCacheToken(secret, "job-1", "i-abc", scope)
 	token2 := GenerateCacheToken(secret, "job-2", "i-abc", scope)
@@ -198,7 +199,7 @@ func TestValidateCacheToken(t *testing.T) {
 	secret := "my-secret-key"
 	jobID := "job-123"
 	instanceID := "i-abc123"
-	scope := "org/repo"
+	scope := testScope
 	validToken := GenerateCacheToken(secret, jobID, instanceID, scope)
 
 	tests := []struct {
