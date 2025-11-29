@@ -52,8 +52,10 @@ func TestCleanup_CleanupRunner_Success(t *testing.T) {
 	}
 
 	// Verify directory was removed
-	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+	if _, statErr := os.Stat(tmpDir); statErr == nil {
 		t.Error("expected runner directory to be removed")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected error checking directory: %v", statErr)
 	}
 }
 
@@ -107,8 +109,10 @@ func TestCleanup_removeDirectory_Success(t *testing.T) {
 	}
 
 	// Verify directory was removed
-	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+	if _, statErr := os.Stat(tmpDir); statErr == nil {
 		t.Error("expected directory to be removed")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected error checking directory: %v", statErr)
 	}
 }
 
@@ -192,8 +196,10 @@ func TestCleanup_CleanupLogs_Success(t *testing.T) {
 	}
 
 	// Verify log file was removed
-	if _, statErr := os.Stat(logFile); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(logFile); statErr == nil {
 		t.Error("expected log file to be removed")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected error checking log file: %v", statErr)
 	}
 }
 
@@ -250,7 +256,11 @@ func TestCleanup_CleanupLogs_NonLogFiles(t *testing.T) {
 	}
 
 	// Verify non-log file was NOT removed
-	if _, err := os.Stat(nonLogFile); os.IsNotExist(err) {
-		t.Error("non-log file should NOT be removed")
+	if _, statErr := os.Stat(nonLogFile); statErr != nil {
+		if os.IsNotExist(statErr) {
+			t.Error("non-log file should NOT be removed")
+		} else {
+			t.Fatalf("unexpected error checking file: %v", statErr)
+		}
 	}
 }
