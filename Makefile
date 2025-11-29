@@ -45,7 +45,7 @@ test:
 # Run linter
 lint:
 	@echo "Running linter..."
-	golangci-lint run
+	CGO_ENABLED=0 golangci-lint run
 
 # Clean build artifacts
 clean:
