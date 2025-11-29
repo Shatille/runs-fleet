@@ -120,6 +120,31 @@ func (p *Publisher) PublishPoolUtilization(ctx context.Context, poolName string,
 	return nil
 }
 
+// PublishSchedulingFailure publishes scheduling failure metric with task type dimension.
+func (p *Publisher) PublishSchedulingFailure(ctx context.Context, taskType string) error {
+	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+		Namespace: aws.String(p.namespace),
+		MetricData: []types.MetricDatum{
+			{
+				MetricName: aws.String("SchedulingFailure"),
+				Value:      aws.Float64(1),
+				Unit:       types.StandardUnitCount,
+				Timestamp:  aws.Time(time.Now()),
+				Dimensions: []types.Dimension{
+					{
+						Name:  aws.String("TaskType"),
+						Value: aws.String(taskType),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish scheduling failure metric for %s: %w", taskType, err)
+	}
+	return nil
+}
+
 // PublishCircuitBreakerTriggered publishes circuit breaker triggered metric.
 func (p *Publisher) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
