@@ -21,8 +21,9 @@ type SSMAPI interface {
 
 // ManagerConfig holds configuration for the runner manager.
 type ManagerConfig struct {
-	CacheSecret string
-	CacheURL    string
+	CacheSecret          string
+	CacheURL             string
+	TerminationQueueURL  string
 }
 
 // Manager handles runner registration and SSM configuration.
@@ -43,15 +44,16 @@ func NewManager(awsCfg aws.Config, githubClient *GitHubClient, config ManagerCon
 
 // Config represents the configuration stored in SSM for a runner.
 type Config struct {
-	Org         string   `json:"org"`
-	Repo        string   `json:"repo,omitempty"`
-	JITToken    string   `json:"jit_token"`
-	Labels      []string `json:"labels"`
-	RunnerGroup string   `json:"runner_group,omitempty"`
-	JobID       string   `json:"job_id,omitempty"`
-	CacheToken  string   `json:"cache_token,omitempty"`
-	CacheURL    string   `json:"cache_url,omitempty"`
-	IsOrg       bool     `json:"is_org"`
+	Org                 string   `json:"org"`
+	Repo                string   `json:"repo,omitempty"`
+	JITToken            string   `json:"jit_token"`
+	Labels              []string `json:"labels"`
+	RunnerGroup         string   `json:"runner_group,omitempty"`
+	JobID               string   `json:"job_id,omitempty"`
+	CacheToken          string   `json:"cache_token,omitempty"`
+	CacheURL            string   `json:"cache_url,omitempty"`
+	TerminationQueueURL string   `json:"termination_queue_url,omitempty"`
+	IsOrg               bool     `json:"is_org"`
 }
 
 // PrepareRunnerRequest contains parameters for preparing a runner.
@@ -94,14 +96,15 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 
 	// Build runner config with dynamic org from repo
 	config := Config{
-		Org:        org,
-		Repo:       req.Repo,
-		JITToken:   regResult.Token,
-		Labels:     req.Labels,
-		JobID:      req.JobID,
-		CacheToken: cacheToken,
-		CacheURL:   m.config.CacheURL,
-		IsOrg:      regResult.IsOrg,
+		Org:                 org,
+		Repo:                req.Repo,
+		JITToken:            regResult.Token,
+		Labels:              req.Labels,
+		JobID:               req.JobID,
+		CacheToken:          cacheToken,
+		CacheURL:            m.config.CacheURL,
+		TerminationQueueURL: m.config.TerminationQueueURL,
+		IsOrg:               regResult.IsOrg,
 	}
 
 	// Serialize to JSON

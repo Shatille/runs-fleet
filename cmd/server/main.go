@@ -148,8 +148,9 @@ func main() {
 			log.Fatalf("Failed to create GitHub client: %v", err)
 		}
 		runnerManager = runner.NewManager(awsCfg, githubClient, runner.ManagerConfig{
-			CacheSecret: cfg.CacheSecret,
-			CacheURL:    cfg.CacheURL,
+			CacheSecret:         cfg.CacheSecret,
+			CacheURL:            cfg.CacheURL,
+			TerminationQueueURL: cfg.TerminationQueueURL,
 		})
 		log.Println("Runner manager initialized for SSM configuration")
 	} else {
