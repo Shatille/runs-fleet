@@ -53,7 +53,7 @@ type Config struct {
 	CacheToken          string   `json:"cache_token,omitempty"`
 	CacheURL            string   `json:"cache_url,omitempty"`
 	TerminationQueueURL string   `json:"termination_queue_url,omitempty"`
-	IsOrg               bool     `json:"is_org"`
+	IsOrg               bool     `json:"is_org"` // Deprecated: always false, kept for JSON compatibility
 }
 
 // PrepareRunnerRequest contains parameters for preparing a runner.

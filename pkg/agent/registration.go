@@ -35,7 +35,7 @@ type RunnerConfig struct {
 	RunnerGroup string   `json:"runner_group,omitempty"`
 	JobID       string   `json:"job_id,omitempty"`
 	CacheToken  string   `json:"cache_token,omitempty"`
-	IsOrg       bool     `json:"is_org"`
+	IsOrg       bool     `json:"is_org"` // Deprecated: kept for JSON compatibility
 }
 
 // Registrar handles runner registration with GitHub.
@@ -103,21 +103,13 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *RunnerConfig, ru
 		return fmt.Errorf("config.sh not found: %w", err)
 	}
 
-	// Build registration URL based on account type
-	// For organizations: use org URL (https://github.com/{org})
-	// For personal accounts: use repo URL (https://github.com/{owner}/{repo})
-	var repoURL string
-	if config.IsOrg {
-		if config.Org == "" {
-			return fmt.Errorf("org is required for organization registration")
-		}
-		repoURL = fmt.Sprintf("https://github.com/%s", config.Org)
-	} else {
-		if config.Repo == "" {
-			return fmt.Errorf("repo is required for personal account registration")
-		}
-		repoURL = fmt.Sprintf("https://github.com/%s", config.Repo)
+	// Always use repo-level registration to ensure runners only pick up jobs
+	// from the specific repository. Org-level registration allows runners to
+	// pick up jobs from ANY repo in the org, which can cause job misassignment.
+	if config.Repo == "" {
+		return fmt.Errorf("repo is required for registration (owner/repo format)")
 	}
+	repoURL := fmt.Sprintf("https://github.com/%s", config.Repo)
 
 	// Build command arguments
 	args := []string{
