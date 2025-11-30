@@ -8,10 +8,22 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+)
+
+const (
+	testPathOrgInstallation    = "/orgs/myorg/installation"
+	testPathUserInstallation   = "/users/myuser/installation"
+	testPathAccessTokens123    = "/app/installations/123/access_tokens"
+	testPathAccessTokens456    = "/app/installations/456/access_tokens"
+	testPathRegTokenMyOrg      = "/repos/myorg/myrepo/actions/runners/registration-token"
+	testPathRegTokenMyUser     = "/repos/myuser/myrepo/actions/runners/registration-token"
+	testPathOrgTestOrg         = "/orgs/testorg/installation"
+	testPathOrgMyUser          = "/orgs/myuser/installation"
 )
 
 // generateTestKey generates a test RSA key pair and returns the base64-encoded PEM.
@@ -176,7 +188,7 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 	// Create a test server that simulates GitHub API
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/orgs/myorg/installation":
+		case testPathOrgInstallation:
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 123,
@@ -184,12 +196,12 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 					"type": "Organization",
 				},
 			})
-		case "/app/installations/123/access_tokens":
+		case testPathAccessTokens123:
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
 			})
-		case "/repos/myorg/myrepo/actions/runners/registration-token":
+		case testPathRegTokenMyOrg:
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "AABB123",
@@ -296,7 +308,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/orgs/testorg/installation":
+		case testPathOrgTestOrg:
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 123,
@@ -304,7 +316,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 					"type": "Organization",
 				},
 			})
-		case "/app/installations/123/access_tokens":
+		case testPathAccessTokens123:
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_test_token",
@@ -343,9 +355,9 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 	// Create a test server that simulates a personal account (no org)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/orgs/myuser/installation":
+		case testPathOrgMyUser:
 			w.WriteHeader(http.StatusNotFound)
-		case "/users/myuser/installation":
+		case testPathUserInstallation:
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": 456,
@@ -353,12 +365,12 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 					"type": "User",
 				},
 			})
-		case "/app/installations/456/access_tokens":
+		case testPathAccessTokens456:
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "ghs_user_token",
 			})
-		case "/repos/myuser/myrepo/actions/runners/registration-token":
+		case testPathRegTokenMyUser:
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"token": "user_reg_token",
@@ -389,3 +401,393 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 		t.Error("expected IsOrg to be false for user account")
 	}
 }
+
+func TestIsRetryableError(t *testing.T) {
+	tests := []struct {
+		name     string
+		resp     *http.Response
+		err      error
+		expected bool
+	}{
+		{
+			name:     "network error is retryable",
+			resp:     nil,
+			err:      context.DeadlineExceeded,
+			expected: true,
+		},
+		{
+			name:     "nil response is retryable",
+			resp:     nil,
+			err:      nil,
+			expected: true,
+		},
+		{
+			name:     "429 rate limit is retryable",
+			resp:     &http.Response{StatusCode: http.StatusTooManyRequests},
+			err:      nil,
+			expected: true,
+		},
+		{
+			name:     "500 server error is retryable",
+			resp:     &http.Response{StatusCode: http.StatusInternalServerError},
+			err:      nil,
+			expected: true,
+		},
+		{
+			name:     "502 bad gateway is retryable",
+			resp:     &http.Response{StatusCode: http.StatusBadGateway},
+			err:      nil,
+			expected: true,
+		},
+		{
+			name:     "503 service unavailable is retryable",
+			resp:     &http.Response{StatusCode: http.StatusServiceUnavailable},
+			err:      nil,
+			expected: true,
+		},
+		{
+			name:     "400 bad request is not retryable",
+			resp:     &http.Response{StatusCode: http.StatusBadRequest},
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "401 unauthorized is not retryable",
+			resp:     &http.Response{StatusCode: http.StatusUnauthorized},
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "403 forbidden is not retryable",
+			resp:     &http.Response{StatusCode: http.StatusForbidden},
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "404 not found is not retryable",
+			resp:     &http.Response{StatusCode: http.StatusNotFound},
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "201 created is not retryable",
+			resp:     &http.Response{StatusCode: http.StatusCreated},
+			err:      nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isRetryableError(tt.resp, tt.err)
+			if result != tt.expected {
+				t.Errorf("isRetryableError() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRetryDelay(t *testing.T) {
+	for attempt := 0; attempt < 5; attempt++ {
+		delay := retryDelay(attempt)
+		expectedMin := (baseRetryDelay * time.Duration(1<<attempt)) / 2
+		expectedMax := baseRetryDelay * time.Duration(1<<attempt)
+		if expectedMax > maxRetryDelay {
+			expectedMax = maxRetryDelay
+			expectedMin = maxRetryDelay / 2
+		}
+
+		if delay < expectedMin || delay > expectedMax {
+			t.Errorf("attempt %d: delay %v outside expected range [%v, %v]",
+				attempt, delay, expectedMin, expectedMax)
+		}
+	}
+}
+
+func TestGitHubClient_GetRegistrationToken_RetriesOnTransientErrors(t *testing.T) {
+	tests := []struct {
+		name             string
+		errorStatusCode  int
+		failuresBeforeOK int
+		expectedAttempts int
+		expectedToken    string
+	}{
+		{
+			name:             "retries on 503 service unavailable",
+			errorStatusCode:  http.StatusServiceUnavailable,
+			failuresBeforeOK: 2,
+			expectedAttempts: 3,
+			expectedToken:    "RETRY_SUCCESS",
+		},
+		{
+			name:             "retries on 429 rate limit",
+			errorStatusCode:  http.StatusTooManyRequests,
+			failuresBeforeOK: 1,
+			expectedAttempts: 2,
+			expectedToken:    "RATE_LIMIT_SUCCESS",
+		},
+		{
+			name:             "retries on 500 internal server error",
+			errorStatusCode:  http.StatusInternalServerError,
+			failuresBeforeOK: 1,
+			expectedAttempts: 2,
+			expectedToken:    "SERVER_ERROR_SUCCESS",
+		},
+		{
+			name:             "retries on 502 bad gateway",
+			errorStatusCode:  http.StatusBadGateway,
+			failuresBeforeOK: 1,
+			expectedAttempts: 2,
+			expectedToken:    "BAD_GATEWAY_SUCCESS",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyBase64 := generateTestKey(t)
+
+			attempts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case testPathOrgInstallation:
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id": 123,
+						"account": map[string]interface{}{
+							"type": "Organization",
+						},
+					})
+				case testPathAccessTokens123:
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"token": "ghs_test_token",
+					})
+				case testPathRegTokenMyOrg:
+					attempts++
+					if attempts <= tt.failuresBeforeOK {
+						w.WriteHeader(tt.errorStatusCode)
+						return
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"token": tt.expectedToken,
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client, err := NewGitHubClient("12345", keyBase64)
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			client.baseURL = server.URL
+
+			result, err := client.GetRegistrationToken(context.Background(), "myorg/myrepo")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Token != tt.expectedToken {
+				t.Errorf("expected token '%s', got '%s'", tt.expectedToken, result.Token)
+			}
+
+			if attempts != tt.expectedAttempts {
+				t.Errorf("expected %d attempts, got %d", tt.expectedAttempts, attempts)
+			}
+		})
+	}
+}
+
+func TestGitHubClient_GetRegistrationToken_NoRetryOnClientError(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 123,
+				"account": map[string]interface{}{
+					"type": "Organization",
+				},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"token": "ghs_test_token",
+			})
+		case testPathRegTokenMyOrg:
+			attempts++
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"forbidden"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.baseURL = server.URL
+
+	_, err = client.GetRegistrationToken(context.Background(), "myorg/myrepo")
+	if err == nil {
+		t.Fatal("expected error for forbidden response")
+	}
+
+	if attempts != 1 {
+		t.Errorf("expected 1 attempt (no retries for 403), got %d", attempts)
+	}
+}
+
+func TestGitHubClient_GetRegistrationToken_ExhaustsRetries(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 123,
+				"account": map[string]interface{}{
+					"type": "Organization",
+				},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"token": "ghs_test_token",
+			})
+		case testPathRegTokenMyOrg:
+			attempts++
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.baseURL = server.URL
+
+	_, err = client.GetRegistrationToken(context.Background(), "myorg/myrepo")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+
+	expectedAttempts := maxRetries + 1
+	if attempts != expectedAttempts {
+		t.Errorf("expected %d attempts, got %d", expectedAttempts, attempts)
+	}
+}
+
+func TestGitHubClient_GetRegistrationToken_RespectsContextCancellation(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 123,
+				"account": map[string]interface{}{
+					"type": "Organization",
+				},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"token": "ghs_test_token",
+			})
+		case testPathRegTokenMyOrg:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.baseURL = server.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err = client.GetRegistrationToken(ctx, "myorg/myrepo")
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 123,
+				"account": map[string]interface{}{
+					"type": "Organization",
+				},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"token": "ghs_test_token",
+			})
+		case testPathRegTokenMyOrg:
+			attempts++
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.baseURL = server.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.GetRegistrationToken(ctx, "myorg/myrepo")
+		done <- err
+	}()
+
+	// Wait for first attempt to fail, then cancel during backoff
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for cancellation")
+	}
+
+	if attempts < 1 {
+		t.Errorf("expected at least 1 attempt before cancellation, got %d", attempts)
+	}
+}
+

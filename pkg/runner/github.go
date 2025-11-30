@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,35 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v57/github"
 )
+
+const (
+	maxRetries     = 3
+	baseRetryDelay = 500 * time.Millisecond
+	maxRetryDelay  = 10 * time.Second
+)
+
+// isRetryableError returns true if the HTTP response indicates a retryable error.
+func isRetryableError(resp *http.Response, err error) bool {
+	if err != nil {
+		return true // Network errors are retryable
+	}
+	if resp == nil {
+		return true
+	}
+	// Retry on rate limit (429) or server errors (5xx)
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+}
+
+// retryDelay calculates exponential backoff with jitter.
+func retryDelay(attempt int) time.Duration {
+	delay := baseRetryDelay * time.Duration(1<<attempt)
+	if delay > maxRetryDelay {
+		delay = maxRetryDelay
+	}
+	// Add jitter: 50-100% of calculated delay
+	jitter := time.Duration(rand.Int64N(int64(delay / 2)))
+	return delay/2 + jitter
+}
 
 // GitHubClient handles GitHub App authentication and runner registration.
 type GitHubClient struct {
@@ -229,6 +259,7 @@ type RegistrationResult struct {
 // GetRegistrationToken gets a registration token for GitHub Actions runners.
 // Always uses repo-level endpoint to ensure runners only pick up jobs from the specific repository.
 // Extracts owner from repo string (owner/repo format) for installation token.
+// Retries transient errors with exponential backoff.
 func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
 	// Extract owner from repo string (required)
 	if repo == "" {
@@ -251,30 +282,51 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 	// See: https://docs.github.com/en/rest/actions/self-hosted-runners#create-a-registration-token-for-a-repository
 	url := fmt.Sprintf("%s/repos/%s/actions/runners/registration-token", c.baseURL, repo)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", "token "+info.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusCreated {
-		var result struct {
-			Token string `json:"token"`
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryDelay(attempt - 1)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", err)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		return &RegistrationResult{Token: result.Token, IsOrg: false}, nil
+		req.Header.Set("Authorization", "token "+info.Token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to execute request: %w", err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusCreated {
+			var result struct {
+				Token string `json:"token"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("failed to decode response: %w", err)
+			}
+			_ = resp.Body.Close()
+			return &RegistrationResult{Token: result.Token, IsOrg: false}, nil
+		}
+
+		// Read error body for debugging
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		lastErr = fmt.Errorf("failed to create registration token for %s: status=%d body=%s", repo, resp.StatusCode, string(body))
+
+		if !isRetryableError(resp, nil) {
+			return nil, lastErr
+		}
 	}
 
-	// Read error body for debugging
-	body, _ := io.ReadAll(resp.Body)
-	return nil, fmt.Errorf("failed to create registration token for %s: status=%d body=%s", repo, resp.StatusCode, string(body))
+	return nil, fmt.Errorf("exhausted retries: %w", lastErr)
 }
