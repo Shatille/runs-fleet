@@ -489,8 +489,18 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 				RunnerSpec:   job.RunnerSpec,
 				RetryCount:   job.RetryCount,
 			}
-			if err := dbc.SaveJob(ctx, jobRecord); err != nil {
-				log.Printf("Failed to save job record for instance %s: %v", instanceID, err)
+			// Retry SaveJob with exponential backoff (spot tracking is critical for job re-queueing)
+			var saveErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
+					break
+				}
+				if attempt < 2 {
+					time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond) // 100ms, 200ms
+				}
+			}
+			if saveErr != nil {
+				log.Printf("ERROR: Failed to save job record after retries for instance %s: %v (spot interruption tracking disabled)", instanceID, saveErr)
 			}
 		}
 	}
