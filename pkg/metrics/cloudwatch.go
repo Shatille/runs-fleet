@@ -60,6 +60,11 @@ func (p *Publisher) PublishJobFailure(ctx context.Context) error {
 	return p.putMetric(ctx, "JobFailure", 1, types.StandardUnitCount)
 }
 
+// PublishJobQueued publishes job queued metric.
+func (p *Publisher) PublishJobQueued(ctx context.Context) error {
+	return p.putMetric(ctx, "JobQueued", 1, types.StandardUnitCount)
+}
+
 // PublishSpotInterruption publishes spot interruption metric.
 func (p *Publisher) PublishSpotInterruption(ctx context.Context) error {
 	return p.putMetric(ctx, "SpotInterruptions", 1, types.StandardUnitCount)
