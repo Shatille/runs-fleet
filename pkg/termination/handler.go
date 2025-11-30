@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"strings"
+
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
@@ -223,7 +225,7 @@ func (h *Handler) deleteSSMParameter(ctx context.Context, instanceID string) err
 
 	if err != nil {
 		// Check if parameter was already deleted
-		if containsString(err.Error(), "ParameterNotFound") {
+		if strings.Contains(err.Error(), "ParameterNotFound") {
 			log.Printf("SSM parameter already deleted: %s", parameterPath)
 			return nil
 		}
@@ -232,19 +234,4 @@ func (h *Handler) deleteSSMParameter(ctx context.Context, instanceID string) err
 
 	log.Printf("Deleted SSM parameter: %s", parameterPath)
 	return nil
-}
-
-// containsString checks if a string contains a substring.
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr) >= 0
-}
-
-// findSubstring returns the index of substr in s, or -1 if not found.
-func findSubstring(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

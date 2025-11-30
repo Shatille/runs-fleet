@@ -32,6 +32,7 @@ type DBAPI interface {
 type JobInfo struct {
 	JobID        string
 	RunID        string
+	Repo         string
 	InstanceType string
 	Pool         string
 	Private      bool
@@ -291,6 +292,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 	requeueMsg := &queue.JobMessage{
 		JobID:         job.JobID,
 		RunID:         job.RunID,
+		Repo:          job.Repo,
 		InstanceType:  job.InstanceType,
 		Pool:          job.Pool,
 		Private:       job.Private,

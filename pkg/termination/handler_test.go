@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -586,7 +587,7 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 	}
 
 	for _, field := range requiredFields {
-		if !containsString(jsonStr, field) {
+		if !strings.Contains(jsonStr, field) {
 			t.Errorf("required field %s should be present in JSON even when empty", field)
 		}
 	}
@@ -598,7 +599,7 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 	}
 
 	for _, field := range optionalFields {
-		if containsString(jsonStr, field) {
+		if strings.Contains(jsonStr, field) {
 			t.Logf("optional field %s is omitted as expected (has omitempty)", field)
 		}
 	}
@@ -615,50 +616,6 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 	}
 }
 
-func TestContainsString(t *testing.T) {
-	tests := []struct {
-		s       string
-		substr  string
-		want    bool
-	}{
-		{"hello world", "world", true},
-		{"hello world", "foo", false},
-		{"ParameterNotFound", "ParameterNotFound", true},
-		{"ParameterNotFound: param", "ParameterNotFound", true},
-		{"", "", true},
-		{"hello", "", true},
-		{"", "a", false},
-	}
-
-	for _, tt := range tests {
-		got := containsString(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("containsString(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
-
-func TestFindSubstring(t *testing.T) {
-	tests := []struct {
-		s      string
-		substr string
-		want   int
-	}{
-		{"hello world", "world", 6},
-		{"hello world", "hello", 0},
-		{"hello world", "foo", -1},
-		{"", "", 0},
-		{"hello", "", 0},
-		{"", "a", -1},
-	}
-
-	for _, tt := range tests {
-		got := findSubstring(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("findSubstring(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
 
 func TestHandler_processTermination_NoDuration(t *testing.T) {
 	q := &mockQueueAPI{}

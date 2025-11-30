@@ -9,7 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-// MockDynamoDBAPI implements DynamoDBAPI interface
+// MockDynamoDBAPI implements DynamoDBAPI interface.
+//
+//nolint:dupl // Mock mirrors interface - intentional pattern
 type MockDynamoDBAPI struct {
 	GetItemFunc    func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItemFunc func(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)

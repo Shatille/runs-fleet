@@ -15,6 +15,8 @@ import (
 )
 
 // DynamoDBAPI defines DynamoDB operations for pool configuration storage.
+//
+//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 type DynamoDBAPI interface {
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
@@ -46,6 +48,7 @@ const jobsByInstanceIndex = "jobs-by-instance"
 type jobRecord struct {
 	JobID        string `dynamodbav:"job_id"`
 	RunID        string `dynamodbav:"run_id"`
+	Repo         string `dynamodbav:"repo"`
 	InstanceID   string `dynamodbav:"instance_id"`
 	InstanceType string `dynamodbav:"instance_type"`
 	Pool         string `dynamodbav:"pool"`
@@ -230,10 +233,50 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 	return nil
 }
 
-// MarkInstanceTerminating marks an instance as terminating in DynamoDB.
-// TODO(Phase 4): Implement job-to-instance tracking for spot interruption handling.
-func (c *Client) MarkInstanceTerminating(_ context.Context, instanceID string) error {
-	return fmt.Errorf("MarkInstanceTerminating not yet implemented for instance %s", instanceID)
+// MarkInstanceTerminating marks jobs on an instance as terminating in DynamoDB.
+// Updates any running jobs for this instance to status "terminating".
+func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	// Find running job for this instance
+	job, err := c.GetJobByInstance(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get job for instance: %w", err)
+	}
+	if job == nil {
+		return nil // No running job on this instance
+	}
+
+	// Update job status to terminating
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"job_id": job.JobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:        aws.String(c.jobsTable),
+		Key:              key,
+		UpdateExpression: aws.String("SET #status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status": &types.AttributeValueMemberS{Value: "terminating"},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to mark job as terminating: %w", err)
+	}
+
+	return nil
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
@@ -247,13 +290,14 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		return nil, fmt.Errorf("jobs table not configured")
 	}
 
-	// Query the GSI to find jobs for this instance
+	// Query the GSI to find jobs for this instance.
+	// Note: We don't use Limit here because DynamoDB applies Limit before FilterExpression,
+	// which could return no results if the first item doesn't match the filter.
 	output, err := c.dynamoClient.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(c.jobsTable),
 		IndexName:              aws.String(jobsByInstanceIndex),
 		KeyConditionExpression: aws.String("instance_id = :iid"),
-		// Only get running jobs (not completed ones)
-		FilterExpression: aws.String("#status = :running"),
+		FilterExpression:       aws.String("#status = :running"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
@@ -261,7 +305,6 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 			":iid":     &types.AttributeValueMemberS{Value: instanceID},
 			":running": &types.AttributeValueMemberS{Value: "running"},
 		},
-		Limit: aws.Int32(1), // We only expect one running job per instance
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query jobs by instance: %w", err)
@@ -279,6 +322,7 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 	return &events.JobInfo{
 		JobID:        record.JobID,
 		RunID:        record.RunID,
+		Repo:         record.Repo,
 		InstanceType: record.InstanceType,
 		Pool:         record.Pool,
 		Private:      record.Private,
@@ -292,6 +336,7 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 type JobRecord struct {
 	JobID        string
 	RunID        string
+	Repo         string
 	InstanceID   string
 	InstanceType string
 	Pool         string
@@ -321,6 +366,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	record := jobRecord{
 		JobID:        job.JobID,
 		RunID:        job.RunID,
+		Repo:         job.Repo,
 		InstanceID:   job.InstanceID,
 		InstanceType: job.InstanceType,
 		Pool:         job.Pool,
