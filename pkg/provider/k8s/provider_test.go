@@ -30,26 +30,39 @@ func TestProvider_CreateRunner(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "successful creation",
+			name: "successful creation with resources",
 			spec: &provider.RunnerSpec{
-				RunID:        "run-123",
-				JobID:        "job-456",
-				Repo:         "org/repo",
-				InstanceType: "c7g.xlarge",
-				Arch:         "arm64",
-				OS:           "linux",
-				Pool:         "default",
+				RunID:      "run-123",
+				JobID:      "job-456",
+				Repo:       "org/repo",
+				Arch:       "arm64",
+				OS:         "linux",
+				Pool:       "default",
+				CPUCores:   4,
+				MemoryGiB:  8,
+				StorageGiB: 50,
 			},
 			wantErr: false,
 		},
 		{
 			name: "x64 architecture",
 			spec: &provider.RunnerSpec{
-				RunID:        "run-789",
-				JobID:        "job-012",
-				InstanceType: "c6i.xlarge",
-				Arch:         "x64",
-				OS:           "linux",
+				RunID:      "run-789",
+				JobID:      "job-012",
+				Arch:       "x64",
+				OS:         "linux",
+				CPUCores:   4,
+				MemoryGiB:  8,
+				StorageGiB: 50,
+			},
+			wantErr: false,
+		},
+		{
+			name: "default resources when not specified",
+			spec: &provider.RunnerSpec{
+				RunID: "run-defaults",
+				JobID: "job-defaults",
+				Arch:  "arm64",
 			},
 			wantErr: false,
 		},
@@ -263,51 +276,83 @@ func TestGetResourceRequirements(t *testing.T) {
 	p := NewProviderWithClient(nil, cfg)
 
 	tests := []struct {
-		instanceType string
-		wantCPU      string
-		wantMem      string
-		wantStorage  string
+		name        string
+		spec        *provider.RunnerSpec
+		wantCPU     string
+		wantMem     string
+		wantStorage string
 	}{
-		{"t4g.medium", "2", "4Gi", "30Gi"},
-		{"c7g.xlarge", "4", "8Gi", "50Gi"},
-		{"c7g.2xlarge", "8", "16Gi", "100Gi"},
-		{"unknown", "2", "4Gi", "30Gi"}, // default
+		{
+			name:        "explicit resources",
+			spec:        &provider.RunnerSpec{CPUCores: 4, MemoryGiB: 8, StorageGiB: 50},
+			wantCPU:     "4",
+			wantMem:     "8Gi",
+			wantStorage: "50Gi",
+		},
+		{
+			name:        "large resources",
+			spec:        &provider.RunnerSpec{CPUCores: 8, MemoryGiB: 32, StorageGiB: 100},
+			wantCPU:     "8",
+			wantMem:     "32Gi",
+			wantStorage: "100Gi",
+		},
+		{
+			name:        "fractional memory",
+			spec:        &provider.RunnerSpec{CPUCores: 4, MemoryGiB: 8.5, StorageGiB: 50},
+			wantCPU:     "4",
+			wantMem:     "8704Mi", // 8.5 * 1024 = 8704Mi
+			wantStorage: "50Gi",
+		},
+		{
+			name:        "defaults when zero",
+			spec:        &provider.RunnerSpec{},
+			wantCPU:     "2",
+			wantMem:     "4Gi",
+			wantStorage: "30Gi",
+		},
+		{
+			name:        "partial spec uses defaults",
+			spec:        &provider.RunnerSpec{CPUCores: 4},
+			wantCPU:     "4",
+			wantMem:     "4Gi",
+			wantStorage: "30Gi",
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.instanceType, func(t *testing.T) {
-			resources := p.getResourceRequirements(tt.instanceType)
+		t.Run(tt.name, func(t *testing.T) {
+			resources := p.getResourceRequirements(tt.spec)
 
 			// Check requests
 			cpu := resources.Requests[corev1.ResourceCPU]
 			if cpu.String() != tt.wantCPU {
-				t.Errorf("CPU request for %s = %v, want %v", tt.instanceType, cpu.String(), tt.wantCPU)
+				t.Errorf("CPU request = %v, want %v", cpu.String(), tt.wantCPU)
 			}
 
 			mem := resources.Requests[corev1.ResourceMemory]
 			if mem.String() != tt.wantMem {
-				t.Errorf("Memory request for %s = %v, want %v", tt.instanceType, mem.String(), tt.wantMem)
+				t.Errorf("Memory request = %v, want %v", mem.String(), tt.wantMem)
 			}
 
 			storage := resources.Requests[corev1.ResourceEphemeralStorage]
 			if storage.String() != tt.wantStorage {
-				t.Errorf("Storage request for %s = %v, want %v", tt.instanceType, storage.String(), tt.wantStorage)
+				t.Errorf("Storage request = %v, want %v", storage.String(), tt.wantStorage)
 			}
 
 			// Check limits match requests
 			cpuLimit := resources.Limits[corev1.ResourceCPU]
 			if cpuLimit.String() != tt.wantCPU {
-				t.Errorf("CPU limit for %s = %v, want %v", tt.instanceType, cpuLimit.String(), tt.wantCPU)
+				t.Errorf("CPU limit = %v, want %v", cpuLimit.String(), tt.wantCPU)
 			}
 
 			memLimit := resources.Limits[corev1.ResourceMemory]
 			if memLimit.String() != tt.wantMem {
-				t.Errorf("Memory limit for %s = %v, want %v", tt.instanceType, memLimit.String(), tt.wantMem)
+				t.Errorf("Memory limit = %v, want %v", memLimit.String(), tt.wantMem)
 			}
 
 			storageLimit := resources.Limits[corev1.ResourceEphemeralStorage]
 			if storageLimit.String() != tt.wantStorage {
-				t.Errorf("Storage limit for %s = %v, want %v", tt.instanceType, storageLimit.String(), tt.wantStorage)
+				t.Errorf("Storage limit = %v, want %v", storageLimit.String(), tt.wantStorage)
 			}
 		})
 	}

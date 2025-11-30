@@ -192,8 +192,8 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 		nodeSelector["kubernetes.io/arch"] = "amd64"
 	}
 
-	// Resource requests based on instance type
-	resources := p.getResourceRequirements(spec.InstanceType)
+	// Resource requests from spec (Karpenter provisions nodes based on these)
+	resources := p.getResourceRequirements(spec)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -243,43 +243,36 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	return pod
 }
 
-// getResourceRequirements returns resource requests and limits based on instance type.
-func (p *Provider) getResourceRequirements(instanceType string) corev1.ResourceRequirements {
-	// Map instance types to resource requests (cpu, memory, ephemeral-storage)
-	// Ephemeral storage aligns with EC2 disk sizes
-	resourceMap := map[string][3]string{
-		// t-series (burstable)
-		"t4g.medium": {"2", "4Gi", "30Gi"},
-		"t3.medium":  {"2", "4Gi", "30Gi"},
-		// c-series (compute-optimized)
-		"c7g.xlarge":  {"4", "8Gi", "50Gi"},
-		"c7g.2xlarge": {"8", "16Gi", "100Gi"},
-		"c6i.xlarge":  {"4", "8Gi", "50Gi"},
-		"c6i.2xlarge": {"8", "16Gi", "100Gi"},
-		"c6a.xlarge":  {"4", "8Gi", "50Gi"},
-		"c6a.2xlarge": {"8", "16Gi", "100Gi"},
-		// m-series (general purpose)
-		"m6i.xlarge":  {"4", "16Gi", "50Gi"},
-		"m6i.2xlarge": {"8", "32Gi", "100Gi"},
-		"m7g.xlarge":  {"4", "16Gi", "50Gi"},
-		"m7g.2xlarge": {"8", "32Gi", "100Gi"},
-		// r-series (memory-optimized)
-		"r7g.xlarge":  {"4", "32Gi", "50Gi"},
-		"r7g.2xlarge": {"8", "64Gi", "100Gi"},
+// Default resource values when spec doesn't provide them.
+const (
+	defaultCPUCores   = 2
+	defaultMemoryGiB  = 4
+	defaultStorageGiB = 30
+)
+
+// getResourceRequirements returns resource requests and limits from spec.
+// Uses spec.CPUCores, spec.MemoryGiB, spec.StorageGiB directly for K8s-native
+// resource management with Karpenter. Falls back to defaults if not specified.
+func (p *Provider) getResourceRequirements(spec *provider.RunnerSpec) corev1.ResourceRequirements {
+	cpu := spec.CPUCores
+	if cpu <= 0 {
+		cpu = defaultCPUCores
 	}
 
-	cpu := "2"
-	mem := "4Gi"
-	storage := "30Gi"
-	if resources, ok := resourceMap[instanceType]; ok {
-		cpu = resources[0]
-		mem = resources[1]
-		storage = resources[2]
+	mem := spec.MemoryGiB
+	if mem <= 0 {
+		mem = defaultMemoryGiB
 	}
 
-	cpuQuantity := resource.MustParse(cpu)
-	memQuantity := resource.MustParse(mem)
-	storageQuantity := resource.MustParse(storage)
+	storage := spec.StorageGiB
+	if storage <= 0 {
+		storage = defaultStorageGiB
+	}
+
+	cpuQuantity := resource.MustParse(fmt.Sprintf("%d", cpu))
+	// Use fractional format to preserve precision (e.g., 8.5Gi)
+	memQuantity := resource.MustParse(fmt.Sprintf("%.1fGi", mem))
+	storageQuantity := resource.MustParse(fmt.Sprintf("%dGi", storage))
 
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
