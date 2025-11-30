@@ -15,10 +15,14 @@ import (
 )
 
 // DynamoDBAPI defines DynamoDB operations for pool configuration storage.
+//
+//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 type DynamoDBAPI interface {
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 }
 
 // Client provides DynamoDB operations for pool configuration and state.
@@ -35,6 +39,23 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 		poolsTable:   poolsTable,
 		jobsTable:    jobsTable,
 	}
+}
+
+// jobRecord represents a job stored in DynamoDB.
+// Primary key is instance_id (one job per instance, ephemeral runners).
+type jobRecord struct {
+	InstanceID   string `dynamodbav:"instance_id"`
+	JobID        string `dynamodbav:"job_id"`
+	RunID        string `dynamodbav:"run_id"`
+	Repo         string `dynamodbav:"repo"`
+	InstanceType string `dynamodbav:"instance_type"`
+	Pool         string `dynamodbav:"pool"`
+	Private      bool   `dynamodbav:"private"`
+	Spot         bool   `dynamodbav:"spot"`
+	RunnerSpec   string `dynamodbav:"runner_spec"`
+	RetryCount   int    `dynamodbav:"retry_count"`
+	Status       string `dynamodbav:"status"`
+	CreatedAt    string `dynamodbav:"created_at"`
 }
 
 // PoolSchedule defines time-based pool sizing for cost optimization.
@@ -210,29 +231,180 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 	return nil
 }
 
-// MarkInstanceTerminating marks an instance as terminating in DynamoDB.
-// TODO(Phase 4): Implement job-to-instance tracking for spot interruption handling.
-func (c *Client) MarkInstanceTerminating(_ context.Context, instanceID string) error {
-	return fmt.Errorf("MarkInstanceTerminating not yet implemented for instance %s", instanceID)
+// MarkInstanceTerminating marks jobs on an instance as terminating in DynamoDB.
+// Updates any running jobs for this instance to status "terminating".
+func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	// Find running job for this instance
+	job, err := c.GetJobByInstance(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get job for instance: %w", err)
+	}
+	if job == nil {
+		return nil // No running job on this instance
+	}
+
+	// Update job status to terminating using instance_id as primary key
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"instance_id": instanceID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:        aws.String(c.jobsTable),
+		Key:              key,
+		UpdateExpression: aws.String("SET #status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status": &types.AttributeValueMemberS{Value: "terminating"},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to mark job as terminating: %w", err)
+	}
+
+	return nil
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
-// TODO(Phase 4): Implement job-to-instance tracking for spot interruption re-queueing.
-func (c *Client) GetJobByInstance(_ context.Context, instanceID string) (*events.JobInfo, error) {
-	return nil, fmt.Errorf("GetJobByInstance not yet implemented for instance %s", instanceID)
+// Uses direct GetItem on primary key (instance_id) for efficient lookup.
+func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error) {
+	if instanceID == "" {
+		return nil, fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	// Direct lookup by primary key (instance_id)
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"instance_id": instanceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	output, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job by instance: %w", err)
+	}
+
+	if output.Item == nil {
+		return nil, nil // No job found for this instance
+	}
+
+	var record jobRecord
+	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
+	}
+
+	// Only return running jobs for spot interruption handling
+	if record.Status != "running" {
+		return nil, nil
+	}
+
+	return &events.JobInfo{
+		JobID:        record.JobID,
+		RunID:        record.RunID,
+		Repo:         record.Repo,
+		InstanceType: record.InstanceType,
+		Pool:         record.Pool,
+		Private:      record.Private,
+		Spot:         record.Spot,
+		RunnerSpec:   record.RunnerSpec,
+		RetryCount:   record.RetryCount,
+	}, nil
+}
+
+// JobRecord contains job information for storage.
+type JobRecord struct {
+	JobID        string
+	RunID        string
+	Repo         string
+	InstanceID   string
+	InstanceType string
+	Pool         string
+	Private      bool
+	Spot         bool
+	RunnerSpec   string
+	RetryCount   int
+}
+
+// SaveJob creates or updates a job record in DynamoDB.
+// The job is stored with status "running" and can be queried by instance_id via the GSI.
+func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
+	if job == nil {
+		return fmt.Errorf("job record cannot be nil")
+	}
+	if job.JobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+	if job.InstanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	record := jobRecord{
+		JobID:        job.JobID,
+		RunID:        job.RunID,
+		Repo:         job.Repo,
+		InstanceID:   job.InstanceID,
+		InstanceType: job.InstanceType,
+		Pool:         job.Pool,
+		Private:      job.Private,
+		Spot:         job.Spot,
+		RunnerSpec:   job.RunnerSpec,
+		RetryCount:   job.RetryCount,
+		Status:       "running",
+		CreatedAt:    time.Now().Format(time.RFC3339),
+	}
+
+	item, err := attributevalue.MarshalMap(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job record: %w", err)
+	}
+
+	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(c.jobsTable),
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save job record: %w", err)
+	}
+
+	return nil
 }
 
 // MarkJobComplete marks a job as complete in DynamoDB with exit status.
-func (c *Client) MarkJobComplete(ctx context.Context, jobID, status string, exitCode, duration int) error {
-	if jobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+// Uses instance_id as primary key (one job per instance).
+func (c *Client) MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
 	}
 	if status == "" {
 		return fmt.Errorf("status cannot be empty")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
-		"job_id": jobID,
+		"instance_id": instanceID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -267,13 +439,14 @@ func (c *Client) MarkJobComplete(ctx context.Context, jobID, status string, exit
 }
 
 // UpdateJobMetrics updates job timing metrics in DynamoDB.
-func (c *Client) UpdateJobMetrics(ctx context.Context, jobID string, startedAt, completedAt time.Time) error {
-	if jobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+// Uses instance_id as primary key (one job per instance).
+func (c *Client) UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
-		"job_id": jobID,
+		"instance_id": instanceID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)

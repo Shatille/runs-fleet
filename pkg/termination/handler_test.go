@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,13 +49,13 @@ type mockDBAPI struct {
 	updateMetricsErr error
 	completeCalls    int
 	metricsCalls     int
-	lastJobID        string
+	lastInstanceID   string
 	lastStatus       string
 }
 
-func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID, status string, _, _ int) error {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, instanceID, status string, _, _ int) error {
 	m.completeCalls++
-	m.lastJobID = jobID
+	m.lastInstanceID = instanceID
 	m.lastStatus = status
 	return m.markCompleteErr
 }
@@ -166,8 +167,8 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	if db.completeCalls != 1 {
 		t.Errorf("expected 1 complete call, got %d", db.completeCalls)
 	}
-	if db.lastJobID != "job-123" {
-		t.Errorf("expected job ID 'job-123', got '%s'", db.lastJobID)
+	if db.lastInstanceID != "i-12345" {
+		t.Errorf("expected instance ID 'i-12345', got '%s'", db.lastInstanceID)
 	}
 	if db.lastStatus != testStatusSuccess {
 		t.Errorf("expected status '%s', got '%s'", testStatusSuccess, db.lastStatus)
@@ -586,7 +587,7 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 	}
 
 	for _, field := range requiredFields {
-		if !containsString(jsonStr, field) {
+		if !strings.Contains(jsonStr, field) {
 			t.Errorf("required field %s should be present in JSON even when empty", field)
 		}
 	}
@@ -598,7 +599,7 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 	}
 
 	for _, field := range optionalFields {
-		if containsString(jsonStr, field) {
+		if strings.Contains(jsonStr, field) {
 			t.Logf("optional field %s is omitted as expected (has omitempty)", field)
 		}
 	}
@@ -615,50 +616,6 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 	}
 }
 
-func TestContainsString(t *testing.T) {
-	tests := []struct {
-		s       string
-		substr  string
-		want    bool
-	}{
-		{"hello world", "world", true},
-		{"hello world", "foo", false},
-		{"ParameterNotFound", "ParameterNotFound", true},
-		{"ParameterNotFound: param", "ParameterNotFound", true},
-		{"", "", true},
-		{"hello", "", true},
-		{"", "a", false},
-	}
-
-	for _, tt := range tests {
-		got := containsString(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("containsString(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
-
-func TestFindSubstring(t *testing.T) {
-	tests := []struct {
-		s      string
-		substr string
-		want   int
-	}{
-		{"hello world", "world", 6},
-		{"hello world", "hello", 0},
-		{"hello world", "foo", -1},
-		{"", "", 0},
-		{"hello", "", 0},
-		{"", "a", -1},
-	}
-
-	for _, tt := range tests {
-		got := findSubstring(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("findSubstring(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
 
 func TestHandler_processTermination_NoDuration(t *testing.T) {
 	q := &mockQueueAPI{}

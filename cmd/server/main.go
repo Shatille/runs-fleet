@@ -207,7 +207,7 @@ func main() {
 	}
 
 	var subnetIndex uint64
-	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, cfg, &subnetIndex)
+	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
 
 	go poolManager.ReconcileLoop(ctx)
 
@@ -294,7 +294,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	return nil
 }
 
-func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, cfg *config.Config, subnetIndex *uint64) {
+func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {
 	log.Println("Starting worker loop...")
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -348,7 +348,7 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 
 					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 					defer processCancel()
-					processMessage(processCtx, q, f, pm, m, rm, msg, cfg, subnetIndex)
+					processMessage(processCtx, q, f, pm, m, rm, dbc, msg, cfg, subnetIndex)
 				}()
 			}
 		}
@@ -396,7 +396,7 @@ func createFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.Lau
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
-func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
+func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
@@ -473,6 +473,37 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 	}
 
 	fleetCreated = true
+
+	// Save job records in DynamoDB for spot interruption tracking
+	if dbc != nil {
+		for _, instanceID := range instanceIDs {
+			jobRecord := &db.JobRecord{
+				JobID:        job.JobID,
+				RunID:        job.RunID,
+				Repo:         job.Repo,
+				InstanceID:   instanceID,
+				InstanceType: job.InstanceType,
+				Pool:         job.Pool,
+				Private:      job.Private,
+				Spot:         job.Spot,
+				RunnerSpec:   job.RunnerSpec,
+				RetryCount:   job.RetryCount,
+			}
+			// Retry SaveJob with exponential backoff (spot tracking is critical for job re-queueing)
+			var saveErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
+					break
+				}
+				if attempt < 2 {
+					time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond) // 100ms, 200ms
+				}
+			}
+			if saveErr != nil {
+				log.Printf("ERROR: Failed to save job record after retries for instance %s: %v (spot interruption tracking disabled)", instanceID, saveErr)
+			}
+		}
+	}
 
 	// Prepare runner config in SSM for each instance
 	if rm != nil {

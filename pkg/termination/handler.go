@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"strings"
+
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
@@ -23,8 +25,8 @@ type QueueAPI interface {
 
 // DBAPI provides database operations for termination processing.
 type DBAPI interface {
-	MarkJobComplete(ctx context.Context, jobID, status string, exitCode, duration int) error
-	UpdateJobMetrics(ctx context.Context, jobID string, startedAt, completedAt time.Time) error
+	MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error
+	UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error
 }
 
 // MetricsAPI provides CloudWatch metrics publishing for job completion.
@@ -176,14 +178,14 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
-	// Update DynamoDB job record
-	if err := h.dbClient.MarkJobComplete(ctx, msg.JobID, msg.Status, msg.ExitCode, msg.DurationSeconds); err != nil {
+	// Update DynamoDB job record (keyed by instance_id)
+	if err := h.dbClient.MarkJobComplete(ctx, msg.InstanceID, msg.Status, msg.ExitCode, msg.DurationSeconds); err != nil {
 		return fmt.Errorf("failed to mark job complete: %w", err)
 	}
 
 	// Update job metrics (timestamps)
 	if !msg.StartedAt.IsZero() && !msg.CompletedAt.IsZero() {
-		if err := h.dbClient.UpdateJobMetrics(ctx, msg.JobID, msg.StartedAt, msg.CompletedAt); err != nil {
+		if err := h.dbClient.UpdateJobMetrics(ctx, msg.InstanceID, msg.StartedAt, msg.CompletedAt); err != nil {
 			log.Printf("Warning: failed to update job metrics: %v", err)
 		}
 	}
@@ -223,7 +225,7 @@ func (h *Handler) deleteSSMParameter(ctx context.Context, instanceID string) err
 
 	if err != nil {
 		// Check if parameter was already deleted
-		if containsString(err.Error(), "ParameterNotFound") {
+		if strings.Contains(err.Error(), "ParameterNotFound") {
 			log.Printf("SSM parameter already deleted: %s", parameterPath)
 			return nil
 		}
@@ -232,19 +234,4 @@ func (h *Handler) deleteSSMParameter(ctx context.Context, instanceID string) err
 
 	log.Printf("Deleted SSM parameter: %s", parameterPath)
 	return nil
-}
-
-// containsString checks if a string contains a substring.
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr) >= 0
-}
-
-// findSubstring returns the index of substr in s, or -1 if not found.
-func findSubstring(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
