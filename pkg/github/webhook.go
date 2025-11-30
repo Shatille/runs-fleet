@@ -89,6 +89,7 @@ type JobConfig struct {
 	Environment  string // Per-stack environment support (Phase 6)
 	OS           string // Operating system (linux, windows)
 	Arch         string // Architecture (x64, arm64)
+	Backend      string // Compute backend: "ec2" or "k8s" (empty = use default)
 
 	// Flexible instance selection (Phase 10)
 	InstanceTypes []string // Multiple instance types for spot diversification
@@ -159,10 +160,29 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		return nil, errors.New("empty run-id in label")
 	}
 
-	// Track whether we're using flexible specs
+	hasFlexibleSpec, err := parseLabelParts(cfg, parts[1:])
+	if err != nil {
+		return nil, err
+	}
+
+	// If using flexible specs, resolve instance types
+	if hasFlexibleSpec {
+		if err := resolveFlexibleSpec(cfg); err != nil {
+			return nil, err
+		}
+	} else if cfg.RunnerSpec == "" {
+		return nil, errors.New("missing runner or cpu/ram specification in runs-fleet label")
+	}
+
+	return cfg, nil
+}
+
+// parseLabelParts parses key=value pairs from the runs-fleet label and populates the JobConfig.
+// Returns true if flexible specs (cpu/ram/family) are used.
+func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 	hasFlexibleSpec := false
 
-	for _, part := range parts[1:] {
+	for _, part := range parts {
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
 			continue
@@ -171,38 +191,33 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 
 		switch key {
 		case "runner":
-			// Legacy runner spec (e.g., runner=4cpu-linux-arm64)
 			cfg.RunnerSpec = value
 			cfg.InstanceType = resolveInstanceType(value)
 			cfg.OS, cfg.Arch = parseRunnerOSArch(value)
 
 		case "cpu":
-			// Flexible CPU spec (e.g., cpu=4 or cpu=4+16)
 			hasFlexibleSpec = true
 			cpuMin, cpuMax, err := parseRange(value)
 			if err != nil {
-				return nil, fmt.Errorf("invalid cpu label: %w", err)
+				return false, fmt.Errorf("invalid cpu label: %w", err)
 			}
 			cfg.CPUMin = cpuMin
 			cfg.CPUMax = cpuMax
 
 		case "ram":
-			// Flexible RAM spec (e.g., ram=8 or ram=8+32)
 			hasFlexibleSpec = true
 			ramMin, ramMax, err := parseRangeFloat(value)
 			if err != nil {
-				return nil, fmt.Errorf("invalid ram label: %w", err)
+				return false, fmt.Errorf("invalid ram label: %w", err)
 			}
 			cfg.RAMMin = ramMin
 			cfg.RAMMax = ramMax
 
 		case "family":
-			// Instance family filter (e.g., family=c7g or family=c7g+m7g+r7g)
 			hasFlexibleSpec = true
 			cfg.Families = strings.Split(value, "+")
 
 		case "arch":
-			// Architecture override (e.g., arch=arm64 or arch=x64)
 			if value == ArchARM64 || value == ArchX64 {
 				cfg.Arch = value
 			}
@@ -223,19 +238,17 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 			if value == "dev" || value == "staging" || value == "prod" {
 				cfg.Environment = value
 			}
+
+		case "backend":
+			if value == "ec2" || value == "k8s" {
+				cfg.Backend = value
+			} else {
+				return false, fmt.Errorf("invalid backend label: must be 'ec2' or 'k8s', got %q", value)
+			}
 		}
 	}
 
-	// If using flexible specs, resolve instance types
-	if hasFlexibleSpec {
-		if err := resolveFlexibleSpec(cfg); err != nil {
-			return nil, err
-		}
-	} else if cfg.RunnerSpec == "" {
-		return nil, errors.New("missing runner or cpu/ram specification in runs-fleet label")
-	}
-
-	return cfg, nil
+	return hasFlexibleSpec, nil
 }
 
 // parseRange parses an integer range like "4" or "4+16" into min and max values.

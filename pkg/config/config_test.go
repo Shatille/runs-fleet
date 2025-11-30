@@ -126,3 +126,240 @@ func splitEnv(s string) []string {
 	}
 	return []string{s, ""}
 }
+
+func TestIsEC2Backend(t *testing.T) {
+	tests := []struct {
+		backend string
+		want    bool
+	}{
+		{"", true},
+		{"ec2", true},
+		{"k8s", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.backend, func(t *testing.T) {
+			cfg := &Config{DefaultBackend: tt.backend}
+			if got := cfg.IsEC2Backend(); got != tt.want {
+				t.Errorf("IsEC2Backend() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsK8sBackend(t *testing.T) {
+	tests := []struct {
+		backend string
+		want    bool
+	}{
+		{"", false},
+		{"ec2", false},
+		{"k8s", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.backend, func(t *testing.T) {
+			cfg := &Config{DefaultBackend: tt.backend}
+			if got := cfg.IsK8sBackend(); got != tt.want {
+				t.Errorf("IsK8sBackend() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateK8sConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{
+			name: "valid K8s config",
+			cfg: &Config{
+				KubeNamespace:   "runs-fleet",
+				KubeRunnerImage: "runner:latest",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing namespace",
+			cfg: &Config{
+				KubeNamespace:   "",
+				KubeRunnerImage: "runner:latest",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing runner image",
+			cfg: &Config{
+				KubeNamespace:   "runs-fleet",
+				KubeRunnerImage: "",
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.validateK8sConfig()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateK8sConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseNodeSelector(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    map[string]string
+		wantErr bool
+	}{
+		{
+			name:  "empty",
+			input: "",
+			want:  map[string]string{},
+		},
+		{
+			name:  "single pair",
+			input: "kubernetes.io/arch=arm64",
+			want:  map[string]string{"kubernetes.io/arch": "arm64"},
+		},
+		{
+			name:  "multiple pairs",
+			input: "kubernetes.io/arch=arm64,node.kubernetes.io/instance-type=c7g.xlarge",
+			want: map[string]string{
+				"kubernetes.io/arch":                "arm64",
+				"node.kubernetes.io/instance-type": "c7g.xlarge",
+			},
+		},
+		{
+			name:  "with spaces",
+			input: " key1=value1 , key2=value2 ",
+			want:  map[string]string{"key1": "value1", "key2": "value2"},
+		},
+		{
+			name:    "invalid value too long",
+			input:   "key=" + string(make([]byte, 64)),
+			wantErr: true,
+		},
+		{
+			name:    "invalid value starts with dash",
+			input:   "key=-value",
+			wantErr: true,
+		},
+		{
+			name:    "missing equals",
+			input:   "key-without-equals",
+			wantErr: true,
+		},
+		{
+			name:    "empty key",
+			input:   "=value",
+			wantErr: true,
+		},
+		{
+			name:    "invalid key too long",
+			input:   string(make([]byte, 64)) + "=value",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseNodeSelector(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseNodeSelector() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("parseNodeSelector() length = %v, want %v", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("parseNodeSelector()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateK8sLabelKey(t *testing.T) {
+	tests := []struct {
+		key     string
+		wantErr bool
+	}{
+		{"valid", false},
+		{"valid-key", false},
+		{"valid_key", false},
+		{"valid.key", false},
+		{"kubernetes.io/arch", false},
+		{"node.kubernetes.io/instance-type", false},
+		{"example.com/key", false},
+		{"", true},
+		{"-invalid", true},
+		{"invalid-", true},
+		{"kubernetes.io/", true},
+		{"/name", true},
+		{string(make([]byte, 64)), true},
+		// Prefix validation edge cases
+		{"Kubernetes.io/arch", true},  // uppercase in prefix
+		{"-example.com/key", true},    // prefix starts with dash
+		{"example.com-/key", true},    // prefix ends with dash
+		{"example.Com/key", true},     // uppercase in prefix middle
+		{"9example.com/key", false},   // prefix starts with number (valid)
+		{"example.com9/key", false},   // prefix ends with number (valid)
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			err := validateK8sLabelKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateK8sLabelKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestIsValidK8sLabelValue(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"", true},
+		{"valid", true},
+		{"valid-value", true},
+		{"valid_value", true},
+		{"valid.value", true},
+		{"Valid123", true},
+		{"-invalid", false},
+		{"invalid-", false},
+		{".invalid", false},
+		{"invalid.", false},
+		{"in valid", false},
+		{string(make([]byte, 64)), false},
+		{"value\u00e9", false}, // non-ASCII character
+		{"v\u4e2d\u6587", false}, // Chinese characters
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			if got := isValidK8sLabelValue(tt.value); got != tt.want {
+				t.Errorf("isValidK8sLabelValue(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateInvalidBackend(t *testing.T) {
+	cfg := &Config{
+		DefaultBackend:      "invalid",
+		GitHubWebhookSecret: "secret",
+		GitHubAppID:         "123",
+		GitHubAppPrivateKey: "key",
+		QueueURL:            "https://sqs.example.com",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("Validate() should return error for invalid backend")
+	}
+}
