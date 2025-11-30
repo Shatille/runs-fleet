@@ -41,15 +41,13 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 	}
 }
 
-// GSI name for querying jobs by instance ID.
-const jobsByInstanceIndex = "jobs-by-instance"
-
 // jobRecord represents a job stored in DynamoDB.
+// Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
+	InstanceID   string `dynamodbav:"instance_id"`
 	JobID        string `dynamodbav:"job_id"`
 	RunID        string `dynamodbav:"run_id"`
 	Repo         string `dynamodbav:"repo"`
-	InstanceID   string `dynamodbav:"instance_id"`
 	InstanceType string `dynamodbav:"instance_type"`
 	Pool         string `dynamodbav:"pool"`
 	Private      bool   `dynamodbav:"private"`
@@ -253,9 +251,9 @@ func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string)
 		return nil // No running job on this instance
 	}
 
-	// Update job status to terminating
+	// Update job status to terminating using instance_id as primary key
 	key, err := attributevalue.MarshalMap(map[string]string{
-		"job_id": job.JobID,
+		"instance_id": instanceID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -280,7 +278,7 @@ func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string)
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
-// Queries the jobs-by-instance GSI to find running jobs associated with the instance.
+// Uses direct GetItem on primary key (instance_id) for efficient lookup.
 func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error) {
 	if instanceID == "" {
 		return nil, fmt.Errorf("instance ID cannot be empty")
@@ -290,33 +288,34 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		return nil, fmt.Errorf("jobs table not configured")
 	}
 
-	// Query the GSI to find jobs for this instance.
-	// Note: We don't use Limit here because DynamoDB applies Limit before FilterExpression,
-	// which could return no results if the first item doesn't match the filter.
-	output, err := c.dynamoClient.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(c.jobsTable),
-		IndexName:              aws.String(jobsByInstanceIndex),
-		KeyConditionExpression: aws.String("instance_id = :iid"),
-		FilterExpression:       aws.String("#status = :running"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":iid":     &types.AttributeValueMemberS{Value: instanceID},
-			":running": &types.AttributeValueMemberS{Value: "running"},
-		},
+	// Direct lookup by primary key (instance_id)
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"instance_id": instanceID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to query jobs by instance: %w", err)
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
 	}
 
-	if len(output.Items) == 0 {
-		return nil, nil // No running job found for this instance
+	output, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job by instance: %w", err)
+	}
+
+	if output.Item == nil {
+		return nil, nil // No job found for this instance
 	}
 
 	var record jobRecord
-	if err := attributevalue.UnmarshalMap(output.Items[0], &record); err != nil {
+	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
+	}
+
+	// Only return running jobs for spot interruption handling
+	if record.Status != "running" {
+		return nil, nil
 	}
 
 	return &events.JobInfo{
@@ -395,16 +394,17 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 }
 
 // MarkJobComplete marks a job as complete in DynamoDB with exit status.
-func (c *Client) MarkJobComplete(ctx context.Context, jobID, status string, exitCode, duration int) error {
-	if jobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+// Uses instance_id as primary key (one job per instance).
+func (c *Client) MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
 	}
 	if status == "" {
 		return fmt.Errorf("status cannot be empty")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
-		"job_id": jobID,
+		"instance_id": instanceID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -439,13 +439,14 @@ func (c *Client) MarkJobComplete(ctx context.Context, jobID, status string, exit
 }
 
 // UpdateJobMetrics updates job timing metrics in DynamoDB.
-func (c *Client) UpdateJobMetrics(ctx context.Context, jobID string, startedAt, completedAt time.Time) error {
-	if jobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+// Uses instance_id as primary key (one job per instance).
+func (c *Client) UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
-		"job_id": jobID,
+		"instance_id": instanceID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)

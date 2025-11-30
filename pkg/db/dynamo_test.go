@@ -6,7 +6,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // MockDynamoDBAPI implements DynamoDBAPI interface.
@@ -221,15 +220,11 @@ func TestGetJobByInstance(t *testing.T) {
 			name:       "Found",
 			instanceID: "i-1234567890abcdef0",
 			mockDB: &MockDynamoDBAPI{
-				QueryFunc: func(_ context.Context, params *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
-					// Verify correct index is used
-					if params.IndexName == nil || *params.IndexName != "jobs-by-instance" {
-						t.Errorf("Expected index 'jobs-by-instance', got %v", params.IndexName)
-					}
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 					item, err := attributevalue.MarshalMap(map[string]interface{}{
+						"instance_id":   "i-1234567890abcdef0",
 						"job_id":        "job-123",
 						"run_id":        "run-456",
-						"instance_id":   "i-1234567890abcdef0",
 						"instance_type": "t4g.medium",
 						"pool":          "default",
 						"private":       false,
@@ -241,7 +236,7 @@ func TestGetJobByInstance(t *testing.T) {
 					if err != nil {
 						t.Fatalf("Failed to marshal item: %v", err)
 					}
-					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item}}, nil
+					return &dynamodb.GetItemOutput{Item: item}, nil
 				},
 			},
 			wantJob: true,
@@ -251,8 +246,8 @@ func TestGetJobByInstance(t *testing.T) {
 			name:       "Not Found",
 			instanceID: "i-notfound",
 			mockDB: &MockDynamoDBAPI{
-				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
-					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: nil}, nil
 				},
 			},
 			wantJob: false,
@@ -264,6 +259,22 @@ func TestGetJobByInstance(t *testing.T) {
 			mockDB:     &MockDynamoDBAPI{},
 			wantJob:    false,
 			wantErr:    true,
+		},
+		{
+			name:       "Not Running Status",
+			instanceID: "i-completed",
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					item, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"instance_id": "i-completed",
+						"job_id":      "job-done",
+						"status":      "completed",
+					})
+					return &dynamodb.GetItemOutput{Item: item}, nil
+				},
+			},
+			wantJob: false,
+			wantErr: false,
 		},
 	}
 

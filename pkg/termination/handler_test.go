@@ -49,13 +49,13 @@ type mockDBAPI struct {
 	updateMetricsErr error
 	completeCalls    int
 	metricsCalls     int
-	lastJobID        string
+	lastInstanceID   string
 	lastStatus       string
 }
 
-func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID, status string, _, _ int) error {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, instanceID, status string, _, _ int) error {
 	m.completeCalls++
-	m.lastJobID = jobID
+	m.lastInstanceID = instanceID
 	m.lastStatus = status
 	return m.markCompleteErr
 }
@@ -167,8 +167,8 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	if db.completeCalls != 1 {
 		t.Errorf("expected 1 complete call, got %d", db.completeCalls)
 	}
-	if db.lastJobID != "job-123" {
-		t.Errorf("expected job ID 'job-123', got '%s'", db.lastJobID)
+	if db.lastInstanceID != "i-12345" {
+		t.Errorf("expected instance ID 'i-12345', got '%s'", db.lastInstanceID)
 	}
 	if db.lastStatus != testStatusSuccess {
 		t.Errorf("expected status '%s', got '%s'", testStatusSuccess, db.lastStatus)
