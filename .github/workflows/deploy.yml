@@ -20,13 +20,13 @@ env:
   S3_CONFIG_BUCKET: shavakan-runs-fleet-config
 
 jobs:
-  build-and-deploy:
+  version:
+    name: Calculate Version
     runs-on: ubuntu-latest
-
+    outputs:
+      new_version: ${{ steps.get_version.outputs.new_version }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -37,25 +37,14 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Get latest version from ECR
         id: get_version
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           ECR_OUTPUT=$(aws ecr describe-images \
             --repository-name $ECR_REPOSITORY \
             --region $AWS_REGION \
             --query 'imageDetails[*].imageTags[]' \
-            --output text) || {
-            echo "Failed to query ECR repository"
-            exit 1
-          }
+            --output text 2>/dev/null) || ECR_OUTPUT=""
 
           LATEST_TAG=$(echo "$ECR_OUTPUT" | tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
 
@@ -73,7 +62,6 @@ jobs:
             NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
           fi
 
-          # Race condition protection
           if aws ecr describe-images --repository-name $ECR_REPOSITORY --region $AWS_REGION \
             --image-ids imageTag=$NEW_VERSION >/dev/null 2>&1; then
             echo "Version $NEW_VERSION already exists in ECR"
@@ -83,38 +71,111 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-      - name: Build and push Docker image
-        id: build-image
+  build-arm64:
+    name: Build (arm64)
+    needs: version
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
+          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
         run: |
-          docker buildx build \
+          docker build \
             --platform linux/arm64 \
             --build-arg VERSION=$IMAGE_TAG \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            --load \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64 \
             .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64
 
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+  build-amd64:
+    name: Build (amd64)
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Extract agent binaries from Docker image
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
+          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
         run: |
-          CONTAINER_ID=$(docker create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG)
+          docker build \
+            --platform linux/amd64 \
+            --build-arg VERSION=$IMAGE_TAG \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64 \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
+
+  manifest-and-deploy:
+    name: Create Manifest & Deploy
+    needs: [version, build-arm64, build-amd64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create and push manifest
+        env:
+          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
+        run: |
+          docker manifest create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
+
+          docker manifest create $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
+
+          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Extract agent binaries
+        env:
+          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
+        run: |
+          docker pull --platform linux/amd64 $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
+          CONTAINER_ID=$(docker create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64)
           docker cp $CONTAINER_ID:/app/agent-linux-amd64 ./agent-linux-amd64
           docker cp $CONTAINER_ID:/app/agent-linux-arm64 ./agent-linux-arm64
           docker rm $CONTAINER_ID
 
       - name: Upload agent binaries to S3
         env:
-          IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
         run: |
           aws s3 cp ./agent-linux-amd64 \
             s3://${{ env.S3_CONFIG_BUCKET }}/agents/$IMAGE_TAG/runs-fleet-agent-linux-amd64
@@ -130,21 +191,18 @@ jobs:
 
       - name: Update ECS task definition and service
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
+          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
         run: |
-          # Get current task definition
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition runs-fleet-server \
             --query 'taskDefinition' \
             --output json)
 
-          # Update image tag in container definition
           NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
             --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
             '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
 
-          # Register new task definition
           NEW_TASK_ARN=$(aws ecs register-task-definition \
             --cli-input-json "$NEW_TASK_DEF" \
             --query 'taskDefinition.taskDefinitionArn' \
@@ -152,7 +210,6 @@ jobs:
 
           echo "Registered new task definition: $NEW_TASK_ARN"
 
-          # Update service with new task definition
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE }} \
@@ -161,11 +218,13 @@ jobs:
 
       - name: Deployment summary
         env:
-          IMAGE_TAG: ${{ steps.get_version.outputs.new_version }}
+          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
+          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
         run: |
           echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`$IMAGE_TAG\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: \`${{ steps.build-image.outputs.image }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms**: \`linux/arm64\`, \`linux/amd64\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Cluster**: \`${{ env.ECS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Service**: \`${{ env.ECS_SERVICE }}\`" >> $GITHUB_STEP_SUMMARY
