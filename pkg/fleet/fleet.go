@@ -168,7 +168,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	return instanceIDs, nil
 }
 
-// selectLaunchTemplate returns the appropriate launch template based on OS.
+// selectLaunchTemplate returns the appropriate launch template based on OS and architecture.
 func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
 	baseName := m.config.LaunchTemplateName
 	if baseName == "" {
@@ -180,7 +180,13 @@ func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
 		return baseName + "-windows"
 	}
 
-	return baseName
+	// x64 Linux instances use a separate launch template (different AMI)
+	if spec.Arch == "x64" {
+		return baseName + "-x64"
+	}
+
+	// ARM64 Linux instances (default)
+	return baseName + "-arm64"
 }
 
 // buildTags creates the tag set for the fleet resources.

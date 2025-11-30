@@ -274,3 +274,59 @@ func TestCreateFleet_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectLaunchTemplate(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *config.Config
+		spec     *LaunchSpec
+		expected string
+	}{
+		{
+			name:     "Default ARM64 Linux",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
+			expected: "runs-fleet-runner-arm64",
+		},
+		{
+			name:     "x64 Linux",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "linux", Arch: "x64"},
+			expected: "runs-fleet-runner-x64",
+		},
+		{
+			name:     "Windows",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "windows", Arch: "x64"},
+			expected: "runs-fleet-runner-windows",
+		},
+		{
+			name:     "Custom base name ARM64",
+			config:   &config.Config{LaunchTemplateName: "custom-runner"},
+			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
+			expected: "custom-runner-arm64",
+		},
+		{
+			name:     "Custom base name x64",
+			config:   &config.Config{LaunchTemplateName: "custom-runner"},
+			spec:     &LaunchSpec{OS: "linux", Arch: "x64"},
+			expected: "custom-runner-x64",
+		},
+		{
+			name:     "Empty arch defaults to ARM64 template",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "linux", Arch: ""},
+			expected: "runs-fleet-runner-arm64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{config: tt.config}
+			got := m.selectLaunchTemplate(tt.spec)
+			if got != tt.expected {
+				t.Errorf("selectLaunchTemplate() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
