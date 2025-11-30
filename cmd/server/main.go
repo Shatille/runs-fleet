@@ -281,6 +281,9 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 		return fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
+	if err := m.PublishJobQueued(ctx); err != nil {
+		log.Printf("Failed to publish job queued metric: %v", err)
+	}
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
 		log.Printf("Failed to publish queue depth metric: %v", err)
 	}

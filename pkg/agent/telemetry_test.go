@@ -19,17 +19,23 @@ const (
 
 // mockTelemetrySQSAPI implements TelemetrySQSAPI for testing.
 type mockTelemetrySQSAPI struct {
-	mu        sync.Mutex
-	messages  []string
-	sendErr   error
-	sendCalls int
-	failCount int // Number of times to fail before succeeding
+	mu              sync.Mutex
+	messages        []string
+	sendErr         error
+	sendCalls       int
+	failCount       int // Number of times to fail before succeeding
+	sendMessageFunc func(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
-func (m *mockTelemetrySQSAPI) SendMessage(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+func (m *mockTelemetrySQSAPI) SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sendCalls++
+
+	// Use custom function if provided
+	if m.sendMessageFunc != nil {
+		return m.sendMessageFunc(ctx, params, optFns...)
+	}
 
 	// Simulate failures for failCount times, then succeed
 	if m.failCount > 0 {
@@ -42,6 +48,12 @@ func (m *mockTelemetrySQSAPI) SendMessage(_ context.Context, params *sqs.SendMes
 		m.messages = append(m.messages, *params.MessageBody)
 	}
 	return &sqs.SendMessageOutput{}, nil
+}
+
+func (m *mockTelemetrySQSAPI) getMessages() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.messages
 }
 
 // mockLogger implements Logger for testing.
@@ -105,13 +117,14 @@ func TestTelemetry_SendJobStarted(t *testing.T) {
 		t.Errorf("expected 1 send call, got %d", sqsClient.sendCalls)
 	}
 
-	if len(sqsClient.messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(sqsClient.messages))
+	messages := sqsClient.getMessages()
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
 	}
 
 	// Verify message content
 	var decoded JobStatus
-	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(messages[0]), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
@@ -144,8 +157,9 @@ func TestTelemetry_SendJobCompleted_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	messages := sqsClient.getMessages()
 	var decoded JobStatus
-	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(messages[0]), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
@@ -175,8 +189,9 @@ func TestTelemetry_SendJobCompleted_Failure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	messages := sqsClient.getMessages()
 	var decoded JobStatus
-	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(messages[0]), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
@@ -206,8 +221,9 @@ func TestTelemetry_SendJobCompleted_Interrupted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	messages := sqsClient.getMessages()
 	var decoded JobStatus
-	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(messages[0]), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
@@ -236,8 +252,9 @@ func TestTelemetry_SendJobTimeout(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	messages := sqsClient.getMessages()
 	var decoded JobStatus
-	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(messages[0]), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
@@ -267,8 +284,9 @@ func TestTelemetry_SendJobFailure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	messages := sqsClient.getMessages()
 	var decoded JobStatus
-	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(messages[0]), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
