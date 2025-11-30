@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,11 +20,41 @@ import (
 	"github.com/google/go-github/v57/github"
 )
 
+const (
+	maxRetries     = 3
+	baseRetryDelay = 500 * time.Millisecond
+	maxRetryDelay  = 10 * time.Second
+)
+
+// isRetryableError returns true if the HTTP response indicates a retryable error.
+func isRetryableError(resp *http.Response, err error) bool {
+	if err != nil {
+		return true // Network errors are retryable
+	}
+	if resp == nil {
+		return true
+	}
+	// Retry on rate limit (429) or server errors (5xx)
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+}
+
+// retryDelay calculates exponential backoff with jitter.
+func retryDelay(attempt int) time.Duration {
+	delay := baseRetryDelay * time.Duration(1<<attempt)
+	if delay > maxRetryDelay {
+		delay = maxRetryDelay
+	}
+	// Add jitter: 50-100% of calculated delay
+	jitter := time.Duration(rand.Int64N(int64(delay / 2)))
+	return delay/2 + jitter
+}
+
 // GitHubClient handles GitHub App authentication and runner registration.
 type GitHubClient struct {
 	appID      int64
 	privateKey *rsa.PrivateKey
 	httpClient *http.Client
+	baseURL    string // API base URL, defaults to https://api.github.com
 }
 
 // NewGitHubClient creates a new GitHub client for runner operations.
@@ -62,6 +93,7 @@ func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, erro
 		appID:      id,
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL:    "https://api.github.com",
 	}, nil
 }
 
@@ -98,7 +130,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	}
 
 	// Find installation for org (using Bearer auth for JWT)
-	url := fmt.Sprintf("https://api.github.com/orgs/%s/installation", owner)
+	url := fmt.Sprintf("%s/orgs/%s/installation", c.baseURL, owner)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create installation request: %w", err)
@@ -116,7 +148,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	if resp.StatusCode == http.StatusNotFound {
 		_ = resp.Body.Close() // Close first response before reassigning
 
-		url = fmt.Sprintf("https://api.github.com/users/%s/installation", owner)
+		url = fmt.Sprintf("%s/users/%s/installation", c.baseURL, owner)
 		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create user installation request: %w", err)
@@ -149,7 +181,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	isOrg := installation.Account.Type == "Organization"
 
 	// Create installation token
-	url = fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installation.ID)
+	url = fmt.Sprintf("%s/app/installations/%d/access_tokens", c.baseURL, installation.ID)
 	req, err = http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
@@ -218,15 +250,16 @@ func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName 
 	return jitConfig.GetEncodedJITConfig(), nil
 }
 
-// RegistrationResult contains the registration token and account type.
+// RegistrationResult contains the registration token.
 type RegistrationResult struct {
 	Token string
-	IsOrg bool // true for Organization, false for User (personal account)
+	IsOrg bool // Deprecated: always false since repo-level registration is always used
 }
 
 // GetRegistrationToken gets a registration token for GitHub Actions runners.
-// For organizations, uses org-level endpoint. For personal accounts, uses repo-level.
+// Always uses repo-level endpoint to ensure runners only pick up jobs from the specific repository.
 // Extracts owner from repo string (owner/repo format) for installation token.
+// Retries transient errors with exponential backoff.
 func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
 	// Extract owner from repo string (required)
 	if repo == "" {
@@ -243,38 +276,57 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 		return nil, err
 	}
 
-	// Use org-level endpoint for organizations, repo-level for personal accounts
-	var url string
-	if info.IsOrg {
-		url = fmt.Sprintf("https://api.github.com/orgs/%s/actions/runners/registration-token", owner)
-	} else {
-		url = fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/registration-token", repo)
-	}
+	// Always use repo-level endpoint to ensure runners only pick up jobs
+	// from the specific repository. Org-level registration allows runners
+	// to pick up jobs from ANY repo in the org, causing job misassignment.
+	// See: https://docs.github.com/en/rest/actions/self-hosted-runners#create-a-registration-token-for-a-repository
+	url := fmt.Sprintf("%s/repos/%s/actions/runners/registration-token", c.baseURL, repo)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", "token "+info.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusCreated {
-		var result struct {
-			Token string `json:"token"`
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryDelay(attempt - 1)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", err)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		return &RegistrationResult{Token: result.Token, IsOrg: info.IsOrg}, nil
+		req.Header.Set("Authorization", "token "+info.Token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to execute request: %w", err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusCreated {
+			var result struct {
+				Token string `json:"token"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("failed to decode response: %w", err)
+			}
+			_ = resp.Body.Close()
+			return &RegistrationResult{Token: result.Token, IsOrg: false}, nil
+		}
+
+		// Read error body for debugging
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		lastErr = fmt.Errorf("failed to create registration token for %s: status=%d body=%s", repo, resp.StatusCode, string(body))
+
+		if !isRetryableError(resp, nil) {
+			return nil, lastErr
+		}
 	}
 
-	// Read error body for debugging
-	body, _ := io.ReadAll(resp.Body)
-	return nil, fmt.Errorf("failed to create registration token for %s: status=%d body=%s", repo, resp.StatusCode, string(body))
+	return nil, fmt.Errorf("exhausted retries: %w", lastErr)
 }
