@@ -1,5 +1,8 @@
 # runs-fleet
 
+[![CI](https://github.com/Shavakan/runs-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Shavakan/runs-fleet/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Shavakan/089a4c604db357e35ee33f10be5a1bbf/raw/runs-fleet-coverage.json)](https://github.com/Shavakan/runs-fleet)
+
 > Self-hosted ephemeral GitHub Actions runners on AWS, orchestrating spot EC2 instances for workflow jobs
 
 Inspired by [runs-on](https://github.com/runs-on/runs-on). Fleet orchestration with warm pools, S3 caching, and spot-first cost optimization.

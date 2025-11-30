@@ -46,12 +46,32 @@ jobs:
         run: |
           go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "Coverage: $COVERAGE%"
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: github.event_name == 'pull_request'
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+
+      - name: Update coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.GIST_ID }}
+          filename: runs-fleet-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percentage }}%
+          valColorRange: ${{ steps.coverage.outputs.percentage }}
+          maxColorRange: 100
+          minColorRange: 0
 
   build:
     name: Build
