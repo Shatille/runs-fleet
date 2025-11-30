@@ -85,8 +85,8 @@ type RunnerSpec struct {
 	JobID         string
 	Repo          string
 	Labels        []string
-	InstanceType  string   // Primary instance type
-	InstanceTypes []string // Multiple types for spot diversification
+	InstanceType  string   // Primary instance type (EC2-specific)
+	InstanceTypes []string // Multiple types for spot diversification (EC2-specific)
 	Spot          bool
 	Private       bool
 	Pool          string
@@ -97,6 +97,11 @@ type RunnerSpec struct {
 	ForceOnDemand bool
 	RetryCount    int
 	SubnetID      string // Network isolation (EC2: subnet, K8s: namespace)
+
+	// K8s-native resource requests (used by Karpenter to provision nodes)
+	CPUCores   int     // CPU cores requested (e.g., 4)
+	MemoryGiB  float64 // Memory in GiB requested (e.g., 8)
+	StorageGiB int     // Ephemeral storage in GiB (e.g., 50)
 }
 
 // RunnerResult contains the result of creating a runner.
