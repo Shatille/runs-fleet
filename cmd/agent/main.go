@@ -55,6 +55,7 @@ func main() {
 	configBucket := os.Getenv("RUNS_FLEET_CONFIG_BUCKET")
 	terminationQueueURL := os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL")
 	ssmParameterPath := os.Getenv("RUNS_FLEET_SSM_PARAMETER")
+	logGroup := os.Getenv("RUNS_FLEET_LOG_GROUP")
 	maxRuntimeMinutes := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
 
 	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, region=%s, max_runtime=%dm",
@@ -75,6 +76,20 @@ func main() {
 	safetyMonitor := agent.NewSafetyMonitor(time.Duration(maxRuntimeMinutes)*time.Minute, logger)
 	executor := agent.NewExecutor(logger, safetyMonitor)
 	cleanup := agent.NewCleanup(logger)
+
+	// Set up CloudWatch logging if configured
+	var cwLogger *agent.CloudWatchLogger
+	if logGroup != "" {
+		logStream := fmt.Sprintf("%s/%s", instanceID, runID)
+		cwLogger = agent.NewCloudWatchLogger(cfg, logGroup, logStream, logger)
+		if startErr := cwLogger.Start(ctx); startErr != nil {
+			logger.Printf("Warning: failed to start CloudWatch logger: %v", startErr)
+		} else {
+			executor.SetCloudWatchLogger(cwLogger)
+			defer cwLogger.Stop()
+			logger.Printf("CloudWatch logging enabled: %s/%s", logGroup, logStream)
+		}
+	}
 
 	var telemetry *agent.Telemetry
 	if terminationQueueURL != "" {
