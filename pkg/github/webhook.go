@@ -328,9 +328,17 @@ func resolveFlexibleSpec(cfg *JobConfig) error {
 	cfg.InstanceType = instanceTypes[0]
 
 	// Generate a synthetic runner spec for logging/display
-	cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s-%s", cfg.CPUMin, cfg.OS, cfg.Arch)
-	if cfg.CPUMax > 0 {
-		cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS, cfg.Arch)
+	if cfg.Arch != "" {
+		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s-%s", cfg.CPUMin, cfg.OS, cfg.Arch)
+		if cfg.CPUMax > 0 {
+			cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS, cfg.Arch)
+		}
+	} else {
+		// Empty arch = arch doesn't matter
+		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s", cfg.CPUMin, cfg.OS)
+		if cfg.CPUMax > 0 {
+			cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS)
+		}
 	}
 
 	return nil

@@ -246,4 +246,14 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 			t.Error("DefaultFlexibleFamilies should return different families for arm64 and x64")
 		}
 	}
+
+	// Empty arch should return combined families (arch doesn't matter)
+	emptyArchFamilies := DefaultFlexibleFamilies("")
+	if len(emptyArchFamilies) == 0 {
+		t.Error("DefaultFlexibleFamilies(\"\") returned empty slice")
+	}
+	// Should contain families from both architectures
+	if len(emptyArchFamilies) <= len(arm64Families) || len(emptyArchFamilies) <= len(x64Families) {
+		t.Error("DefaultFlexibleFamilies(\"\") should return combined families from both architectures")
+	}
 }
