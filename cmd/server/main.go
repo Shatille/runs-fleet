@@ -727,6 +727,12 @@ func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp
 		}
 	}()
 
+	if msg.Body == nil {
+		log.Printf("Received message with nil body")
+		poisonMessage = true
+		return
+	}
+
 	var job queue.JobMessage
 	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
 		log.Printf("Failed to unmarshal message: %v", err)
@@ -798,6 +804,9 @@ func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp
 			}
 			if saveErr != nil {
 				log.Printf("ERROR: Failed to save job record after retries for pod %s: %v", runnerID, saveErr)
+				if metricErr := m.PublishSchedulingFailure(ctx, "k8s-job-record-save"); metricErr != nil {
+					log.Printf("Failed to publish job record save failure metric: %v", metricErr)
+				}
 			}
 		}
 	}
