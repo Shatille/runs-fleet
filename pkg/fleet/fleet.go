@@ -169,6 +169,8 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 }
 
 // selectLaunchTemplate returns the appropriate launch template based on OS and architecture.
+// spec must not be nil; enforced by caller (CreateFleet).
+// Supported OS values: "linux", "windows", or "" (defaults to linux).
 func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
 	baseName := m.config.LaunchTemplateName
 	if baseName == "" {
@@ -178,6 +180,11 @@ func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
 	// Windows instances use a separate launch template
 	if spec.OS == "windows" {
 		return baseName + "-windows"
+	}
+
+	// Validate OS - only linux (or empty, defaulting to linux) is supported beyond windows
+	if spec.OS != "" && spec.OS != "linux" {
+		log.Printf("Warning: unsupported OS %q, defaulting to linux", spec.OS)
 	}
 
 	// x64 Linux instances use a separate launch template (different AMI)

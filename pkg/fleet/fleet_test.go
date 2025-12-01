@@ -318,6 +318,18 @@ func TestSelectLaunchTemplate(t *testing.T) {
 			spec:     &LaunchSpec{OS: "linux", Arch: ""},
 			expected: "runs-fleet-runner-arm64",
 		},
+		{
+			name:     "Unsupported OS defaults to Linux ARM64",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "macos", Arch: "arm64"},
+			expected: "runs-fleet-runner-arm64",
+		},
+		{
+			name:     "Unsupported OS with x64 defaults to Linux x64",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "freebsd", Arch: "x64"},
+			expected: "runs-fleet-runner-x64",
+		},
 	}
 
 	for _, tt := range tests {
