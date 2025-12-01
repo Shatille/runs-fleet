@@ -274,3 +274,77 @@ func TestCreateFleet_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectLaunchTemplate(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *config.Config
+		spec     *LaunchSpec
+		expected string
+	}{
+		{
+			name:     "Default ARM64 Linux",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
+			expected: "runs-fleet-runner-arm64",
+		},
+		{
+			name:     "x64 Linux",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "linux", Arch: "x64"},
+			expected: "runs-fleet-runner-x64",
+		},
+		{
+			name:     "Windows",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "windows", Arch: "x64"},
+			expected: "runs-fleet-runner-windows",
+		},
+		{
+			name:     "Windows ignores arch (always uses -windows suffix)",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "windows", Arch: "arm64"},
+			expected: "runs-fleet-runner-windows",
+		},
+		{
+			name:     "Custom base name ARM64",
+			config:   &config.Config{LaunchTemplateName: "custom-runner"},
+			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
+			expected: "custom-runner-arm64",
+		},
+		{
+			name:     "Custom base name x64",
+			config:   &config.Config{LaunchTemplateName: "custom-runner"},
+			spec:     &LaunchSpec{OS: "linux", Arch: "x64"},
+			expected: "custom-runner-x64",
+		},
+		{
+			name:     "Empty arch uses non-suffixed template",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "linux", Arch: ""},
+			expected: "runs-fleet-runner",
+		},
+		{
+			name:     "Unsupported OS defaults to Linux ARM64",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "macos", Arch: "arm64"},
+			expected: "runs-fleet-runner-arm64",
+		},
+		{
+			name:     "Unsupported OS with x64 defaults to Linux x64",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "freebsd", Arch: "x64"},
+			expected: "runs-fleet-runner-x64",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{config: tt.config}
+			got := m.selectLaunchTemplate(tt.spec)
+			if got != tt.expected {
+				t.Errorf("selectLaunchTemplate() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}

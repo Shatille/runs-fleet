@@ -246,4 +246,14 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 			t.Error("DefaultFlexibleFamilies should return different families for arm64 and x64")
 		}
 	}
+
+	// Empty arch should return ARM64 families (legacy template uses ARM64 AMI)
+	emptyArchFamilies := DefaultFlexibleFamilies("")
+	if len(emptyArchFamilies) == 0 {
+		t.Error("DefaultFlexibleFamilies(\"\") returned empty slice")
+	}
+	// Empty arch defaults to ARM64 families
+	if len(emptyArchFamilies) != len(arm64Families) {
+		t.Errorf("DefaultFlexibleFamilies(\"\") should return ARM64 families, got %d families, want %d", len(emptyArchFamilies), len(arm64Families))
+	}
 }

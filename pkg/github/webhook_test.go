@@ -247,6 +247,15 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 			wantInstanceTypes: 1,
 		},
 		{
+			name: "Empty arch (defaults to ARM64 families)",
+			labels: []string{
+				"runs-fleet=12345/cpu=4",
+			},
+			wantCPUMin:        4,
+			wantArch:          "",
+			wantInstanceTypes: 1, // Matches ARM64 instances only (legacy template compatibility)
+		},
+		{
 			name: "No matching instances",
 			labels: []string{
 				"runs-fleet=12345/cpu=1000/arch=arm64",
@@ -399,6 +408,10 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 		{
 			name:   "Invalid backend value",
 			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/backend=invalid"},
+		},
+		{
+			name:   "Windows with ARM64 architecture",
+			labels: []string{"runs-fleet=12345/runner=2cpu-windows-arm64"},
 		},
 	}
 
