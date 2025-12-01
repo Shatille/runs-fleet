@@ -96,6 +96,11 @@ func NewProviderWithClient(clientset kubernetes.Interface, appConfig *config.Con
 	}
 }
 
+// Clientset returns the Kubernetes clientset for use by PoolProvider.
+func (p *Provider) Clientset() kubernetes.Interface {
+	return p.clientset
+}
+
 // Name returns the provider identifier.
 func (p *Provider) Name() string {
 	return "k8s"
