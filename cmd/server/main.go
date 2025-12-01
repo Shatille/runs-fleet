@@ -26,9 +26,12 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
+	"github.com/Shavakan/runs-fleet/pkg/provider"
+	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -54,6 +57,43 @@ func (l *stdLogger) Println(v ...interface{}) {
 	log.Println(v...)
 }
 
+func initCoordinator(_ context.Context, awsCfg aws.Config, cfg *config.Config, logger coordinator.Logger) coordinator.Coordinator {
+	if cfg.CoordinatorEnabled && cfg.InstanceID != "" && cfg.LocksTableName != "" {
+		dynamoClient := dynamodb.NewFromConfig(awsCfg)
+		coordCfg := coordinator.DefaultConfig(cfg.InstanceID)
+		coordCfg.LockTableName = cfg.LocksTableName
+		coord := coordinator.NewDynamoDBCoordinator(coordCfg, dynamoClient, logger)
+		log.Printf("Distributed coordinator enabled: instance_id=%s, table=%s", cfg.InstanceID, cfg.LocksTableName)
+		return coord
+	}
+	log.Println("Distributed coordinator disabled (no-op coordinator)")
+	return coordinator.NewNoOpCoordinator(logger)
+}
+
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher *metrics.Publisher) (*housekeeping.Handler, *housekeeping.Scheduler) {
+	if cfg.HousekeepingQueueURL == "" {
+		return nil, nil
+	}
+
+	housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
+
+	var costReporter *cost.Reporter
+	if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
+		costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
+	}
+
+	housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
+	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
+	handler := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
+
+	schedulerCfg := housekeeping.DefaultSchedulerConfig()
+	scheduler := housekeeping.NewSchedulerFromConfig(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
+	scheduler.SetMetrics(metricsPublisher)
+
+	log.Printf("Housekeeping handler and scheduler initialized with queue: %s", cfg.HousekeepingQueueURL)
+	return handler, scheduler
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -71,73 +111,70 @@ func main() {
 	}
 
 	sqsClient := queue.NewClient(awsCfg, cfg.QueueURL)
-	eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
-	fleetManager := fleet.NewManager(awsCfg, cfg)
 	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
-	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher := metrics.NewPublisher(awsCfg)
-	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 
-	var coord coordinator.Coordinator
-	logger := &stdLogger{}
-	if cfg.CoordinatorEnabled && cfg.InstanceID != "" && cfg.LocksTableName != "" {
-		dynamoClient := dynamodb.NewFromConfig(awsCfg)
-		coordCfg := coordinator.DefaultConfig(cfg.InstanceID)
-		coordCfg.LockTableName = cfg.LocksTableName
-		coord = coordinator.NewDynamoDBCoordinator(coordCfg, dynamoClient, logger)
-		log.Printf("Distributed coordinator enabled: instance_id=%s, table=%s", cfg.InstanceID, cfg.LocksTableName)
+	// Backend-specific initialization
+	var fleetManager *fleet.Manager
+	var poolManager *pools.Manager
+	var eventHandler *events.Handler
+	var k8sProvider *k8s.Provider
+	var k8sPoolProvider *k8s.PoolProvider
+
+	if cfg.IsK8sBackend() {
+		log.Printf("Initializing K8s backend (namespace: %s)", cfg.KubeNamespace)
+		var err error
+		k8sProvider, err = k8s.NewProvider(cfg)
+		if err != nil {
+			log.Fatalf("Failed to create K8s provider: %v", err)
+		}
+		k8sPoolProvider = k8s.NewPoolProvider(k8sProvider.Clientset(), cfg)
+		log.Println("K8s provider and pool provider initialized")
 	} else {
-		coord = coordinator.NewNoOpCoordinator(logger)
-		log.Println("Distributed coordinator disabled (no-op coordinator)")
+		log.Println("Initializing EC2 backend")
+		eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
+		fleetManager = fleet.NewManager(awsCfg, cfg)
+		poolManager = pools.NewManager(dbClient, fleetManager, cfg)
+		eventHandler = events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 	}
 
+	logger := &stdLogger{}
+	coord := initCoordinator(ctx, awsCfg, cfg, logger)
 	if err := coord.Start(ctx); err != nil {
 		log.Fatalf("Failed to start coordinator: %v", err)
 	}
 
-	poolManager.SetCoordinator(coord)
-
-	ec2Client := ec2.NewFromConfig(awsCfg)
-	poolManager.SetEC2Client(ec2Client)
-	log.Println("Pool manager initialized with EC2 client for reconciliation")
+	// EC2-specific pool manager setup
+	if poolManager != nil {
+		poolManager.SetCoordinator(coord)
+		ec2Client := ec2.NewFromConfig(awsCfg)
+		poolManager.SetEC2Client(ec2Client)
+		log.Println("Pool manager initialized with EC2 client for reconciliation")
+	}
 
 	var circuitBreaker *circuit.Breaker
-	if cfg.CircuitBreakerTable != "" {
+	if cfg.CircuitBreakerTable != "" && fleetManager != nil {
 		circuitBreaker = circuit.NewBreaker(awsCfg, cfg.CircuitBreakerTable)
 		circuitBreaker.StartCacheCleanup(ctx)
 		fleetManager.SetCircuitBreaker(circuitBreaker)
-		eventHandler.SetCircuitBreaker(circuitBreaker)
+		if eventHandler != nil {
+			eventHandler.SetCircuitBreaker(circuitBreaker)
+		}
 		log.Printf("Circuit breaker initialized with table: %s", cfg.CircuitBreakerTable)
 	}
 
+	// EC2-specific handlers (SSM-based termination and EC2 housekeeping)
 	var terminationHandler *termination.Handler
-	if cfg.TerminationQueueURL != "" {
-		terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
-		ssmClient := ssm.NewFromConfig(awsCfg)
-		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
-	}
-
 	var housekeepingHandler *housekeeping.Handler
 	var housekeepingScheduler *housekeeping.Scheduler
-	if cfg.HousekeepingQueueURL != "" {
-		housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
-
-		var costReporter *cost.Reporter
-		if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
-			costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
+	if cfg.IsEC2Backend() {
+		if cfg.TerminationQueueURL != "" {
+			terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
+			ssmClient := ssm.NewFromConfig(awsCfg)
+			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
 		}
-
-		housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
-		tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
-		housekeepingHandler = housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
-
-		// Create scheduler to periodically trigger housekeeping tasks
-		schedulerCfg := housekeeping.DefaultSchedulerConfig()
-		housekeepingScheduler = housekeeping.NewSchedulerFromConfig(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
-		housekeepingScheduler.SetMetrics(metricsPublisher)
-
-		log.Printf("Housekeeping handler and scheduler initialized with queue: %s", cfg.HousekeepingQueueURL)
+		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher)
 	}
 
 	// Initialize runner manager for SSM configuration
@@ -207,11 +244,14 @@ func main() {
 	}
 
 	var subnetIndex uint64
-	go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
-
-	go poolManager.ReconcileLoop(ctx)
-
-	go eventHandler.Run(ctx)
+	if cfg.IsK8sBackend() {
+		go runK8sWorker(ctx, sqsClient, k8sProvider, k8sPoolProvider, metricsPublisher, runnerManager, dbClient, cfg)
+		// TODO: K8s pool reconcile loop
+	} else {
+		go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
+		go poolManager.ReconcileLoop(ctx)
+		go eventHandler.Run(ctx)
+	}
 
 	if terminationHandler != nil {
 		go terminationHandler.Run(ctx)
@@ -399,6 +439,26 @@ func createFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.Lau
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
+func createK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
+	var result *provider.RunnerResult
+	var err error
+	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
+		if attempt > 0 {
+			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
+			log.Printf("Retrying K8s pod creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
+			time.Sleep(backoff)
+		}
+
+		result, err = p.CreateRunner(ctx, spec)
+		if err == nil {
+			return result, nil
+		}
+
+		log.Printf("K8s pod creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
+	}
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
+}
+
 func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
@@ -569,4 +629,194 @@ func (h *housekeepingMetricsAdapter) PublishJobRecordsArchived(ctx context.Conte
 
 func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	return h.publisher.PublishPoolUtilization(ctx, poolName, utilization)
+}
+
+// K8s backend functions
+
+func runK8sWorker(ctx context.Context, q *queue.Client, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config) {
+	log.Println("Starting K8s worker loop...")
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	const maxConcurrency = 5
+	sem := make(chan struct{}, maxConcurrency)
+	var activeWork sync.WaitGroup
+
+	defer func() {
+		log.Println("Waiting for in-flight K8s work to complete...")
+		activeWork.Wait()
+		log.Println("K8s worker shutdown complete")
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			timeout := 25 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline)
+				if remaining < timeout {
+					timeout = remaining
+				}
+			}
+			recvCtx, cancel := context.WithTimeout(ctx, timeout)
+			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
+			cancel()
+			if err != nil {
+				log.Printf("Failed to receive messages: %v", err)
+				continue
+			}
+
+			if len(messages) == 0 {
+				continue
+			}
+
+			for _, msg := range messages {
+				msg := msg
+				activeWork.Add(1)
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("panic in processK8sMessage: %v", r)
+						}
+					}()
+					defer activeWork.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
+					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
+					defer processCancel()
+					processK8sMessage(processCtx, q, p, pp, m, rm, dbc, msg, cfg)
+				}()
+			}
+		}
+	}
+}
+
+func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg types.Message, _ *config.Config) {
+	startTime := time.Now()
+	podCreated := false
+	poisonMessage := false
+
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+		defer cleanupCancel()
+
+		if podCreated {
+			if err := deleteMessageWithRetry(cleanupCtx, q, *msg.ReceiptHandle); err != nil {
+				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
+			}
+
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
+			}
+		}
+
+		if poisonMessage {
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
+			}
+		}
+
+		if err := m.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
+			log.Printf("Failed to publish job duration metric: %v", err)
+		}
+	}()
+
+	var job queue.JobMessage
+	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
+		log.Printf("Failed to unmarshal message: %v", err)
+		poisonMessage = true
+
+		if err := deleteMessageWithRetry(ctx, q, *msg.ReceiptHandle); err != nil {
+			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
+		}
+
+		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
+		defer metricCancel()
+		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
+			log.Printf("Failed to publish poison message metric: %v", metricErr)
+		}
+		return
+	}
+
+	log.Printf("Processing K8s job for run %s (os=%s, arch=%s, pool=%s)",
+		job.RunID, job.OS, job.Arch, job.Pool)
+
+	spec := &provider.RunnerSpec{
+		RunID:        job.RunID,
+		JobID:        job.JobID,
+		Repo:         job.Repo,
+		Pool:         job.Pool,
+		OS:           job.OS,
+		Arch:         job.Arch,
+		InstanceType: job.InstanceType,
+		Spot:         job.Spot,
+		Private:      job.Private,
+		Environment:  job.Environment,
+		RetryCount:   job.RetryCount,
+	}
+
+	result, err := createK8sRunnerWithRetry(ctx, p, spec)
+	if err != nil {
+		log.Printf("Failed to create K8s runner: %v", err)
+		return
+	}
+
+	podCreated = true
+
+	// Save job records in DynamoDB with retry
+	if dbc != nil {
+		for _, runnerID := range result.RunnerIDs {
+			jobRecord := &db.JobRecord{
+				JobID:        job.JobID,
+				RunID:        job.RunID,
+				Repo:         job.Repo,
+				InstanceID:   runnerID,
+				InstanceType: job.InstanceType,
+				Pool:         job.Pool,
+				Private:      job.Private,
+				Spot:         job.Spot,
+				RunnerSpec:   job.RunnerSpec,
+				RetryCount:   job.RetryCount,
+			}
+			var saveErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
+					break
+				}
+				if attempt < 2 {
+					time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond)
+				}
+			}
+			if saveErr != nil {
+				log.Printf("ERROR: Failed to save job record after retries for pod %s: %v", runnerID, saveErr)
+			}
+		}
+	}
+
+	// Prepare runner config for each pod (via SSM or ConfigMap - future enhancement)
+	if rm != nil {
+		for _, runnerID := range result.RunnerIDs {
+			label := buildRunnerLabel(&job)
+			prepareReq := runner.PrepareRunnerRequest{
+				InstanceID: runnerID,
+				JobID:      job.JobID,
+				RunID:      job.RunID,
+				Repo:       job.Repo,
+				Labels:     []string{label},
+			}
+			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
+				log.Printf("Failed to prepare runner config for pod %s: %v", runnerID, err)
+			}
+		}
+	}
+
+	// Mark pods as busy for idle timeout tracking
+	for _, runnerID := range result.RunnerIDs {
+		pp.MarkRunnerBusy(runnerID)
+	}
+
+	log.Printf("Successfully created %d K8s pod(s) for run %s", len(result.RunnerIDs), job.RunID)
 }
