@@ -313,10 +313,10 @@ func TestSelectLaunchTemplate(t *testing.T) {
 			expected: "custom-runner-x64",
 		},
 		{
-			name:     "Empty arch defaults to ARM64 template",
+			name:     "Empty arch uses non-suffixed template",
 			config:   &config.Config{},
 			spec:     &LaunchSpec{OS: "linux", Arch: ""},
-			expected: "runs-fleet-runner-arm64",
+			expected: "runs-fleet-runner",
 		},
 		{
 			name:     "Unsupported OS defaults to Linux ARM64",
