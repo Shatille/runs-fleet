@@ -133,7 +133,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	cfg := &JobConfig{
 		Spot:        true,
 		OS:          "linux",
-		Arch:        ArchARM64,
+		Arch:        "", // Empty = arch doesn't matter, uses non-suffixed launch template
 		Environment: "", // Default: no specific environment
 		Region:      "", // Default: use primary region
 	}
@@ -362,9 +362,10 @@ func resolveInstanceType(runnerSpec string) string {
 }
 
 // parseRunnerOSArch extracts OS and architecture from runner spec.
+// Returns empty arch if not explicitly specified (arch doesn't matter).
 func parseRunnerOSArch(runnerSpec string) (os, arch string) {
 	os = "linux"
-	arch = ArchARM64
+	arch = "" // Empty = arch doesn't matter
 
 	if strings.Contains(runnerSpec, "windows") {
 		os = "windows"
