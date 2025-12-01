@@ -145,12 +145,15 @@ func main() {
 		log.Fatalf("Failed to start coordinator: %v", err)
 	}
 
-	// EC2-specific pool manager setup
+	// Backend-specific coordinator setup
 	if poolManager != nil {
 		poolManager.SetCoordinator(coord)
 		ec2Client := ec2.NewFromConfig(awsCfg)
 		poolManager.SetEC2Client(ec2Client)
 		log.Println("Pool manager initialized with EC2 client for reconciliation")
+	}
+	if k8sPoolProvider != nil {
+		k8sPoolProvider.SetCoordinator(coord)
 	}
 
 	var circuitBreaker *circuit.Breaker
@@ -246,7 +249,7 @@ func main() {
 	var subnetIndex uint64
 	if cfg.IsK8sBackend() {
 		go runK8sWorker(ctx, sqsClient, k8sProvider, k8sPoolProvider, metricsPublisher, runnerManager, dbClient, cfg)
-		// TODO: K8s pool reconcile loop
+		go k8sPoolProvider.ReconcileLoop(ctx)
 	} else {
 		go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
 		go poolManager.ReconcileLoop(ctx)

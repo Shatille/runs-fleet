@@ -275,12 +275,17 @@ func TestPoolProvider_IdleTracking(t *testing.T) {
 	}, metav1.CreateOptions{})
 
 	cfg := &config.Config{
-		KubeNamespace: "runs-fleet",
+		KubeNamespace:          "runs-fleet",
+		KubeIdleTimeoutMinutes: 10,
 	}
 
 	p := NewPoolProvider(clientset, cfg)
+	p.SetCoordinator(&mockCoordinator{leader: true})
 
-	// First list should initialize idle tracking
+	// Reconcile initializes idle tracking for running pods
+	p.reconcile(context.Background())
+
+	// ListPoolRunners should now show IdleSince
 	runners, err := p.ListPoolRunners(context.Background(), "default")
 	if err != nil {
 		t.Fatalf("ListPoolRunners() error = %v", err)
@@ -291,7 +296,7 @@ func TestPoolProvider_IdleTracking(t *testing.T) {
 	}
 
 	if runners[0].IdleSince.IsZero() {
-		t.Error("IdleSince should be set for running pod")
+		t.Error("IdleSince should be set after reconcile")
 	}
 
 	firstIdleSince := runners[0].IdleSince
@@ -307,13 +312,179 @@ func TestPoolProvider_IdleTracking(t *testing.T) {
 		t.Error("MarkRunnerBusy should remove runner from podIdle map")
 	}
 
-	// Subsequent list should preserve or re-initialize idle time
+	// Subsequent list should not show IdleSince (pod is busy, not tracked)
+	runners, err = p.ListPoolRunners(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("ListPoolRunners() error = %v", err)
+	}
+	if !runners[0].IdleSince.IsZero() {
+		t.Error("IdleSince should be zero for busy runner not in podIdle")
+	}
+
+	// Mark idle again
+	p.MarkRunnerIdle("runner-1")
+
 	runners, err = p.ListPoolRunners(context.Background(), "default")
 	if err != nil {
 		t.Fatalf("ListPoolRunners() error = %v", err)
 	}
 	if runners[0].IdleSince.Before(firstIdleSince) {
-		t.Error("IdleSince should not go backwards")
+		t.Error("IdleSince should not go backwards after marking idle")
+	}
+}
+
+type mockCoordinator struct {
+	leader bool
+}
+
+func (m *mockCoordinator) IsLeader() bool {
+	return m.leader
+}
+
+func TestPoolProvider_Reconcile(t *testing.T) {
+	tests := []struct {
+		name           string
+		podName        string
+		isLeader       bool
+		idleDuration   time.Duration
+		expectTerminate bool
+	}{
+		{
+			name:           "terminates idle pods past threshold",
+			podName:        "idle-runner",
+			isLeader:       true,
+			idleDuration:   15 * time.Minute, // threshold is 10 min
+			expectTerminate: true,
+		},
+		{
+			name:           "skips reconcile when not leader",
+			podName:        "idle-runner",
+			isLeader:       false,
+			idleDuration:   15 * time.Minute,
+			expectTerminate: false,
+		},
+		{
+			name:           "keeps recently idle pods",
+			podName:        "recent-idle-runner",
+			isLeader:       true,
+			idleDuration:   5 * time.Minute, // within 10 min threshold
+			expectTerminate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientset := fake.NewSimpleClientset()
+			_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tt.podName,
+					Namespace: "runs-fleet",
+					Labels: map[string]string{
+						"app":                "runs-fleet-runner",
+						"runs-fleet.io/pool": "default",
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+				},
+			}, metav1.CreateOptions{})
+
+			cfg := &config.Config{KubeNamespace: "runs-fleet"}
+			p := NewPoolProvider(clientset, cfg)
+			p.SetCoordinator(&mockCoordinator{leader: tt.isLeader})
+
+			p.mu.Lock()
+			p.podIdle[tt.podName] = time.Now().Add(-tt.idleDuration)
+			p.mu.Unlock()
+
+			p.reconcile(context.Background())
+
+			_, err := clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), tt.podName, metav1.GetOptions{})
+			terminated := err != nil
+
+			if terminated != tt.expectTerminate {
+				t.Errorf("pod terminated = %v, want %v", terminated, tt.expectTerminate)
+			}
+		})
+	}
+}
+
+func TestPoolProvider_ReconcileCleansUpStalePodIdle(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+
+	cfg := &config.Config{
+		KubeNamespace:          "runs-fleet",
+		KubeIdleTimeoutMinutes: 10,
+	}
+	p := NewPoolProvider(clientset, cfg)
+	p.SetCoordinator(&mockCoordinator{leader: true})
+
+	// Add stale entries for pods that no longer exist
+	p.mu.Lock()
+	p.podIdle["deleted-pod-1"] = time.Now().Add(-20 * time.Minute)
+	p.podIdle["deleted-pod-2"] = time.Now().Add(-30 * time.Minute)
+	p.mu.Unlock()
+
+	// Run reconcile - should clean up stale entries
+	p.reconcile(context.Background())
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.podIdle) != 0 {
+		t.Errorf("expected podIdle to be empty after cleanup, got %d entries", len(p.podIdle))
+	}
+}
+
+func TestPoolProvider_ReconcileInitializesUntrackedPods(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	// Create a running pod that is not tracked in podIdle
+	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "untracked-runner",
+			Namespace: "runs-fleet",
+			Labels: map[string]string{
+				"app":                "runs-fleet-runner",
+				"runs-fleet.io/pool": "default",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+		},
+	}, metav1.CreateOptions{})
+
+	cfg := &config.Config{
+		KubeNamespace:          "runs-fleet",
+		KubeIdleTimeoutMinutes: 10,
+	}
+	p := NewPoolProvider(clientset, cfg)
+	p.SetCoordinator(&mockCoordinator{leader: true})
+
+	// Verify pod is not tracked
+	p.mu.RLock()
+	_, tracked := p.podIdle["untracked-runner"]
+	p.mu.RUnlock()
+	if tracked {
+		t.Fatal("pod should not be tracked before reconcile")
+	}
+
+	// Run reconcile - should initialize tracking for untracked pod
+	p.reconcile(context.Background())
+
+	// Verify pod is now tracked
+	p.mu.RLock()
+	idleSince, tracked := p.podIdle["untracked-runner"]
+	p.mu.RUnlock()
+	if !tracked {
+		t.Error("pod should be tracked after reconcile")
+	}
+	if time.Since(idleSince) > time.Second {
+		t.Error("idle time should be very recent")
+	}
+
+	// Verify pod is not terminated (just initialized)
+	_, err := clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), "untracked-runner", metav1.GetOptions{})
+	if err != nil {
+		t.Errorf("pod should not be terminated on first reconcile: %v", err)
 	}
 }
 

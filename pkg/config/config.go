@@ -58,16 +58,22 @@ type Config struct {
 	CacheURL    string
 
 	// K8s-specific configuration
-	KubeConfig         string            // Path to kubeconfig (empty = in-cluster)
-	KubeNamespace      string            // Default namespace for runners
-	KubeServiceAccount string            // ServiceAccount for runner pods
-	KubeNodeSelector   map[string]string // Default node selector for runners
-	KubeRunnerImage    string            // Container image for runner pods
+	KubeConfig             string            // Path to kubeconfig (empty = in-cluster)
+	KubeNamespace          string            // Default namespace for runners
+	KubeServiceAccount     string            // ServiceAccount for runner pods
+	KubeNodeSelector       map[string]string // Default node selector for runners
+	KubeRunnerImage        string            // Container image for runner pods
+	KubeIdleTimeoutMinutes int               // Idle timeout for K8s pods (default: 10)
 }
 
 // Load reads configuration from environment variables and validates required fields.
 func Load() (*Config, error) {
 	maxRuntimeMinutes, err := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
+	kubeIdleTimeoutMinutes, err := getEnvInt("RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES", 10)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
@@ -112,10 +118,11 @@ func Load() (*Config, error) {
 		CacheURL:    getEnv("RUNS_FLEET_CACHE_URL", ""),
 
 		// K8s-specific
-		KubeConfig:         getEnv("RUNS_FLEET_KUBE_CONFIG", ""),
-		KubeNamespace:      getEnv("RUNS_FLEET_KUBE_NAMESPACE", ""),
-		KubeServiceAccount: getEnv("RUNS_FLEET_KUBE_SERVICE_ACCOUNT", "runs-fleet-runner"),
-		KubeRunnerImage:    getEnv("RUNS_FLEET_KUBE_RUNNER_IMAGE", ""),
+		KubeConfig:             getEnv("RUNS_FLEET_KUBE_CONFIG", ""),
+		KubeNamespace:          getEnv("RUNS_FLEET_KUBE_NAMESPACE", ""),
+		KubeServiceAccount:     getEnv("RUNS_FLEET_KUBE_SERVICE_ACCOUNT", "runs-fleet-runner"),
+		KubeRunnerImage:        getEnv("RUNS_FLEET_KUBE_RUNNER_IMAGE", ""),
+		KubeIdleTimeoutMinutes: kubeIdleTimeoutMinutes,
 	}
 
 	// Parse node selector with validation (only for K8s backend)
