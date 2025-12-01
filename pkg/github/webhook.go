@@ -174,6 +174,11 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		return nil, errors.New("missing runner or cpu/ram specification in runs-fleet label")
 	}
 
+	// Validate Windows only supports x64 architecture
+	if cfg.OS == "windows" && cfg.Arch != "" && cfg.Arch != ArchX64 {
+		return nil, fmt.Errorf("windows runners only support x64 architecture, got %q", cfg.Arch)
+	}
+
 	return cfg, nil
 }
 
@@ -370,7 +375,8 @@ func resolveInstanceType(runnerSpec string) string {
 }
 
 // parseRunnerOSArch extracts OS and architecture from runner spec.
-// Returns empty arch if not explicitly specified (arch doesn't matter).
+// Returns empty arch if not explicitly specified, which triggers ARM64 family
+// defaults in DefaultFlexibleFamilies for backward compatibility with legacy template.
 func parseRunnerOSArch(runnerSpec string) (os, arch string) {
 	os = "linux"
 	arch = "" // Empty = arch doesn't matter

@@ -409,6 +409,10 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 			name:   "Invalid backend value",
 			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/backend=invalid"},
 		},
+		{
+			name:   "Windows with ARM64 architecture",
+			labels: []string{"runs-fleet=12345/runner=2cpu-windows-arm64"},
+		},
 	}
 
 	for _, tt := range tests {

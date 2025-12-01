@@ -301,6 +301,12 @@ func TestSelectLaunchTemplate(t *testing.T) {
 			expected: "runs-fleet-runner-windows",
 		},
 		{
+			name:     "Windows ignores arch (always uses -windows suffix)",
+			config:   &config.Config{},
+			spec:     &LaunchSpec{OS: "windows", Arch: "arm64"},
+			expected: "runs-fleet-runner-windows",
+		},
+		{
 			name:     "Custom base name ARM64",
 			config:   &config.Config{LaunchTemplateName: "custom-runner"},
 			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
