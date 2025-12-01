@@ -219,14 +219,11 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 }
 
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
-// Empty arch returns families for both architectures (arch doesn't matter).
+// Empty arch defaults to ARM64 families (legacy template uses ARM64 AMI).
 func DefaultFlexibleFamilies(arch string) []string {
-	if arch == "arm64" {
-		return []string{"c7g", "m7g", "t4g"}
-	}
 	if arch == "x64" {
 		return []string{"c6i", "c7i", "m6i", "m7i", "t3"}
 	}
-	// Empty arch = arch doesn't matter, return both ARM64 and x64 families
-	return []string{"c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
+	// ARM64 or empty arch - empty defaults to ARM64 since legacy template uses ARM64 AMI
+	return []string{"c7g", "m7g", "t4g"}
 }

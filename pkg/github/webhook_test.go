@@ -247,6 +247,15 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 			wantInstanceTypes: 1,
 		},
 		{
+			name: "Empty arch (defaults to ARM64 families)",
+			labels: []string{
+				"runs-fleet=12345/cpu=4",
+			},
+			wantCPUMin:        4,
+			wantArch:          "",
+			wantInstanceTypes: 1, // Matches ARM64 instances only (legacy template compatibility)
+		},
+		{
 			name: "No matching instances",
 			labels: []string{
 				"runs-fleet=12345/cpu=1000/arch=arm64",
