@@ -4,6 +4,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -11,9 +12,11 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/provider"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -107,6 +110,7 @@ func (p *Provider) Name() string {
 }
 
 // CreateRunner creates a Kubernetes Pod for a runner.
+// For private jobs, also creates a NetworkPolicy to restrict egress.
 func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
 	podName := sanitizePodName(spec.RunID)
 	namespace := p.config.KubeNamespace
@@ -118,20 +122,42 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 		return nil, fmt.Errorf("failed to create pod %s: %w", podName, err)
 	}
 
+	// Create NetworkPolicy for private jobs to restrict internal cluster access
+	if spec.Private {
+		netpol := p.buildNetworkPolicy(podName, spec)
+		_, err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
+		if err != nil {
+			// Private jobs require NetworkPolicy for security - clean up pod and fail
+			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, err)
+			if delErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, created.Name, metav1.DeleteOptions{}); delErr != nil {
+				log.Printf("Failed to cleanup pod %s after NetworkPolicy failure: %v", created.Name, delErr)
+			}
+			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", err)
+		}
+	}
+
 	return &provider.RunnerResult{
 		RunnerIDs: []string{created.Name},
 		ProviderData: map[string]string{
 			"namespace": namespace,
+			"private":   fmt.Sprintf("%t", spec.Private),
 		},
 	}, nil
 }
 
-// TerminateRunner deletes a Kubernetes Pod.
+// TerminateRunner deletes a Kubernetes Pod and its associated NetworkPolicy.
 // NotFound is treated as success for idempotency - termination is a desired end state.
 func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
 	namespace := p.config.KubeNamespace
 
-	err := p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{})
+	// Delete associated NetworkPolicy (best effort - may not exist for non-private jobs)
+	netpolName := networkPolicyName(runnerID)
+	err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		log.Printf("Failed to delete NetworkPolicy %s: %v", netpolName, err)
+	}
+
+	err = p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{})
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to delete pod %s: %w", runnerID, err)
 	}
@@ -176,12 +202,20 @@ func (p *Provider) DescribeRunner(ctx context.Context, runnerID string) (*provid
 // buildPodSpec creates a Pod specification for a runner.
 func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.Pod {
 	labels := map[string]string{
-		"app":                          "runs-fleet-runner",
-		"runs-fleet.io/run-id":         spec.RunID,
-		"runs-fleet.io/pool":           spec.Pool,
-		"runs-fleet.io/arch":           spec.Arch,
-		"runs-fleet.io/os":             spec.OS,
-		"runs-fleet.io/instance-type":  spec.InstanceType,
+		"app":                         "runs-fleet-runner",
+		"runs-fleet.io/run-id":        spec.RunID,
+		"runs-fleet.io/pool":          spec.Pool,
+		"runs-fleet.io/arch":          spec.Arch,
+		"runs-fleet.io/os":            spec.OS,
+		"runs-fleet.io/instance-type": spec.InstanceType,
+	}
+
+	// Add spot/private labels for NetworkPolicy and scheduling
+	if spec.Spot {
+		labels["runs-fleet.io/spot"] = "true"
+	}
+	if spec.Private {
+		labels["runs-fleet.io/private"] = "true"
 	}
 
 	// Merge default node selector with config
@@ -197,6 +231,9 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 		nodeSelector["kubernetes.io/arch"] = "amd64"
 	}
 
+	// Build tolerations for spot/preemptible nodes
+	tolerations := p.buildTolerations(spec)
+
 	// Resource requests from spec (Karpenter provisions nodes based on these)
 	resources := p.getResourceRequirements(spec)
 
@@ -210,6 +247,7 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 			ServiceAccountName: p.config.KubeServiceAccount,
 			RestartPolicy:      corev1.RestartPolicyNever,
 			NodeSelector:       nodeSelector,
+			Tolerations:        tolerations,
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: ptr.To(true),
 				RunAsUser:    ptr.To(int64(1000)),
@@ -246,6 +284,147 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	}
 
 	return pod
+}
+
+// buildTolerations creates tolerations for spot/preemptible nodes.
+// Supports common cloud provider taints for spot instances.
+func (p *Provider) buildTolerations(spec *provider.RunnerSpec) []corev1.Toleration {
+	var tolerations []corev1.Toleration
+
+	if spec.Spot {
+		// GKE preemptible/spot nodes
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "cloud.google.com/gke-preemptible",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "true",
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "cloud.google.com/gke-spot",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "true",
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+
+		// EKS spot nodes
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "eks.amazonaws.com/capacityType",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "SPOT",
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+
+		// AKS spot nodes
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "kubernetes.azure.com/scalesetpriority",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "spot",
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+
+		// GKE node provisioning (transient taint during node startup)
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "cloud.google.com/gke-provisioning",
+			Operator: corev1.TolerationOpExists,
+		})
+
+		// Generic runs-fleet preemptible taint
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "runs-fleet.io/preemptible",
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+
+		// Karpenter spot consolidation
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      "karpenter.sh/disruption",
+			Operator: corev1.TolerationOpExists,
+		})
+	}
+
+	return tolerations
+}
+
+// networkPolicyName returns the NetworkPolicy name for a runner.
+func networkPolicyName(runnerID string) string {
+	return runnerID + "-netpol"
+}
+
+// blockedCIDRs contains IP ranges that private jobs should not access.
+// Includes RFC1918 private ranges and cloud metadata service ranges.
+var blockedCIDRs = []string{
+	"10.0.0.0/8",       // RFC1918 Class A private
+	"172.16.0.0/12",    // RFC1918 Class B private
+	"192.168.0.0/16",   // RFC1918 Class C private
+	"169.254.0.0/16",   // Link-local (includes cloud metadata services)
+	"100.64.0.0/10",    // Carrier-grade NAT (some cloud providers)
+}
+
+// buildNetworkPolicy creates a NetworkPolicy for private runners.
+// Restricts egress to deny internal cluster IPs and cloud metadata services.
+func (p *Provider) buildNetworkPolicy(podName string, spec *provider.RunnerSpec) *networkingv1.NetworkPolicy {
+	netpolName := networkPolicyName(podName)
+	dnsPort := intstr.FromInt32(53)
+	httpsPort := intstr.FromInt32(443)
+
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      netpolName,
+			Namespace: p.config.KubeNamespace,
+			Labels: map[string]string{
+				"app":                  "runs-fleet-runner",
+				"runs-fleet.io/run-id": spec.RunID,
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"runs-fleet.io/run-id":  spec.RunID,
+					"runs-fleet.io/private": "true",
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeEgress,
+			},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				// Allow DNS (kube-dns/coredns)
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Port: &dnsPort, Protocol: ptr.To(corev1.ProtocolUDP)},
+						{Port: &dnsPort, Protocol: ptr.To(corev1.ProtocolTCP)},
+					},
+				},
+				// Allow HTTPS to external IPs (deny internal and metadata ranges)
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Port: &httpsPort, Protocol: ptr.To(corev1.ProtocolTCP)},
+					},
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							IPBlock: &networkingv1.IPBlock{
+								CIDR:   "0.0.0.0/0",
+								Except: blockedCIDRs,
+							},
+						},
+					},
+				},
+				// Allow HTTP to external IPs (for package downloads)
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Port: ptr.To(intstr.FromInt32(80)), Protocol: ptr.To(corev1.ProtocolTCP)},
+					},
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							IPBlock: &networkingv1.IPBlock{
+								CIDR:   "0.0.0.0/0",
+								Except: blockedCIDRs,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // Default resource values when spec doesn't provide them.
