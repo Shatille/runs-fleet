@@ -764,6 +764,9 @@ func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp
 	result, err := createK8sRunnerWithRetry(ctx, p, spec)
 	if err != nil {
 		log.Printf("Failed to create K8s runner: %v", err)
+		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-pod-creation"); metricErr != nil {
+			log.Printf("Failed to publish pod creation failure metric: %v", metricErr)
+		}
 		return
 	}
 
