@@ -116,6 +116,32 @@ var DefaultRunnerSpecs = map[string]string{
 	"8cpu-windows-x64": "m6i.2xlarge",
 }
 
+// SpotDiversificationTypes maps runner specs to alternative instance types for spot capacity.
+// When spot is enabled, EC2 Fleet selects from this pool for better availability.
+// All instance types must meet the minimum CPU requirement of the runner spec.
+// Note: 4cpu and 8cpu specs use only sustained-performance instances (no burstable)
+// to avoid CPU throttling after burst credits exhaust.
+var SpotDiversificationTypes = map[string][]string{
+	// Linux ARM64 - 2 vCPU options (burstable OK for short jobs)
+	"2cpu-linux-arm64": {"t4g.medium", "t4g.large"},
+	// Linux ARM64 - 4 vCPU sustained-performance options
+	"4cpu-linux-arm64": {"c7g.xlarge", "m7g.xlarge", "c6g.xlarge"},
+	// Linux ARM64 - 8 vCPU sustained-performance options
+	"8cpu-linux-arm64": {"c7g.2xlarge", "m7g.2xlarge", "c6g.2xlarge"},
+	// Linux x64 - 2 vCPU options (burstable OK for short jobs)
+	"2cpu-linux-x64": {"t3.medium", "t3.large"},
+	// Linux x64 - 4 vCPU sustained-performance options
+	"4cpu-linux-x64": {"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
+	// Linux x64 - 8 vCPU sustained-performance options
+	"8cpu-linux-x64": {"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
+	// Windows x64 - 2 vCPU options (burstable OK for short jobs)
+	"2cpu-windows-x64": {"t3.medium", "t3.large"},
+	// Windows x64 - 4 vCPU sustained-performance options
+	"4cpu-windows-x64": {"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
+	// Windows x64 - 8 vCPU sustained-performance options
+	"8cpu-windows-x64": {"m6i.2xlarge", "m7i.2xlarge", "c6i.2xlarge"},
+}
+
 // ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
 // Supports both legacy runner= specs and flexible cpu=/ram=/family=/arch= labels.
 //
@@ -198,6 +224,7 @@ func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 		case "runner":
 			cfg.RunnerSpec = value
 			cfg.InstanceType = resolveInstanceType(value)
+			cfg.InstanceTypes = resolveSpotDiversificationTypes(value)
 			cfg.OS, cfg.Arch = parseRunnerOSArch(value)
 
 		case "cpu":
@@ -372,6 +399,16 @@ func resolveInstanceType(runnerSpec string) string {
 	default:
 		return "t4g.medium" // Default fallback
 	}
+}
+
+// resolveSpotDiversificationTypes returns multiple instance types for spot capacity.
+// When spot is enabled, EC2 Fleet selects from this pool for better availability.
+func resolveSpotDiversificationTypes(runnerSpec string) []string {
+	if types, ok := SpotDiversificationTypes[runnerSpec]; ok {
+		return types
+	}
+	// Fallback to single instance type if no diversification defined
+	return []string{resolveInstanceType(runnerSpec)}
 }
 
 // parseRunnerOSArch extracts OS and architecture from runner spec.
