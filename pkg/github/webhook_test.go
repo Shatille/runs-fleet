@@ -462,3 +462,87 @@ func TestParseLabels_Backend(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLabels_SpotDiversification(t *testing.T) {
+	tests := []struct {
+		name              string
+		labels            []string
+		wantInstanceType  string
+		wantInstanceTypes []string
+	}{
+		{
+			name:              "ARM64 2cpu has diversification types",
+			labels:            []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+			wantInstanceType:  "t4g.medium",
+			wantInstanceTypes: []string{"t4g.medium", "t4g.large"},
+		},
+		{
+			name:              "x64 4cpu has diversification types",
+			labels:            []string{"runs-fleet=12345/runner=4cpu-linux-x64"},
+			wantInstanceType:  "c6i.xlarge",
+			wantInstanceTypes: []string{"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
+		},
+		{
+			name:              "x64 8cpu has diversification types",
+			labels:            []string{"runs-fleet=12345/runner=8cpu-linux-x64"},
+			wantInstanceType:  "c6i.2xlarge",
+			wantInstanceTypes: []string{"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
+		},
+		{
+			name:              "Windows has diversification types",
+			labels:            []string{"runs-fleet=12345/runner=4cpu-windows-x64"},
+			wantInstanceType:  "m6i.xlarge",
+			wantInstanceTypes: []string{"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if got.InstanceType != tt.wantInstanceType {
+				t.Errorf("ParseLabels() InstanceType = %v, want %v", got.InstanceType, tt.wantInstanceType)
+			}
+			if len(got.InstanceTypes) != len(tt.wantInstanceTypes) {
+				t.Errorf("ParseLabels() InstanceTypes has %d types, want %d", len(got.InstanceTypes), len(tt.wantInstanceTypes))
+				return
+			}
+			for i, wantType := range tt.wantInstanceTypes {
+				if got.InstanceTypes[i] != wantType {
+					t.Errorf("ParseLabels() InstanceTypes[%d] = %v, want %v", i, got.InstanceTypes[i], wantType)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveSpotDiversificationTypes(t *testing.T) {
+	tests := []struct {
+		runnerSpec string
+		wantLen    int
+		wantFirst  string
+	}{
+		{"2cpu-linux-arm64", 2, "t4g.medium"},
+		{"4cpu-linux-arm64", 3, "c7g.xlarge"},
+		{"8cpu-linux-arm64", 3, "c7g.2xlarge"},
+		{"2cpu-linux-x64", 2, "t3.medium"},
+		{"4cpu-linux-x64", 3, "c6i.xlarge"},
+		{"8cpu-linux-x64", 3, "c6i.2xlarge"},
+		{"unknown-spec", 1, "t4g.medium"}, // Fallback to single type
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runnerSpec, func(t *testing.T) {
+			got := resolveSpotDiversificationTypes(tt.runnerSpec)
+			if len(got) != tt.wantLen {
+				t.Errorf("resolveSpotDiversificationTypes(%q) returned %d types, want %d", tt.runnerSpec, len(got), tt.wantLen)
+			}
+			if len(got) > 0 && got[0] != tt.wantFirst {
+				t.Errorf("resolveSpotDiversificationTypes(%q)[0] = %q, want %q", tt.runnerSpec, got[0], tt.wantFirst)
+			}
+		})
+	}
+}
