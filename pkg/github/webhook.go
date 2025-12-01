@@ -133,7 +133,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	cfg := &JobConfig{
 		Spot:        true,
 		OS:          "linux",
-		Arch:        ArchARM64,
+		Arch:        "", // Empty = arch doesn't matter, uses non-suffixed launch template
 		Environment: "", // Default: no specific environment
 		Region:      "", // Default: use primary region
 	}
@@ -172,6 +172,11 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		}
 	} else if cfg.RunnerSpec == "" {
 		return nil, errors.New("missing runner or cpu/ram specification in runs-fleet label")
+	}
+
+	// Validate Windows only supports x64 architecture
+	if cfg.OS == "windows" && cfg.Arch != "" && cfg.Arch != ArchX64 {
+		return nil, fmt.Errorf("windows runners only support x64 architecture, got %q", cfg.Arch)
 	}
 
 	return cfg, nil
@@ -328,9 +333,17 @@ func resolveFlexibleSpec(cfg *JobConfig) error {
 	cfg.InstanceType = instanceTypes[0]
 
 	// Generate a synthetic runner spec for logging/display
-	cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s-%s", cfg.CPUMin, cfg.OS, cfg.Arch)
-	if cfg.CPUMax > 0 {
-		cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS, cfg.Arch)
+	if cfg.Arch != "" {
+		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s-%s", cfg.CPUMin, cfg.OS, cfg.Arch)
+		if cfg.CPUMax > 0 {
+			cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS, cfg.Arch)
+		}
+	} else {
+		// Empty arch = arch doesn't matter
+		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s", cfg.CPUMin, cfg.OS)
+		if cfg.CPUMax > 0 {
+			cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS)
+		}
 	}
 
 	return nil
@@ -362,9 +375,11 @@ func resolveInstanceType(runnerSpec string) string {
 }
 
 // parseRunnerOSArch extracts OS and architecture from runner spec.
+// Returns empty arch if not explicitly specified, which triggers ARM64 family
+// defaults in DefaultFlexibleFamilies for backward compatibility with legacy template.
 func parseRunnerOSArch(runnerSpec string) (os, arch string) {
 	os = "linux"
-	arch = ArchARM64
+	arch = "" // Empty = arch doesn't matter
 
 	if strings.Contains(runnerSpec, "windows") {
 		os = "windows"
