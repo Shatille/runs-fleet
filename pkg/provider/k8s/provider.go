@@ -3,6 +3,7 @@ package k8s
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -110,29 +111,57 @@ func (p *Provider) Name() string {
 }
 
 // CreateRunner creates a Kubernetes Pod for a runner.
+// Creates ConfigMap and Secret for agent config before Pod creation.
 // For private jobs, also creates a NetworkPolicy to restrict egress.
 func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
 	podName := sanitizePodName(spec.RunID)
 	namespace := p.config.KubeNamespace
 
+	// Create ConfigMap with runner config (non-sensitive)
+	if err := p.createRunnerConfigMap(ctx, podName, spec); err != nil {
+		return nil, fmt.Errorf("failed to create ConfigMap for runner: %w", err)
+	}
+
+	// Create Secret with sensitive data (JIT token, cache token)
+	if err := p.createRunnerSecret(ctx, podName, spec); err != nil {
+		// Cleanup ConfigMap on failure
+		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
+			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+		}
+		return nil, fmt.Errorf("failed to create Secret for runner: %w", err)
+	}
+
 	pod := p.buildPodSpec(podName, spec)
 
 	created, err := p.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		// Cleanup ConfigMap and Secret on failure
+		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
+			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+		}
+		if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil {
+			log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
+		}
 		return nil, fmt.Errorf("failed to create pod %s: %w", podName, err)
 	}
 
 	// Create NetworkPolicy for private jobs to restrict internal cluster access
 	if spec.Private {
 		netpol := p.buildNetworkPolicy(podName, spec)
-		_, err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
-		if err != nil {
-			// Private jobs require NetworkPolicy for security - clean up pod and fail
-			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, err)
-			if delErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, created.Name, metav1.DeleteOptions{}); delErr != nil {
-				log.Printf("Failed to cleanup pod %s after NetworkPolicy failure: %v", created.Name, delErr)
+		_, npErr := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
+		if npErr != nil {
+			// Private jobs require NetworkPolicy for security - clean up all resources and fail
+			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, npErr)
+			if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, created.Name, metav1.DeleteOptions{}); podErr != nil {
+				log.Printf("Failed to cleanup Pod %s: %v", created.Name, podErr)
 			}
-			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", err)
+			if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
+				log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+			}
+			if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil {
+				log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
+			}
+			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", npErr)
 		}
 	}
 
@@ -145,21 +174,116 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 	}, nil
 }
 
-// TerminateRunner deletes a Kubernetes Pod and its associated NetworkPolicy.
-// NotFound is treated as success for idempotency - termination is a desired end state.
-func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
-	namespace := p.config.KubeNamespace
+// configMapName returns the ConfigMap name for a runner.
+func configMapName(podName string) string {
+	return podName + "-config"
+}
 
-	// Delete associated NetworkPolicy (best effort - may not exist for non-private jobs)
-	netpolName := networkPolicyName(runnerID)
-	err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		log.Printf("Failed to delete NetworkPolicy %s: %v", netpolName, err)
+// secretName returns the Secret name for a runner.
+func secretName(podName string) string {
+	return podName + "-secrets"
+}
+
+// createRunnerConfigMap creates a ConfigMap with non-sensitive runner config.
+func (p *Provider) createRunnerConfigMap(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
+	labelsJSON := "[]"
+	if len(spec.Labels) > 0 {
+		if data, err := json.Marshal(spec.Labels); err == nil {
+			labelsJSON = string(data)
+		}
 	}
 
-	err = p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete pod %s: %w", runnerID, err)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName(podName),
+			Namespace: p.config.KubeNamespace,
+			Labels: map[string]string{
+				"app":                  "runs-fleet-runner",
+				"runs-fleet.io/run-id": spec.RunID,
+			},
+		},
+		Data: map[string]string{
+			"repo":         spec.Repo,
+			"labels":       labelsJSON,
+			"runner_group": spec.RunnerGroup,
+			"job_id":       spec.JobID,
+		},
+	}
+
+	_, err := p.clientset.CoreV1().ConfigMaps(p.config.KubeNamespace).Create(ctx, cm, metav1.CreateOptions{})
+	return err
+}
+
+// createRunnerSecret creates a Secret with sensitive runner config.
+func (p *Provider) createRunnerSecret(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
+	if spec.JITToken == "" {
+		return fmt.Errorf("JITToken is required for runner registration")
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName(podName),
+			Namespace: p.config.KubeNamespace,
+			Labels: map[string]string{
+				"app":                  "runs-fleet-runner",
+				"runs-fleet.io/run-id": spec.RunID,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			"jit_token":   spec.JITToken,
+			"cache_token": spec.CacheToken,
+		},
+	}
+
+	_, err := p.clientset.CoreV1().Secrets(p.config.KubeNamespace).Create(ctx, secret, metav1.CreateOptions{})
+	return err
+}
+
+// deleteRunnerConfigMap deletes the ConfigMap for a runner.
+func (p *Provider) deleteRunnerConfigMap(ctx context.Context, podName string) error {
+	return p.clientset.CoreV1().ConfigMaps(p.config.KubeNamespace).Delete(ctx, configMapName(podName), metav1.DeleteOptions{})
+}
+
+// deleteRunnerSecret deletes the Secret for a runner.
+func (p *Provider) deleteRunnerSecret(ctx context.Context, podName string) error {
+	return p.clientset.CoreV1().Secrets(p.config.KubeNamespace).Delete(ctx, secretName(podName), metav1.DeleteOptions{})
+}
+
+// TerminateRunner deletes a Kubernetes Pod and its associated resources.
+// Cleans up: Pod, NetworkPolicy, ConfigMap, Secret.
+// NotFound is treated as success for idempotency - termination is a desired end state.
+// Returns error if any cleanup operation fails (except NotFound).
+func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
+	namespace := p.config.KubeNamespace
+	var cleanupErrors []string
+
+	// Delete associated NetworkPolicy (may not exist for non-private jobs)
+	netpolName := networkPolicyName(runnerID)
+	if err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("Failed to delete NetworkPolicy %s: %v", netpolName, err)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("NetworkPolicy: %v", err))
+	}
+
+	// Delete ConfigMap
+	if cmErr := p.deleteRunnerConfigMap(ctx, runnerID); cmErr != nil && !errors.IsNotFound(cmErr) {
+		log.Printf("Failed to delete ConfigMap for %s: %v", runnerID, cmErr)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("ConfigMap: %v", cmErr))
+	}
+
+	// Delete Secret
+	if secErr := p.deleteRunnerSecret(ctx, runnerID); secErr != nil && !errors.IsNotFound(secErr) {
+		log.Printf("Failed to delete Secret for %s: %v", runnerID, secErr)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Secret: %v", secErr))
+	}
+
+	// Delete Pod (primary operation)
+	if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
+		return fmt.Errorf("failed to delete pod %s: %w", runnerID, podErr)
+	}
+
+	if len(cleanupErrors) > 0 {
+		return fmt.Errorf("cleanup incomplete for %s: %v", runnerID, cleanupErrors)
 	}
 	return nil
 }
@@ -237,6 +361,22 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	// Resource requests from spec (Karpenter provisions nodes based on these)
 	resources := p.getResourceRequirements(spec)
 
+	// Build environment variables
+	envVars := []corev1.EnvVar{
+		{Name: "RUNS_FLEET_RUN_ID", Value: spec.RunID},
+		{Name: "RUNS_FLEET_JOB_ID", Value: spec.JobID},
+		{Name: "RUNS_FLEET_REPO", Value: spec.Repo},
+		{Name: "RUNS_FLEET_POOL", Value: spec.Pool},
+	}
+
+	// Add Valkey address for telemetry if configured
+	if p.config.ValkeyAddr != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "RUNS_FLEET_VALKEY_ADDR", Value: p.config.ValkeyAddr})
+		if p.config.ValkeyPassword != "" {
+			envVars = append(envVars, corev1.EnvVar{Name: "RUNS_FLEET_VALKEY_PASSWORD", Value: p.config.ValkeyPassword})
+		}
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -249,12 +389,32 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 			NodeSelector:       nodeSelector,
 			Tolerations:        tolerations,
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot: ptr.To(true),
-				RunAsUser:    ptr.To(int64(1000)),
-				RunAsGroup:   ptr.To(int64(1000)),
-				FSGroup:      ptr.To(int64(1000)),
+				// Note: RunAsNonRoot disabled - GitHub Actions runner requires root for
+				// package installation, Docker operations, and workspace permissions.
+				// Enable RunAsNonRoot only with a pre-configured non-root runner image.
+				FSGroup: ptr.To(int64(1000)),
 				SeccompProfile: &corev1.SeccompProfile{
 					Type: corev1.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: configMapName(name),
+							},
+						},
+					},
+				},
+				{
+					Name: "secrets",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: secretName(name),
+						},
+					},
 				},
 			},
 			Containers: []corev1.Container{
@@ -272,11 +432,18 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 							Drop: []corev1.Capability{"ALL"},
 						},
 					},
-					Env: []corev1.EnvVar{
-						{Name: "RUNS_FLEET_RUN_ID", Value: spec.RunID},
-						{Name: "RUNS_FLEET_JOB_ID", Value: spec.JobID},
-						{Name: "RUNS_FLEET_REPO", Value: spec.Repo},
-						{Name: "RUNS_FLEET_POOL", Value: spec.Pool},
+					Env: envVars,
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "config",
+							MountPath: "/etc/runs-fleet/config",
+							ReadOnly:  true,
+						},
+						{
+							Name:      "secrets",
+							MountPath: "/etc/runs-fleet/secrets",
+							ReadOnly:  true,
+						},
 					},
 				},
 			},

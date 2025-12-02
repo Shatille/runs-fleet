@@ -52,6 +52,15 @@ func NewRegistrar(cfg aws.Config, logger Logger) *Registrar {
 	}
 }
 
+// NewRegistrarWithoutAWS creates a registrar without AWS SSM client.
+// Used in K8s mode where config is loaded from files instead of SSM.
+func NewRegistrarWithoutAWS(logger Logger) *Registrar {
+	return &Registrar{
+		ssmClient: nil,
+		logger:    logger,
+	}
+}
+
 // FetchConfig retrieves runner configuration from SSM Parameter Store.
 func (r *Registrar) FetchConfig(ctx context.Context, parameterPath string) (*RunnerConfig, error) {
 	var config *RunnerConfig
