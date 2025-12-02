@@ -68,6 +68,41 @@ docker-push: docker-build
 	@echo "Pushing to ECR..."
 	docker push $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
 
+# Build runner Docker image (multi-arch)
+RUNNER_IMAGE?=runs-fleet-runner
+RUNNER_TAG?=latest
+RUNNER_VERSION?=2.321.0
+
+docker-build-runner:
+	@echo "Building runner Docker image (multi-arch)..."
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg VERSION=$(RUNNER_TAG) \
+		-f docker/runner/Dockerfile \
+		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
+		.
+
+# Build runner image for local architecture only (faster for testing)
+docker-build-runner-local:
+	@echo "Building runner Docker image (local arch)..."
+	docker build \
+		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg VERSION=$(RUNNER_TAG) \
+		-f docker/runner/Dockerfile \
+		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
+		.
+
+# Push runner image to ECR
+docker-push-runner: docker-build-runner
+	@echo "Logging into ECR..."
+	aws ecr get-login-password --region $(AWS_REGION) | \
+		docker login --username AWS --password-stdin $(ECR_REGISTRY)
+	@echo "Tagging runner image..."
+	docker tag $(RUNNER_IMAGE):$(RUNNER_TAG) $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)
+	@echo "Pushing runner to ECR..."
+	docker push $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)
+
 
 # Run server locally
 run-server:
@@ -91,16 +126,19 @@ ci: deps lint test build
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  init            - Initialize project (download deps, setup)"
-	@echo "  build-server    - Build server binary"
-	@echo "  build-agent     - Build agent binaries (amd64 + arm64)"
-	@echo "  build           - Build all binaries"
-	@echo "  test            - Run tests with coverage"
-	@echo "  lint            - Run golangci-lint"
-	@echo "  clean           - Remove build artifacts"
-	@echo "  docker-build    - Build Docker image"
-	@echo "  docker-push     - Build and push to ECR"
-	@echo "  run-server      - Run server locally"
-	@echo "  deps            - Update dependencies"
-	@echo "  ci              - Run full CI pipeline"
-	@echo "  help            - Show this help"
+	@echo "  init                    - Initialize project (download deps, setup)"
+	@echo "  build-server            - Build server binary"
+	@echo "  build-agent             - Build agent binaries (amd64 + arm64)"
+	@echo "  build                   - Build all binaries"
+	@echo "  test                    - Run tests with coverage"
+	@echo "  lint                    - Run golangci-lint"
+	@echo "  clean                   - Remove build artifacts"
+	@echo "  docker-build            - Build server Docker image"
+	@echo "  docker-push             - Build and push server image to ECR"
+	@echo "  docker-build-runner     - Build runner Docker image (multi-arch)"
+	@echo "  docker-build-runner-local - Build runner image (local arch only)"
+	@echo "  docker-push-runner      - Build and push runner image to ECR"
+	@echo "  run-server              - Run server locally"
+	@echo "  deps                    - Update dependencies"
+	@echo "  ci                      - Run full CI pipeline"
+	@echo "  help                    - Show this help"
