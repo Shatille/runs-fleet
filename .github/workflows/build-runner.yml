@@ -90,16 +90,16 @@ jobs:
       - name: Delete staging image on scan failure
         if: always() && steps.scan.outcome == 'failure'
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           echo "Vulnerability scan failed. Deleting unverified image..."
           aws ecr batch-delete-image \
             --repository-name ${{ env.ECR_REPOSITORY }} \
-            --image-ids imageTag=${{ steps.version.outputs.version }}-unverified
+            --image-ids imageTag="${VERSION}-unverified"
 
       - name: Promote to final tags
         if: success()
         run: |
           set -e
-          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           REPO="${{ env.ECR_REPOSITORY }}"
           VERSION="${{ steps.version.outputs.version }}"
 
@@ -119,21 +119,26 @@ jobs:
           fi
 
           # Put the manifest with the final version tag
+          echo "Tagging as ${VERSION}..."
           aws ecr put-image \
             --repository-name "$REPO" \
             --image-tag "$VERSION" \
-            --image-manifest "$MANIFEST"
+            --image-manifest "$MANIFEST" \
+            || { echo "ERROR: Failed to tag as ${VERSION}"; exit 1; }
 
           # Put the manifest with the latest tag
+          echo "Tagging as latest..."
           aws ecr put-image \
             --repository-name "$REPO" \
             --image-tag "latest" \
-            --image-manifest "$MANIFEST"
+            --image-manifest "$MANIFEST" \
+            || { echo "ERROR: Failed to tag as latest"; exit 1; }
 
-          # Clean up the unverified tag
+          # Clean up the unverified tag (non-fatal - images are already promoted)
           aws ecr batch-delete-image \
             --repository-name "$REPO" \
-            --image-ids imageTag="${VERSION}-unverified"
+            --image-ids imageTag="${VERSION}-unverified" \
+            || echo "Warning: Failed to clean up ${VERSION}-unverified tag"
 
           echo "Image promoted successfully"
 
