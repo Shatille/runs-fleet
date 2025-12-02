@@ -153,7 +153,6 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 		record.FirstInterruptionAt = now.Format(time.RFC3339)
 	}
 
-	// Increment count
 	record.InterruptionCount++
 	record.LastInterruptionAt = now.Format(time.RFC3339)
 
@@ -165,18 +164,16 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 		log.Printf("Circuit breaker OPENED for instance type %s after %d interruptions", instanceType, record.InterruptionCount)
 	}
 
-	// Set TTL for DynamoDB cleanup (1 hour after auto-reset)
+	// NOTE: Set TTL for DynamoDB cleanup (1 hour after auto-reset)
 	if record.AutoResetAt != "" {
 		autoResetTime, _ := time.Parse(time.RFC3339, record.AutoResetAt)
 		record.TTL = autoResetTime.Add(1 * time.Hour).Unix()
 	}
 
-	// Save record
 	if err := b.putRecord(ctx, record); err != nil {
 		return fmt.Errorf("failed to save circuit record: %w", err)
 	}
 
-	// Invalidate cache
 	b.mu.Lock()
 	delete(b.cache, instanceType)
 	b.mu.Unlock()
@@ -228,7 +225,6 @@ func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (State,
 		}
 	}
 
-	// Cache the result
 	b.mu.Lock()
 	b.cache[instanceType] = &CachedState{
 		State:    state,
@@ -256,7 +252,6 @@ func (b *Breaker) ResetCircuit(ctx context.Context, instanceType string) error {
 		return fmt.Errorf("failed to reset circuit: %w", err)
 	}
 
-	// Invalidate cache
 	b.mu.Lock()
 	delete(b.cache, instanceType)
 	b.mu.Unlock()

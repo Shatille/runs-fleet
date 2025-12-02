@@ -65,7 +65,6 @@ func (s *SafetyMonitor) Monitor(ctx context.Context) {
 
 // check performs safety checks.
 func (s *SafetyMonitor) check() {
-	// Check runtime
 	elapsed := time.Since(s.startTime)
 	if elapsed > s.maxRuntime {
 		s.logger.Printf("SAFETY: Maximum runtime exceeded (%v > %v)", elapsed, s.maxRuntime)
@@ -80,12 +79,10 @@ func (s *SafetyMonitor) check() {
 		s.logger.Printf("SAFETY: Warning - only %v remaining before max runtime", remaining)
 	}
 
-	// Check disk space
 	if err := s.checkDiskSpace(); err != nil {
 		s.logger.Printf("SAFETY: Disk space issue: %v", err)
 	}
 
-	// Check memory
 	if err := s.checkMemory(); err != nil {
 		s.logger.Printf("SAFETY: Memory issue: %v", err)
 	}
