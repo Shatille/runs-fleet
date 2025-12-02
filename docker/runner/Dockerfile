@@ -26,11 +26,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -o /bin/runs-fleet-agent ./cmd/agent
 
 # Stage 2: Runner image
-FROM ubuntu:22.04
+# Pin to specific digest for reproducible builds (ubuntu:22.04 as of 2024-12)
+FROM ubuntu:22.04@sha256:0e5e4a57c2499249aafc3b40fcd541e9a456aab7296681a3994d631587203f97
 
 ARG RUNNER_VERSION
 ARG TARGETARCH
-ARG RUNNER_ARCH=${TARGETARCH}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV RUNNER_ALLOW_RUNASROOT=1
@@ -59,14 +59,19 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
     && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
-# Create runner user
+# Create runner user with restricted sudo (apt only for workflow package installs)
 RUN useradd -m -s /bin/bash runner \
-    && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+    && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
-# Download and install GitHub Actions runner
+# Download and install GitHub Actions runner with checksum verification
+# Checksums from https://github.com/actions/runner/releases/tag/v${RUNNER_VERSION}
 RUN RUNNER_ARCH_DOWNLOAD=$(case "${TARGETARCH}" in "amd64") echo "x64" ;; "arm64") echo "arm64" ;; *) echo "x64" ;; esac) \
     && curl -fsSL -o actions-runner.tar.gz \
        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH_DOWNLOAD}-${RUNNER_VERSION}.tar.gz" \
+    && curl -fsSL -o actions-runner-checksums.txt \
+       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH_DOWNLOAD}-${RUNNER_VERSION}.tar.gz.sha256" \
+    && echo "$(cat actions-runner-checksums.txt)  actions-runner.tar.gz" | sha256sum -c - \
+    && rm actions-runner-checksums.txt \
     && tar xzf actions-runner.tar.gz \
     && rm actions-runner.tar.gz \
     && ./bin/installdependencies.sh \

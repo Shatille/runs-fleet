@@ -8,7 +8,6 @@ on:
       - 'docker/runner/**'
       - 'cmd/agent/**'
       - 'pkg/agent/**'
-      - '.github/workflows/build-runner.yml'
   workflow_dispatch:
     inputs:
       tag:
@@ -63,6 +62,7 @@ jobs:
           echo "Version: $VERSION"
 
       - name: Build and push multi-arch runner image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -77,6 +77,16 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
 
       - name: Image digest
         run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"

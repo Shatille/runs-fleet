@@ -4,12 +4,11 @@ set -e
 # runs-fleet runner entrypoint
 # This script is executed when the runner pod starts
 
-echo "Starting runs-fleet runner..."
-echo "Instance ID: ${RUNS_FLEET_INSTANCE_ID:-$(hostname)}"
-echo "Run ID: ${RUNS_FLEET_RUN_ID:-unknown}"
-
 # Export instance ID from hostname if not set (K8s pod name)
 export RUNS_FLEET_INSTANCE_ID="${RUNS_FLEET_INSTANCE_ID:-$(hostname)}"
+
+echo "Starting runs-fleet runner..."
+echo "Instance ID: ${RUNS_FLEET_INSTANCE_ID}"
 
 # Run the runs-fleet agent
 # The agent handles:

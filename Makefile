@@ -1,4 +1,4 @@
-.PHONY: init build test lint clean docker-build docker-push
+.PHONY: init build test lint clean docker-build docker-push docker-build-runner docker-push-runner
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
@@ -68,23 +68,13 @@ docker-push: docker-build
 	@echo "Pushing to ECR..."
 	docker push $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
 
-# Build runner Docker image (multi-arch)
+# Build runner Docker image
 RUNNER_IMAGE?=runs-fleet-runner
 RUNNER_TAG?=latest
 RUNNER_VERSION?=2.321.0
 
+# Build runner image for local architecture only (for testing)
 docker-build-runner:
-	@echo "Building runner Docker image (multi-arch)..."
-	docker buildx build \
-		--platform linux/amd64,linux/arm64 \
-		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
-		--build-arg VERSION=$(RUNNER_TAG) \
-		-f docker/runner/Dockerfile \
-		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
-		.
-
-# Build runner image for local architecture only (faster for testing)
-docker-build-runner-local:
 	@echo "Building runner Docker image (local arch)..."
 	docker build \
 		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
@@ -93,15 +83,20 @@ docker-build-runner-local:
 		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
 		.
 
-# Push runner image to ECR
-docker-push-runner: docker-build-runner
+# Push runner image to ECR (multi-arch build + push in one step)
+docker-push-runner:
 	@echo "Logging into ECR..."
 	aws ecr get-login-password --region $(AWS_REGION) | \
 		docker login --username AWS --password-stdin $(ECR_REGISTRY)
-	@echo "Tagging runner image..."
-	docker tag $(RUNNER_IMAGE):$(RUNNER_TAG) $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)
-	@echo "Pushing runner to ECR..."
-	docker push $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)
+	@echo "Building and pushing runner Docker image (multi-arch)..."
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg VERSION=$(RUNNER_TAG) \
+		-f docker/runner/Dockerfile \
+		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG) \
+		--push \
+		.
 
 
 # Run server locally
@@ -135,9 +130,8 @@ help:
 	@echo "  clean                   - Remove build artifacts"
 	@echo "  docker-build            - Build server Docker image"
 	@echo "  docker-push             - Build and push server image to ECR"
-	@echo "  docker-build-runner     - Build runner Docker image (multi-arch)"
-	@echo "  docker-build-runner-local - Build runner image (local arch only)"
-	@echo "  docker-push-runner      - Build and push runner image to ECR"
+	@echo "  docker-build-runner     - Build runner Docker image (local arch)"
+	@echo "  docker-push-runner      - Build and push runner image to ECR (multi-arch)"
 	@echo "  run-server              - Run server locally"
 	@echo "  deps                    - Update dependencies"
 	@echo "  ci                      - Run full CI pipeline"
