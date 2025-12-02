@@ -109,11 +109,9 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 
 	log.Printf("Processing housekeeping task: %s", hkMsg.TaskType)
 
-	// Add timeout for task execution
 	taskCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Execute the appropriate task
 	var err error
 	switch hkMsg.TaskType {
 	case TaskOrphanedInstances:
@@ -132,11 +130,10 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 
 	if err != nil {
 		log.Printf("Task %s failed: %v", hkMsg.TaskType, err)
-		// Don't delete message on failure - let it retry via visibility timeout
+		// NOTE: Don't delete message on failure - let it retry via visibility timeout
 		return err
 	}
 
-	// Delete message on success
 	if msg.ReceiptHandle != nil {
 		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
 			return fmt.Errorf("failed to delete message: %w", err)

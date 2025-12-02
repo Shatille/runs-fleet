@@ -135,17 +135,14 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 	log.Printf("Processing termination: instance_id=%s, job_id=%s, status=%s, exit_code=%d",
 		termMsg.InstanceID, termMsg.JobID, termMsg.Status, termMsg.ExitCode)
 
-	// Validate required fields
 	if err := h.validateMessage(&termMsg); err != nil {
 		return fmt.Errorf("invalid message: %w", err)
 	}
 
-	// Process the termination
 	if err := h.processTermination(ctx, &termMsg); err != nil {
 		return fmt.Errorf("failed to process termination: %w", err)
 	}
 
-	// Delete message from queue
 	if msg.ReceiptHandle != nil {
 		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
 			return fmt.Errorf("failed to delete message: %w", err)
