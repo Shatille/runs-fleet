@@ -65,6 +65,11 @@ type Config struct {
 	KubeNodeSelector       map[string]string // Default node selector for runners
 	KubeRunnerImage        string            // Container image for runner pods
 	KubeIdleTimeoutMinutes int               // Idle timeout for K8s pods (default: 10)
+
+	// Valkey queue configuration (K8s mode only)
+	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
+	ValkeyPassword string // Optional password
+	ValkeyDB       int    // Database number (default: 0)
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -75,6 +80,11 @@ func Load() (*Config, error) {
 	}
 
 	kubeIdleTimeoutMinutes, err := getEnvInt("RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES", 10)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
+	valkeyDB, err := getEnvInt("RUNS_FLEET_VALKEY_DB", 0)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
@@ -125,6 +135,11 @@ func Load() (*Config, error) {
 		KubeServiceAccount:     getEnv("RUNS_FLEET_KUBE_SERVICE_ACCOUNT", "runs-fleet-runner"),
 		KubeRunnerImage:        getEnv("RUNS_FLEET_KUBE_RUNNER_IMAGE", ""),
 		KubeIdleTimeoutMinutes: kubeIdleTimeoutMinutes,
+
+		// Valkey queue (K8s mode)
+		ValkeyAddr:     getEnv("RUNS_FLEET_VALKEY_ADDR", "valkey:6379"),
+		ValkeyPassword: getEnv("RUNS_FLEET_VALKEY_PASSWORD", ""),
+		ValkeyDB:       valkeyDB,
 	}
 
 	// Parse node selector with validation (only for K8s backend)
@@ -175,8 +190,13 @@ func (c *Config) Validate() error {
 	if c.GitHubAppPrivateKey == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY is required")
 	}
-	if c.QueueURL == "" {
-		return fmt.Errorf("RUNS_FLEET_QUEUE_URL is required")
+
+	// Queue validation: SQS for EC2, Valkey for K8s
+	if c.IsEC2Backend() && c.QueueURL == "" {
+		return fmt.Errorf("RUNS_FLEET_QUEUE_URL is required for EC2 backend")
+	}
+	if c.IsK8sBackend() && c.ValkeyAddr == "" {
+		return fmt.Errorf("RUNS_FLEET_VALKEY_ADDR is required for K8s backend")
 	}
 	if c.MaxRuntimeMinutes <= 0 {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must be greater than 0, got %d", c.MaxRuntimeMinutes)

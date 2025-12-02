@@ -6,21 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
-	"strings"
-
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
-// QueueAPI provides SQS operations for termination event processing.
+// QueueAPI provides queue operations for termination event processing.
 type QueueAPI interface {
-	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error)
-	DeleteMessage(ctx context.Context, receiptHandle string) error
+	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
+	DeleteMessage(ctx context.Context, handle string) error
 }
 
 // DBAPI provides database operations for termination processing.
@@ -104,7 +103,7 @@ func (h *Handler) Run(ctx context.Context) {
 				wg.Add(1)
 				sem <- struct{}{}
 
-				go func(m types.Message) {
+				go func(m queue.Message) {
 					defer wg.Done()
 					defer func() { <-sem }()
 
@@ -122,13 +121,13 @@ func (h *Handler) Run(ctx context.Context) {
 }
 
 // processMessage processes a single termination message.
-func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
-	if msg.Body == nil {
-		return fmt.Errorf("message body is nil")
+func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
+	if msg.Body == "" {
+		return fmt.Errorf("message body is empty")
 	}
 
 	var termMsg Message
-	if err := json.Unmarshal([]byte(*msg.Body), &termMsg); err != nil {
+	if err := json.Unmarshal([]byte(msg.Body), &termMsg); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
@@ -143,8 +142,8 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 		return fmt.Errorf("failed to process termination: %w", err)
 	}
 
-	if msg.ReceiptHandle != nil {
-		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
+	if msg.Handle != "" {
+		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
 			return fmt.Errorf("failed to delete message: %w", err)
 		}
 	}

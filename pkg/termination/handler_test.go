@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
@@ -21,7 +21,7 @@ const (
 
 // mockQueueAPI implements QueueAPI for testing.
 type mockQueueAPI struct {
-	messages      []types.Message
+	messages      []queue.Message
 	receiveErr    error
 	deleteErr     error
 	receiveCalls  int
@@ -29,7 +29,7 @@ type mockQueueAPI struct {
 	deleteReceipt string
 }
 
-func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 	m.receiveCalls++
 	if m.receiveErr != nil {
 		return nil, m.receiveErr
@@ -151,15 +151,13 @@ func TestHandler_processMessage_Success(t *testing.T) {
 		CompletedAt:     time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceiptTermination
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,15 +206,13 @@ func TestHandler_processMessage_Failure(t *testing.T) {
 		Error:           "test error",
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceiptTermination
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,15 +236,13 @@ func TestHandler_processMessage_Started(t *testing.T) {
 		Status:     "started",
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceiptTermination
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -262,7 +256,7 @@ func TestHandler_processMessage_Started(t *testing.T) {
 	}
 }
 
-func TestHandler_processMessage_NilBody(t *testing.T) {
+func TestHandler_processMessage_EmptyBody(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
@@ -270,13 +264,14 @@ func TestHandler_processMessage_NilBody(t *testing.T) {
 	cfg := &config.Config{}
 	handler := NewHandler(q, db, metrics, ssmClient, cfg)
 
-	sqsMsg := types.Message{
-		Body: nil,
+	queueMsg := queue.Message{
+		Body:   "",
+		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
-		t.Fatal("expected error for nil body")
+		t.Fatal("expected error for empty body")
 	}
 }
 
@@ -288,12 +283,12 @@ func TestHandler_processMessage_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{}
 	handler := NewHandler(q, db, metrics, ssmClient, cfg)
 
-	bodyStr := "invalid json"
-	sqsMsg := types.Message{
-		Body: &bodyStr,
+	queueMsg := queue.Message{
+		Body:   "invalid json",
+		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -448,15 +443,13 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 		Status:     "success",
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceiptTermination
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
 		t.Fatal("expected error from message deletion")
 	}
@@ -464,7 +457,7 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 
 func TestHandler_Run_Cancellation(t *testing.T) {
 	q := &mockQueueAPI{
-		messages: []types.Message{},
+		messages: []queue.Message{},
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}

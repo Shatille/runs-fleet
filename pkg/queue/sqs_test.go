@@ -85,7 +85,7 @@ func TestJobMessage_Unmarshal(t *testing.T) {
 	}
 }
 
-func TestClient_SendMessage(t *testing.T) {
+func TestSQSClient_SendMessage(t *testing.T) {
 	tests := []struct {
 		name    string
 		job     *JobMessage
@@ -158,7 +158,7 @@ func TestClient_SendMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &Client{
+			client := &SQSClient{
 				sqsClient: tt.mock,
 				queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
 			}
@@ -171,7 +171,7 @@ func TestClient_SendMessage(t *testing.T) {
 	}
 }
 
-func TestClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
+func TestSQSClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
 	var firstDedupID, secondDedupID string
 
 	job := &JobMessage{
@@ -193,7 +193,7 @@ func TestClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
 		},
 	}
 
-	client := &Client{
+	client := &SQSClient{
 		sqsClient: mock,
 		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
 	}
@@ -215,7 +215,7 @@ func TestClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
 	}
 }
 
-func TestClient_ReceiveMessages(t *testing.T) {
+func TestSQSClient_ReceiveMessages(t *testing.T) {
 	tests := []struct {
 		name         string
 		mock         *mockSQSClient
@@ -271,7 +271,7 @@ func TestClient_ReceiveMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &Client{
+			client := &SQSClient{
 				sqsClient: tt.mock,
 				queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
 			}
@@ -287,7 +287,7 @@ func TestClient_ReceiveMessages(t *testing.T) {
 	}
 }
 
-func TestClient_DeleteMessage(t *testing.T) {
+func TestSQSClient_DeleteMessage(t *testing.T) {
 	tests := []struct {
 		name    string
 		mock    *mockSQSClient
@@ -318,7 +318,7 @@ func TestClient_DeleteMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &Client{
+			client := &SQSClient{
 				sqsClient: tt.mock,
 				queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
 			}
