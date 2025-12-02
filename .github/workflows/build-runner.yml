@@ -88,7 +88,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Delete staging image on scan failure
-        if: failure() && steps.scan.outcome == 'failure'
+        if: always() && steps.scan.outcome == 'failure'
         run: |
           echo "Vulnerability scan failed. Deleting unverified image..."
           aws ecr batch-delete-image \
@@ -98,6 +98,7 @@ jobs:
       - name: Promote to final tags
         if: success()
         run: |
+          set -e
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           REPO="${{ env.ECR_REPOSITORY }}"
           VERSION="${{ steps.version.outputs.version }}"
@@ -111,17 +112,23 @@ jobs:
             --query 'images[0].imageManifest' \
             --output text)
 
+          # Validate manifest was retrieved
+          if [[ -z "$MANIFEST" || "$MANIFEST" == "None" ]]; then
+            echo "ERROR: Failed to retrieve manifest for ${VERSION}-unverified"
+            exit 1
+          fi
+
           # Put the manifest with the final version tag
           aws ecr put-image \
             --repository-name "$REPO" \
             --image-tag "$VERSION" \
-            --image-manifest "$MANIFEST" || true
+            --image-manifest "$MANIFEST"
 
           # Put the manifest with the latest tag
           aws ecr put-image \
             --repository-name "$REPO" \
             --image-tag "latest" \
-            --image-manifest "$MANIFEST" || true
+            --image-manifest "$MANIFEST"
 
           # Clean up the unverified tag
           aws ecr batch-delete-image \
