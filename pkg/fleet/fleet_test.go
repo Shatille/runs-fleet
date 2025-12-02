@@ -275,75 +275,200 @@ func TestCreateFleet_Errors(t *testing.T) {
 	}
 }
 
-func TestSelectLaunchTemplate(t *testing.T) {
+func TestGetLaunchTemplateForArch(t *testing.T) {
 	tests := []struct {
 		name     string
 		config   *config.Config
-		spec     *LaunchSpec
+		os       string
+		arch     string
 		expected string
 	}{
 		{
-			name:     "Default ARM64 Linux",
+			name:     "ARM64 Linux",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
+			os:       "linux",
+			arch:     "arm64",
 			expected: "runs-fleet-runner-arm64",
 		},
 		{
 			name:     "amd64 Linux",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "linux", Arch: "amd64"},
+			os:       "linux",
+			arch:     "amd64",
 			expected: "runs-fleet-runner-amd64",
 		},
 		{
-			name:     "Windows",
+			name:     "Windows ignores arch",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "windows", Arch: "amd64"},
+			os:       "windows",
+			arch:     "amd64",
 			expected: "runs-fleet-runner-windows",
 		},
 		{
-			name:     "Windows ignores arch (always uses -windows suffix)",
+			name:     "Windows with ARM64 arch still uses windows template",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "windows", Arch: "arm64"},
+			os:       "windows",
+			arch:     "arm64",
 			expected: "runs-fleet-runner-windows",
 		},
 		{
 			name:     "Custom base name ARM64",
 			config:   &config.Config{LaunchTemplateName: "custom-runner"},
-			spec:     &LaunchSpec{OS: "linux", Arch: "arm64"},
+			os:       "linux",
+			arch:     "arm64",
 			expected: "custom-runner-arm64",
 		},
 		{
 			name:     "Custom base name amd64",
 			config:   &config.Config{LaunchTemplateName: "custom-runner"},
-			spec:     &LaunchSpec{OS: "linux", Arch: "amd64"},
+			os:       "linux",
+			arch:     "amd64",
 			expected: "custom-runner-amd64",
 		},
 		{
-			name:     "Empty arch uses non-suffixed template",
+			name:     "Empty arch defaults to arm64",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "linux", Arch: ""},
-			expected: "runs-fleet-runner",
-		},
-		{
-			name:     "Unsupported OS defaults to Linux ARM64",
-			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "macos", Arch: "arm64"},
+			os:       "linux",
+			arch:     "",
 			expected: "runs-fleet-runner-arm64",
 		},
 		{
-			name:     "Unsupported OS with amd64 defaults to Linux amd64",
+			name:     "Unsupported OS defaults to Linux with specified arch",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "freebsd", Arch: "amd64"},
-			expected: "runs-fleet-runner-amd64",
+			os:       "macos",
+			arch:     "arm64",
+			expected: "runs-fleet-runner-arm64",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &Manager{config: tt.config}
-			got := m.selectLaunchTemplate(tt.spec)
+			got := m.getLaunchTemplateForArch(tt.os, tt.arch)
 			if got != tt.expected {
-				t.Errorf("selectLaunchTemplate() = %q, want %q", got, tt.expected)
+				t.Errorf("getLaunchTemplateForArch() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildLaunchTemplateConfigs(t *testing.T) {
+	tests := []struct {
+		name              string
+		config            *config.Config
+		spec              *LaunchSpec
+		wantConfigCount   int
+		wantTemplateNames []string
+		wantErr           bool
+		wantErrContains   string
+	}{
+		{
+			name:   "Specified arch creates single config",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				OS:            "linux",
+				Arch:          "arm64",
+				InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
+				SubnetID:      "subnet-1",
+			},
+			wantConfigCount:   1,
+			wantTemplateNames: []string{"runs-fleet-runner-arm64"},
+		},
+		{
+			name:   "Empty arch with ARM64 only creates single config",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				OS:            "linux",
+				Arch:          "",
+				InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
+				SubnetID:      "subnet-1",
+			},
+			wantConfigCount:   1,
+			wantTemplateNames: []string{"runs-fleet-runner-arm64"},
+		},
+		{
+			name:   "Empty arch with AMD64 only creates single config",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				OS:            "linux",
+				Arch:          "",
+				InstanceTypes: []string{"c6i.xlarge", "t3.medium"},
+				SubnetID:      "subnet-1",
+			},
+			wantConfigCount:   1,
+			wantTemplateNames: []string{"runs-fleet-runner-amd64"},
+		},
+		{
+			name:   "Empty arch with mixed architectures creates two configs sorted",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				OS:            "linux",
+				Arch:          "",
+				InstanceTypes: []string{"c7g.xlarge", "t3.medium", "t4g.medium", "c6i.large"},
+				SubnetID:      "subnet-1",
+			},
+			wantConfigCount: 2,
+			// Sorted alphabetically: amd64, arm64
+			wantTemplateNames: []string{"runs-fleet-runner-amd64", "runs-fleet-runner-arm64"},
+		},
+		{
+			name:   "Empty arch with unknown types returns error",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				OS:            "linux",
+				Arch:          "",
+				InstanceTypes: []string{"unknown.type"},
+				SubnetID:      "subnet-1",
+			},
+			wantErr:         true,
+			wantErrContains: "no valid instance types found",
+		},
+		{
+			name:   "Arch mismatch returns error",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				OS:            "linux",
+				Arch:          "arm64",
+				InstanceTypes: []string{"t3.medium"}, // AMD64 type with ARM64 arch
+				SubnetID:      "subnet-1",
+			},
+			wantErr:         true,
+			wantErrContains: "conflicts with specified arch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{config: tt.config}
+			configs, err := m.buildLaunchTemplateConfigs(tt.spec)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("buildLaunchTemplateConfigs() expected error, got nil")
+				}
+				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("buildLaunchTemplateConfigs() error = %q, want error containing %q", err, tt.wantErrContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("buildLaunchTemplateConfigs() unexpected error: %v", err)
+			}
+
+			if len(configs) != tt.wantConfigCount {
+				t.Errorf("buildLaunchTemplateConfigs() returned %d configs, want %d", len(configs), tt.wantConfigCount)
+			}
+
+			if tt.wantTemplateNames != nil {
+				for i, wantName := range tt.wantTemplateNames {
+					if i < len(configs) {
+						gotName := *configs[i].LaunchTemplateSpecification.LaunchTemplateName
+						if gotName != wantName {
+							t.Errorf("config[%d] template name = %q, want %q", i, gotName, wantName)
+						}
+					}
+				}
 			}
 		})
 	}

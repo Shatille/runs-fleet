@@ -123,6 +123,33 @@ runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
 
 Add `/large-disk` modifier for 200GB disk: `runner=4cpu-linux-arm64/large-disk`
 
+### Flexible Specs
+
+For advanced instance selection with spot diversification, use flexible specs instead of fixed runner specs:
+
+```yaml
+# Flexible: EC2 Fleet chooses best instance from multiple families
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+
+# Architecture-agnostic: EC2 Fleet chooses between ARM64 and AMD64 based on spot availability
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
+```
+
+| Label | Description |
+|-------|-------------|
+| `cpu=<n>` | Minimum vCPUs required |
+| `cpu=<min>-<max>` | vCPU range (e.g., `cpu=4-8`) |
+| `ram=<n>` | Minimum RAM in GB |
+| `arch=<arch>` | Architecture: `arm64` or `amd64` (omit for both) |
+| `family=<list>` | Instance families (e.g., `family=c7g+m7g`) |
+
+When `arch` is omitted, runs-fleet creates multiple EC2 Fleet launch template configurations (one per architecture) and lets EC2 choose based on `price-capacity-optimized` strategy. This maximizes spot availability across both ARM64 and AMD64 instance pools.
+
+**Default families by architecture:**
+- ARM64: c7g, m7g, t4g
+- AMD64: c6i, c7i, m6i, m7i, t3
+- No arch: all of the above
+
 ### Label Reference
 
 | Label | Description |
