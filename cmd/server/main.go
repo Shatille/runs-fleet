@@ -323,14 +323,15 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 	}
 
 	msg := &queue.JobMessage{
-		JobID:        fmt.Sprintf("%d", event.GetWorkflowJob().GetID()),
-		RunID:        jobConfig.RunID,
-		Repo:         event.GetRepo().GetFullName(), // owner/repo for repo-level registration
-		InstanceType: jobConfig.InstanceType,
-		Pool:         jobConfig.Pool,
-		Private:      jobConfig.Private,
-		Spot:         jobConfig.Spot,
-		RunnerSpec:   jobConfig.RunnerSpec,
+		JobID:         fmt.Sprintf("%d", event.GetWorkflowJob().GetID()),
+		RunID:         jobConfig.RunID,
+		Repo:          event.GetRepo().GetFullName(), // owner/repo for repo-level registration
+		InstanceType:  jobConfig.InstanceType,
+		Pool:          jobConfig.Pool,
+		Private:       jobConfig.Private,
+		Spot:          jobConfig.Spot,
+		RunnerSpec:    jobConfig.RunnerSpec,
+		OriginalLabel: jobConfig.OriginalLabel,
 		// Sprint 4 features
 		Region:      jobConfig.Region,      // Phase 3: Multi-region support
 		Environment: jobConfig.Environment, // Phase 6: Per-stack environments
@@ -618,9 +619,13 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
 }
 
-// buildRunnerLabel reconstructs the runs-fleet label from job components.
-// The label must exactly match the workflow's runs-on value for GitHub to match runners to jobs.
+// buildRunnerLabel returns the runs-fleet label for GitHub runner registration.
+// Uses the original label from the webhook to ensure exact matching with workflow runs-on.
 func buildRunnerLabel(job *queue.JobMessage) string {
+	if job.OriginalLabel != "" {
+		return job.OriginalLabel
+	}
+	// Fallback for backwards compatibility with queued messages without OriginalLabel
 	label := fmt.Sprintf("runs-fleet=%s/runner=%s", job.RunID, job.RunnerSpec)
 	if job.Pool != "" {
 		label += fmt.Sprintf("/pool=%s", job.Pool)
