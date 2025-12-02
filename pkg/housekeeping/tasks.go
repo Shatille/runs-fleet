@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
@@ -48,11 +50,18 @@ type CostReporter interface {
 	GenerateDailyReport(ctx context.Context) error
 }
 
+// SQSAPI defines SQS operations for housekeeping.
+type SQSAPI interface {
+	GetQueueAttributes(ctx context.Context, params *sqs.GetQueueAttributesInput, optFns ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error)
+	StartMessageMoveTask(ctx context.Context, params *sqs.StartMessageMoveTaskInput, optFns ...func(*sqs.Options)) (*sqs.StartMessageMoveTaskOutput, error)
+}
+
 // Tasks implements housekeeping task execution.
 type Tasks struct {
 	ec2Client    EC2API
 	ssmClient    SSMAPI
 	dynamoClient DynamoDBAPI
+	sqsClient    SQSAPI
 	metrics      MetricsAPI
 	costReporter CostReporter
 	config       *config.Config
@@ -64,6 +73,7 @@ func NewTasks(cfg aws.Config, appConfig *config.Config, metrics MetricsAPI, cost
 		ec2Client:    ec2.NewFromConfig(cfg),
 		ssmClient:    ssm.NewFromConfig(cfg),
 		dynamoClient: dynamodb.NewFromConfig(cfg),
+		sqsClient:    sqs.NewFromConfig(cfg),
 		metrics:      metrics,
 		costReporter: costReporter,
 		config:       appConfig,
@@ -404,4 +414,72 @@ func (t *Tasks) ExecuteCostReport(ctx context.Context) error {
 	}
 
 	return t.costReporter.GenerateDailyReport(ctx)
+}
+
+// ExecuteDLQRedrive moves messages from the DLQ back to the main queue.
+func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
+	log.Println("Executing DLQ redrive...")
+
+	if t.config.QueueDLQURL == "" {
+		log.Println("DLQ URL not configured, skipping")
+		return nil
+	}
+
+	if t.config.QueueURL == "" {
+		log.Println("Main queue URL not configured, skipping")
+		return nil
+	}
+
+	// Check if DLQ has messages
+	attrs, err := t.sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl: aws.String(t.config.QueueDLQURL),
+		AttributeNames: []sqstypes.QueueAttributeName{
+			sqstypes.QueueAttributeNameApproximateNumberOfMessages,
+			sqstypes.QueueAttributeNameQueueArn,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get DLQ attributes: %w", err)
+	}
+
+	msgCount := attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]
+	if msgCount == "0" {
+		log.Println("DLQ is empty, nothing to redrive")
+		return nil
+	}
+
+	dlqArn := attrs.Attributes[string(sqstypes.QueueAttributeNameQueueArn)]
+	if dlqArn == "" {
+		return fmt.Errorf("failed to get DLQ ARN")
+	}
+
+	// Get main queue ARN
+	mainAttrs, err := t.sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl: aws.String(t.config.QueueURL),
+		AttributeNames: []sqstypes.QueueAttributeName{
+			sqstypes.QueueAttributeNameQueueArn,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get main queue attributes: %w", err)
+	}
+
+	mainQueueArn := mainAttrs.Attributes[string(sqstypes.QueueAttributeNameQueueArn)]
+	if mainQueueArn == "" {
+		return fmt.Errorf("failed to get main queue ARN")
+	}
+
+	log.Printf("Starting DLQ redrive: %s messages from DLQ to main queue", msgCount)
+
+	// Start the message move task
+	output, err := t.sqsClient.StartMessageMoveTask(ctx, &sqs.StartMessageMoveTaskInput{
+		SourceArn:      aws.String(dlqArn),
+		DestinationArn: aws.String(mainQueueArn),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start message move task: %w", err)
+	}
+
+	log.Printf("DLQ redrive started: task handle %s", aws.ToString(output.TaskHandle))
+	return nil
 }

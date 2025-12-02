@@ -41,6 +41,10 @@ type SchedulerConfig struct {
 	// CostReportInterval is how often to generate cost reports.
 	// Default: 24 hours
 	CostReportInterval time.Duration
+
+	// DLQRedriveInterval is how often to redrive messages from DLQ.
+	// Default: 15 minutes
+	DLQRedriveInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default scheduler configuration.
@@ -51,6 +55,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		OldJobsInterval:           1 * time.Hour,
 		PoolAuditInterval:         10 * time.Minute,
 		CostReportInterval:        24 * time.Hour,
+		DLQRedriveInterval:        15 * time.Minute,
 	}
 }
 
@@ -93,12 +98,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	jobsTicker := time.NewTicker(s.config.OldJobsInterval)
 	poolTicker := time.NewTicker(s.config.PoolAuditInterval)
 	costTicker := time.NewTicker(s.config.CostReportInterval)
+	dlqTicker := time.NewTicker(s.config.DLQRedriveInterval)
 
 	defer orphanedTicker.Stop()
 	defer ssmTicker.Stop()
 	defer jobsTicker.Stop()
 	defer poolTicker.Stop()
 	defer costTicker.Stop()
+	defer dlqTicker.Stop()
 
 	// Run orphaned instances cleanup immediately on startup
 	s.scheduleTask(ctx, TaskOrphanedInstances)
@@ -123,6 +130,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-costTicker.C:
 			s.scheduleTask(ctx, TaskCostReport)
+
+		case <-dlqTicker.C:
+			s.scheduleTask(ctx, TaskDLQRedrive)
 		}
 	}
 }
