@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
-// QueueAPI provides SQS operations for housekeeping processing.
+// QueueAPI provides queue operations for housekeeping processing.
 type QueueAPI interface {
-	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error)
-	DeleteMessage(ctx context.Context, receiptHandle string) error
+	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
+	DeleteMessage(ctx context.Context, handle string) error
 }
 
 // TaskType represents the type of housekeeping task.
@@ -100,13 +100,13 @@ func (h *Handler) Run(ctx context.Context) {
 }
 
 // processMessage processes a single housekeeping message.
-func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
-	if msg.Body == nil {
-		return fmt.Errorf("message body is nil")
+func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
+	if msg.Body == "" {
+		return fmt.Errorf("message body is empty")
 	}
 
 	var hkMsg Message
-	if err := json.Unmarshal([]byte(*msg.Body), &hkMsg); err != nil {
+	if err := json.Unmarshal([]byte(msg.Body), &hkMsg); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
@@ -139,8 +139,8 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 		return err
 	}
 
-	if msg.ReceiptHandle != nil {
-		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
+	if msg.Handle != "" {
+		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
 			return fmt.Errorf("failed to delete message: %w", err)
 		}
 	}

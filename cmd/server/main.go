@@ -35,7 +35,6 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/google/go-github/v57/github"
 )
@@ -68,6 +67,26 @@ func initCoordinator(_ context.Context, awsCfg aws.Config, cfg *config.Config, l
 	}
 	log.Println("Distributed coordinator disabled (no-op coordinator)")
 	return coordinator.NewNoOpCoordinator(logger)
+}
+
+func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
+	if cfg.IsK8sBackend() {
+		valkeyClient, err := queue.NewValkeyClient(queue.ValkeyConfig{
+			Addr:       cfg.ValkeyAddr,
+			Password:   cfg.ValkeyPassword,
+			DB:         cfg.ValkeyDB,
+			Stream:     "runs-fleet:jobs",
+			Group:      "orchestrator",
+			ConsumerID: cfg.InstanceID,
+		})
+		if err != nil {
+			log.Fatalf("Failed to create Valkey client: %v", err)
+		}
+		log.Printf("Using Valkey queue at %s", cfg.ValkeyAddr)
+		return valkeyClient
+	}
+	log.Printf("Using SQS queue at %s", cfg.QueueURL)
+	return queue.NewSQSClient(awsCfg, cfg.QueueURL)
 }
 
 func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher *metrics.Publisher) (*housekeeping.Handler, *housekeeping.Scheduler) {
@@ -110,7 +129,9 @@ func main() {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	sqsClient := queue.NewClient(awsCfg, cfg.QueueURL)
+	// Initialize queue based on backend mode
+	jobQueue := initJobQueue(awsCfg, cfg)
+
 	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher := metrics.NewPublisher(awsCfg)
@@ -224,7 +245,7 @@ func main() {
 		switch event := payload.(type) {
 		case *github.WorkflowJobEvent:
 			if event.GetAction() == "queued" {
-				if err := handleWorkflowJob(r.Context(), event, sqsClient, metricsPublisher); err == nil {
+				if err := handleWorkflowJob(r.Context(), event, jobQueue, metricsPublisher); err == nil {
 					processed = true
 				}
 			}
@@ -248,10 +269,10 @@ func main() {
 
 	var subnetIndex uint64
 	if cfg.IsK8sBackend() {
-		go runK8sWorker(ctx, sqsClient, k8sProvider, k8sPoolProvider, metricsPublisher, runnerManager, dbClient, cfg)
+		go runK8sWorker(ctx, jobQueue, k8sProvider, k8sPoolProvider, metricsPublisher, runnerManager, dbClient, cfg)
 		go k8sPoolProvider.ReconcileLoop(ctx)
 	} else {
-		go runWorker(ctx, sqsClient, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
+		go runWorker(ctx, jobQueue, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
 		go poolManager.ReconcileLoop(ctx)
 		go eventHandler.Run(ctx)
 	}
@@ -292,7 +313,7 @@ func main() {
 	log.Println("Server stopped")
 }
 
-func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *queue.Client, m *metrics.Publisher) error {
+func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, m *metrics.Publisher) error {
 	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
 
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
@@ -340,7 +361,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q *q
 	return nil
 }
 
-func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {
+func runWorker(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {
 	log.Println("Starting worker loop...")
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -401,7 +422,7 @@ func runWorker(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools
 	}
 }
 
-func deleteMessageWithRetry(ctx context.Context, q *queue.Client, receiptHandle string) error {
+func deleteMessageWithRetry(ctx context.Context, q queue.Queue, receiptHandle string) error {
 	err := q.DeleteMessage(ctx, receiptHandle)
 	for attempts := 1; attempts < maxDeleteRetries && err != nil; attempts++ {
 		time.Sleep(retryDelay)
@@ -462,7 +483,7 @@ func createK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provid
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
-func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg types.Message, cfg *config.Config, subnetIndex *uint64) {
+func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
@@ -472,7 +493,7 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 		defer cleanupCancel()
 
 		if fleetCreated {
-			if err := deleteMessageWithRetry(cleanupCtx, q, *msg.ReceiptHandle); err != nil {
+			if err := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); err != nil {
 				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
 			}
 
@@ -497,11 +518,11 @@ func processMessage(ctx context.Context, q *queue.Client, f *fleet.Manager, pm *
 	}()
 
 	var job queue.JobMessage
-	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
+	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
 		log.Printf("Failed to unmarshal message: %v", err)
 		poisonMessage = true
 
-		if err := deleteMessageWithRetry(ctx, q, *msg.ReceiptHandle); err != nil {
+		if err := deleteMessageWithRetry(ctx, q, msg.Handle); err != nil {
 			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
 		}
 
@@ -636,7 +657,7 @@ func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context,
 
 // K8s backend functions
 
-func runK8sWorker(ctx context.Context, q *queue.Client, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config) {
+func runK8sWorker(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config) {
 	log.Println("Starting K8s worker loop...")
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -697,7 +718,7 @@ func runK8sWorker(ctx context.Context, q *queue.Client, p *k8s.Provider, pp *k8s
 	}
 }
 
-func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg types.Message, _ *config.Config) {
+func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, _ *config.Config) {
 	startTime := time.Now()
 	podCreated := false
 	poisonMessage := false
@@ -707,7 +728,7 @@ func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp
 		defer cleanupCancel()
 
 		if podCreated {
-			if err := deleteMessageWithRetry(cleanupCtx, q, *msg.ReceiptHandle); err != nil {
+			if err := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); err != nil {
 				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
 			}
 
@@ -727,18 +748,18 @@ func processK8sMessage(ctx context.Context, q *queue.Client, p *k8s.Provider, pp
 		}
 	}()
 
-	if msg.Body == nil {
-		log.Printf("Received message with nil body")
+	if msg.Body == "" {
+		log.Printf("Received message with empty body")
 		poisonMessage = true
 		return
 	}
 
 	var job queue.JobMessage
-	if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
+	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
 		log.Printf("Failed to unmarshal message: %v", err)
 		poisonMessage = true
 
-		if err := deleteMessageWithRetry(ctx, q, *msg.ReceiptHandle); err != nil {
+		if err := deleteMessageWithRetry(ctx, q, msg.Handle); err != nil {
 			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
 		}
 

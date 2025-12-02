@@ -22,7 +22,7 @@ RUNS_FLEET_MODE=k8s
 | Runner config | SSM Parameter Store | K8s Secrets |
 | Warm pools | Stopped EC2 instances | Placeholder pods |
 | Metrics | CloudWatch | CloudWatch (unified) |
-| Queue | SQS FIFO | SQS FIFO (unchanged) |
+| Queue | SQS FIFO | Valkey Streams |
 
 **Workflow labels unchanged** - same `runs-on` format works for both modes:
 ```yaml
@@ -300,7 +300,148 @@ func (c *Config) Validate() error {
 }
 ```
 
-### 6. Label Parsing Changes (`pkg/github/webhook.go`)
+### 6. Queue Abstraction (`pkg/queue/`)
+
+Abstract queue interface to support SQS (EC2 mode) and Valkey Streams (K8s mode):
+
+```go
+// pkg/queue/interface.go
+
+type Queue interface {
+    // SendMessage publishes a job to the queue
+    SendMessage(ctx context.Context, job *JobMessage) error
+
+    // ReceiveMessages retrieves messages with long polling
+    ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]Message, error)
+
+    // DeleteMessage acknowledges successful processing
+    DeleteMessage(ctx context.Context, handle string) error
+}
+
+// Message wraps queue-specific message types
+type Message struct {
+    ID            string
+    Body          string
+    Handle        string // ReceiptHandle (SQS) or message ID (Valkey)
+    Attributes    map[string]string
+}
+```
+
+**SQS Implementation** (existing, refactored):
+```go
+// pkg/queue/sqs.go
+type SQSClient struct {
+    client   SQSAPI
+    queueURL string
+}
+
+func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
+    // Existing FIFO logic with MessageGroupId, deduplication
+}
+```
+
+**Valkey Implementation** (new):
+```go
+// pkg/queue/valkey.go
+type ValkeyClient struct {
+    client     *redis.Client
+    stream     string // e.g., "runs-fleet:jobs"
+    group      string // consumer group for exactly-once
+    consumerID string
+}
+
+func (c *ValkeyClient) SendMessage(ctx context.Context, job *JobMessage) error {
+    return c.client.XAdd(ctx, &redis.XAddArgs{
+        Stream: c.stream,
+        Values: map[string]interface{}{
+            "data":     marshal(job),
+            "group_id": job.RunID, // Preserve FIFO ordering per run
+        },
+    }).Err()
+}
+
+func (c *ValkeyClient) ReceiveMessages(ctx context.Context, max int32, wait int32) ([]Message, error) {
+    streams, err := c.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+        Group:    c.group,
+        Consumer: c.consumerID,
+        Streams:  []string{c.stream, ">"},
+        Count:    int64(max),
+        Block:    time.Duration(wait) * time.Second,
+    }).Result()
+    // Convert XMessage to Message...
+}
+
+func (c *ValkeyClient) DeleteMessage(ctx context.Context, handle string) error {
+    return c.client.XAck(ctx, c.stream, c.group, handle).Err()
+}
+```
+
+**Queue selection in main.go:**
+```go
+var mainQueue, poolQueue, eventsQueue queue.Queue
+
+switch cfg.Mode {
+case "ec2":
+    mainQueue = queue.NewSQSClient(awsCfg, cfg.QueueURL)
+    poolQueue = queue.NewSQSClient(awsCfg, cfg.PoolQueueURL)
+    eventsQueue = queue.NewSQSClient(awsCfg, cfg.EventsQueueURL)
+case "k8s":
+    valkeyClient := queue.NewValkeyClient(cfg.ValkeyURL)
+    mainQueue = valkeyClient.Stream("runs-fleet:jobs")
+    poolQueue = valkeyClient.Stream("runs-fleet:pool")
+    eventsQueue = valkeyClient.Stream("runs-fleet:events")
+}
+```
+
+**Valkey K8s deployment:**
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  namespace: runs-fleet
+spec:
+  serviceName: valkey
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+        - name: valkey
+          image: valkey/valkey:8
+          ports:
+            - containerPort: 6379
+          args: ["--appendonly", "yes"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: runs-fleet
+spec:
+  selector:
+    app: valkey
+  ports:
+    - port: 6379
+```
+
+### 7. Label Parsing Changes (`pkg/github/webhook.go`)
 
 ```go
 type JobConfig struct {

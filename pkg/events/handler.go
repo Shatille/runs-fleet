@@ -12,13 +12,12 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-// QueueAPI provides SQS operations for event processing.
+// QueueAPI provides queue operations for event processing.
 type QueueAPI interface {
-	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error)
-	DeleteMessage(ctx context.Context, receiptHandle string) error
+	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
+	DeleteMessage(ctx context.Context, handle string) error
 	SendMessage(ctx context.Context, job *queue.JobMessage) error
 }
 
@@ -177,14 +176,14 @@ func (h *Handler) Run(ctx context.Context) {
 	}
 }
 
-func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
-	if msg.ReceiptHandle == nil {
-		log.Printf("received message with nil receipt handle")
+func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
+	if msg.Handle == "" {
+		log.Printf("received message with empty handle")
 		return
 	}
 
 	defer func() {
-		if err := h.queueClient.DeleteMessage(ctx, *msg.ReceiptHandle); err != nil {
+		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
 			log.Printf("failed to delete event message: %v", err)
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
@@ -194,13 +193,13 @@ func (h *Handler) processEvent(ctx context.Context, msg types.Message) {
 		}
 	}()
 
-	if msg.Body == nil {
-		log.Printf("received message with nil body")
+	if msg.Body == "" {
+		log.Printf("received message with empty body")
 		return
 	}
 
 	var event EventBridgeEvent
-	if err := json.Unmarshal([]byte(*msg.Body), &event); err != nil {
+	if err := json.Unmarshal([]byte(msg.Body), &event); err != nil {
 		log.Printf("failed to unmarshal event: %v", err)
 		return
 	}

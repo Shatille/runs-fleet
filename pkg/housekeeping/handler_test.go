@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
 // Test constants to satisfy goconst
@@ -16,7 +16,7 @@ const testReceipt = "test-receipt"
 
 // mockQueueAPI implements QueueAPI for testing.
 type mockQueueAPI struct {
-	messages      []types.Message
+	messages      []queue.Message
 	receiveErr    error
 	deleteErr     error
 	receiveCalls  int
@@ -24,7 +24,7 @@ type mockQueueAPI struct {
 	deleteReceipt string
 }
 
-func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 	m.receiveCalls++
 	if m.receiveErr != nil {
 		return nil, m.receiveErr
@@ -113,15 +113,13 @@ func TestHandler_ProcessMessage_OrphanedInstances(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,15 +140,13 @@ func TestHandler_ProcessMessage_StaleSSM(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,15 +167,13 @@ func TestHandler_ProcessMessage_OldJobs(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,15 +194,13 @@ func TestHandler_ProcessMessage_PoolAudit(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,15 +221,13 @@ func TestHandler_ProcessMessage_CostReport(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,19 +237,20 @@ func TestHandler_ProcessMessage_CostReport(t *testing.T) {
 	}
 }
 
-func TestHandler_ProcessMessage_NilBody(t *testing.T) {
+func TestHandler_ProcessMessage_EmptyBody(t *testing.T) {
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
 	handler := NewHandler(q, executor, cfg)
 
-	sqsMsg := types.Message{
-		Body: nil,
+	queueMsg := queue.Message{
+		Body:   "",
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
-		t.Fatal("expected error for nil body")
+		t.Fatal("expected error for empty body")
 	}
 }
 
@@ -269,12 +260,12 @@ func TestHandler_ProcessMessage_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{}
 	handler := NewHandler(q, executor, cfg)
 
-	bodyStr := "invalid json"
-	sqsMsg := types.Message{
-		Body: &bodyStr,
+	queueMsg := queue.Message{
+		Body:   "invalid json",
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -291,16 +282,14 @@ func TestHandler_ProcessMessage_UnknownTaskType(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
 	// Should not error, just log unknown task
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,13 +308,13 @@ func TestHandler_ProcessMessage_TaskError(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
 
-	sqsMsg := types.Message{
-		Body: &bodyStr,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
 		t.Fatal("expected error from task execution")
 	}
@@ -346,13 +335,13 @@ func TestHandler_ProcessMessage_CostReportError(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
 
-	sqsMsg := types.Message{
-		Body: &bodyStr,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
 		t.Fatal("expected error from cost report execution")
 	}
@@ -377,15 +366,13 @@ func TestHandler_ProcessMessage_DeleteError(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
-	receipt := testReceipt
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err == nil {
 		t.Fatal("expected error from message deletion")
 	}
@@ -402,15 +389,14 @@ func TestHandler_ProcessMessage_DeletesOnSuccess(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
-	bodyStr := string(body)
 	receipt := "test-receipt-123"
 
-	sqsMsg := types.Message{
-		Body:          &bodyStr,
-		ReceiptHandle: &receipt,
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: receipt,
 	}
 
-	err := handler.processMessage(context.Background(), sqsMsg)
+	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -425,7 +411,7 @@ func TestHandler_ProcessMessage_DeletesOnSuccess(t *testing.T) {
 
 func TestHandler_Run_Cancellation(t *testing.T) {
 	q := &mockQueueAPI{
-		messages: []types.Message{},
+		messages: []queue.Message{},
 	}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}

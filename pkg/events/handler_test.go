@@ -10,27 +10,25 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 // MockQueueAPI implements QueueAPI interface
 type MockQueueAPI struct {
-	ReceiveMessagesFunc func(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error)
-	DeleteMessageFunc   func(ctx context.Context, receiptHandle string) error
+	ReceiveMessagesFunc func(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
+	DeleteMessageFunc   func(ctx context.Context, handle string) error
 	SendMessageFunc     func(ctx context.Context, job *queue.JobMessage) error
 }
 
-func (m *MockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]types.Message, error) {
+func (m *MockQueueAPI) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error) {
 	if m.ReceiveMessagesFunc != nil {
 		return m.ReceiveMessagesFunc(ctx, maxMessages, waitTimeSeconds)
 	}
 	return nil, nil
 }
 
-func (m *MockQueueAPI) DeleteMessage(ctx context.Context, receiptHandle string) error {
+func (m *MockQueueAPI) DeleteMessage(ctx context.Context, handle string) error {
 	if m.DeleteMessageFunc != nil {
-		return m.DeleteMessageFunc(ctx, receiptHandle)
+		return m.DeleteMessageFunc(ctx, handle)
 	}
 	return nil
 }
@@ -216,9 +214,9 @@ func TestProcessEvent(t *testing.T) {
 				config:   &config.Config{},
 			}
 
-			msg := types.Message{
-				Body:          aws.String(tt.eventBody),
-				ReceiptHandle: aws.String("receipt-handle"),
+			msg := queue.Message{
+				Body:   tt.eventBody,
+				Handle: "receipt-handle",
 			}
 
 			handler.processEvent(context.Background(), msg)
@@ -233,48 +231,48 @@ func TestProcessEvent(t *testing.T) {
 func TestProcessEventErrors(t *testing.T) {
 	tests := []struct {
 		name             string
-		eventBody        *string
-		receiptHandle    *string
+		eventBody        string
+		receiptHandle    string
 		metricsError     error
 		expectDeleteCall bool
 	}{
 		{
-			name:             "Nil Body",
-			eventBody:        nil,
-			receiptHandle:    aws.String("receipt-handle"),
+			name:             "Empty Body",
+			eventBody:        "",
+			receiptHandle:    "receipt-handle",
 			expectDeleteCall: true,
 		},
 		{
-			name:             "Nil Receipt Handle",
-			eventBody:        aws.String(`{}`),
-			receiptHandle:    nil,
+			name:             "Empty Receipt Handle",
+			eventBody:        `{}`,
+			receiptHandle:    "",
 			expectDeleteCall: false,
 		},
 		{
 			name:             "Malformed JSON",
-			eventBody:        aws.String(`{invalid json}`),
-			receiptHandle:    aws.String("receipt-handle"),
+			eventBody:        `{invalid json}`,
+			receiptHandle:    "receipt-handle",
 			expectDeleteCall: true,
 		},
 		{
 			name: "Unknown Event Type",
-			eventBody: aws.String(`{
+			eventBody: `{
 				"detail-type": "Unknown Event",
 				"detail": {}
-			}`),
-			receiptHandle:    aws.String("receipt-handle"),
+			}`,
+			receiptHandle:    "receipt-handle",
 			expectDeleteCall: true,
 		},
 		{
 			name: "Metrics Failure",
-			eventBody: aws.String(`{
+			eventBody: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {
 					"instance-id": "i-1234567890abcdef0",
 					"instance-action": "terminate"
 				}
-			}`),
-			receiptHandle:    aws.String("receipt-handle"),
+			}`,
+			receiptHandle:    "receipt-handle",
 			metricsError:     fmt.Errorf("cloudwatch throttled"),
 			expectDeleteCall: true,
 		},
@@ -307,9 +305,9 @@ func TestProcessEventErrors(t *testing.T) {
 				config:   &config.Config{},
 			}
 
-			msg := types.Message{
-				Body:          tt.eventBody,
-				ReceiptHandle: tt.receiptHandle,
+			msg := queue.Message{
+				Body:   tt.eventBody,
+				Handle: tt.receiptHandle,
 			}
 
 			handler.processEvent(context.Background(), msg)
@@ -344,15 +342,15 @@ func TestDeleteMessageFailureMetric(t *testing.T) {
 		config:   &config.Config{},
 	}
 
-	msg := types.Message{
-		Body: aws.String(`{
+	msg := queue.Message{
+		Body: `{
 			"detail-type": "EC2 Spot Instance Interruption Warning",
 			"detail": {
 				"instance-id": "i-test",
 				"instance-action": "terminate"
 			}
-		}`),
-		ReceiptHandle: aws.String("receipt-test"),
+		}`,
+		Handle: "receipt-test",
 	}
 
 	handler.processEvent(context.Background(), msg)
@@ -365,7 +363,7 @@ func TestDeleteMessageFailureMetric(t *testing.T) {
 func TestHandlerRunContextCancellation(t *testing.T) {
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				return nil, nil
 			},
 		},
@@ -394,7 +392,7 @@ func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 	receiveCallCount := 0
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				receiveCallCount++
 				_, ok := ctx.Deadline()
 				if !ok {
@@ -431,7 +429,7 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 	var capturedDeadline time.Time
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				capturedTime = time.Now()
 				deadline, ok := ctx.Deadline()
 				if !ok {
@@ -472,14 +470,14 @@ func TestConcurrentEventProcessing(t *testing.T) {
 	var processStartTimes []time.Time
 	var mu sync.Mutex
 
-	messages := make([]types.Message, numMessages)
+	messages := make([]queue.Message, numMessages)
 	for i := 0; i < numMessages; i++ {
-		messages[i] = types.Message{
-			Body: aws.String(fmt.Sprintf(`{
+		messages[i] = queue.Message{
+			Body: fmt.Sprintf(`{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
-			}`, i)),
-			ReceiptHandle: aws.String(fmt.Sprintf("receipt-%d", i)),
+			}`, i),
+			Handle: fmt.Sprintf("receipt-%d", i),
 		}
 	}
 
@@ -495,7 +493,7 @@ func TestConcurrentEventProcessing(t *testing.T) {
 
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				return messages, nil
 			},
 			DeleteMessageFunc: func(_ context.Context, _ string) error {
@@ -546,14 +544,14 @@ func TestBoundedConcurrency(t *testing.T) {
 	var maxActive int32
 	var mu sync.Mutex
 
-	messages := make([]types.Message, numMessages)
+	messages := make([]queue.Message, numMessages)
 	for i := 0; i < numMessages; i++ {
-		messages[i] = types.Message{
-			Body: aws.String(fmt.Sprintf(`{
+		messages[i] = queue.Message{
+			Body: fmt.Sprintf(`{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
-			}`, i)),
-			ReceiptHandle: aws.String(fmt.Sprintf("receipt-%d", i)),
+			}`, i),
+			Handle: fmt.Sprintf("receipt-%d", i),
 		}
 	}
 
@@ -575,7 +573,7 @@ func TestBoundedConcurrency(t *testing.T) {
 
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				return messages, nil
 			},
 			DeleteMessageFunc: func(_ context.Context, _ string) error {
@@ -619,13 +617,13 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
-				return []types.Message{{
-					Body: aws.String(`{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+				return []queue.Message{{
+					Body: `{
 						"detail-type": "EC2 Spot Instance Interruption Warning",
 						"detail": {"instance-id": "i-test", "instance-action": "terminate"}
-					}`),
-					ReceiptHandle: aws.String("receipt-test"),
+					}`,
+					Handle: "receipt-test",
 				}}, nil
 			},
 			DeleteMessageFunc: func(_ context.Context, _ string) error {
@@ -661,20 +659,20 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 }
 
 func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
-	messages := []types.Message{
+	messages := []queue.Message{
 		{
-			Body: aws.String(`{
+			Body: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-1", "instance-action": "terminate"}
-			}`),
-			ReceiptHandle: aws.String("receipt-1"),
+			}`,
+			Handle: "receipt-1",
 		},
 		{
-			Body: aws.String(`{
+			Body: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-2", "instance-action": "terminate"}
-			}`),
-			ReceiptHandle: aws.String("receipt-2"),
+			}`,
+			Handle: "receipt-2",
 		},
 	}
 
@@ -696,7 +694,7 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				return messages, nil
 			},
 			DeleteMessageFunc: func(_ context.Context, _ string) error {
@@ -782,19 +780,19 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 
 			handler := &Handler{
 				queueClient: &MockQueueAPI{
-					ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+					ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 						mu.Lock()
 						defer mu.Unlock()
 						if messageReturned {
 							return nil, nil
 						}
 						messageReturned = true
-						return []types.Message{{
-							Body: aws.String(`{
+						return []queue.Message{{
+							Body: `{
 								"detail-type": "EC2 Spot Instance Interruption Warning",
 								"detail": {"instance-id": "i-test", "instance-action": "terminate"}
-							}`),
-							ReceiptHandle: aws.String("receipt-test"),
+							}`,
+							Handle: "receipt-test",
 						}}, nil
 					},
 					DeleteMessageFunc: func(_ context.Context, _ string) error {
@@ -844,20 +842,20 @@ func TestPanicRecovery(t *testing.T) {
 	deletedReceipts := make(map[string]bool)
 	var mu sync.Mutex
 
-	messages := []types.Message{
+	messages := []queue.Message{
 		{
-			Body: aws.String(`{
+			Body: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-panic", "instance-action": "terminate"}
-			}`),
-			ReceiptHandle: aws.String("receipt-panic"),
+			}`,
+			Handle: "receipt-panic",
 		},
 		{
-			Body: aws.String(`{
+			Body: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-normal", "instance-action": "terminate"}
-			}`),
-			ReceiptHandle: aws.String("receipt-normal"),
+			}`,
+			Handle: "receipt-normal",
 		},
 	}
 
@@ -876,7 +874,7 @@ func TestPanicRecovery(t *testing.T) {
 
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]types.Message, error) {
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				if processCount >= 2 {
@@ -1090,9 +1088,9 @@ func TestSpotInterruptionHandling(t *testing.T) {
 				}
 			}`, tt.instanceID)
 
-			msg := types.Message{
-				Body:          aws.String(eventBody),
-				ReceiptHandle: aws.String("receipt-test"),
+			msg := queue.Message{
+				Body:   eventBody,
+				Handle: "receipt-test",
 			}
 
 			handler.processEvent(context.Background(), msg)
@@ -1154,15 +1152,15 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 		config:      &config.Config{},
 	}
 
-	msg := types.Message{
-		Body: aws.String(`{
+	msg := queue.Message{
+		Body: `{
 			"detail-type": "EC2 Spot Instance Interruption Warning",
 			"detail": {
 				"instance-id": "i-interrupted",
 				"instance-action": "terminate"
 			}
-		}`),
-		ReceiptHandle: aws.String("receipt-test"),
+		}`,
+		Handle: "receipt-test",
 	}
 
 	handler.processEvent(context.Background(), msg)
