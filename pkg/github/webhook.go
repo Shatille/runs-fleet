@@ -98,6 +98,7 @@ type JobConfig struct {
 	RAMMin        float64  // Minimum RAM in GB (from ram= label)
 	RAMMax        float64  // Maximum RAM in GB (from ram= label, e.g., ram=8+32)
 	Families      []string // Instance families (from family= label, e.g., family=c7g+m7g)
+	OriginalLabel string   // Original runs-fleet label from workflow (for GitHub matching)
 }
 
 // DefaultRunnerSpecs maps runner spec names to EC2 instance types.
@@ -175,6 +176,8 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	if runsFleetLabel == "" {
 		return nil, errors.New("no runs-fleet label found")
 	}
+
+	cfg.OriginalLabel = runsFleetLabel
 
 	parts := strings.Split(strings.TrimPrefix(runsFleetLabel, "runs-fleet="), "/")
 	if len(parts) == 0 {

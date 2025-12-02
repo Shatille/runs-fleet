@@ -546,3 +546,45 @@ func TestResolveSpotDiversificationTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLabels_OriginalLabel(t *testing.T) {
+	tests := []struct {
+		name              string
+		labels            []string
+		wantOriginalLabel string
+	}{
+		{
+			name:              "Standard runner spec",
+			labels:            []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+			wantOriginalLabel: "runs-fleet=12345/runner=2cpu-linux-arm64",
+		},
+		{
+			name:              "Flexible CPU spec",
+			labels:            []string{"runs-fleet=67890/cpu=2"},
+			wantOriginalLabel: "runs-fleet=67890/cpu=2",
+		},
+		{
+			name:              "Flexible CPU with arch",
+			labels:            []string{"runs-fleet=11111/cpu=4+8/arch=arm64"},
+			wantOriginalLabel: "runs-fleet=11111/cpu=4+8/arch=arm64",
+		},
+		{
+			name:              "With multiple labels",
+			labels:            []string{"self-hosted", "linux", "runs-fleet=22222/cpu=2/pool=default"},
+			wantOriginalLabel: "runs-fleet=22222/cpu=2/pool=default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if got.OriginalLabel != tt.wantOriginalLabel {
+				t.Errorf("ParseLabels() OriginalLabel = %q, want %q", got.OriginalLabel, tt.wantOriginalLabel)
+			}
+		})
+	}
+}

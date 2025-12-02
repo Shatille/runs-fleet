@@ -13,7 +13,27 @@ func TestBuildRunnerLabel(t *testing.T) {
 		want string
 	}{
 		{
-			name: "basic label",
+			name: "uses original label when present",
+			job: &queue.JobMessage{
+				RunID:         "12345",
+				RunnerSpec:    "2cpu-linux",
+				OriginalLabel: "runs-fleet=12345/cpu=2",
+				Spot:          true,
+			},
+			want: "runs-fleet=12345/cpu=2",
+		},
+		{
+			name: "uses original label with flexible spec",
+			job: &queue.JobMessage{
+				RunID:         "67890",
+				RunnerSpec:    "4cpu-linux-arm64",
+				OriginalLabel: "runs-fleet=67890/cpu=4+8/arch=arm64",
+				Spot:          true,
+			},
+			want: "runs-fleet=67890/cpu=4+8/arch=arm64",
+		},
+		{
+			name: "basic label fallback",
 			job: &queue.JobMessage{
 				RunID:      "12345",
 				RunnerSpec: "2cpu-linux-arm64",

@@ -50,6 +50,7 @@ type JobMessage struct {
 	Private       bool     `json:"private"`
 	Spot          bool     `json:"spot"`
 	RunnerSpec    string   `json:"runner_spec"`
+	OriginalLabel string   `json:"original_label,omitempty"`
 	RetryCount    int      `json:"retry_count,omitempty"`
 	ForceOnDemand bool     `json:"force_on_demand,omitempty"`
 	Region        string   `json:"region,omitempty"`
