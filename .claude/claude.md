@@ -93,8 +93,10 @@ Label format:
 Instance specs:
 - `2cpu-linux-arm64` → t4g.medium (2 vCPU, 4GB, 30GB disk)
 - `4cpu-linux-arm64` → c7g.xlarge (4 vCPU, 8GB, 50GB disk)
-- `4cpu-linux-x64` → c6i.xlarge
 - `8cpu-linux-arm64` → c7g.2xlarge (8 vCPU, 16GB, 100GB disk)
+- `2cpu-linux-amd64` → t3.medium (2 vCPU, 4GB, 30GB disk)
+- `4cpu-linux-amd64` → c6i.xlarge (4 vCPU, 8GB, 50GB disk)
+- `8cpu-linux-amd64` → c6i.2xlarge (8 vCPU, 16GB, 100GB disk)
 - `/large-disk` → 200GB disk
 
 ## Key Flows

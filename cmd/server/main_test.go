@@ -35,11 +35,11 @@ func TestBuildRunnerLabel(t *testing.T) {
 			name: "with private",
 			job: &queue.JobMessage{
 				RunID:      "12345",
-				RunnerSpec: "4cpu-linux-x64",
+				RunnerSpec: "4cpu-linux-amd64",
 				Private:    true,
 				Spot:       true,
 			},
-			want: "runs-fleet=12345/runner=4cpu-linux-x64/private=true",
+			want: "runs-fleet=12345/runner=4cpu-linux-amd64/private=true",
 		},
 		{
 			name: "with spot=false",

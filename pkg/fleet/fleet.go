@@ -57,7 +57,7 @@ type LaunchSpec struct {
 	Region        string // Target AWS region (Phase 3: Multi-region)
 	Environment   string // Environment tag (Phase 6: Per-stack environments)
 	OS            string // Operating system: linux, windows (Phase 4: Windows support)
-	Arch          string // Architecture: x64, arm64
+	Arch          string // Architecture: amd64, arm64
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
@@ -171,7 +171,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 // selectLaunchTemplate returns the appropriate launch template based on OS and architecture.
 // spec must not be nil; enforced by caller (CreateFleet).
 // Supported OS values: "linux", "windows", or "" (defaults to linux).
-// Supported Arch values: "arm64", "x64", or "" (arch doesn't matter - uses non-suffixed template).
+// Supported Arch values: "arm64", "amd64", or "" (arch doesn't matter - uses non-suffixed template).
 func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
 	baseName := m.config.LaunchTemplateName
 	if baseName == "" {
@@ -188,9 +188,9 @@ func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
 		log.Printf("Warning: unsupported OS %q, defaulting to linux", spec.OS)
 	}
 
-	// x64 Linux instances use a separate launch template (different AMI)
-	if spec.Arch == "x64" {
-		return baseName + "-x64"
+	// amd64 Linux instances use a separate launch template (different AMI)
+	if spec.Arch == "amd64" {
+		return baseName + "-amd64"
 	}
 
 	// ARM64 Linux instances

@@ -45,11 +45,11 @@ func TestProvider_CreateRunner(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "x64 architecture",
+			name: "amd64 architecture",
 			spec: &provider.RunnerSpec{
 				RunID:      "run-789",
 				JobID:      "job-012",
-				Arch:       "x64",
+				Arch:       "amd64",
 				OS:         "linux",
 				CPUCores:   4,
 				MemoryGiB:  8,

@@ -175,19 +175,19 @@ spec:
       - nodes: "0"
 
 ---
-# nodepool-x64.yaml
+# nodepool-amd64.yaml
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
-  name: runners-x64
+  name: runners-amd64
   labels:
-    runs-fleet/runner-class: 4cpu-linux-x64
+    runs-fleet/runner-class: 4cpu-linux-amd64
 spec:
   template:
     metadata:
       labels:
         runs-fleet/managed: "true"
-        runs-fleet/runner-class: 4cpu-linux-x64
+        runs-fleet/runner-class: 4cpu-linux-amd64
     spec:
       requirements:
         - key: karpenter.sh/capacity-type
@@ -206,7 +206,7 @@ spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: runners-x64
+        name: runners-amd64
 
   limits:
     cpu: 100
@@ -427,13 +427,13 @@ var RunnerClasses = map[string]RunnerClassSpec{
         MemoryLimit:   "16Gi",
         NodeClass:     "runners-arm64",
     },
-    "4cpu-linux-x64": {
-        NodeSelector:  map[string]string{"runs-fleet/runner-class": "4cpu-linux-x64"},
+    "4cpu-linux-amd64": {
+        NodeSelector:  map[string]string{"runs-fleet/runner-class": "4cpu-linux-amd64"},
         CPURequest:    "3600m",
         CPULimit:      "4000m",
         MemoryRequest: "7Gi",
         MemoryLimit:   "8Gi",
-        NodeClass:     "runners-x64",
+        NodeClass:     "runners-amd64",
     },
     // Large disk variants
     "8cpu-linux-arm64/large-disk": {

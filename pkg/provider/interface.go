@@ -91,7 +91,7 @@ type RunnerSpec struct {
 	Private       bool
 	Pool          string
 	OS            string // linux, windows
-	Arch          string // arm64, x64
+	Arch          string // arm64, amd64
 	Environment   string
 	Region        string
 	ForceOnDemand bool

@@ -54,7 +54,7 @@ type JobMessage struct {
 	Environment string `json:"environment,omitempty"`
 	// Windows support (Phase 4)
 	OS   string `json:"os,omitempty"`   // linux, windows
-	Arch string `json:"arch,omitempty"` // x64, arm64
+	Arch string `json:"arch,omitempty"` // amd64, arm64
 	// Flexible instance selection (Phase 10)
 	InstanceTypes []string `json:"instance_types,omitempty"` // Multiple instance types for spot diversification
 	// OpenTelemetry tracing (Phase 5)

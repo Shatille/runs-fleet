@@ -227,7 +227,7 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	switch spec.Arch {
 	case "arm64":
 		nodeSelector["kubernetes.io/arch"] = "arm64"
-	case "x64":
+	case "amd64":
 		nodeSelector["kubernetes.io/arch"] = "amd64"
 	}
 

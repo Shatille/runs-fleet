@@ -20,7 +20,7 @@ import (
 // Architecture constants.
 const (
 	ArchARM64 = "arm64"
-	ArchX64   = "x64"
+	ArchAMD64 = "amd64"
 )
 
 // ValidateSignature verifies GitHub webhook HMAC-SHA256 signature against the expected secret.
@@ -88,7 +88,7 @@ type JobConfig struct {
 	Region       string // Multi-region support (Phase 3)
 	Environment  string // Per-stack environment support (Phase 6)
 	OS           string // Operating system (linux, windows)
-	Arch         string // Architecture (x64, arm64)
+	Arch         string // Architecture (amd64, arm64)
 	Backend      string // Compute backend: "ec2" or "k8s" (empty = use default)
 
 	// Flexible instance selection (Phase 10)
@@ -106,14 +106,14 @@ var DefaultRunnerSpecs = map[string]string{
 	"2cpu-linux-arm64": "t4g.medium",
 	"4cpu-linux-arm64": "c7g.xlarge",
 	"8cpu-linux-arm64": "c7g.2xlarge",
-	// Linux x64
-	"2cpu-linux-x64": "t3.medium",
-	"4cpu-linux-x64": "c6i.xlarge",
-	"8cpu-linux-x64": "c6i.2xlarge",
-	// Windows x64 (Phase 4)
-	"2cpu-windows-x64": "t3.medium",
-	"4cpu-windows-x64": "m6i.xlarge",
-	"8cpu-windows-x64": "m6i.2xlarge",
+	// Linux amd64
+	"2cpu-linux-amd64": "t3.medium",
+	"4cpu-linux-amd64": "c6i.xlarge",
+	"8cpu-linux-amd64": "c6i.2xlarge",
+	// Windows amd64 (Phase 4)
+	"2cpu-windows-amd64": "t3.medium",
+	"4cpu-windows-amd64": "m6i.xlarge",
+	"8cpu-windows-amd64": "m6i.2xlarge",
 }
 
 // SpotDiversificationTypes maps runner specs to alternative instance types for spot capacity.
@@ -128,18 +128,18 @@ var SpotDiversificationTypes = map[string][]string{
 	"4cpu-linux-arm64": {"c7g.xlarge", "m7g.xlarge", "c6g.xlarge"},
 	// Linux ARM64 - 8 vCPU sustained-performance options
 	"8cpu-linux-arm64": {"c7g.2xlarge", "m7g.2xlarge", "c6g.2xlarge"},
-	// Linux x64 - 2 vCPU options (burstable OK for short jobs)
-	"2cpu-linux-x64": {"t3.medium", "t3.large"},
-	// Linux x64 - 4 vCPU sustained-performance options
-	"4cpu-linux-x64": {"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
-	// Linux x64 - 8 vCPU sustained-performance options
-	"8cpu-linux-x64": {"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
-	// Windows x64 - 2 vCPU options (burstable OK for short jobs)
-	"2cpu-windows-x64": {"t3.medium", "t3.large"},
-	// Windows x64 - 4 vCPU sustained-performance options
-	"4cpu-windows-x64": {"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
-	// Windows x64 - 8 vCPU sustained-performance options
-	"8cpu-windows-x64": {"m6i.2xlarge", "m7i.2xlarge", "c6i.2xlarge"},
+	// Linux amd64 - 2 vCPU options (burstable OK for short jobs)
+	"2cpu-linux-amd64": {"t3.medium", "t3.large"},
+	// Linux amd64 - 4 vCPU sustained-performance options
+	"4cpu-linux-amd64": {"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
+	// Linux amd64 - 8 vCPU sustained-performance options
+	"8cpu-linux-amd64": {"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
+	// Windows amd64 - 2 vCPU options (burstable OK for short jobs)
+	"2cpu-windows-amd64": {"t3.medium", "t3.large"},
+	// Windows amd64 - 4 vCPU sustained-performance options
+	"4cpu-windows-amd64": {"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
+	// Windows amd64 - 8 vCPU sustained-performance options
+	"8cpu-windows-amd64": {"m6i.2xlarge", "m7i.2xlarge", "c6i.2xlarge"},
 }
 
 // ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
@@ -200,9 +200,9 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		return nil, errors.New("missing runner or cpu/ram specification in runs-fleet label")
 	}
 
-	// Validate Windows only supports x64 architecture
-	if cfg.OS == "windows" && cfg.Arch != "" && cfg.Arch != ArchX64 {
-		return nil, fmt.Errorf("windows runners only support x64 architecture, got %q", cfg.Arch)
+	// Validate Windows only supports amd64 architecture
+	if cfg.OS == "windows" && cfg.Arch != "" && cfg.Arch != ArchAMD64 {
+		return nil, fmt.Errorf("windows runners only support amd64 architecture, got %q", cfg.Arch)
 	}
 
 	return cfg, nil
@@ -250,7 +250,7 @@ func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 			cfg.Families = strings.Split(value, "+")
 
 		case "arch":
-			if value == ArchARM64 || value == ArchX64 {
+			if value == ArchARM64 || value == ArchAMD64 {
 				cfg.Arch = value
 			}
 
@@ -388,11 +388,11 @@ func resolveInstanceType(runnerSpec string) string {
 		return "t4g.medium"
 	case strings.HasPrefix(runnerSpec, "4cpu-linux-arm64"):
 		return "c7g.xlarge"
-	case strings.HasPrefix(runnerSpec, "4cpu-linux-x64"):
+	case strings.HasPrefix(runnerSpec, "4cpu-linux-amd64"):
 		return "c6i.xlarge"
 	case strings.HasPrefix(runnerSpec, "8cpu-linux-arm64"):
 		return "c7g.2xlarge"
-	case strings.HasPrefix(runnerSpec, "8cpu-linux-x64"):
+	case strings.HasPrefix(runnerSpec, "8cpu-linux-amd64"):
 		return "c6i.2xlarge"
 	case strings.Contains(runnerSpec, "windows"):
 		return "m6i.xlarge" // Default Windows instance
@@ -421,8 +421,8 @@ func parseRunnerOSArch(runnerSpec string) (os, arch string) {
 	if strings.Contains(runnerSpec, "windows") {
 		os = "windows"
 	}
-	if strings.Contains(runnerSpec, ArchX64) {
-		arch = ArchX64
+	if strings.Contains(runnerSpec, ArchAMD64) {
+		arch = ArchAMD64
 	} else if strings.Contains(runnerSpec, ArchARM64) {
 		arch = ArchARM64
 	}

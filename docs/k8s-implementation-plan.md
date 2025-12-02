@@ -102,7 +102,7 @@ type RunnerSpec struct {
     Spot          bool              // EC2: spot, K8s: preemptible nodes
     Private       bool              // EC2: private subnet, K8s: namespace/network policy
     Pool          string
-    Arch          string            // arm64 or x64
+    Arch          string            // arm64 or amd64
 
     // EC2-specific (ignored by K8s)
     SubnetID      string
