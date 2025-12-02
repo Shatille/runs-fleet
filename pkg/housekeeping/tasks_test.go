@@ -7,10 +7,13 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
@@ -155,6 +158,43 @@ type mockCostReporter struct {
 func (m *mockCostReporter) GenerateDailyReport(_ context.Context) error {
 	m.calls++
 	return m.err
+}
+
+// mockTaskSQSAPI implements SQSAPI for testing.
+type mockTaskSQSAPI struct {
+	getQueueAttrsOutputs   []*sqs.GetQueueAttributesOutput // Multiple outputs for successive calls
+	getQueueAttrsErrors    []error                         // Multiple errors for successive calls
+	startMoveTaskOutput    *sqs.StartMessageMoveTaskOutput
+	startMoveTaskErr       error
+	getQueueAttrsCalls     int
+	startMoveTaskCalls     int
+	lastGetQueueAttrsInput *sqs.GetQueueAttributesInput
+}
+
+func (m *mockTaskSQSAPI) GetQueueAttributes(_ context.Context, params *sqs.GetQueueAttributesInput, _ ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error) {
+	idx := m.getQueueAttrsCalls
+	m.getQueueAttrsCalls++
+	m.lastGetQueueAttrsInput = params
+
+	// Return error for this call if specified
+	if idx < len(m.getQueueAttrsErrors) && m.getQueueAttrsErrors[idx] != nil {
+		return nil, m.getQueueAttrsErrors[idx]
+	}
+
+	// Return output for this call if specified
+	if idx < len(m.getQueueAttrsOutputs) {
+		return m.getQueueAttrsOutputs[idx], nil
+	}
+
+	return nil, nil
+}
+
+func (m *mockTaskSQSAPI) StartMessageMoveTask(_ context.Context, _ *sqs.StartMessageMoveTaskInput, _ ...func(*sqs.Options)) (*sqs.StartMessageMoveTaskOutput, error) {
+	m.startMoveTaskCalls++
+	if m.startMoveTaskErr != nil {
+		return nil, m.startMoveTaskErr
+	}
+	return m.startMoveTaskOutput, nil
 }
 
 func TestExecuteOrphanedInstances_NoOrphans(t *testing.T) {
@@ -542,6 +582,248 @@ func TestExecuteCostReport_Error(t *testing.T) {
 func TestInstanceTerminationGracePeriod(t *testing.T) {
 	if instanceTerminationGracePeriod != 10*time.Minute {
 		t.Errorf("expected grace period 10m, got %v", instanceTerminationGracePeriod)
+	}
+}
+
+func TestExecuteDLQRedrive_NoDLQURL(t *testing.T) {
+	tasks := &Tasks{
+		config: &config.Config{
+			QueueDLQURL: "",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteDLQRedrive_NoMainQueueURL(t *testing.T) {
+	tasks := &Tasks{
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteDLQRedrive_EmptyDLQ(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "0",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "arn:aws:sqs:us-east-1:123456789012:dlq",
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if sqsClient.getQueueAttrsCalls != 1 {
+		t.Errorf("expected 1 get queue attributes call, got %d", sqsClient.getQueueAttrsCalls)
+	}
+	if sqsClient.startMoveTaskCalls != 0 {
+		t.Errorf("expected 0 start move task calls for empty DLQ, got %d", sqsClient.startMoveTaskCalls)
+	}
+}
+
+func TestExecuteDLQRedrive_Success(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			// First call - DLQ attributes
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "5",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "arn:aws:sqs:us-east-1:123456789012:dlq",
+				},
+			},
+			// Second call - Main queue attributes
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameQueueArn): "arn:aws:sqs:us-east-1:123456789012:main-queue",
+				},
+			},
+		},
+		startMoveTaskOutput: &sqs.StartMessageMoveTaskOutput{
+			TaskHandle: aws.String("task-handle-123"),
+		},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if sqsClient.startMoveTaskCalls != 1 {
+		t.Errorf("expected 1 start move task call, got %d", sqsClient.startMoveTaskCalls)
+	}
+}
+
+func TestExecuteDLQRedrive_GetDLQAttributesError(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsErrors: []error{errors.New("failed to get DLQ attributes")},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err == nil {
+		t.Fatal("expected error from get DLQ attributes")
+	}
+}
+
+func TestExecuteDLQRedrive_StartMoveTaskError(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			// First call - DLQ attributes
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "5",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "arn:aws:sqs:us-east-1:123456789012:dlq",
+				},
+			},
+			// Second call - Main queue attributes
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameQueueArn): "arn:aws:sqs:us-east-1:123456789012:main-queue",
+				},
+			},
+		},
+		startMoveTaskErr: errors.New("failed to start move task"),
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err == nil {
+		t.Fatal("expected error from start move task")
+	}
+}
+
+func TestExecuteDLQRedrive_EmptyDLQArn(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "5",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "",
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty DLQ ARN")
+	}
+}
+
+func TestExecuteDLQRedrive_EmptyMainQueueArn(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			// First call - DLQ attributes
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "5",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "arn:aws:sqs:us-east-1:123456789012:dlq",
+				},
+			},
+			// Second call - Main queue attributes with empty ARN
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameQueueArn): "",
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty main queue ARN")
+	}
+}
+
+func TestExecuteDLQRedrive_GetMainQueueAttributesError(t *testing.T) {
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			// First call - DLQ attributes success
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "5",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "arn:aws:sqs:us-east-1:123456789012:dlq",
+				},
+			},
+		},
+		// Second call will fail
+		getQueueAttrsErrors: []error{nil, errors.New("failed to get main queue attributes")},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	err := tasks.ExecuteDLQRedrive(context.Background())
+	if err == nil {
+		t.Fatal("expected error from get main queue attributes")
 	}
 }
 

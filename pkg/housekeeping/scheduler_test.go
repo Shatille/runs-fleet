@@ -70,6 +70,9 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 	if cfg.CostReportInterval != 24*time.Hour {
 		t.Errorf("expected CostReportInterval 24h, got %v", cfg.CostReportInterval)
 	}
+	if cfg.DLQRedriveInterval != 15*time.Minute {
+		t.Errorf("expected DLQRedriveInterval 15m, got %v", cfg.DLQRedriveInterval)
+	}
 }
 
 func TestNewScheduler(t *testing.T) {
@@ -135,6 +138,7 @@ func TestScheduler_scheduleTask_AllTaskTypes(t *testing.T) {
 		TaskOldJobs,
 		TaskPoolAudit,
 		TaskCostReport,
+		TaskDLQRedrive,
 	}
 
 	for _, taskType := range taskTypes {
