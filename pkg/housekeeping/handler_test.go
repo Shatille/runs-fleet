@@ -237,6 +237,64 @@ func TestHandler_ProcessMessage_CostReport(t *testing.T) {
 	}
 }
 
+func TestHandler_ProcessMessage_DLQRedrive(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+
+	msg := Message{
+		TaskType:  TaskDLQRedrive,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if executor.dlqCall != 1 {
+		t.Errorf("expected 1 dlq call, got %d", executor.dlqCall)
+	}
+}
+
+func TestHandler_ProcessMessage_DLQRedriveError(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{
+		dlqErr: errors.New("dlq redrive failed"),
+	}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+
+	msg := Message{
+		TaskType:  TaskDLQRedrive,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err == nil {
+		t.Fatal("expected error from DLQ redrive execution")
+	}
+	if err.Error() != "dlq redrive failed" {
+		t.Errorf("expected 'dlq redrive failed', got '%s'", err.Error())
+	}
+	if executor.dlqCall != 1 {
+		t.Errorf("expected 1 dlq call, got %d", executor.dlqCall)
+	}
+}
+
 func TestHandler_ProcessMessage_EmptyBody(t *testing.T) {
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
@@ -447,6 +505,7 @@ func TestTaskTypeConstants(t *testing.T) {
 		{TaskOldJobs, "old_jobs"},
 		{TaskPoolAudit, "pool_audit"},
 		{TaskCostReport, "cost_report"},
+		{TaskDLQRedrive, "dlq_redrive"},
 	}
 
 	for _, tt := range tests {
