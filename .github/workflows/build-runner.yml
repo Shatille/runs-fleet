@@ -61,7 +61,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
-      - name: Build and push multi-arch runner image
+      - name: Build and push to staging tag
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -69,9 +69,7 @@ jobs:
           file: docker/runner/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}-unverified
           build-args: |
             RUNNER_VERSION=${{ env.RUNNER_VERSION }}
             VERSION=${{ steps.version.outputs.version }}
@@ -79,14 +77,59 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan image for vulnerabilities
+        id: scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}'
+          image-ref: '${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}-unverified'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
+      - name: Delete staging image on scan failure
+        if: failure() && steps.scan.outcome == 'failure'
+        run: |
+          echo "Vulnerability scan failed. Deleting unverified image..."
+          aws ecr batch-delete-image \
+            --repository-name ${{ env.ECR_REPOSITORY }} \
+            --image-ids imageTag=${{ steps.version.outputs.version }}-unverified
+
+      - name: Promote to final tags
+        if: success()
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          REPO="${{ env.ECR_REPOSITORY }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          echo "Promoting ${VERSION}-unverified to ${VERSION} and latest..."
+
+          # Get the manifest of the unverified image
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "$REPO" \
+            --image-ids imageTag="${VERSION}-unverified" \
+            --query 'images[0].imageManifest' \
+            --output text)
+
+          # Put the manifest with the final version tag
+          aws ecr put-image \
+            --repository-name "$REPO" \
+            --image-tag "$VERSION" \
+            --image-manifest "$MANIFEST" || true
+
+          # Put the manifest with the latest tag
+          aws ecr put-image \
+            --repository-name "$REPO" \
+            --image-tag "latest" \
+            --image-manifest "$MANIFEST" || true
+
+          # Clean up the unverified tag
+          aws ecr batch-delete-image \
+            --repository-name "$REPO" \
+            --image-ids imageTag="${VERSION}-unverified"
+
+          echo "Image promoted successfully"
+
       - name: Image digest
+        if: success()
         run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"

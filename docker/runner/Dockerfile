@@ -64,14 +64,16 @@ RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
 # Download and install GitHub Actions runner with checksum verification
-# Checksums from https://github.com/actions/runner/releases/tag/v${RUNNER_VERSION}
+# Checksums from https://github.com/actions/runner/releases/tag/v2.321.0
+# Update these when changing RUNNER_VERSION
 RUN RUNNER_ARCH_DOWNLOAD=$(case "${TARGETARCH}" in "amd64") echo "x64" ;; "arm64") echo "arm64" ;; *) echo "x64" ;; esac) \
+    && EXPECTED_CHECKSUM=$(case "${TARGETARCH}" in \
+         "amd64") echo "ba46ba7ce3a4d7236b16fbe44419fb453bc08f866b24f04d549ec89f1722a29e" ;; \
+         "arm64") echo "62cc5735d63057d8d07441507c3d6974e90c1854bdb33e9c8b26c0da086336e1" ;; \
+         *) echo "ba46ba7ce3a4d7236b16fbe44419fb453bc08f866b24f04d549ec89f1722a29e" ;; esac) \
     && curl -fsSL -o actions-runner.tar.gz \
        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH_DOWNLOAD}-${RUNNER_VERSION}.tar.gz" \
-    && curl -fsSL -o actions-runner-checksums.txt \
-       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH_DOWNLOAD}-${RUNNER_VERSION}.tar.gz.sha256" \
-    && echo "$(cat actions-runner-checksums.txt)  actions-runner.tar.gz" | sha256sum -c - \
-    && rm actions-runner-checksums.txt \
+    && echo "${EXPECTED_CHECKSUM}  actions-runner.tar.gz" | sha256sum -c - \
     && tar xzf actions-runner.tar.gz \
     && rm actions-runner.tar.gz \
     && ./bin/installdependencies.sh \
