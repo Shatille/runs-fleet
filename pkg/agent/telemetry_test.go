@@ -15,6 +15,7 @@ import (
 const (
 	testStatusSuccess = "success"
 	testStatusFailure = "failure"
+	testJobID123      = "job-123"
 )
 
 // mockTelemetrySQSAPI implements TelemetrySQSAPI for testing.
@@ -104,7 +105,7 @@ func TestTelemetry_SendJobStarted(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 		StartedAt:  time.Now(),
 	}
 
@@ -145,7 +146,7 @@ func TestTelemetry_SendJobCompleted_Success(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           testJobID123,
 		ExitCode:        0,
 		DurationSeconds: 120,
 		StartedAt:       time.Now().Add(-2 * time.Minute),
@@ -180,7 +181,7 @@ func TestTelemetry_SendJobCompleted_Failure(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 		ExitCode:   1, // Non-zero exit code
 	}
 
@@ -212,7 +213,7 @@ func TestTelemetry_SendJobCompleted_Interrupted(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID:    "i-12345",
-		JobID:         "job-123",
+		JobID:         testJobID123,
 		InterruptedBy: "spot",
 	}
 
@@ -244,7 +245,7 @@ func TestTelemetry_SendJobTimeout(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 	}
 
 	err := telemetry.SendJobTimeout(context.Background(), status)
@@ -275,7 +276,7 @@ func TestTelemetry_SendJobFailure(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 		Error:      "test error",
 	}
 
@@ -310,7 +311,7 @@ func TestTelemetry_SendMessage_RetryOnError(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 	}
 
 	err := telemetry.SendJobStarted(context.Background(), status)
@@ -339,7 +340,7 @@ func TestTelemetry_SendMessage_AllRetriesFail(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 	}
 
 	err := telemetry.SendJobStarted(context.Background(), status)
@@ -371,7 +372,7 @@ func TestTelemetry_SendMessage_ContextCancelled(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 	}
 
 	_ = telemetry.SendJobStarted(ctx, status)
@@ -393,7 +394,7 @@ func TestTelemetry_SendWithTimeout(t *testing.T) {
 
 	status := JobStatus{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      testJobID123,
 	}
 
 	err := telemetry.SendWithTimeout(status, 5*time.Second)
@@ -410,7 +411,7 @@ func TestJobStatus_Structure(t *testing.T) {
 	now := time.Now()
 	status := JobStatus{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           testJobID123,
 		Status:          testStatusSuccess,
 		ExitCode:        0,
 		DurationSeconds: 120,
@@ -423,8 +424,8 @@ func TestJobStatus_Structure(t *testing.T) {
 	if status.InstanceID != "i-12345" {
 		t.Errorf("expected InstanceID 'i-12345', got '%s'", status.InstanceID)
 	}
-	if status.JobID != "job-123" {
-		t.Errorf("expected JobID 'job-123', got '%s'", status.JobID)
+	if status.JobID != testJobID123 {
+		t.Errorf("expected JobID '%s', got '%s'", testJobID123, status.JobID)
 	}
 	if status.Status != testStatusSuccess {
 		t.Errorf("expected Status '%s', got '%s'", testStatusSuccess, status.Status)
@@ -447,7 +448,7 @@ func TestJobStatus_JSONSerialization(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	status := JobStatus{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           testJobID123,
 		Status:          testStatusSuccess,
 		ExitCode:        0,
 		DurationSeconds: 120,
