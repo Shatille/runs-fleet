@@ -128,7 +128,7 @@ func TestTelemetry_SendJobStarted(t *testing.T) {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if decoded.Status != "started" {
+	if decoded.Status != StatusStarted {
 		t.Errorf("expected status 'started', got '%s'", decoded.Status)
 	}
 }
@@ -227,8 +227,8 @@ func TestTelemetry_SendJobCompleted_Interrupted(t *testing.T) {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if decoded.Status != "interrupted" {
-		t.Errorf("expected status 'interrupted', got '%s'", decoded.Status)
+	if decoded.Status != StatusInterrupted {
+		t.Errorf("expected status '%s', got '%s'", StatusInterrupted, decoded.Status)
 	}
 }
 
@@ -258,8 +258,8 @@ func TestTelemetry_SendJobTimeout(t *testing.T) {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if decoded.Status != "timeout" {
-		t.Errorf("expected status 'timeout', got '%s'", decoded.Status)
+	if decoded.Status != StatusTimeout {
+		t.Errorf("expected status '%s', got '%s'", StatusTimeout, decoded.Status)
 	}
 }
 

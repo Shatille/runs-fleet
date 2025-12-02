@@ -102,6 +102,11 @@ type RunnerSpec struct {
 	CPUCores   int     // CPU cores requested (e.g., 4)
 	MemoryGiB  float64 // Memory in GiB requested (e.g., 8)
 	StorageGiB int     // Ephemeral storage in GiB (e.g., 50)
+
+	// Runner config (K8s: used to create ConfigMap/Secret for agent)
+	JITToken    string // GitHub JIT runner token
+	CacheToken  string // Cache service auth token
+	RunnerGroup string // GitHub runner group
 }
 
 // RunnerResult contains the result of creating a runner.

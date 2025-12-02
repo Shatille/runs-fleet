@@ -10,6 +10,33 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+// TelemetryClient defines the interface for sending job telemetry.
+// Implementations handle backend-specific telemetry (SQS vs Valkey).
+type TelemetryClient interface {
+	SendJobStarted(ctx context.Context, status JobStatus) error
+	SendJobCompleted(ctx context.Context, status JobStatus) error
+}
+
+// Job status constants.
+const (
+	StatusStarted     = "started"
+	StatusSuccess     = "success"
+	StatusFailure     = "failure"
+	StatusTimeout     = "timeout"
+	StatusInterrupted = "interrupted"
+)
+
+// DetermineCompletionStatus returns the appropriate status based on job result.
+func DetermineCompletionStatus(interruptedBy string, exitCode int) string {
+	if interruptedBy != "" {
+		return StatusInterrupted
+	}
+	if exitCode == 0 {
+		return StatusSuccess
+	}
+	return StatusFailure
+}
+
 // TelemetrySQSAPI defines SQS operations for telemetry.
 type TelemetrySQSAPI interface {
 	SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
@@ -28,50 +55,56 @@ type JobStatus struct {
 	InterruptedBy   string    `json:"interrupted_by,omitempty"`
 }
 
-// Telemetry handles sending job status to SQS.
-type Telemetry struct {
+// SQSTelemetry handles sending job status to SQS.
+type SQSTelemetry struct {
 	sqsClient TelemetrySQSAPI
 	queueURL  string
 	logger    Logger
 }
 
-// NewTelemetry creates a new telemetry client.
-func NewTelemetry(cfg aws.Config, queueURL string, logger Logger) *Telemetry {
-	return &Telemetry{
+// Verify SQSTelemetry implements TelemetryClient.
+var _ TelemetryClient = (*SQSTelemetry)(nil)
+
+// NewSQSTelemetry creates a new SQS telemetry client.
+func NewSQSTelemetry(cfg aws.Config, queueURL string, logger Logger) *SQSTelemetry {
+	return &SQSTelemetry{
 		sqsClient: sqs.NewFromConfig(cfg),
 		queueURL:  queueURL,
 		logger:    logger,
 	}
 }
 
+// NewTelemetry is an alias for NewSQSTelemetry for backward compatibility.
+// Deprecated: Use NewSQSTelemetry instead.
+func NewTelemetry(cfg aws.Config, queueURL string, logger Logger) *SQSTelemetry {
+	return NewSQSTelemetry(cfg, queueURL, logger)
+}
+
+// Telemetry is an alias for SQSTelemetry for backward compatibility.
+// Deprecated: Use SQSTelemetry instead.
+type Telemetry = SQSTelemetry
+
 // SendJobStarted sends a job started notification.
 func (t *Telemetry) SendJobStarted(ctx context.Context, status JobStatus) error {
-	status.Status = "started"
+	status.Status = StatusStarted
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobCompleted sends a job completion notification.
 func (t *Telemetry) SendJobCompleted(ctx context.Context, status JobStatus) error {
-	// Determine status based on exit code and interruption
-	if status.InterruptedBy != "" {
-		status.Status = "interrupted"
-	} else if status.ExitCode == 0 {
-		status.Status = "success"
-	} else {
-		status.Status = "failure"
-	}
+	status.Status = DetermineCompletionStatus(status.InterruptedBy, status.ExitCode)
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobTimeout sends a job timeout notification.
 func (t *Telemetry) SendJobTimeout(ctx context.Context, status JobStatus) error {
-	status.Status = "timeout"
+	status.Status = StatusTimeout
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobFailure sends a job failure notification.
 func (t *Telemetry) SendJobFailure(ctx context.Context, status JobStatus) error {
-	status.Status = "failure"
+	status.Status = StatusFailure
 	return t.sendMessage(ctx, status)
 }
 

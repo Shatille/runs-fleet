@@ -14,21 +14,40 @@ const (
 	TelemetryTimeout = 30 * time.Second
 )
 
+// InstanceTerminator defines the interface for instance termination.
+// Implementations handle backend-specific termination (EC2 API vs K8s pod exit).
+type InstanceTerminator interface {
+	TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error
+}
+
 // EC2API defines EC2 operations for instance termination.
 type EC2API interface {
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 }
 
-// Terminator handles EC2 instance self-termination.
-type Terminator struct {
+// EC2Terminator handles EC2 instance self-termination.
+type EC2Terminator struct {
 	ec2Client EC2API
-	telemetry *Telemetry
+	telemetry TelemetryClient
 	logger    Logger
 }
 
-// NewTerminator creates a new terminator.
-func NewTerminator(cfg aws.Config, telemetry *Telemetry, logger Logger) *Terminator {
-	return &Terminator{
+// Verify EC2Terminator implements InstanceTerminator.
+var _ InstanceTerminator = (*EC2Terminator)(nil)
+
+// NewEC2Terminator creates a new EC2 terminator.
+func NewEC2Terminator(cfg aws.Config, telemetry TelemetryClient, logger Logger) *EC2Terminator {
+	return &EC2Terminator{
+		ec2Client: ec2.NewFromConfig(cfg),
+		telemetry: telemetry,
+		logger:    logger,
+	}
+}
+
+// NewTerminator is an alias for NewEC2Terminator for backward compatibility.
+// Deprecated: Use NewEC2Terminator instead.
+func NewTerminator(cfg aws.Config, telemetry *Telemetry, logger Logger) *EC2Terminator {
+	return &EC2Terminator{
 		ec2Client: ec2.NewFromConfig(cfg),
 		telemetry: telemetry,
 		logger:    logger,
@@ -36,7 +55,7 @@ func NewTerminator(cfg aws.Config, telemetry *Telemetry, logger Logger) *Termina
 }
 
 // TerminateInstance sends telemetry and terminates the EC2 instance.
-func (t *Terminator) TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error {
+func (t *EC2Terminator) TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error {
 	t.logger.Printf("Preparing to terminate instance %s", instanceID)
 
 	// Send termination notification first
@@ -72,7 +91,7 @@ func (t *Terminator) TerminateInstance(ctx context.Context, instanceID string, s
 }
 
 // TerminateWithStatus terminates with a specific status.
-func (t *Terminator) TerminateWithStatus(instanceID string, status string, exitCode int, duration time.Duration, errorMsg string) error {
+func (t *EC2Terminator) TerminateWithStatus(instanceID string, status string, exitCode int, duration time.Duration, errorMsg string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -89,7 +108,7 @@ func (t *Terminator) TerminateWithStatus(instanceID string, status string, exitC
 }
 
 // TerminateOnPanic handles termination after a panic.
-func (t *Terminator) TerminateOnPanic(instanceID, jobID string, panicValue interface{}) {
+func (t *EC2Terminator) TerminateOnPanic(instanceID, jobID string, panicValue interface{}) {
 	t.logger.Printf("PANIC RECOVERY: Terminating instance %s due to panic: %v", instanceID, panicValue)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
@@ -108,3 +127,7 @@ func (t *Terminator) TerminateOnPanic(instanceID, jobID string, panicValue inter
 		t.logger.Printf("Failed to terminate instance after panic: %v", err)
 	}
 }
+
+// Terminator is an alias for EC2Terminator for backward compatibility.
+// Deprecated: Use EC2Terminator instead.
+type Terminator = EC2Terminator

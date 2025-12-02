@@ -41,6 +41,7 @@ func TestProvider_CreateRunner(t *testing.T) {
 				CPUCores:   4,
 				MemoryGiB:  8,
 				StorageGiB: 50,
+				JITToken:   "test-jit-token",
 			},
 			wantErr: false,
 		},
@@ -54,15 +55,17 @@ func TestProvider_CreateRunner(t *testing.T) {
 				CPUCores:   4,
 				MemoryGiB:  8,
 				StorageGiB: 50,
+				JITToken:   "test-jit-token",
 			},
 			wantErr: false,
 		},
 		{
 			name: "default resources when not specified",
 			spec: &provider.RunnerSpec{
-				RunID: "run-defaults",
-				JobID: "job-defaults",
-				Arch:  "arm64",
+				RunID:    "run-defaults",
+				JobID:    "job-defaults",
+				Arch:     "arm64",
+				JITToken: "test-jit-token",
 			},
 			wantErr: false,
 		},
@@ -374,7 +377,8 @@ func TestProvider_CreateRunner_Error(t *testing.T) {
 
 	p := NewProviderWithClient(clientset, cfg)
 	_, err := p.CreateRunner(context.Background(), &provider.RunnerSpec{
-		RunID: "run-error",
+		RunID:    "run-error",
+		JITToken: "test-jit-token",
 	})
 
 	if err == nil {
@@ -655,14 +659,15 @@ func TestCreateRunner_WithSpotAndPrivate(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:   "run-spot-private",
-		JobID:   "job-123",
-		Repo:    "org/repo",
-		Arch:    "arm64",
-		OS:      "linux",
-		Pool:    "default",
-		Spot:    true,
-		Private: true,
+		RunID:    "run-spot-private",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		Pool:     "default",
+		Spot:     true,
+		Private:  true,
+		JITToken: "test-jit-token",
 	}
 
 	result, err := p.CreateRunner(context.Background(), spec)
@@ -715,13 +720,14 @@ func TestTerminateRunner_CleansUpNetworkPolicy(t *testing.T) {
 
 	// Create a private runner (creates pod + NetworkPolicy)
 	spec := &provider.RunnerSpec{
-		RunID:   "run-cleanup-test",
-		JobID:   "job-123",
-		Repo:    "org/repo",
-		Arch:    "arm64",
-		OS:      "linux",
-		Pool:    "default",
-		Private: true,
+		RunID:    "run-cleanup-test",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		Pool:     "default",
+		Private:  true,
+		JITToken: "test-jit-token",
 	}
 
 	result, err := p.CreateRunner(context.Background(), spec)
@@ -771,12 +777,13 @@ func TestCreateRunner_NetworkPolicyFailure_CleansPod(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:   "run-netpol-fail",
-		JobID:   "job-123",
-		Repo:    "org/repo",
-		Arch:    "arm64",
-		OS:      "linux",
-		Private: true,
+		RunID:    "run-netpol-fail",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		Private:  true,
+		JITToken: "test-jit-token",
 	}
 
 	_, err := p.CreateRunner(context.Background(), spec)
@@ -808,12 +815,13 @@ func TestCreateRunner_NonPrivate_SkipsNetworkPolicy(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:   "run-non-private",
-		JobID:   "job-123",
-		Repo:    "org/repo",
-		Arch:    "arm64",
-		OS:      "linux",
-		Private: false, // Explicitly non-private
+		RunID:    "run-non-private",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		Private:  false, // Explicitly non-private
+		JITToken: "test-jit-token",
 	}
 
 	result, err := p.CreateRunner(context.Background(), spec)
