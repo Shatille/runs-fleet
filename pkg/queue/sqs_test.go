@@ -330,3 +330,278 @@ func TestSQSClient_DeleteMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestSQSClient_SendMessage_WithTraceContext(t *testing.T) {
+	var capturedInput *sqs.SendMessageInput
+
+	mock := &mockSQSClient{
+		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+			capturedInput = params
+			return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
+		},
+	}
+
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	job := &JobMessage{
+		JobID:        "job-trace",
+		RunID:        "run-trace",
+		InstanceType: "t4g.medium",
+		TraceID:      "trace-abc123",
+		SpanID:       "span-def456",
+		ParentID:     "parent-ghi789",
+	}
+
+	err := client.SendMessage(context.Background(), job)
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	// Verify trace context attributes are set
+	if capturedInput.MessageAttributes == nil {
+		t.Fatal("MessageAttributes should not be nil when trace context is present")
+	}
+	if capturedInput.MessageAttributes["TraceID"].StringValue == nil ||
+		*capturedInput.MessageAttributes["TraceID"].StringValue != "trace-abc123" {
+		t.Error("TraceID attribute not set correctly")
+	}
+	if capturedInput.MessageAttributes["SpanID"].StringValue == nil ||
+		*capturedInput.MessageAttributes["SpanID"].StringValue != "span-def456" {
+		t.Error("SpanID attribute not set correctly")
+	}
+	if capturedInput.MessageAttributes["ParentID"].StringValue == nil ||
+		*capturedInput.MessageAttributes["ParentID"].StringValue != "parent-ghi789" {
+		t.Error("ParentID attribute not set correctly")
+	}
+}
+
+func TestSQSClient_SendMessage_WithPartialTraceContext(t *testing.T) {
+	var capturedInput *sqs.SendMessageInput
+
+	mock := &mockSQSClient{
+		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+			capturedInput = params
+			return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
+		},
+	}
+
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	// Only TraceID, no SpanID or ParentID
+	job := &JobMessage{
+		JobID:        "job-partial",
+		RunID:        "run-partial",
+		InstanceType: "t4g.medium",
+		TraceID:      "trace-only",
+	}
+
+	err := client.SendMessage(context.Background(), job)
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	if capturedInput.MessageAttributes == nil {
+		t.Fatal("MessageAttributes should not be nil when trace context is present")
+	}
+	if capturedInput.MessageAttributes["TraceID"].StringValue == nil ||
+		*capturedInput.MessageAttributes["TraceID"].StringValue != "trace-only" {
+		t.Error("TraceID attribute not set correctly")
+	}
+	// SpanID and ParentID should not be present since they're empty
+	if _, ok := capturedInput.MessageAttributes["SpanID"]; ok {
+		t.Error("SpanID should not be set when empty")
+	}
+	if _, ok := capturedInput.MessageAttributes["ParentID"]; ok {
+		t.Error("ParentID should not be set when empty")
+	}
+}
+
+func TestSQSClient_SendMessage_NoTraceContext(t *testing.T) {
+	var capturedInput *sqs.SendMessageInput
+
+	mock := &mockSQSClient{
+		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+			capturedInput = params
+			return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
+		},
+	}
+
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	job := &JobMessage{
+		JobID:        "job-no-trace",
+		RunID:        "run-no-trace",
+		InstanceType: "t4g.medium",
+		// No trace context
+	}
+
+	err := client.SendMessage(context.Background(), job)
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	// MessageAttributes should be nil when no trace context
+	if capturedInput.MessageAttributes != nil {
+		t.Error("MessageAttributes should be nil when no trace context is present")
+	}
+}
+
+func TestSQSClient_ReceiveMessages_WithMessageAttributes(t *testing.T) {
+	mock := &mockSQSClient{
+		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			return &sqs.ReceiveMessageOutput{
+				Messages: []types.Message{
+					{
+						MessageId:     aws.String("msg-1"),
+						Body:          aws.String(`{"run_id":"123"}`),
+						ReceiptHandle: aws.String("receipt-1"),
+						MessageAttributes: map[string]types.MessageAttributeValue{
+							"TraceID": {
+								DataType:    aws.String("String"),
+								StringValue: aws.String("trace-recv"),
+							},
+							"SpanID": {
+								DataType:    aws.String("String"),
+								StringValue: aws.String("span-recv"),
+							},
+							"CustomAttr": {
+								DataType:    aws.String("String"),
+								StringValue: aws.String("custom-value"),
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	messages, err := client.ReceiveMessages(context.Background(), 10, 20)
+	if err != nil {
+		t.Fatalf("ReceiveMessages() error = %v", err)
+	}
+
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+
+	msg := messages[0]
+	if msg.Attributes["TraceID"] != "trace-recv" {
+		t.Errorf("TraceID = %q, want %q", msg.Attributes["TraceID"], "trace-recv")
+	}
+	if msg.Attributes["SpanID"] != "span-recv" {
+		t.Errorf("SpanID = %q, want %q", msg.Attributes["SpanID"], "span-recv")
+	}
+	if msg.Attributes["CustomAttr"] != "custom-value" {
+		t.Errorf("CustomAttr = %q, want %q", msg.Attributes["CustomAttr"], "custom-value")
+	}
+}
+
+func TestSQSClient_ReceiveMessages_NilFields(t *testing.T) {
+	mock := &mockSQSClient{
+		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			return &sqs.ReceiveMessageOutput{
+				Messages: []types.Message{
+					{
+						// MessageId is nil
+						Body:          aws.String(`{"run_id":"123"}`),
+						ReceiptHandle: aws.String("receipt-1"),
+					},
+					{
+						MessageId:     aws.String("msg-2"),
+						Body:          nil, // Body is nil
+						ReceiptHandle: aws.String("receipt-2"),
+					},
+				},
+			}, nil
+		},
+	}
+
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	messages, err := client.ReceiveMessages(context.Background(), 10, 20)
+	if err != nil {
+		t.Fatalf("ReceiveMessages() error = %v", err)
+	}
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	// First message has nil MessageId
+	if messages[0].ID != "" {
+		t.Errorf("first message ID = %q, want empty", messages[0].ID)
+	}
+	if messages[0].Body != `{"run_id":"123"}` {
+		t.Errorf("first message Body = %q, want %q", messages[0].Body, `{"run_id":"123"}`)
+	}
+
+	// Second message has nil Body
+	if messages[1].ID != "msg-2" {
+		t.Errorf("second message ID = %q, want %q", messages[1].ID, "msg-2")
+	}
+	if messages[1].Body != "" {
+		t.Errorf("second message Body = %q, want empty", messages[1].Body)
+	}
+}
+
+func TestDeref(t *testing.T) {
+	tests := []struct {
+		name  string
+		input *string
+		want  string
+	}{
+		{
+			name:  "non-nil value",
+			input: aws.String("test-value"),
+			want:  "test-value",
+		},
+		{
+			name:  "nil value",
+			input: nil,
+			want:  "",
+		},
+		{
+			name:  "empty string",
+			input: aws.String(""),
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deref(tt.input)
+			if got != tt.want {
+				t.Errorf("deref() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewSQSClientWithAPI(t *testing.T) {
+	mock := &mockSQSClient{}
+	client := NewSQSClientWithAPI(mock, "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo")
+
+	if client.queueURL != "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo" {
+		t.Errorf("queueURL = %q, want %q", client.queueURL, "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo")
+	}
+	if client.sqsClient != mock {
+		t.Error("sqsClient not set correctly")
+	}
+}

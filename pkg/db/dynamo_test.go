@@ -2,10 +2,13 @@ package db
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // MockDynamoDBAPI implements DynamoDBAPI interface.
@@ -381,5 +384,416 @@ func TestSaveJob(t *testing.T) {
 				t.Errorf("SaveJob() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestListPools(t *testing.T) {
+	tests := []struct {
+		name       string
+		poolsTable string
+		mockDB     *MockDynamoDBAPI
+		wantPools  []string
+		wantErr    bool
+	}{
+		{
+			name:       "Success with pools",
+			poolsTable: "pools-table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{
+						Items: []map[string]types.AttributeValue{
+							{"pool_name": &types.AttributeValueMemberS{Value: "pool-1"}},
+							{"pool_name": &types.AttributeValueMemberS{Value: "pool-2"}},
+							{"pool_name": &types.AttributeValueMemberS{Value: "pool-3"}},
+						},
+					}, nil
+				},
+			},
+			wantPools: []string{"pool-1", "pool-2", "pool-3"},
+			wantErr:   false,
+		},
+		{
+			name:       "Empty pools table",
+			poolsTable: "pools-table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantPools: nil,
+			wantErr:   false,
+		},
+		{
+			name:       "Pools table not configured",
+			poolsTable: "",
+			mockDB:     &MockDynamoDBAPI{},
+			wantPools:  nil,
+			wantErr:    true,
+		},
+		{
+			name:       "DynamoDB error",
+			poolsTable: "pools-table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return nil, errors.New("dynamodb scan error")
+				},
+			},
+			wantPools: nil,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   tt.poolsTable,
+			}
+
+			pools, err := client.ListPools(context.Background())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListPools() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if len(pools) != len(tt.wantPools) {
+				t.Errorf("ListPools() got %d pools, want %d", len(pools), len(tt.wantPools))
+			}
+		})
+	}
+}
+
+func TestSavePoolConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *PoolConfig
+		mockDB  *MockDynamoDBAPI
+		wantErr bool
+	}{
+		{
+			name: "Success",
+			config: &PoolConfig{
+				PoolName:       "test-pool",
+				InstanceType:   "t4g.medium",
+				DesiredRunning: 5,
+				DesiredStopped: 2,
+				Environment:    "prod",
+				Region:         "us-east-1",
+			},
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "Nil config",
+			config:  nil,
+			mockDB:  &MockDynamoDBAPI{},
+			wantErr: true,
+		},
+		{
+			name: "Empty pool name",
+			config: &PoolConfig{
+				PoolName:     "",
+				InstanceType: "t4g.medium",
+			},
+			mockDB:  &MockDynamoDBAPI{},
+			wantErr: true,
+		},
+		{
+			name: "DynamoDB error",
+			config: &PoolConfig{
+				PoolName:     "test-pool",
+				InstanceType: "t4g.medium",
+			},
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, errors.New("dynamodb update error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   "pools-table",
+			}
+
+			err := client.SavePoolConfig(context.Background(), tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SavePoolConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMarkInstanceTerminating(t *testing.T) {
+	tests := []struct {
+		name       string
+		instanceID string
+		mockDB     *MockDynamoDBAPI
+		wantErr    bool
+	}{
+		{
+			name:       "Success with running job",
+			instanceID: "i-1234567890abcdef0",
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					item, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"instance_id": "i-1234567890abcdef0",
+						"job_id":      "job-123",
+						"status":      "running",
+					})
+					return &dynamodb.GetItemOutput{Item: item}, nil
+				},
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:       "No job found",
+			instanceID: "i-notfound",
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: nil}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:       "Empty instance ID",
+			instanceID: "",
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			err := client.MarkInstanceTerminating(context.Background(), tt.instanceID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("MarkInstanceTerminating() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMarkJobComplete(t *testing.T) {
+	tests := []struct {
+		name       string
+		instanceID string
+		status     string
+		exitCode   int
+		duration   int
+		mockDB     *MockDynamoDBAPI
+		wantErr    bool
+	}{
+		{
+			name:       "Success",
+			instanceID: "i-1234567890abcdef0",
+			status:     "completed",
+			exitCode:   0,
+			duration:   120,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					// Verify that the update expression sets the right fields
+					if params.UpdateExpression == nil {
+						t.Error("UpdateExpression should not be nil")
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:       "Empty instance ID",
+			instanceID: "",
+			status:     "completed",
+			exitCode:   0,
+			duration:   120,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "Empty status",
+			instanceID: "i-123",
+			status:     "",
+			exitCode:   0,
+			duration:   120,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "DynamoDB error",
+			instanceID: "i-error",
+			status:     "failed",
+			exitCode:   1,
+			duration:   60,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, errors.New("dynamodb update error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			err := client.MarkJobComplete(context.Background(), tt.instanceID, tt.status, tt.exitCode, tt.duration)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("MarkJobComplete() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestUpdateJobMetrics(t *testing.T) {
+	tests := []struct {
+		name        string
+		instanceID  string
+		startedAt   time.Time
+		completedAt time.Time
+		mockDB      *MockDynamoDBAPI
+		wantErr     bool
+	}{
+		{
+			name:        "Success",
+			instanceID:  "i-1234567890abcdef0",
+			startedAt:   time.Now().Add(-2 * time.Minute),
+			completedAt: time.Now(),
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:        "Empty instance ID",
+			instanceID:  "",
+			startedAt:   time.Now().Add(-2 * time.Minute),
+			completedAt: time.Now(),
+			mockDB:      &MockDynamoDBAPI{},
+			wantErr:     true,
+		},
+		{
+			name:        "DynamoDB error",
+			instanceID:  "i-error",
+			startedAt:   time.Now().Add(-2 * time.Minute),
+			completedAt: time.Now(),
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, errors.New("dynamodb update error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			err := client.UpdateJobMetrics(context.Background(), tt.instanceID, tt.startedAt, tt.completedAt)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("UpdateJobMetrics() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGetPoolConfig_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	_, err := client.GetPoolConfig(context.Background(), "test-pool")
+	if err == nil {
+		t.Error("GetPoolConfig() should return error when DynamoDB fails")
+	}
+}
+
+func TestGetJobByInstance_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	_, err := client.GetJobByInstance(context.Background(), "i-123")
+	if err == nil {
+		t.Error("GetJobByInstance() should return error when jobs table not configured")
+	}
+}
+
+func TestSaveJob_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	err := client.SaveJob(context.Background(), &JobRecord{
+		JobID:      "job-123",
+		InstanceID: "i-123",
+	})
+	if err == nil {
+		t.Error("SaveJob() should return error when jobs table not configured")
+	}
+}
+
+func TestMarkInstanceTerminating_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	err := client.MarkInstanceTerminating(context.Background(), "i-123")
+	if err == nil {
+		t.Error("MarkInstanceTerminating() should return error when jobs table not configured")
+	}
+}
+
+func TestUpdatePoolState_ConditionalCheckFailed(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{Message: nil}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	err := client.UpdatePoolState(context.Background(), "nonexistent-pool", 5, 2)
+	if err == nil {
+		t.Error("UpdatePoolState() should return error when pool does not exist")
 	}
 }
