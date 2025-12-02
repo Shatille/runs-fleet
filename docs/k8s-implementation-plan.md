@@ -219,45 +219,192 @@ spec:
       restartPolicy: Never
 ```
 
-### 4. Agent Changes (`cmd/agent/`)
+### 4. Agent Changes (`cmd/agent/`, `pkg/agent/`)
 
-Current agent flow:
+Current agent flow (EC2):
 1. Fetch config from SSM
 2. Register with GitHub
 3. Run job
-4. Self-terminate via EC2 API
+4. Send telemetry to SQS
+5. Self-terminate via EC2 API
 
-**Changes needed:**
+**K8s flow:**
+1. Read config from mounted ConfigMap/Secret
+2. Register with GitHub
+3. Run job
+4. Send telemetry to Valkey
+5. Exit cleanly (pod terminates naturally)
+
+**Implementation approach - Interface abstractions:**
 
 ```go
-// Detect environment
-func detectProvider() string {
-    if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
-        return "k8s"
-    }
-    return "ec2"
+// pkg/agent/config.go - Config fetching abstraction
+
+// ConfigFetcher defines the interface for fetching runner configuration.
+type ConfigFetcher interface {
+    FetchConfig(ctx context.Context, source string) (*RunnerConfig, error)
 }
 
-// Provider-aware config fetch
-func getRunnerConfig(ctx context.Context) (*RunnerConfig, error) {
-    switch detectProvider() {
-    case "k8s":
-        return readConfigFromFile("/etc/runs-fleet/config.json")
-    case "ec2":
-        return fetchConfigFromSSM(ctx, os.Getenv("RUNS_FLEET_RUNNER_ID"))
-    }
+// SSM implementation (existing Registrar.FetchConfig)
+// File implementation (K8s ConfigMap/Secret)
+type FileConfigFetcher struct { ... }
+
+// K8s config paths
+type K8sConfigPaths struct {
+    ConfigDir string // /etc/runs-fleet/config (ConfigMap mount)
+    SecretDir string // /etc/runs-fleet/secrets (Secret mount)
 }
 
-// Provider-aware termination
-func terminateSelf(ctx context.Context) error {
-    switch detectProvider() {
-    case "k8s":
-        // Pod exits, Job controller handles cleanup
-        // Just exit cleanly
-        return nil
-    case "ec2":
-        return terminateEC2Instance(ctx)
+// FetchK8sConfig assembles RunnerConfig from mounted volumes
+func FetchK8sConfig(ctx context.Context, paths K8sConfigPaths, logger Logger) (*RunnerConfig, error)
+
+// IsK8sEnvironment detects if running in Kubernetes
+func IsK8sEnvironment() bool {
+    return os.Getenv("KUBERNETES_SERVICE_HOST") != "" ||
+           fileExists("/var/run/secrets/kubernetes.io/serviceaccount/token")
+}
+```
+
+```go
+// pkg/agent/termination.go - Terminator interface
+
+type Terminator interface {
+    TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error
+}
+
+// EC2Terminator - existing implementation
+// Calls EC2 TerminateInstances API after sending SQS telemetry
+
+// K8sTerminator - new implementation
+// Sends Valkey telemetry, then returns (pod exits naturally)
+type K8sTerminator struct {
+    telemetry TelemetryClient
+    logger    Logger
+}
+
+func (t *K8sTerminator) TerminateInstance(ctx context.Context, podName string, status JobStatus) error {
+    if t.telemetry != nil {
+        t.telemetry.SendJobCompleted(ctx, status)
     }
+    // Pod will terminate when main() returns
+    return nil
+}
+```
+
+```go
+// pkg/agent/telemetry.go - Telemetry interface
+
+type TelemetryClient interface {
+    SendJobStarted(ctx context.Context, status JobStatus) error
+    SendJobCompleted(ctx context.Context, status JobStatus) error
+}
+
+// SQSTelemetry - existing implementation for EC2 mode
+// ValkeyTelemetry - new implementation for K8s mode
+type ValkeyTelemetry struct {
+    client *redis.Client
+    stream string // "runs-fleet:termination"
+    logger Logger
+}
+```
+
+**K8s ConfigMap/Secret structure:**
+
+ConfigMap (`runs-fleet-runner-{run-id}`):
+```yaml
+data:
+  repo: "owner/repo"
+  labels: '["self-hosted","linux","arm64"]'
+  runner_group: "default"
+  job_id: "12345"
+```
+
+Secret (`runs-fleet-runner-{run-id}-secrets`):
+```yaml
+data:
+  jit_token: <base64-encoded>
+  cache_token: <base64-encoded>
+```
+
+**Agent main.go wiring:**
+
+```go
+func main() {
+    if agent.IsK8sEnvironment() {
+        // K8s mode
+        config, err := agent.FetchK8sConfig(ctx, agent.DefaultK8sConfigPaths(), logger)
+
+        var telemetry agent.TelemetryClient
+        if valkeyAddr := os.Getenv("RUNS_FLEET_VALKEY_ADDR"); valkeyAddr != "" {
+            telemetry = agent.NewValkeyTelemetry(valkeyAddr, "runs-fleet:termination", logger)
+        }
+
+        terminator = agent.NewK8sTerminator(telemetry, logger)
+    } else {
+        // EC2 mode (existing)
+        config, err = registrar.FetchConfig(ctx, ssmParameterPath)
+        telemetry = agent.NewSQSTelemetry(awsCfg, terminationQueueURL, logger)
+        terminator = agent.NewEC2Terminator(awsCfg, telemetry, logger)
+    }
+    // ... rest of agent flow unchanged
+}
+```
+
+**K8s Provider Pod Spec updates:**
+
+```go
+// pkg/provider/k8s/provider.go - Add volume mounts for config
+
+func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.Pod {
+    // ... existing code ...
+
+    pod.Spec.Volumes = []corev1.Volume{
+        {
+            Name: "config",
+            VolumeSource: corev1.VolumeSource{
+                ConfigMap: &corev1.ConfigMapVolumeSource{
+                    LocalObjectReference: corev1.LocalObjectReference{
+                        Name: configMapName(spec.RunID),
+                    },
+                },
+            },
+        },
+        {
+            Name: "secrets",
+            VolumeSource: corev1.VolumeSource{
+                Secret: &corev1.SecretVolumeSource{
+                    SecretName: secretName(spec.RunID),
+                },
+            },
+        },
+    }
+
+    pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
+        {Name: "config", MountPath: "/etc/runs-fleet/config", ReadOnly: true},
+        {Name: "secrets", MountPath: "/etc/runs-fleet/secrets", ReadOnly: true},
+    }
+
+    // Add Valkey address for telemetry
+    pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
+        corev1.EnvVar{Name: "RUNS_FLEET_VALKEY_ADDR", Value: p.config.ValkeyAddr},
+    )
+}
+
+// CreateRunner must also create ConfigMap and Secret before creating Pod
+func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
+    // 1. Create ConfigMap with runner config
+    if err := p.createRunnerConfigMap(ctx, spec); err != nil {
+        return nil, err
+    }
+
+    // 2. Create Secret with JIT token
+    if err := p.createRunnerSecret(ctx, spec); err != nil {
+        p.deleteConfigMap(ctx, spec.RunID) // cleanup
+        return nil, err
+    }
+
+    // 3. Create Pod (existing)
+    // ...
 }
 ```
 
@@ -604,3 +751,100 @@ pkg/provider/
 
 5. **Multi-cluster support**: Single cluster or federated?
    - Recommendation: Start single, add cluster selection label later
+
+---
+
+## Implementation Progress
+
+### Phase 1: Interface Abstraction ✅ COMPLETE
+| Item | Status | Notes |
+|------|--------|-------|
+| `pkg/provider/interface.go` | ✅ Done | Provider, PoolProvider, RunnerSpec, RunnerState |
+| `pkg/provider/types.go` | ✅ Done | Shared types |
+| EC2 provider wrap | ⏭️ Skipped | Using existing fleet code directly; K8s-only focus |
+
+### Phase 2: Label & Config Support ✅ COMPLETE
+| Item | Status | Notes |
+|------|--------|-------|
+| K8s config fields in `pkg/config/` | ✅ Done | KubeConfig, KubeNamespace, KubeServiceAccount, KubeNodeSelector, KubeRunnerImage, ValkeyAddr |
+| `IsK8sBackend()` / `IsEC2Backend()` | ✅ Done | Mode detection helpers |
+| Config validation | ✅ Done | Validates required fields per mode |
+
+### Phase 3: Kubernetes Provider ✅ COMPLETE
+| Item | Status | Notes |
+|------|--------|-------|
+| `pkg/provider/k8s/provider.go` | ✅ Done | CreateRunner (Pod), TerminateRunner, DescribeRunner |
+| Pod spec with security context | ✅ Done | Non-root, seccomp, drop capabilities |
+| Node selector for arch | ✅ Done | arm64/amd64 selection |
+| Spot/preemptible tolerations | ✅ Done | GKE, EKS, AKS, Karpenter tolerations |
+| NetworkPolicy for private jobs | ✅ Done | Blocks internal CIDRs, allows DNS/HTTPS |
+| `pkg/provider/k8s/pool.go` | ✅ Done | K8s PoolProvider implementation |
+
+### Phase 4: Queue Abstraction ✅ COMPLETE
+| Item | Status | Notes |
+|------|--------|-------|
+| `pkg/queue/interface.go` | ✅ Done | Queue interface, Message, JobMessage types |
+| `pkg/queue/sqs.go` | ✅ Done | Refactored to implement Queue interface |
+| `pkg/queue/valkey.go` | ✅ Done | Valkey Streams implementation with consumer groups |
+| Server main.go integration | ✅ Done | `initJobQueue()` selects SQS or Valkey based on backend |
+| Valkey K8s manifests | ✅ Done | StatefulSet + Service in docs |
+
+### Phase 5: Agent K8s Support 🔄 IN PROGRESS
+| Item | Status | Notes |
+|------|--------|-------|
+| `pkg/agent/config.go` | ✅ Done | FileConfigFetcher, FetchK8sConfig, IsK8sEnvironment |
+| `pkg/agent/termination.go` interface | 🔴 TODO | Extract Terminator interface |
+| `pkg/agent/termination_k8s.go` | 🔴 TODO | K8sTerminator (clean exit) |
+| `pkg/agent/telemetry.go` interface | 🔴 TODO | Extract TelemetryClient interface |
+| `pkg/agent/telemetry_valkey.go` | 🔴 TODO | ValkeyTelemetry implementation |
+| `cmd/agent/main.go` wiring | 🔴 TODO | Backend detection, conditional setup |
+| K8s provider ConfigMap/Secret creation | 🔴 TODO | CreateRunner creates config volumes |
+| K8s provider volume mounts in Pod | 🔴 TODO | Mount ConfigMap/Secret to agent |
+
+### Phase 6: Runner Docker Image 🔴 NOT STARTED
+| Item | Status | Notes |
+|------|--------|-------|
+| `docker/runner/Dockerfile` | 🔴 TODO | Base image + agent binary |
+| Multi-arch build (arm64/amd64) | 🔴 TODO | GitHub Actions workflow |
+| Push to registry | 🔴 TODO | ECR or GHCR |
+
+### Phase 7: K8s Deployment Manifests 🔴 NOT STARTED
+| Item | Status | Notes |
+|------|--------|-------|
+| `deploy/k8s/namespace.yaml` | 🔴 TODO | runs-fleet namespace |
+| `deploy/k8s/rbac.yaml` | 🔴 TODO | ServiceAccount, Role, RoleBinding for orchestrator |
+| `deploy/k8s/runner-rbac.yaml` | 🔴 TODO | ServiceAccount for runner pods |
+| `deploy/k8s/deployment.yaml` | 🔴 TODO | Orchestrator deployment |
+| `deploy/k8s/configmap.yaml` | 🔴 TODO | Orchestrator config |
+| `deploy/k8s/secrets.yaml` | 🔴 TODO | GitHub App credentials template |
+| `deploy/k8s/valkey.yaml` | 🔴 TODO | Valkey StatefulSet (copy from docs) |
+
+### Phase 8: Karpenter Setup 🔴 NOT STARTED
+| Item | Status | Notes |
+|------|--------|-------|
+| NodePool for runners | 🔴 TODO | Spot-first, arm64/amd64 |
+| EC2NodeClass | 🔴 TODO | AMI, security groups, subnet selection |
+| Documentation | 🔴 TODO | Setup guide for EKS + Karpenter |
+
+---
+
+## Summary
+
+| Phase | Status | Completion |
+|-------|--------|------------|
+| 1. Interface Abstraction | ✅ Complete | 100% |
+| 2. Label & Config Support | ✅ Complete | 100% |
+| 3. Kubernetes Provider | ✅ Complete | 100% |
+| 4. Queue Abstraction | ✅ Complete | 100% |
+| 5. Agent K8s Support | 🔄 In Progress | ~15% |
+| 6. Runner Docker Image | 🔴 Not Started | 0% |
+| 7. K8s Deployment Manifests | 🔴 Not Started | 0% |
+| 8. Karpenter Setup | 🔴 Not Started | 0% |
+
+**Overall Progress: ~55%**
+
+**Next Steps (in order):**
+1. Complete Agent K8s Support (Phase 5)
+2. Create Runner Docker Image (Phase 6) - prerequisite for testing
+3. K8s Deployment Manifests (Phase 7)
+4. Karpenter Setup (Phase 8)
