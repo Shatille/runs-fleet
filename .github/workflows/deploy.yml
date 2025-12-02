@@ -20,6 +20,41 @@ env:
   S3_CONFIG_BUCKET: shavakan-runs-fleet-config
 
 jobs:
+  test:
+    name: Test & Coverage Badge
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Run tests with coverage
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "Coverage: $COVERAGE%"
+
+      - name: Update coverage badge
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: 089a4c604db357e35ee33f10be5a1bbf
+          filename: runs-fleet-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percentage }}%
+          valColorRange: ${{ steps.coverage.outputs.percentage }}
+          minColorRange: 50
+          maxColorRange: 90
+
   version:
     name: Calculate Version
     runs-on: ubuntu-latest
