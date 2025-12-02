@@ -219,11 +219,37 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 }
 
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
-// Empty arch defaults to ARM64 families (legacy template uses ARM64 AMI).
+// When arch is empty, returns both ARM64 and AMD64 families for maximum spot diversification.
 func DefaultFlexibleFamilies(arch string) []string {
-	if arch == "amd64" {
+	switch arch {
+	case "amd64":
 		return []string{"c6i", "c7i", "m6i", "m7i", "t3"}
+	case "arm64":
+		return []string{"c7g", "m7g", "t4g"}
+	default:
+		// No arch preference - include both for diversification
+		return []string{"c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
 	}
-	// ARM64 or empty arch - empty defaults to ARM64 since legacy template uses ARM64 AMI
-	return []string{"c7g", "m7g", "t4g"}
+}
+
+// GetInstanceArch returns the architecture for a given instance type.
+// Returns empty string if the instance type is not in the catalog.
+func GetInstanceArch(instanceType string) string {
+	if spec, ok := instanceCatalogByType[instanceType]; ok {
+		return spec.Arch
+	}
+	return ""
+}
+
+// GroupInstanceTypesByArch groups instance types by their architecture.
+// Returns a map of arch -> []instanceType. Unknown instance types are skipped.
+func GroupInstanceTypesByArch(instanceTypes []string) map[string][]string {
+	result := make(map[string][]string)
+	for _, instType := range instanceTypes {
+		arch := GetInstanceArch(instType)
+		if arch != "" {
+			result[arch] = append(result[arch], instType)
+		}
+	}
+	return result
 }

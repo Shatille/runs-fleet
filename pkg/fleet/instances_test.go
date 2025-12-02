@@ -247,13 +247,159 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 		}
 	}
 
-	// Empty arch should return ARM64 families (legacy template uses ARM64 AMI)
+	// Empty arch should return both ARM64 and AMD64 families for diversification
 	emptyArchFamilies := DefaultFlexibleFamilies("")
 	if len(emptyArchFamilies) == 0 {
 		t.Error("DefaultFlexibleFamilies(\"\") returned empty slice")
 	}
-	// Empty arch defaults to ARM64 families
-	if len(emptyArchFamilies) != len(arm64Families) {
-		t.Errorf("DefaultFlexibleFamilies(\"\") should return ARM64 families, got %d families, want %d", len(emptyArchFamilies), len(arm64Families))
+	// Empty arch returns combined families (ARM64 + AMD64)
+	expectedLen := len(arm64Families) + len(amd64Families)
+	if len(emptyArchFamilies) != expectedLen {
+		t.Errorf("DefaultFlexibleFamilies(\"\") should return combined families, got %d families, want %d", len(emptyArchFamilies), expectedLen)
+	}
+	// Verify ARM64 families are included
+	for _, f := range arm64Families {
+		found := false
+		for _, ef := range emptyArchFamilies {
+			if ef == f {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DefaultFlexibleFamilies(\"\") missing ARM64 family %q", f)
+		}
+	}
+	// Verify AMD64 families are included
+	for _, f := range amd64Families {
+		found := false
+		for _, ef := range emptyArchFamilies {
+			if ef == f {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DefaultFlexibleFamilies(\"\") missing AMD64 family %q", f)
+		}
+	}
+}
+
+func TestGetInstanceArch(t *testing.T) {
+	tests := []struct {
+		name         string
+		instanceType string
+		wantArch     string
+	}{
+		{
+			name:         "ARM64 c7g instance",
+			instanceType: "c7g.xlarge",
+			wantArch:     "arm64",
+		},
+		{
+			name:         "ARM64 t4g instance",
+			instanceType: "t4g.medium",
+			wantArch:     "arm64",
+		},
+		{
+			name:         "AMD64 c6i instance",
+			instanceType: "c6i.xlarge",
+			wantArch:     "amd64",
+		},
+		{
+			name:         "AMD64 t3 instance",
+			instanceType: "t3.medium",
+			wantArch:     "amd64",
+		},
+		{
+			name:         "Unknown instance type",
+			instanceType: "unknown.type",
+			wantArch:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetInstanceArch(tt.instanceType)
+			if got != tt.wantArch {
+				t.Errorf("GetInstanceArch(%q) = %q, want %q", tt.instanceType, got, tt.wantArch)
+			}
+		})
+	}
+}
+
+func TestGroupInstanceTypesByArch(t *testing.T) {
+	tests := []struct {
+		name          string
+		instanceTypes []string
+		wantArm64     []string
+		wantAmd64     []string
+	}{
+		{
+			name:          "Mixed architectures",
+			instanceTypes: []string{"c7g.xlarge", "t3.medium", "t4g.medium", "c6i.large"},
+			wantArm64:     []string{"c7g.xlarge", "t4g.medium"},
+			wantAmd64:     []string{"t3.medium", "c6i.large"},
+		},
+		{
+			name:          "ARM64 only",
+			instanceTypes: []string{"c7g.xlarge", "t4g.medium", "m7g.large"},
+			wantArm64:     []string{"c7g.xlarge", "t4g.medium", "m7g.large"},
+			wantAmd64:     nil,
+		},
+		{
+			name:          "AMD64 only",
+			instanceTypes: []string{"t3.medium", "c6i.large", "m6i.xlarge"},
+			wantArm64:     nil,
+			wantAmd64:     []string{"t3.medium", "c6i.large", "m6i.xlarge"},
+		},
+		{
+			name:          "Unknown types filtered out",
+			instanceTypes: []string{"c7g.xlarge", "unknown.type", "t3.medium"},
+			wantArm64:     []string{"c7g.xlarge"},
+			wantAmd64:     []string{"t3.medium"},
+		},
+		{
+			name:          "All unknown types",
+			instanceTypes: []string{"unknown.type", "fake.instance"},
+			wantArm64:     nil,
+			wantAmd64:     nil,
+		},
+		{
+			name:          "Empty input",
+			instanceTypes: []string{},
+			wantArm64:     nil,
+			wantAmd64:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GroupInstanceTypesByArch(tt.instanceTypes)
+
+			// Check ARM64
+			arm64Types := result["arm64"]
+			if len(arm64Types) != len(tt.wantArm64) {
+				t.Errorf("arm64 types: got %v, want %v", arm64Types, tt.wantArm64)
+			} else {
+				for i, want := range tt.wantArm64 {
+					if arm64Types[i] != want {
+						t.Errorf("arm64[%d]: got %q, want %q", i, arm64Types[i], want)
+					}
+				}
+			}
+
+			// Check AMD64
+			amd64Types := result["amd64"]
+			if len(amd64Types) != len(tt.wantAmd64) {
+				t.Errorf("amd64 types: got %v, want %v", amd64Types, tt.wantAmd64)
+			} else {
+				for i, want := range tt.wantAmd64 {
+					if amd64Types[i] != want {
+						t.Errorf("amd64[%d]: got %q, want %q", i, amd64Types[i], want)
+					}
+				}
+			}
+		})
 	}
 }

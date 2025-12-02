@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
@@ -63,29 +64,21 @@ type LaunchSpec struct {
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
 // When multiple instance types are specified and spot is enabled, EC2 Fleet
 // will select from the pool with the best price-capacity balance.
+// When arch is empty and instance types span multiple architectures, multiple
+// launch template configs are created to let EC2 Fleet choose the best option.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
-	// Select appropriate launch template based on OS
-	launchTemplateName := m.selectLaunchTemplate(spec)
-
-	launchTemplate := &types.FleetLaunchTemplateSpecificationRequest{
-		LaunchTemplateName: aws.String(launchTemplateName),
-		Version:            aws.String("$Latest"),
+	// Build launch template configs - may be multiple when arch is empty
+	launchTemplateConfigs, err := m.buildLaunchTemplateConfigs(spec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build launch template configs: %w", err)
 	}
-
-	// Build overrides for instance type diversification
-	overrides := m.buildInstanceOverrides(spec)
 
 	targetCapacity := int32(1)
 
 	tags := m.buildTags(spec)
 
 	req := &ec2.CreateFleetInput{
-		LaunchTemplateConfigs: []types.FleetLaunchTemplateConfigRequest{
-			{
-				LaunchTemplateSpecification: launchTemplate,
-				Overrides:                   overrides,
-			},
-		},
+		LaunchTemplateConfigs: launchTemplateConfigs,
 		TargetCapacitySpecification: &types.TargetCapacitySpecificationRequest{
 			TotalTargetCapacity:       &targetCapacity,
 			DefaultTargetCapacityType: types.DefaultTargetCapacityTypeSpot,
@@ -108,9 +101,9 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		if len(spec.InstanceTypes) > 0 {
 			primaryType = spec.InstanceTypes[0]
 		}
-		state, err := m.circuitBreaker.CheckCircuit(ctx, primaryType)
-		if err != nil {
-			log.Printf("Warning: failed to check circuit breaker: %v", err)
+		state, cbErr := m.circuitBreaker.CheckCircuit(ctx, primaryType)
+		if cbErr != nil {
+			log.Printf("Warning: failed to check circuit breaker: %v", cbErr)
 			// Continue with spot if we can't check
 		} else if state == circuit.StateOpen {
 			log.Printf("Circuit breaker OPEN for %s, forcing on-demand", primaryType)
@@ -123,19 +116,40 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		if spec.ForceOnDemand && spec.RetryCount > 0 {
 			log.Printf("Using on-demand for retry #%d of run %s", spec.RetryCount, spec.RunID)
 		}
-		// For on-demand, use only the primary instance type
-		req.LaunchTemplateConfigs[0].Overrides = []types.FleetLaunchTemplateOverridesRequest{
+		// For on-demand, use only the primary instance type with appropriate template
+		primaryType := m.getPrimaryInstanceType(spec)
+		arch := spec.Arch
+		if arch == "" {
+			arch = GetInstanceArch(primaryType)
+			if arch == "" {
+				return nil, fmt.Errorf("cannot determine architecture for instance type %q: not in catalog", primaryType)
+			}
+		}
+		req.LaunchTemplateConfigs = []types.FleetLaunchTemplateConfigRequest{
 			{
-				InstanceType: types.InstanceType(m.getPrimaryInstanceType(spec)),
-				SubnetId:     aws.String(spec.SubnetID),
+				LaunchTemplateSpecification: &types.FleetLaunchTemplateSpecificationRequest{
+					LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(spec.OS, arch)),
+					Version:            aws.String("$Latest"),
+				},
+				Overrides: []types.FleetLaunchTemplateOverridesRequest{
+					{
+						InstanceType: types.InstanceType(primaryType),
+						SubnetId:     aws.String(spec.SubnetID),
+					},
+				},
 			},
 		}
 	} else {
 		req.SpotOptions = &types.SpotOptionsRequest{
 			AllocationStrategy: types.SpotAllocationStrategyPriceCapacityOptimized,
 		}
-		if len(spec.InstanceTypes) > 1 {
-			log.Printf("Using %d instance types for spot diversification: %v", len(overrides), m.getInstanceTypeNames(overrides))
+		totalTypes := 0
+		for _, cfg := range launchTemplateConfigs {
+			totalTypes += len(cfg.Overrides)
+		}
+		if totalTypes > 1 {
+			log.Printf("Using %d instance types across %d launch template configs for spot diversification",
+				totalTypes, len(launchTemplateConfigs))
 		}
 	}
 
@@ -168,38 +182,106 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	return instanceIDs, nil
 }
 
-// selectLaunchTemplate returns the appropriate launch template based on OS and architecture.
-// spec must not be nil; enforced by caller (CreateFleet).
+// getLaunchTemplateForArch returns the launch template name for a specific OS and architecture.
 // Supported OS values: "linux", "windows", or "" (defaults to linux).
-// Supported Arch values: "arm64", "amd64", or "" (arch doesn't matter - uses non-suffixed template).
-func (m *Manager) selectLaunchTemplate(spec *LaunchSpec) string {
+// Supported Arch values: "arm64", "amd64", or "" (defaults to arm64).
+func (m *Manager) getLaunchTemplateForArch(os, arch string) string {
 	baseName := m.config.LaunchTemplateName
 	if baseName == "" {
 		baseName = "runs-fleet-runner"
 	}
 
 	// Windows instances use a separate launch template
-	if spec.OS == "windows" {
+	if os == "windows" {
 		return baseName + "-windows"
 	}
 
 	// Validate OS - only linux (or empty, defaulting to linux) is supported beyond windows
-	if spec.OS != "" && spec.OS != "linux" {
-		log.Printf("Warning: unsupported OS %q, defaulting to linux", spec.OS)
+	if os != "" && os != "linux" {
+		log.Printf("Warning: unsupported OS %q, defaulting to linux", os)
 	}
 
 	// amd64 Linux instances use a separate launch template (different AMI)
-	if spec.Arch == "amd64" {
+	if arch == "amd64" {
 		return baseName + "-amd64"
 	}
 
-	// ARM64 Linux instances
-	if spec.Arch == "arm64" {
-		return baseName + "-arm64"
+	// ARM64 Linux instances (default)
+	return baseName + "-arm64"
+}
+
+// buildLaunchTemplateConfigs creates launch template configurations for the fleet.
+// When arch is specified, creates a single config. When arch is empty and instance types
+// span multiple architectures, creates separate configs per architecture to let EC2 Fleet
+// choose based on price-capacity optimization.
+// Returns an error if instance types conflict with specified architecture or no valid types found.
+func (m *Manager) buildLaunchTemplateConfigs(spec *LaunchSpec) ([]types.FleetLaunchTemplateConfigRequest, error) {
+	instanceTypes := spec.InstanceTypes
+	if len(instanceTypes) == 0 {
+		instanceTypes = []string{spec.InstanceType}
 	}
 
-	// Empty arch means "arch doesn't matter" - use non-suffixed template
-	return baseName
+	// Limit total instance types (EC2 Fleet maximum per launch template config is 20)
+	const maxOverridesPerConfig = 20
+
+	// If arch is specified, validate instance types match and create a single config
+	if spec.Arch != "" {
+		for _, instType := range instanceTypes {
+			arch := GetInstanceArch(instType)
+			if arch != "" && arch != spec.Arch {
+				return nil, fmt.Errorf("instance type %q (arch=%s) conflicts with specified arch=%s", instType, arch, spec.Arch)
+			}
+		}
+		return []types.FleetLaunchTemplateConfigRequest{
+			m.buildSingleArchConfig(spec.OS, spec.Arch, instanceTypes, spec.SubnetID, maxOverridesPerConfig),
+		}, nil
+	}
+
+	// Arch is empty - group by architecture and create config per arch
+	groupedTypes := GroupInstanceTypesByArch(instanceTypes)
+
+	// If no valid instance types found, return error
+	if len(groupedTypes) == 0 {
+		return nil, fmt.Errorf("no valid instance types found in catalog: %v", instanceTypes)
+	}
+
+	// Sort architectures for deterministic order
+	archs := make([]string, 0, len(groupedTypes))
+	for arch := range groupedTypes {
+		archs = append(archs, arch)
+	}
+	sort.Strings(archs)
+
+	// Create a config for each architecture
+	configs := make([]types.FleetLaunchTemplateConfigRequest, 0, len(archs))
+	for _, arch := range archs {
+		configs = append(configs, m.buildSingleArchConfig(spec.OS, arch, groupedTypes[arch], spec.SubnetID, maxOverridesPerConfig))
+	}
+
+	return configs, nil
+}
+
+// buildSingleArchConfig creates a single launch template config for one architecture.
+func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string, subnetID string, maxOverrides int) types.FleetLaunchTemplateConfigRequest {
+	if len(instanceTypes) > maxOverrides {
+		instanceTypes = instanceTypes[:maxOverrides]
+	}
+
+	overrides := make([]types.FleetLaunchTemplateOverridesRequest, len(instanceTypes))
+	for i, instType := range instanceTypes {
+		overrides[i] = types.FleetLaunchTemplateOverridesRequest{
+			InstanceType: types.InstanceType(instType),
+			SubnetId:     aws.String(subnetID),
+		}
+	}
+
+	return types.FleetLaunchTemplateConfigRequest{
+		LaunchTemplateSpecification: &types.FleetLaunchTemplateSpecificationRequest{
+			LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(os, arch)),
+			Version:            aws.String("$Latest"),
+		},
+		Overrides: overrides,
+	}
 }
 
 // buildTags creates the tag set for the fleet resources.
@@ -280,45 +362,10 @@ func IsValidWindowsInstanceType(instanceType string) bool {
 	return WindowsInstanceTypes[instanceType]
 }
 
-// buildInstanceOverrides creates launch template overrides for instance type diversification.
-// When multiple instance types are specified, this enables EC2 Fleet to select from a
-// larger pool of instances, improving spot availability.
-func (m *Manager) buildInstanceOverrides(spec *LaunchSpec) []types.FleetLaunchTemplateOverridesRequest {
-	instanceTypes := spec.InstanceTypes
-	if len(instanceTypes) == 0 {
-		instanceTypes = []string{spec.InstanceType}
-	}
-
-	// Limit to 20 instance types (EC2 Fleet maximum per launch template config)
-	const maxOverrides = 20
-	if len(instanceTypes) > maxOverrides {
-		instanceTypes = instanceTypes[:maxOverrides]
-	}
-
-	overrides := make([]types.FleetLaunchTemplateOverridesRequest, len(instanceTypes))
-	for i, instType := range instanceTypes {
-		overrides[i] = types.FleetLaunchTemplateOverridesRequest{
-			InstanceType: types.InstanceType(instType),
-			SubnetId:     aws.String(spec.SubnetID),
-		}
-	}
-
-	return overrides
-}
-
 // getPrimaryInstanceType returns the primary instance type to use.
 func (m *Manager) getPrimaryInstanceType(spec *LaunchSpec) string {
 	if len(spec.InstanceTypes) > 0 {
 		return spec.InstanceTypes[0]
 	}
 	return spec.InstanceType
-}
-
-// getInstanceTypeNames extracts instance type names from overrides for logging.
-func (m *Manager) getInstanceTypeNames(overrides []types.FleetLaunchTemplateOverridesRequest) []string {
-	names := make([]string, len(overrides))
-	for i, o := range overrides {
-		names[i] = string(o.InstanceType)
-	}
-	return names
 }
