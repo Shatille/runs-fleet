@@ -531,5 +531,312 @@ func TestSanitizePodName(t *testing.T) {
 	}
 }
 
+func TestBuildTolerations(t *testing.T) {
+	cfg := &config.Config{
+		KubeNamespace:   "runs-fleet",
+		KubeRunnerImage: "runner:latest",
+	}
+	p := &Provider{config: cfg}
+
+	tests := []struct {
+		name         string
+		spec         *provider.RunnerSpec
+		wantCount    int
+		wantTaintKey string
+	}{
+		{
+			name: "spot runner has tolerations",
+			spec: &provider.RunnerSpec{
+				RunID: "run-123",
+				Spot:  true,
+			},
+			wantCount:    7, // GKE preemptible, GKE spot, GKE provisioning, EKS, AKS, runs-fleet, Karpenter
+			wantTaintKey: "eks.amazonaws.com/capacityType",
+		},
+		{
+			name: "non-spot runner has no tolerations",
+			spec: &provider.RunnerSpec{
+				RunID: "run-456",
+				Spot:  false,
+			},
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tolerations := p.buildTolerations(tt.spec)
+			if len(tolerations) != tt.wantCount {
+				t.Errorf("buildTolerations() count = %d, want %d", len(tolerations), tt.wantCount)
+			}
+			if tt.wantTaintKey != "" {
+				found := false
+				for _, tol := range tolerations {
+					if tol.Key == tt.wantTaintKey {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("buildTolerations() missing toleration for key %s", tt.wantTaintKey)
+				}
+			}
+		})
+	}
+}
+
+const labelValueTrue = "true"
+
+func TestBuildNetworkPolicy(t *testing.T) {
+	cfg := &config.Config{
+		KubeNamespace:   "runs-fleet",
+		KubeRunnerImage: "runner:latest",
+	}
+	p := &Provider{config: cfg}
+
+	spec := &provider.RunnerSpec{
+		RunID:   "run-123",
+		Private: true,
+	}
+
+	netpol := p.buildNetworkPolicy("runner-run-123", spec)
+
+	if netpol.Name != "runner-run-123-netpol" {
+		t.Errorf("NetworkPolicy name = %s, want runner-run-123-netpol", netpol.Name)
+	}
+
+	if netpol.Namespace != "runs-fleet" {
+		t.Errorf("NetworkPolicy namespace = %s, want runs-fleet", netpol.Namespace)
+	}
+
+	if len(netpol.Spec.Egress) != 3 {
+		t.Errorf("NetworkPolicy egress rules = %d, want 3 (DNS, HTTPS, HTTP)", len(netpol.Spec.Egress))
+	}
+
+	// Verify selector targets private pods
+	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/private"] != labelValueTrue {
+		t.Error("NetworkPolicy should select private pods")
+	}
+
+	// Verify blockedCIDRs are applied to HTTP/HTTPS egress rules
+	metadataServiceCIDR := "169.254.0.0/16"
+	for i, rule := range netpol.Spec.Egress {
+		if i == 0 {
+			continue // Skip DNS rule (index 0)
+		}
+		if len(rule.To) == 0 {
+			t.Errorf("Egress rule %d should have To destinations", i)
+			continue
+		}
+		ipBlock := rule.To[0].IPBlock
+		if ipBlock == nil {
+			t.Errorf("Egress rule %d should have IPBlock", i)
+			continue
+		}
+		found := false
+		for _, except := range ipBlock.Except {
+			if except == metadataServiceCIDR {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Egress rule %d should block metadata service CIDR %s", i, metadataServiceCIDR)
+		}
+	}
+}
+
+func TestCreateRunner_WithSpotAndPrivate(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:   "runs-fleet",
+		KubeRunnerImage: "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:   "run-spot-private",
+		JobID:   "job-123",
+		Repo:    "org/repo",
+		Arch:    "arm64",
+		OS:      "linux",
+		Pool:    "default",
+		Spot:    true,
+		Private: true,
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	if len(result.RunnerIDs) != 1 {
+		t.Fatalf("CreateRunner() returned %d runner IDs, want 1", len(result.RunnerIDs))
+	}
+
+	// Verify pod was created with spot tolerations
+	pod, err := clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), result.RunnerIDs[0], metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get created pod: %v", err)
+	}
+
+	if len(pod.Spec.Tolerations) == 0 {
+		t.Error("Pod should have tolerations for spot scheduling")
+	}
+
+	// Verify spot label
+	if pod.Labels["runs-fleet.io/spot"] != labelValueTrue {
+		t.Error("Pod should have runs-fleet.io/spot=true label")
+	}
+
+	// Verify private label
+	if pod.Labels["runs-fleet.io/private"] != labelValueTrue {
+		t.Error("Pod should have runs-fleet.io/private=true label")
+	}
+
+	// Verify NetworkPolicy was created
+	netpol, err := clientset.NetworkingV1().NetworkPolicies("runs-fleet").Get(context.Background(), networkPolicyName(result.RunnerIDs[0]), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get NetworkPolicy: %v", err)
+	}
+
+	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/private"] != labelValueTrue {
+		t.Error("NetworkPolicy should target private pods")
+	}
+}
+
+func TestTerminateRunner_CleansUpNetworkPolicy(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:   "runs-fleet",
+		KubeRunnerImage: "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	// Create a private runner (creates pod + NetworkPolicy)
+	spec := &provider.RunnerSpec{
+		RunID:   "run-cleanup-test",
+		JobID:   "job-123",
+		Repo:    "org/repo",
+		Arch:    "arm64",
+		OS:      "linux",
+		Pool:    "default",
+		Private: true,
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	runnerID := result.RunnerIDs[0]
+
+	// Verify NetworkPolicy exists
+	_, err = clientset.NetworkingV1().NetworkPolicies("runs-fleet").Get(context.Background(), networkPolicyName(runnerID), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("NetworkPolicy should exist before termination: %v", err)
+	}
+
+	// Terminate runner
+	err = p.TerminateRunner(context.Background(), runnerID)
+	if err != nil {
+		t.Fatalf("TerminateRunner() error = %v", err)
+	}
+
+	// Verify pod was deleted
+	_, err = clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), runnerID, metav1.GetOptions{})
+	if err == nil {
+		t.Error("Pod should be deleted after termination")
+	}
+
+	// Verify NetworkPolicy was deleted
+	_, err = clientset.NetworkingV1().NetworkPolicies("runs-fleet").Get(context.Background(), networkPolicyName(runnerID), metav1.GetOptions{})
+	if err == nil {
+		t.Error("NetworkPolicy should be deleted after termination")
+	}
+}
+
+func TestCreateRunner_NetworkPolicyFailure_CleansPod(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+
+	// Inject failure on NetworkPolicy creation
+	clientset.PrependReactor("create", "networkpolicies", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("simulated NetworkPolicy creation failure")
+	})
+
+	cfg := &config.Config{
+		KubeNamespace:   "runs-fleet",
+		KubeRunnerImage: "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:   "run-netpol-fail",
+		JobID:   "job-123",
+		Repo:    "org/repo",
+		Arch:    "arm64",
+		OS:      "linux",
+		Private: true,
+	}
+
+	_, err := p.CreateRunner(context.Background(), spec)
+	if err == nil {
+		t.Fatal("CreateRunner() should fail when NetworkPolicy creation fails")
+	}
+
+	if !strings.Contains(err.Error(), "NetworkPolicy") {
+		t.Errorf("Error should mention NetworkPolicy, got: %v", err)
+	}
+
+	// Verify pod was cleaned up
+	pods, listErr := clientset.CoreV1().Pods("runs-fleet").List(context.Background(), metav1.ListOptions{})
+	if listErr != nil {
+		t.Fatalf("Failed to list pods: %v", listErr)
+	}
+
+	if len(pods.Items) != 0 {
+		t.Errorf("Pod should be cleaned up after NetworkPolicy failure, found %d pods", len(pods.Items))
+	}
+}
+
+func TestCreateRunner_NonPrivate_SkipsNetworkPolicy(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:   "runs-fleet",
+		KubeRunnerImage: "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:   "run-non-private",
+		JobID:   "job-123",
+		Repo:    "org/repo",
+		Arch:    "arm64",
+		OS:      "linux",
+		Private: false, // Explicitly non-private
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	// Verify pod was created
+	_, err = clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), result.RunnerIDs[0], metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Pod should exist: %v", err)
+	}
+
+	// Verify NO NetworkPolicy was created
+	netpols, err := clientset.NetworkingV1().NetworkPolicies("runs-fleet").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("Failed to list NetworkPolicies: %v", err)
+	}
+
+	if len(netpols.Items) != 0 {
+		t.Errorf("Non-private runner should not create NetworkPolicy, found %d", len(netpols.Items))
+	}
+}
+
 // Ensure Provider implements provider.Provider.
 var _ provider.Provider = (*Provider)(nil)
