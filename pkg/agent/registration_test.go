@@ -14,6 +14,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
+const (
+	testTokenValue = "test-token"
+)
+
 type mockSSMAPI struct {
 	getParameterFunc func(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
@@ -28,7 +32,7 @@ func (m *mockSSMAPI) GetParameter(ctx context.Context, params *ssm.GetParameterI
 func TestRegistrar_FetchConfig_Success(t *testing.T) {
 	config := RunnerConfig{
 		Org:      "test-org",
-		JITToken: "test-token",
+		JITToken: testTokenValue,
 		Labels:   []string{"self-hosted", "linux"},
 		IsOrg:    true,
 	}
@@ -57,8 +61,8 @@ func TestRegistrar_FetchConfig_Success(t *testing.T) {
 	if result.Org != "test-org" {
 		t.Errorf("expected org 'test-org', got %q", result.Org)
 	}
-	if result.JITToken != "test-token" {
-		t.Errorf("expected jit_token 'test-token', got %q", result.JITToken)
+	if result.JITToken != testTokenValue {
+		t.Errorf("expected jit_token '%s', got %q", testTokenValue, result.JITToken)
 	}
 	if !result.IsOrg {
 		t.Error("expected IsOrg to be true")
