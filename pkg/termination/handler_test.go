@@ -661,3 +661,265 @@ func TestHandler_processTermination_NoTimestamps(t *testing.T) {
 		t.Errorf("expected 0 metrics calls when timestamps are zero, got %d", db.metricsCalls)
 	}
 }
+
+func TestHandler_Run_WithMessages(t *testing.T) {
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "job-123",
+		Status:          testStatusSuccess,
+		DurationSeconds: 60,
+	}
+	body, _ := json.Marshal(msg)
+
+	q := &mockQueueAPI{
+		messages: []queue.Message{
+			{
+				Body:   string(body),
+				Handle: "receipt-1",
+			},
+		},
+	}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for the ticker to fire (handler has 1-second ticker)
+	time.Sleep(1200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not stop after cancellation")
+	}
+
+	// Verify message was processed
+	if q.receiveCalls < 1 {
+		t.Errorf("expected at least 1 receive call, got %d", q.receiveCalls)
+	}
+}
+
+func TestHandler_Run_ReceiveError(t *testing.T) {
+	q := &mockQueueAPI{
+		receiveErr: errors.New("receive error"),
+	}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for ticker to fire
+	time.Sleep(1200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Success - handler should continue despite receive errors
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not stop after cancellation")
+	}
+
+	// Verify receive was attempted despite error
+	if q.receiveCalls < 1 {
+		t.Errorf("expected at least 1 receive call, got %d", q.receiveCalls)
+	}
+}
+
+func TestHandler_processTermination_MetricsErrors(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{
+		durationErr: errors.New("duration error"),
+		successErr:  errors.New("success error"),
+	}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	msg := &Message{
+		InstanceID:      "i-12345",
+		JobID:           "job-123",
+		Status:          testStatusSuccess,
+		DurationSeconds: 60,
+	}
+
+	// Should not fail even if metrics fail (they just log warnings)
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandler_processTermination_FailureMetricsError(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{
+		failureErr: errors.New("failure metric error"),
+	}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "job-123",
+		Status:     "failure",
+	}
+
+	// Should not fail even if failure metric fails
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandler_processTermination_UpdateMetricsError(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		updateMetricsErr: errors.New("update metrics error"),
+	}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	now := time.Now()
+	msg := &Message{
+		InstanceID:  "i-12345",
+		JobID:       "job-123",
+		Status:      testStatusSuccess,
+		StartedAt:   now.Add(-1 * time.Minute),
+		CompletedAt: now,
+	}
+
+	// Should not fail even if update metrics fails (just logs warning)
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandler_processMessage_NoHandle(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	msg := Message{
+		InstanceID: "i-12345",
+		JobID:      "job-123",
+		Status:     testStatusSuccess,
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: "", // Empty handle
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should not try to delete message with empty handle
+	if q.deleteCalls != 0 {
+		t.Errorf("expected 0 delete calls for empty handle, got %d", q.deleteCalls)
+	}
+}
+
+func TestHandler_processTermination_Timeout(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "job-123",
+		Status:     "timeout",
+	}
+
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Timeout should be treated as failure
+	if metrics.failureCalls != 1 {
+		t.Errorf("expected 1 failure call for timeout, got %d", metrics.failureCalls)
+	}
+}
+
+func TestHandler_processTermination_Interrupted(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	msg := &Message{
+		InstanceID:    "i-12345",
+		JobID:         "job-123",
+		Status:        "interrupted",
+		InterruptedBy: "spot",
+	}
+
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Interrupted should be treated as failure
+	if metrics.failureCalls != 1 {
+		t.Errorf("expected 1 failure call for interrupted, got %d", metrics.failureCalls)
+	}
+}
+
+func TestHandler_processTermination_SSMDeleteError(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	ssmClient := &mockSSMAPI{
+		deleteErr: errors.New("access denied"),
+	}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "job-123",
+		Status:     testStatusSuccess,
+	}
+
+	// Should not fail even if SSM delete fails (just logs warning)
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

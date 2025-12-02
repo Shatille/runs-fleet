@@ -14,6 +14,12 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+// Test constants to satisfy goconst
+const (
+	testStateRunning = "running"
+	testStateStopped = "stopped"
+)
+
 // MockDBClient implements DBClient interface
 type MockDBClient struct {
 	GetPoolConfigFunc   func(ctx context.Context, poolName string) (*db.PoolConfig, error)
@@ -592,7 +598,7 @@ func TestReconcileWithoutEC2Client(t *testing.T) {
 	}
 }
 
-func TestReconcileListPoolsError(t *testing.T) {
+func TestReconcileListPoolsError(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return nil, errors.New("db error")
@@ -606,7 +612,7 @@ func TestReconcileListPoolsError(t *testing.T) {
 	manager.reconcile(context.Background())
 }
 
-func TestReconcilePoolConfigError(t *testing.T) {
+func TestReconcilePoolConfigError(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
@@ -623,7 +629,7 @@ func TestReconcilePoolConfigError(t *testing.T) {
 	manager.reconcile(context.Background())
 }
 
-func TestReconcilePoolConfigNotFound(t *testing.T) {
+func TestReconcilePoolConfigNotFound(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
@@ -683,9 +689,10 @@ func TestGetPoolInstances(t *testing.T) {
 	// Verify running instance
 	var running, stopped *PoolInstance
 	for i := range instances {
-		if instances[i].InstanceID == "i-running1" {
+		switch instances[i].InstanceID {
+		case "i-running1":
 			running = &instances[i]
-		} else if instances[i].InstanceID == "i-stopped1" {
+		case "i-stopped1":
 			stopped = &instances[i]
 		}
 	}
@@ -693,7 +700,7 @@ func TestGetPoolInstances(t *testing.T) {
 	if running == nil {
 		t.Fatal("running instance not found")
 	}
-	if running.State != "running" {
+	if running.State != testStateRunning {
 		t.Errorf("expected running state, got %s", running.State)
 	}
 	if running.LaunchTime.IsZero() {
@@ -703,7 +710,7 @@ func TestGetPoolInstances(t *testing.T) {
 	if stopped == nil {
 		t.Fatal("stopped instance not found")
 	}
-	if stopped.State != "stopped" {
+	if stopped.State != testStateStopped {
 		t.Errorf("expected stopped state, got %s", stopped.State)
 	}
 }
@@ -1055,7 +1062,7 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 	}
 }
 
-func TestReconcilePoolUpdateStateError(t *testing.T) {
+func TestReconcilePoolUpdateStateError(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
@@ -1156,7 +1163,7 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 	}
 }
 
-func TestReconcilePoolCreateFleetError(t *testing.T) {
+func TestReconcilePoolCreateFleetError(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
@@ -1195,7 +1202,7 @@ func TestReconcilePoolCreateFleetError(t *testing.T) {
 	manager.reconcile(context.Background())
 }
 
-func TestReconcilePoolStopInstancesError(t *testing.T) {
+func TestReconcilePoolStopInstancesError(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
@@ -1248,7 +1255,7 @@ func TestReconcilePoolStopInstancesError(t *testing.T) {
 	manager.reconcile(context.Background())
 }
 
-func TestReconcilePoolTerminateInstancesError(t *testing.T) {
+func TestReconcilePoolTerminateInstancesError(_ *testing.T) {
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
