@@ -44,6 +44,7 @@ func NewConfigStoreWithClient(client SSMAPI, terminationQueueURL string) *Config
 type runnerConfig struct {
 	Org                 string   `json:"org"`
 	Repo                string   `json:"repo,omitempty"`
+	RunID               string   `json:"run_id"`
 	JITToken            string   `json:"jit_token"`
 	Labels              []string `json:"labels"`
 	RunnerGroup         string   `json:"runner_group,omitempty"`
@@ -65,6 +66,7 @@ func (c *ConfigStore) StoreRunnerConfig(ctx context.Context, req *provider.Store
 	config := runnerConfig{
 		Org:                 org,
 		Repo:                req.Repo,
+		RunID:               req.RunID,
 		JITToken:            req.JITToken,
 		Labels:              req.Labels,
 		JobID:               req.JobID,
