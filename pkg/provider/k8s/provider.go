@@ -362,6 +362,13 @@ var blockedCIDRs = []string{
 
 // buildNetworkPolicy creates a NetworkPolicy for private runners.
 // Restricts egress to deny internal cluster IPs and cloud metadata services.
+//
+// Security trade-off: DNS egress (port 53) is unrestricted to any destination.
+// This is intentional because: (1) kube-dns IP varies by cluster, making IP-based
+// restrictions fragile, (2) namespace selectors vary across K8s distributions,
+// (3) port 53 is protocol-constrained and cannot access non-DNS services like
+// the metadata service (which uses HTTP on port 80). DNS tunneling risk is
+// accepted as low for this threat model.
 func (p *Provider) buildNetworkPolicy(podName string, spec *provider.RunnerSpec) *networkingv1.NetworkPolicy {
 	netpolName := networkPolicyName(podName)
 	dnsPort := intstr.FromInt32(53)
@@ -387,7 +394,7 @@ func (p *Provider) buildNetworkPolicy(podName string, spec *provider.RunnerSpec)
 				networkingv1.PolicyTypeEgress,
 			},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
-				// Allow DNS (kube-dns/coredns)
+				// Allow DNS to any destination (see function doc for security rationale)
 				{
 					Ports: []networkingv1.NetworkPolicyPort{
 						{Port: &dnsPort, Protocol: ptr.To(corev1.ProtocolUDP)},
