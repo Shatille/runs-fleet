@@ -59,6 +59,13 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("unsupported architecture: %s", arch)
 	}
 
+	// Map Go architecture names to GitHub runner asset names
+	// GitHub uses "x64" for x86_64, but Go uses "amd64"
+	githubArch := arch
+	if arch == "amd64" {
+		githubArch = "x64"
+	}
+
 	// Check cache first if available
 	if d.cache != nil {
 		cached, _, err := d.cache.CheckCache(ctx, "latest", arch)
@@ -74,7 +81,7 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
 
-	assetName := fmt.Sprintf("actions-runner-linux-%s-%s.tar.gz", arch, release.TagName[1:])
+	assetName := fmt.Sprintf("actions-runner-linux-%s-%s.tar.gz", githubArch, release.TagName[1:])
 	var downloadURL string
 	for _, asset := range release.Assets {
 		if asset.Name == assetName {

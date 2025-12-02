@@ -46,6 +46,7 @@ func NewManager(awsCfg aws.Config, githubClient *GitHubClient, config ManagerCon
 type Config struct {
 	Org                 string   `json:"org"`
 	Repo                string   `json:"repo,omitempty"`
+	RunID               string   `json:"run_id"`
 	JITToken            string   `json:"jit_token"`
 	Labels              []string `json:"labels"`
 	RunnerGroup         string   `json:"runner_group,omitempty"`
@@ -98,6 +99,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	config := Config{
 		Org:                 org,
 		Repo:                req.Repo,
+		RunID:               req.RunID,
 		JITToken:            regResult.Token,
 		Labels:              req.Labels,
 		JobID:               req.JobID,
