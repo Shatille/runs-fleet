@@ -32,6 +32,8 @@ const (
 	TaskPoolAudit TaskType = "pool_audit"
 	// TaskCostReport generates daily cost reports.
 	TaskCostReport TaskType = "cost_report"
+	// TaskDLQRedrive moves messages from DLQ back to main queue.
+	TaskDLQRedrive TaskType = "dlq_redrive"
 )
 
 // Message represents a housekeeping task message.
@@ -48,6 +50,7 @@ type TaskExecutor interface {
 	ExecuteOldJobs(ctx context.Context) error
 	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
+	ExecuteDLQRedrive(ctx context.Context) error
 }
 
 // Handler processes housekeeping tasks from SQS queue.
@@ -124,6 +127,8 @@ func (h *Handler) processMessage(ctx context.Context, msg types.Message) error {
 		err = h.taskExecutor.ExecutePoolAudit(taskCtx)
 	case TaskCostReport:
 		err = h.taskExecutor.ExecuteCostReport(taskCtx)
+	case TaskDLQRedrive:
+		err = h.taskExecutor.ExecuteDLQRedrive(taskCtx)
 	default:
 		log.Printf("Unknown task type: %s", hkMsg.TaskType)
 	}

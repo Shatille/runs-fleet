@@ -254,6 +254,7 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 		OldJobsInterval:           100 * time.Millisecond,
 		PoolAuditInterval:         100 * time.Millisecond,
 		CostReportInterval:        100 * time.Millisecond,
+		DLQRedriveInterval:        100 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -286,6 +287,7 @@ func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 		OldJobsInterval:           1 * time.Hour,
 		PoolAuditInterval:         1 * time.Hour,
 		CostReportInterval:        1 * time.Hour,
+		DLQRedriveInterval:        1 * time.Hour,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -326,6 +328,7 @@ func TestSchedulerConfig_Structure(t *testing.T) {
 		OldJobsInterval:           1 * time.Hour,
 		PoolAuditInterval:         10 * time.Minute,
 		CostReportInterval:        24 * time.Hour,
+		DLQRedriveInterval:        15 * time.Minute,
 	}
 
 	if cfg.OrphanedInstancesInterval != 5*time.Minute {

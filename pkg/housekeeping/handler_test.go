@@ -45,11 +45,13 @@ type mockTaskExecutor struct {
 	jobsErr      error
 	poolErr      error
 	costErr      error
+	dlqErr       error
 	orphanedCall int
 	ssmCall      int
 	jobsCall     int
 	poolCall     int
 	costCall     int
+	dlqCall      int
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -75,6 +77,11 @@ func (m *mockTaskExecutor) ExecutePoolAudit(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteCostReport(_ context.Context) error {
 	m.costCall++
 	return m.costErr
+}
+
+func (m *mockTaskExecutor) ExecuteDLQRedrive(_ context.Context) error {
+	m.dlqCall++
+	return m.dlqErr
 }
 
 func TestNewHandler(t *testing.T) {
