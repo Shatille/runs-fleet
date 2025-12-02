@@ -3,7 +3,7 @@
 [![CI](https://github.com/Shavakan/runs-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Shavakan/runs-fleet/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Shavakan/089a4c604db357e35ee33f10be5a1bbf/raw/runs-fleet-coverage.json)](https://github.com/Shavakan/runs-fleet)
 
-> Self-hosted ephemeral GitHub Actions runners on AWS, orchestrating spot EC2 instances for workflow jobs
+> Self-hosted ephemeral GitHub Actions runners on AWS/K8s, orchestrating spot EC2 instances or Kubernetes pods for workflow jobs
 
 Inspired by [runs-on](https://github.com/runs-on/runs-on). Fleet orchestration with warm pools, S3 caching, and spot-first cost optimization.
 
@@ -15,13 +15,15 @@ GitHub Webhook → API Gateway → SQS FIFO
                 Orchestrator (Go on Fargate)
                 ├── Queue processors (main, pool, events)
                 ├── Pool manager (warm instances)
-                └── Fleet manager (EC2 API)
+                └── Provider (EC2 Fleet / Kubernetes)
                                    ↓
-                EC2 Spot/On-demand Fleet → Agent (bootstrap, execute, self-terminate)
+                EC2 Spot/On-demand Fleet  OR  Kubernetes Pods
+                                   ↓
+                Agent (bootstrap, execute, self-terminate)
 ```
 
 **Flows:**
-- **Cold-start** (~60s): Webhook → SQS → Fleet creates spot instance → Agent registers with GitHub → Job executes → Self-terminate
+- **Cold-start** (~60s): Webhook → SQS → Provider creates runner → Agent registers with GitHub → Job executes → Self-terminate
 - **Warm pool** (~10s): Webhook with `pool=` label → Assign running instance OR start stopped → Job executes → Reconciliation replaces
 - **Spot interruption**: EventBridge 2-min warning → Re-queue job with `ForceOnDemand=true`
 
@@ -73,20 +75,27 @@ go run cmd/server/main.go
 ```
 cmd/
   server/         # Fargate orchestrator (webhooks, queue processing, fleet mgmt)
-  agent/          # EC2 bootstrap binary (registers runner, executes job)
+  agent/          # EC2/K8s bootstrap binary (registers runner, executes job)
 pkg/
-  github/         # Webhook validation, JIT tokens, label parsing
+  provider/       # Runner provisioning abstraction (EC2, Kubernetes)
   fleet/          # EC2 fleet creation (spot strategy, launch templates)
   pools/          # Warm pool reconciliation (hot/stopped instances)
+  github/         # Webhook validation, JIT tokens, label parsing
+  runner/         # Runner lifecycle management
   cache/          # S3-backed GitHub Actions cache protocol
   queue/          # SQS FIFO processing (batch, DLQ)
   db/             # DynamoDB state management
   events/         # EventBridge (spot interruptions)
   termination/    # Instance shutdown notifications
   housekeeping/   # Cleanup (orphaned instances, stale SSM)
+  circuit/        # Circuit breaker for spot failures
+  coordinator/    # Distributed leader election (DynamoDB)
   cost/           # Pricing calculations
-  coordinator/    # Distributed leader election
+  metrics/        # CloudWatch metrics
+  tracing/        # OpenTelemetry tracing
+  gitops/         # GitOps configuration management
   config/         # Env parsing, AWS clients
+  agent/          # Agent-side logic (bootstrap, self-terminate)
 ```
 
 ## Job Labels
