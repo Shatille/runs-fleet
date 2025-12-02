@@ -44,19 +44,13 @@ func NewValkeyTelemetry(addr, password string, db int, stream string, logger Log
 
 // SendJobStarted sends a job started notification.
 func (t *ValkeyTelemetry) SendJobStarted(ctx context.Context, status JobStatus) error {
-	status.Status = "started"
+	status.Status = StatusStarted
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobCompleted sends a job completion notification.
 func (t *ValkeyTelemetry) SendJobCompleted(ctx context.Context, status JobStatus) error {
-	if status.InterruptedBy != "" {
-		status.Status = "interrupted"
-	} else if status.ExitCode == 0 {
-		status.Status = "success"
-	} else {
-		status.Status = "failure"
-	}
+	status.Status = DetermineCompletionStatus(status.InterruptedBy, status.ExitCode)
 	return t.sendMessage(ctx, status)
 }
 

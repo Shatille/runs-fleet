@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ConfigFetcher defines the interface for fetching runner configuration.
@@ -63,31 +64,41 @@ func DefaultK8sConfigPaths() K8sConfigPaths {
 func FetchK8sConfig(_ context.Context, paths K8sConfigPaths, logger Logger) (*RunnerConfig, error) {
 	config := &RunnerConfig{}
 
-	// Read from ConfigMap
+	// Read from ConfigMap (required: repo; optional: org, runner_group, job_id, labels)
 	if repo, err := readFileContent(filepath.Join(paths.ConfigDir, "repo")); err == nil {
 		config.Repo = repo
+	} else if !os.IsNotExist(err) {
+		logger.Printf("Warning: failed to read repo config: %v", err)
 	}
 	if org, err := readFileContent(filepath.Join(paths.ConfigDir, "org")); err == nil {
 		config.Org = org
+	} else if !os.IsNotExist(err) {
+		logger.Printf("Warning: failed to read org config: %v", err)
 	}
 	if runnerGroup, err := readFileContent(filepath.Join(paths.ConfigDir, "runner_group")); err == nil {
 		config.RunnerGroup = runnerGroup
+	} else if !os.IsNotExist(err) {
+		logger.Printf("Warning: failed to read runner_group config: %v", err)
 	}
 	if jobID, err := readFileContent(filepath.Join(paths.ConfigDir, "job_id")); err == nil {
 		config.JobID = jobID
+	} else if !os.IsNotExist(err) {
+		logger.Printf("Warning: failed to read job_id config: %v", err)
 	}
 
 	// Read labels from file (comma-separated or JSON array)
 	if labelsStr, err := readFileContent(filepath.Join(paths.ConfigDir, "labels")); err == nil {
 		var labels []string
-		if err := json.Unmarshal([]byte(labelsStr), &labels); err != nil {
+		if unmarshalErr := json.Unmarshal([]byte(labelsStr), &labels); unmarshalErr != nil {
 			// Try comma-separated format
 			labels = splitLabels(labelsStr)
 		}
 		config.Labels = labels
+	} else if !os.IsNotExist(err) {
+		logger.Printf("Warning: failed to read labels config: %v", err)
 	}
 
-	// Read from Secret
+	// Read from Secret (required: jit_token; optional: cache_token)
 	if jitToken, err := readFileContent(filepath.Join(paths.SecretDir, "jit_token")); err == nil {
 		config.JITToken = jitToken
 	} else {
@@ -96,6 +107,8 @@ func FetchK8sConfig(_ context.Context, paths K8sConfigPaths, logger Logger) (*Ru
 
 	if cacheToken, err := readFileContent(filepath.Join(paths.SecretDir, "cache_token")); err == nil {
 		config.CacheToken = cacheToken
+	} else if !os.IsNotExist(err) {
+		logger.Printf("Warning: failed to read cache_token: %v", err)
 	}
 
 	if config.Repo == "" {
@@ -112,12 +125,7 @@ func readFileContent(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Trim whitespace and newlines
-	content := string(data)
-	for len(content) > 0 && (content[len(content)-1] == '\n' || content[len(content)-1] == ' ') {
-		content = content[:len(content)-1]
-	}
-	return content, nil
+	return strings.TrimSpace(string(data)), nil
 }
 
 // splitLabels splits comma-separated labels.

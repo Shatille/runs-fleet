@@ -71,7 +71,7 @@ func main() {
 	var ac *agentConfig
 	var err error
 	if isK8s {
-		ac, err = initK8sMode(ctx, instanceID, runID, logger)
+		ac, err = initK8sMode(ctx, logger)
 	} else {
 		ac, err = initEC2Mode(ctx, instanceID, runID, logger)
 	}
@@ -113,7 +113,7 @@ func getInstanceID(isK8s bool) string {
 }
 
 // initK8sMode initializes components for Kubernetes mode.
-func initK8sMode(ctx context.Context, _, _ string, logger *stdLogger) (*agentConfig, error) {
+func initK8sMode(ctx context.Context, logger *stdLogger) (*agentConfig, error) {
 	ac := &agentConfig{}
 
 	runnerConfig, err := agent.FetchK8sConfig(ctx, agent.DefaultK8sConfigPaths(), logger)
@@ -122,23 +122,22 @@ func initK8sMode(ctx context.Context, _, _ string, logger *stdLogger) (*agentCon
 	}
 	ac.runnerConfig = runnerConfig
 
-	// Valkey telemetry (optional)
+	// Valkey telemetry (required when configured)
 	valkeyAddr := os.Getenv("RUNS_FLEET_VALKEY_ADDR")
 	if valkeyAddr != "" {
 		valkeyPassword := os.Getenv("RUNS_FLEET_VALKEY_PASSWORD")
 		valkeyDB := getEnvInt("RUNS_FLEET_VALKEY_DB", 0)
-		valkeyTelemetry, err := agent.NewValkeyTelemetry(
+		valkeyTelemetry, valkeyErr := agent.NewValkeyTelemetry(
 			valkeyAddr, valkeyPassword, valkeyDB,
 			"runs-fleet:termination", logger,
 		)
-		if err != nil {
-			logger.Printf("Warning: failed to create Valkey telemetry: %v", err)
-		} else {
-			ac.telemetry = valkeyTelemetry
-			ac.cleanup = func() {
-				if err := valkeyTelemetry.Close(); err != nil {
-					logger.Printf("Warning: failed to close Valkey connection: %v", err)
-				}
+		if valkeyErr != nil {
+			return nil, fmt.Errorf("failed to connect to Valkey at %s: %w", valkeyAddr, valkeyErr)
+		}
+		ac.telemetry = valkeyTelemetry
+		ac.cleanup = func() {
+			if closeErr := valkeyTelemetry.Close(); closeErr != nil {
+				logger.Printf("Warning: failed to close Valkey connection: %v", closeErr)
 			}
 		}
 	}

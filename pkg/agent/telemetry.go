@@ -26,6 +26,17 @@ const (
 	StatusInterrupted = "interrupted"
 )
 
+// DetermineCompletionStatus returns the appropriate status based on job result.
+func DetermineCompletionStatus(interruptedBy string, exitCode int) string {
+	if interruptedBy != "" {
+		return StatusInterrupted
+	}
+	if exitCode == 0 {
+		return StatusSuccess
+	}
+	return StatusFailure
+}
+
 // TelemetrySQSAPI defines SQS operations for telemetry.
 type TelemetrySQSAPI interface {
 	SendMessage(ctx context.Context, params *sqs.SendMessageInput, optFns ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
@@ -81,14 +92,7 @@ func (t *Telemetry) SendJobStarted(ctx context.Context, status JobStatus) error 
 
 // SendJobCompleted sends a job completion notification.
 func (t *Telemetry) SendJobCompleted(ctx context.Context, status JobStatus) error {
-	// Determine status based on exit code and interruption
-	if status.InterruptedBy != "" {
-		status.Status = StatusInterrupted
-	} else if status.ExitCode == 0 {
-		status.Status = StatusSuccess
-	} else {
-		status.Status = StatusFailure
-	}
+	status.Status = DetermineCompletionStatus(status.InterruptedBy, status.ExitCode)
 	return t.sendMessage(ctx, status)
 }
 

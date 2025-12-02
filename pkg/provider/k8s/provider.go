@@ -125,7 +125,9 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 	// Create Secret with sensitive data (JIT token, cache token)
 	if err := p.createRunnerSecret(ctx, podName, spec); err != nil {
 		// Cleanup ConfigMap on failure
-		_ = p.deleteRunnerConfigMap(ctx, podName)
+		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
+			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+		}
 		return nil, fmt.Errorf("failed to create Secret for runner: %w", err)
 	}
 
@@ -134,22 +136,32 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 	created, err := p.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		// Cleanup ConfigMap and Secret on failure
-		_ = p.deleteRunnerConfigMap(ctx, podName)
-		_ = p.deleteRunnerSecret(ctx, podName)
+		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
+			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+		}
+		if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil {
+			log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
+		}
 		return nil, fmt.Errorf("failed to create pod %s: %w", podName, err)
 	}
 
 	// Create NetworkPolicy for private jobs to restrict internal cluster access
 	if spec.Private {
 		netpol := p.buildNetworkPolicy(podName, spec)
-		_, err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
-		if err != nil {
+		_, npErr := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
+		if npErr != nil {
 			// Private jobs require NetworkPolicy for security - clean up all resources and fail
-			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, err)
-			_ = p.clientset.CoreV1().Pods(namespace).Delete(ctx, created.Name, metav1.DeleteOptions{})
-			_ = p.deleteRunnerConfigMap(ctx, podName)
-			_ = p.deleteRunnerSecret(ctx, podName)
-			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", err)
+			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, npErr)
+			if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, created.Name, metav1.DeleteOptions{}); podErr != nil {
+				log.Printf("Failed to cleanup Pod %s: %v", created.Name, podErr)
+			}
+			if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
+				log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+			}
+			if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil {
+				log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
+			}
+			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", npErr)
 		}
 	}
 
@@ -204,6 +216,10 @@ func (p *Provider) createRunnerConfigMap(ctx context.Context, podName string, sp
 
 // createRunnerSecret creates a Secret with sensitive runner config.
 func (p *Provider) createRunnerSecret(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
+	if spec.JITToken == "" {
+		return fmt.Errorf("JITToken is required for runner registration")
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName(podName),
@@ -237,29 +253,37 @@ func (p *Provider) deleteRunnerSecret(ctx context.Context, podName string) error
 // TerminateRunner deletes a Kubernetes Pod and its associated resources.
 // Cleans up: Pod, NetworkPolicy, ConfigMap, Secret.
 // NotFound is treated as success for idempotency - termination is a desired end state.
+// Returns error if any cleanup operation fails (except NotFound).
 func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
 	namespace := p.config.KubeNamespace
+	var cleanupErrors []string
 
-	// Delete associated NetworkPolicy (best effort - may not exist for non-private jobs)
+	// Delete associated NetworkPolicy (may not exist for non-private jobs)
 	netpolName := networkPolicyName(runnerID)
-	err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
+	if err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		log.Printf("Failed to delete NetworkPolicy %s: %v", netpolName, err)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("NetworkPolicy: %v", err))
 	}
 
-	// Delete ConfigMap (best effort)
+	// Delete ConfigMap
 	if cmErr := p.deleteRunnerConfigMap(ctx, runnerID); cmErr != nil && !errors.IsNotFound(cmErr) {
 		log.Printf("Failed to delete ConfigMap for %s: %v", runnerID, cmErr)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("ConfigMap: %v", cmErr))
 	}
 
-	// Delete Secret (best effort)
+	// Delete Secret
 	if secErr := p.deleteRunnerSecret(ctx, runnerID); secErr != nil && !errors.IsNotFound(secErr) {
 		log.Printf("Failed to delete Secret for %s: %v", runnerID, secErr)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Secret: %v", secErr))
 	}
 
-	err = p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete pod %s: %w", runnerID, err)
+	// Delete Pod (primary operation)
+	if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
+		return fmt.Errorf("failed to delete pod %s: %w", runnerID, podErr)
+	}
+
+	if len(cleanupErrors) > 0 {
+		return fmt.Errorf("cleanup incomplete for %s: %v", runnerID, cleanupErrors)
 	}
 	return nil
 }
@@ -365,10 +389,10 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 			NodeSelector:       nodeSelector,
 			Tolerations:        tolerations,
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot: ptr.To(true),
-				RunAsUser:    ptr.To(int64(1000)),
-				RunAsGroup:   ptr.To(int64(1000)),
-				FSGroup:      ptr.To(int64(1000)),
+				// Note: RunAsNonRoot disabled - GitHub Actions runner requires root for
+				// package installation, Docker operations, and workspace permissions.
+				// Enable RunAsNonRoot only with a pre-configured non-root runner image.
+				FSGroup: ptr.To(int64(1000)),
 				SeccompProfile: &corev1.SeccompProfile{
 					Type: corev1.SeccompProfileTypeRuntimeDefault,
 				},
