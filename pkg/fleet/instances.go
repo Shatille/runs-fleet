@@ -11,7 +11,7 @@ type InstanceSpec struct {
 	Type   string  // EC2 instance type (e.g., "c7g.xlarge")
 	CPU    int     // Number of vCPUs
 	RAM    float64 // Memory in GB
-	Arch   string  // Architecture: "x64" or "arm64"
+	Arch   string  // Architecture: "amd64" or "arm64"
 	Family string  // Instance family (e.g., "c7g", "m7g", "t4g")
 }
 
@@ -56,79 +56,79 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "r7g.12xlarge", CPU: 48, RAM: 384, Arch: "arm64", Family: "r7g"},
 	{Type: "r7g.16xlarge", CPU: 64, RAM: 512, Arch: "arm64", Family: "r7g"},
 
-	// x64 - Burstable
-	{Type: "t3.micro", CPU: 2, RAM: 1, Arch: "x64", Family: "t3"},
-	{Type: "t3.small", CPU: 2, RAM: 2, Arch: "x64", Family: "t3"},
-	{Type: "t3.medium", CPU: 2, RAM: 4, Arch: "x64", Family: "t3"},
-	{Type: "t3.large", CPU: 2, RAM: 8, Arch: "x64", Family: "t3"},
-	{Type: "t3.xlarge", CPU: 4, RAM: 16, Arch: "x64", Family: "t3"},
-	{Type: "t3.2xlarge", CPU: 8, RAM: 32, Arch: "x64", Family: "t3"},
+	// amd64 - Burstable
+	{Type: "t3.micro", CPU: 2, RAM: 1, Arch: "amd64", Family: "t3"},
+	{Type: "t3.small", CPU: 2, RAM: 2, Arch: "amd64", Family: "t3"},
+	{Type: "t3.medium", CPU: 2, RAM: 4, Arch: "amd64", Family: "t3"},
+	{Type: "t3.large", CPU: 2, RAM: 8, Arch: "amd64", Family: "t3"},
+	{Type: "t3.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "t3"},
+	{Type: "t3.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "t3"},
 
-	// x64 - Compute Optimized (6th gen)
-	{Type: "c6i.large", CPU: 2, RAM: 4, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.xlarge", CPU: 4, RAM: 8, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.2xlarge", CPU: 8, RAM: 16, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.4xlarge", CPU: 16, RAM: 32, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.8xlarge", CPU: 32, RAM: 64, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.12xlarge", CPU: 48, RAM: 96, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.16xlarge", CPU: 64, RAM: 128, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.24xlarge", CPU: 96, RAM: 192, Arch: "x64", Family: "c6i"},
-	{Type: "c6i.32xlarge", CPU: 128, RAM: 256, Arch: "x64", Family: "c6i"},
+	// amd64 - Compute Optimized (6th gen)
+	{Type: "c6i.large", CPU: 2, RAM: 4, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.xlarge", CPU: 4, RAM: 8, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.2xlarge", CPU: 8, RAM: 16, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.4xlarge", CPU: 16, RAM: 32, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.8xlarge", CPU: 32, RAM: 64, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.12xlarge", CPU: 48, RAM: 96, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.16xlarge", CPU: 64, RAM: 128, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.24xlarge", CPU: 96, RAM: 192, Arch: "amd64", Family: "c6i"},
+	{Type: "c6i.32xlarge", CPU: 128, RAM: 256, Arch: "amd64", Family: "c6i"},
 
-	// x64 - Compute Optimized (7th gen)
-	{Type: "c7i.large", CPU: 2, RAM: 4, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.xlarge", CPU: 4, RAM: 8, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.2xlarge", CPU: 8, RAM: 16, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.4xlarge", CPU: 16, RAM: 32, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.8xlarge", CPU: 32, RAM: 64, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.12xlarge", CPU: 48, RAM: 96, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.16xlarge", CPU: 64, RAM: 128, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.24xlarge", CPU: 96, RAM: 192, Arch: "x64", Family: "c7i"},
-	{Type: "c7i.48xlarge", CPU: 192, RAM: 384, Arch: "x64", Family: "c7i"},
+	// amd64 - Compute Optimized (7th gen)
+	{Type: "c7i.large", CPU: 2, RAM: 4, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.xlarge", CPU: 4, RAM: 8, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.2xlarge", CPU: 8, RAM: 16, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.4xlarge", CPU: 16, RAM: 32, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.8xlarge", CPU: 32, RAM: 64, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.12xlarge", CPU: 48, RAM: 96, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.16xlarge", CPU: 64, RAM: 128, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.24xlarge", CPU: 96, RAM: 192, Arch: "amd64", Family: "c7i"},
+	{Type: "c7i.48xlarge", CPU: 192, RAM: 384, Arch: "amd64", Family: "c7i"},
 
-	// x64 - Memory Optimized (6th gen)
-	{Type: "m6i.large", CPU: 2, RAM: 8, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.xlarge", CPU: 4, RAM: 16, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.2xlarge", CPU: 8, RAM: 32, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.4xlarge", CPU: 16, RAM: 64, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.8xlarge", CPU: 32, RAM: 128, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.12xlarge", CPU: 48, RAM: 192, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.16xlarge", CPU: 64, RAM: 256, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.24xlarge", CPU: 96, RAM: 384, Arch: "x64", Family: "m6i"},
-	{Type: "m6i.32xlarge", CPU: 128, RAM: 512, Arch: "x64", Family: "m6i"},
+	// amd64 - Memory Optimized (6th gen)
+	{Type: "m6i.large", CPU: 2, RAM: 8, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.4xlarge", CPU: 16, RAM: 64, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.8xlarge", CPU: 32, RAM: 128, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.12xlarge", CPU: 48, RAM: 192, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.16xlarge", CPU: 64, RAM: 256, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.24xlarge", CPU: 96, RAM: 384, Arch: "amd64", Family: "m6i"},
+	{Type: "m6i.32xlarge", CPU: 128, RAM: 512, Arch: "amd64", Family: "m6i"},
 
-	// x64 - Memory Optimized (7th gen)
-	{Type: "m7i.large", CPU: 2, RAM: 8, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.xlarge", CPU: 4, RAM: 16, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.2xlarge", CPU: 8, RAM: 32, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.4xlarge", CPU: 16, RAM: 64, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.8xlarge", CPU: 32, RAM: 128, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.12xlarge", CPU: 48, RAM: 192, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.16xlarge", CPU: 64, RAM: 256, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.24xlarge", CPU: 96, RAM: 384, Arch: "x64", Family: "m7i"},
-	{Type: "m7i.48xlarge", CPU: 192, RAM: 768, Arch: "x64", Family: "m7i"},
+	// amd64 - Memory Optimized (7th gen)
+	{Type: "m7i.large", CPU: 2, RAM: 8, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.4xlarge", CPU: 16, RAM: 64, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.8xlarge", CPU: 32, RAM: 128, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.12xlarge", CPU: 48, RAM: 192, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.16xlarge", CPU: 64, RAM: 256, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.24xlarge", CPU: 96, RAM: 384, Arch: "amd64", Family: "m7i"},
+	{Type: "m7i.48xlarge", CPU: 192, RAM: 768, Arch: "amd64", Family: "m7i"},
 
-	// x64 - High Memory (6th gen)
-	{Type: "r6i.large", CPU: 2, RAM: 16, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.xlarge", CPU: 4, RAM: 32, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.2xlarge", CPU: 8, RAM: 64, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.4xlarge", CPU: 16, RAM: 128, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.8xlarge", CPU: 32, RAM: 256, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.12xlarge", CPU: 48, RAM: 384, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.16xlarge", CPU: 64, RAM: 512, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.24xlarge", CPU: 96, RAM: 768, Arch: "x64", Family: "r6i"},
-	{Type: "r6i.32xlarge", CPU: 128, RAM: 1024, Arch: "x64", Family: "r6i"},
+	// amd64 - High Memory (6th gen)
+	{Type: "r6i.large", CPU: 2, RAM: 16, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.xlarge", CPU: 4, RAM: 32, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.2xlarge", CPU: 8, RAM: 64, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.4xlarge", CPU: 16, RAM: 128, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.8xlarge", CPU: 32, RAM: 256, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.12xlarge", CPU: 48, RAM: 384, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.16xlarge", CPU: 64, RAM: 512, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.24xlarge", CPU: 96, RAM: 768, Arch: "amd64", Family: "r6i"},
+	{Type: "r6i.32xlarge", CPU: 128, RAM: 1024, Arch: "amd64", Family: "r6i"},
 
-	// x64 - High Memory (7th gen)
-	{Type: "r7i.large", CPU: 2, RAM: 16, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.xlarge", CPU: 4, RAM: 32, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.2xlarge", CPU: 8, RAM: 64, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.4xlarge", CPU: 16, RAM: 128, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.8xlarge", CPU: 32, RAM: 256, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.12xlarge", CPU: 48, RAM: 384, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.16xlarge", CPU: 64, RAM: 512, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.24xlarge", CPU: 96, RAM: 768, Arch: "x64", Family: "r7i"},
-	{Type: "r7i.48xlarge", CPU: 192, RAM: 1536, Arch: "x64", Family: "r7i"},
+	// amd64 - High Memory (7th gen)
+	{Type: "r7i.large", CPU: 2, RAM: 16, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.xlarge", CPU: 4, RAM: 32, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.2xlarge", CPU: 8, RAM: 64, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.4xlarge", CPU: 16, RAM: 128, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.8xlarge", CPU: 32, RAM: 256, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.12xlarge", CPU: 48, RAM: 384, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.16xlarge", CPU: 64, RAM: 512, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.24xlarge", CPU: 96, RAM: 768, Arch: "amd64", Family: "r7i"},
+	{Type: "r7i.48xlarge", CPU: 192, RAM: 1536, Arch: "amd64", Family: "r7i"},
 }
 
 // instanceCatalogByType provides O(1) lookup by instance type.
@@ -153,7 +153,7 @@ type FlexibleSpec struct {
 	CPUMax   int      // Maximum vCPUs acceptable (0 = no max)
 	RAMMin   float64  // Minimum RAM in GB
 	RAMMax   float64  // Maximum RAM in GB (0 = no max)
-	Arch     string   // Required architecture: "x64" or "arm64"
+	Arch     string   // Required architecture: "amd64" or "arm64"
 	Families []string // Preferred instance families (empty = all families)
 }
 
@@ -221,7 +221,7 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
 // Empty arch defaults to ARM64 families (legacy template uses ARM64 AMI).
 func DefaultFlexibleFamilies(arch string) []string {
-	if arch == "x64" {
+	if arch == "amd64" {
 		return []string{"c6i", "c7i", "m6i", "m7i", "t3"}
 	}
 	// ARM64 or empty arch - empty defaults to ARM64 since legacy template uses ARM64 AMI

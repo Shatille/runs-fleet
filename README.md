@@ -98,21 +98,102 @@ pkg/
   agent/          # Agent-side logic (bootstrap, self-terminate)
 ```
 
-## Job Labels
+## Workflow Configuration
+
+Replace GitHub-hosted runners with runs-fleet by changing the `runs-on` field:
 
 ```yaml
-runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64/pool=default"
+# Before (GitHub-hosted)
+runs-on: ubuntu-latest
+
+# After (runs-fleet)
+runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
 ```
+
+### Runner Specs
+
+| Spec | Instance | vCPU | RAM | Disk |
+|------|----------|------|-----|------|
+| `2cpu-linux-arm64` | t4g.medium | 2 | 4GB | 30GB |
+| `4cpu-linux-arm64` | c7g.xlarge | 4 | 8GB | 50GB |
+| `8cpu-linux-arm64` | c7g.2xlarge | 8 | 16GB | 100GB |
+| `2cpu-linux-amd64` | t3.medium | 2 | 4GB | 30GB |
+| `4cpu-linux-amd64` | c6i.xlarge | 4 | 8GB | 50GB |
+| `8cpu-linux-amd64` | c6i.2xlarge | 8 | 16GB | 100GB |
+
+Add `/large-disk` modifier for 200GB disk: `runner=4cpu-linux-arm64/large-disk`
+
+### Label Reference
 
 | Label | Description |
 |-------|-------------|
 | `runs-fleet=<run-id>` | Workflow run identifier (required) |
 | `runner=<spec>` | `<cpu>cpu-<os>-<arch>[/<modifier>]` |
-| `pool=<name>` | Warm pool for fast start |
-| `private=true` | Private subnet with static egress |
-| `spot=false` | Force on-demand |
+| `pool=<name>` | Warm pool for fast start (~10s vs ~60s) |
+| `private=true` | Private subnet with static egress IP |
+| `spot=false` | Force on-demand (skip spot instances) |
 
-**Specs:** `2cpu-linux-arm64` (t4g.medium), `4cpu-linux-arm64` (c7g.xlarge), `8cpu-linux-arm64` (c7g.2xlarge), `/large-disk` (200GB)
+### Examples
+
+**Basic CI workflow:**
+
+```yaml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+```
+
+**Fast start with warm pool:**
+
+```yaml
+jobs:
+  build:
+    # Pool provides ~10s start time vs ~60s cold start
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64/pool=default"
+```
+
+**AMD64 for x86-specific builds:**
+
+```yaml
+jobs:
+  build-amd64:
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-amd64"
+```
+
+**Private networking (static egress IP):**
+
+```yaml
+jobs:
+  deploy:
+    # Use private subnet when calling APIs that whitelist IPs
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64/private=true"
+```
+
+**Force on-demand instance:**
+
+```yaml
+jobs:
+  critical-deploy:
+    # Skip spot for critical jobs that can't tolerate interruption
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64/spot=false"
+```
+
+**Matrix build:**
+
+```yaml
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-${{ matrix.arch }}"
+```
 
 ## Configuration
 

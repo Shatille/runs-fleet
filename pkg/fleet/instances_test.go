@@ -35,7 +35,7 @@ func TestGetInstanceSpec(t *testing.T) {
 			wantFound:    true,
 			wantCPU:      8,
 			wantRAM:      16,
-			wantArch:     "x64",
+			wantArch:     "amd64",
 		},
 		{
 			name:         "unknown instance type",
@@ -108,11 +108,11 @@ func TestResolveInstanceTypes(t *testing.T) {
 			contains: []string{"c7g.xlarge", "c7g.2xlarge", "m7g.xlarge", "m7g.2xlarge"},
 		},
 		{
-			name: "2 CPU x64 t3 family",
+			name: "2 CPU amd64 t3 family",
 			spec: FlexibleSpec{
 				CPUMin:   2,
 				CPUMax:   2,
-				Arch:     "x64",
+				Arch:     "amd64",
 				Families: []string{"t3"},
 			},
 			contains: []string{"t3.medium", "t3.small", "t3.micro", "t3.large"},
@@ -228,22 +228,22 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 		t.Error("DefaultFlexibleFamilies(arm64) returned empty slice")
 	}
 
-	x64Families := DefaultFlexibleFamilies("x64")
-	if len(x64Families) == 0 {
-		t.Error("DefaultFlexibleFamilies(x64) returned empty slice")
+	amd64Families := DefaultFlexibleFamilies("amd64")
+	if len(amd64Families) == 0 {
+		t.Error("DefaultFlexibleFamilies(amd64) returned empty slice")
 	}
 
 	// Verify they're different
-	if len(arm64Families) == len(x64Families) {
+	if len(arm64Families) == len(amd64Families) {
 		allSame := true
 		for i := range arm64Families {
-			if arm64Families[i] != x64Families[i] {
+			if arm64Families[i] != amd64Families[i] {
 				allSame = false
 				break
 			}
 		}
 		if allSame {
-			t.Error("DefaultFlexibleFamilies should return different families for arm64 and x64")
+			t.Error("DefaultFlexibleFamilies should return different families for arm64 and amd64")
 		}
 	}
 

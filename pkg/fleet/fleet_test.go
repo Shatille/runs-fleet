@@ -289,15 +289,15 @@ func TestSelectLaunchTemplate(t *testing.T) {
 			expected: "runs-fleet-runner-arm64",
 		},
 		{
-			name:     "x64 Linux",
+			name:     "amd64 Linux",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "linux", Arch: "x64"},
-			expected: "runs-fleet-runner-x64",
+			spec:     &LaunchSpec{OS: "linux", Arch: "amd64"},
+			expected: "runs-fleet-runner-amd64",
 		},
 		{
 			name:     "Windows",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "windows", Arch: "x64"},
+			spec:     &LaunchSpec{OS: "windows", Arch: "amd64"},
 			expected: "runs-fleet-runner-windows",
 		},
 		{
@@ -313,10 +313,10 @@ func TestSelectLaunchTemplate(t *testing.T) {
 			expected: "custom-runner-arm64",
 		},
 		{
-			name:     "Custom base name x64",
+			name:     "Custom base name amd64",
 			config:   &config.Config{LaunchTemplateName: "custom-runner"},
-			spec:     &LaunchSpec{OS: "linux", Arch: "x64"},
-			expected: "custom-runner-x64",
+			spec:     &LaunchSpec{OS: "linux", Arch: "amd64"},
+			expected: "custom-runner-amd64",
 		},
 		{
 			name:     "Empty arch uses non-suffixed template",
@@ -331,10 +331,10 @@ func TestSelectLaunchTemplate(t *testing.T) {
 			expected: "runs-fleet-runner-arm64",
 		},
 		{
-			name:     "Unsupported OS with x64 defaults to Linux x64",
+			name:     "Unsupported OS with amd64 defaults to Linux amd64",
 			config:   &config.Config{},
-			spec:     &LaunchSpec{OS: "freebsd", Arch: "x64"},
-			expected: "runs-fleet-runner-x64",
+			spec:     &LaunchSpec{OS: "freebsd", Arch: "amd64"},
+			expected: "runs-fleet-runner-amd64",
 		},
 	}
 

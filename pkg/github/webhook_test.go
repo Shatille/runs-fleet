@@ -94,7 +94,7 @@ func TestParseLabels(t *testing.T) {
 		{
 			name: "Private and On-Demand",
 			labels: []string{
-				"runs-fleet=67890/runner=4cpu-linux-x64/private=true/spot=false",
+				"runs-fleet=67890/runner=4cpu-linux-amd64/private=true/spot=false",
 			},
 			want: &JobConfig{
 				RunID:        "67890",
@@ -102,7 +102,7 @@ func TestParseLabels(t *testing.T) {
 				Pool:         "",
 				Private:      true,
 				Spot:         false,
-				RunnerSpec:   "4cpu-linux-x64",
+				RunnerSpec:   "4cpu-linux-amd64",
 			},
 			wantErr: false,
 		},
@@ -229,12 +229,12 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 			wantInstanceTypes: 4, // 2 sizes x 2 families
 		},
 		{
-			name: "x64 architecture",
+			name: "amd64 architecture",
 			labels: []string{
-				"runs-fleet=12345/cpu=4/arch=x64",
+				"runs-fleet=12345/cpu=4/arch=amd64",
 			},
 			wantCPUMin:        4,
-			wantArch:          "x64",
+			wantArch:          "amd64",
 			wantInstanceTypes: 1,
 		},
 		{
@@ -477,20 +477,20 @@ func TestParseLabels_SpotDiversification(t *testing.T) {
 			wantInstanceTypes: []string{"t4g.medium", "t4g.large"},
 		},
 		{
-			name:              "x64 4cpu has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=4cpu-linux-x64"},
+			name:              "amd64 4cpu has diversification types",
+			labels:            []string{"runs-fleet=12345/runner=4cpu-linux-amd64"},
 			wantInstanceType:  "c6i.xlarge",
 			wantInstanceTypes: []string{"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
 		},
 		{
-			name:              "x64 8cpu has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=8cpu-linux-x64"},
+			name:              "amd64 8cpu has diversification types",
+			labels:            []string{"runs-fleet=12345/runner=8cpu-linux-amd64"},
 			wantInstanceType:  "c6i.2xlarge",
 			wantInstanceTypes: []string{"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
 		},
 		{
 			name:              "Windows has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=4cpu-windows-x64"},
+			labels:            []string{"runs-fleet=12345/runner=4cpu-windows-amd64"},
 			wantInstanceType:  "m6i.xlarge",
 			wantInstanceTypes: []string{"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
 		},
@@ -528,9 +528,9 @@ func TestResolveSpotDiversificationTypes(t *testing.T) {
 		{"2cpu-linux-arm64", 2, "t4g.medium"},
 		{"4cpu-linux-arm64", 3, "c7g.xlarge"},
 		{"8cpu-linux-arm64", 3, "c7g.2xlarge"},
-		{"2cpu-linux-x64", 2, "t3.medium"},
-		{"4cpu-linux-x64", 3, "c6i.xlarge"},
-		{"8cpu-linux-x64", 3, "c6i.2xlarge"},
+		{"2cpu-linux-amd64", 2, "t3.medium"},
+		{"4cpu-linux-amd64", 3, "c6i.xlarge"},
+		{"8cpu-linux-amd64", 3, "c6i.2xlarge"},
 		{"unknown-spec", 1, "t4g.medium"}, // Fallback to single type
 	}
 
