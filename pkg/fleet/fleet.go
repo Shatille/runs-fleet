@@ -372,6 +372,32 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		})
 	}
 
+	// Add container config tags for bootstrap script
+	if m.config.RunnerImage != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:runner-image"),
+			Value: aws.String(m.config.RunnerImage),
+		})
+	}
+	if m.config.TerminationQueueURL != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:termination-queue-url"),
+			Value: aws.String(m.config.TerminationQueueURL),
+		})
+	}
+	if m.config.CacheURL != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:cache-url"),
+			Value: aws.String(m.config.CacheURL),
+		})
+	}
+	if m.config.ConfigBucketName != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:config-bucket"),
+			Value: aws.String(m.config.ConfigBucketName),
+		})
+	}
+
 	return tags
 }
 

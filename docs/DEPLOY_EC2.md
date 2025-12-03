@@ -32,39 +32,58 @@ Required AWS resources:
 | Security Group | Runner traffic rules |
 | SQS FIFO Queues | Job queuing (main, pool, events, termination, housekeeping) |
 | DynamoDB Tables | State storage (jobs, locks, pools) |
-| S3 Buckets | Cache artifacts, runner configs |
+| S3 Buckets | Cache artifacts |
 | IAM Roles | ECS task role, EC2 instance profile |
 | ECS Cluster + Service | Orchestrator runtime |
 | API Gateway | Webhook endpoint |
 | Launch Template | EC2 runner configuration |
-
-Example Terraform structure:
-```
-terraform/
-├── vpc.tf
-├── sqs.tf
-├── dynamodb.tf
-├── s3.tf
-├── iam.tf
-├── ecs.tf
-├── api_gateway.tf
-└── ec2.tf
-```
+| ECR Repository | Runner container images |
 
 ## 3. Build and Push Images
 
 ```bash
-# Build orchestrator
-docker build -t runs-fleet:latest .
-docker tag runs-fleet:latest <account>.dkr.ecr.<region>.amazonaws.com/runs-fleet:latest
-docker push <account>.dkr.ecr.<region>.amazonaws.com/runs-fleet:latest
+# Build and push orchestrator image
+make docker-push
 
-# Build agent
-make build-agent
-# Upload to S3 config bucket
+# Build and push runner image (multi-arch)
+make docker-push-runner
 ```
 
-## 4. Configure Environment
+Both EC2 and K8s deployments use the same runner container image.
+
+## 4. Create Launch Template
+
+Create a launch template with:
+
+- **AMI**: Amazon Linux 2023 (Docker pre-installed)
+- **Instance profile**: IAM role with ECR pull, SSM read, EC2 terminate permissions
+- **User-data**: Copy contents of `scripts/bootstrap-linux.sh` to the launch template user-data field
+- **Instance metadata options**: Enable IMDSv2 required, enable instance tags in metadata
+
+**Important**: The user-data script (`scripts/bootstrap-linux.sh`) must be added to the launch template. This script:
+- Authenticates to ECR using instance credentials
+- Pulls the runner container image
+- Reads configuration from instance tags set by the orchestrator
+- Runs the container with the appropriate environment variables
+
+Required IAM permissions for instance profile:
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "ecr:GetAuthorizationToken",
+    "ecr:BatchGetImage",
+    "ecr:GetDownloadUrlForLayer",
+    "ssm:GetParameter",
+    "sqs:SendMessage",
+    "ec2:TerminateInstances",
+    "ec2:DescribeTags"
+  ],
+  "Resource": "*"
+}
+```
+
+## 5. Configure Environment
 
 ECS task definition environment variables:
 
@@ -73,6 +92,9 @@ ECS task definition environment variables:
 RUNS_FLEET_GITHUB_WEBHOOK_SECRET=<secret>
 RUNS_FLEET_GITHUB_APP_ID=<app-id>
 RUNS_FLEET_GITHUB_APP_PRIVATE_KEY=<pem-contents>
+
+# Runner image (ECR URL)
+RUNS_FLEET_RUNNER_IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/runs-fleet-runner:latest
 
 # AWS Resources
 RUNS_FLEET_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/runs-fleet-main.fifo
@@ -83,7 +105,6 @@ RUNS_FLEET_JOBS_TABLE=runs-fleet-jobs
 RUNS_FLEET_LOCKS_TABLE=runs-fleet-locks
 RUNS_FLEET_POOLS_TABLE=runs-fleet-pools
 RUNS_FLEET_CACHE_BUCKET=runs-fleet-cache
-RUNS_FLEET_CONFIG_BUCKET=runs-fleet-config
 
 # EC2 Configuration
 RUNS_FLEET_VPC_ID=vpc-xxx
@@ -99,7 +120,7 @@ RUNS_FLEET_COORDINATOR_ENABLED=true
 RUNS_FLEET_INSTANCE_ID=${HOSTNAME}
 ```
 
-## 5. Deploy ECS Service
+## 6. Deploy ECS Service
 
 ```bash
 # Apply Terraform
@@ -113,12 +134,12 @@ aws ecs update-service \
   --force-new-deployment
 ```
 
-## 6. Configure Webhook
+## 7. Configure Webhook
 
 1. Get API Gateway endpoint URL
 2. Update GitHub App webhook URL to: `https://<api-gateway-id>.execute-api.<region>.amazonaws.com/webhook`
 
-## 7. Test
+## 8. Test
 
 Add workflow to a repository:
 
@@ -132,19 +153,20 @@ jobs:
       - run: echo "Hello from runs-fleet"
 ```
 
-## Warm Pools (Optional)
+## How It Works
 
-Configure in DynamoDB pools table:
-
-```json
-{
-  "pool_name": "default",
-  "runner_spec": "2cpu-linux-arm64",
-  "min_hot": 2,
-  "max_hot": 5,
-  "idle_timeout_minutes": 60
-}
-```
+1. Orchestrator receives webhook, creates runner config in SSM
+2. EC2 Fleet launches instance with launch template
+3. Instance boots, user-data script:
+   - Authenticates to ECR
+   - Pulls runner container image
+   - Runs container with config from instance tags
+4. Container agent:
+   - Fetches full config from SSM
+   - Registers with GitHub
+   - Executes job
+   - Sends telemetry to SQS
+   - Terminates instance via EC2 API
 
 ## Troubleshooting
 
@@ -159,8 +181,12 @@ aws sqs get-queue-attributes \
 
 # List running instances
 aws ec2 describe-instances \
-  --filters "Name=tag:runs-fleet/managed,Values=true" \
+  --filters "Name=tag:runs-fleet:managed,Values=true" \
   --query 'Reservations[].Instances[].[InstanceId,State.Name,LaunchTime]'
+
+# Check instance user-data logs
+aws ssm start-session --target <instance-id>
+cat /var/log/runs-fleet-bootstrap.log
 
 # Check DynamoDB jobs
 aws dynamodb scan --table-name runs-fleet-jobs --limit 10
@@ -169,6 +195,6 @@ aws dynamodb scan --table-name runs-fleet-jobs --limit 10
 ## Cost Optimization
 
 - Enable spot instances: `RUNS_FLEET_SPOT_ENABLED=true`
-- Configure warm pools to balance cost vs latency
-- Set S3 lifecycle policies (30-day expiry for cache)
 - Use ARM instances where possible (cheaper)
+- Set S3 lifecycle policies (30-day expiry for cache)
+- Configure warm pools to balance cost vs latency

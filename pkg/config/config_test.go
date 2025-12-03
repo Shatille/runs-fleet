@@ -31,6 +31,7 @@ func TestLoad(t *testing.T) {
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
 				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+				"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
 			},
 			wantErr: false,
 		},
@@ -57,6 +58,35 @@ func TestLoad(t *testing.T) {
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
 				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+			},
+			wantErr: true,
+		},
+		{
+			name: "Missing Runner Image",
+			env: map[string]string{
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_PUBLIC_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+			},
+			wantErr: true,
+		},
+		{
+			name: "Invalid Runner Image URL",
+			env: map[string]string{
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_PUBLIC_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+				"RUNS_FLEET_RUNNER_IMAGE":           "docker.io/library/runner:latest",
 			},
 			wantErr: true,
 		},
@@ -361,5 +391,48 @@ func TestValidateInvalidBackend(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Error("Validate() should return error for invalid backend")
+	}
+}
+
+func TestValidateECRImageURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		// Valid URLs
+		{"valid with tag", "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:latest", false},
+		{"valid with digest", "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", false},
+		{"valid with tag and digest", "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:v1.0@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", false},
+		{"valid nested repo", "123456789012.dkr.ecr.us-west-2.amazonaws.com/org/repo:tag", false},
+		{"valid deeply nested", "123456789012.dkr.ecr.eu-west-1.amazonaws.com/org/team/repo:v1.2.3", false},
+		{"valid without tag", "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/repo", false},
+		{"valid with underscore in repo", "123456789012.dkr.ecr.us-east-1.amazonaws.com/my_repo:tag", false},
+		{"valid with dots in repo", "123456789012.dkr.ecr.us-east-1.amazonaws.com/my.repo:tag", false},
+
+		// Invalid URLs
+		{"docker hub", "docker.io/library/runner:latest", true},
+		{"missing account id", ".dkr.ecr.us-east-1.amazonaws.com/repo:tag", true},
+		{"short account id", "12345.dkr.ecr.us-east-1.amazonaws.com/repo:tag", true},
+		{"long account id", "1234567890123.dkr.ecr.us-east-1.amazonaws.com/repo:tag", true},
+		{"missing region", "123456789012.dkr.ecr..amazonaws.com/repo:tag", true},
+		{"missing repo", "123456789012.dkr.ecr.us-east-1.amazonaws.com/", true},
+		{"invalid chars in repo", "123456789012.dkr.ecr.us-east-1.amazonaws.com/REPO:tag", true},
+		{"repo starting with dash", "123456789012.dkr.ecr.us-east-1.amazonaws.com/-repo:tag", true},
+		{"repo ending with dash", "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo-:tag", true},
+		{"malicious url suffix", "evil.dkr.ecr.com.amazonaws.com.attacker.com/repo:tag", true},
+		{"valid account with domain suffix", "123456789012.dkr.ecr.us-east-1.amazonaws.com.attacker.com/repo:tag", true},
+		{"subdomain attack", "attacker.123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag", true},
+		{"missing amazonaws.com", "123456789012.dkr.ecr.us-east-1.aws.com/repo:tag", true},
+		{"invalid digest length", "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo@sha256:abc", true},
+		{"invalid digest chars", "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo@sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateECRImageURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateECRImageURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+			}
+		})
 	}
 }

@@ -2,8 +2,6 @@
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
-BINARY_AGENT_AMD64=bin/runs-fleet-agent-linux-amd64
-BINARY_AGENT_ARM64=bin/runs-fleet-agent-linux-arm64
 DOCKER_IMAGE?=runs-fleet
 DOCKER_TAG?=latest
 AWS_REGION?=ap-northeast-1
@@ -25,17 +23,8 @@ build-server:
 	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
 		-o $(BINARY_SERVER) ./cmd/server
 
-# Build agent binaries
-build-agent:
-	@echo "Building agent binaries..."
-	@mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
-		-o $(BINARY_AGENT_AMD64) ./cmd/agent
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
-		-o $(BINARY_AGENT_ARM64) ./cmd/agent
-
-# Build all binaries
-build: build-server build-agent
+# Build all binaries (alias for build-server)
+build: build-server
 
 # Run tests
 test:
@@ -123,13 +112,12 @@ help:
 	@echo "Available targets:"
 	@echo "  init                    - Initialize project (download deps, setup)"
 	@echo "  build-server            - Build server binary"
-	@echo "  build-agent             - Build agent binaries (amd64 + arm64)"
 	@echo "  build                   - Build all binaries"
 	@echo "  test                    - Run tests with coverage"
 	@echo "  lint                    - Run golangci-lint"
 	@echo "  clean                   - Remove build artifacts"
-	@echo "  docker-build            - Build server Docker image"
-	@echo "  docker-push             - Build and push server image to ECR"
+	@echo "  docker-build            - Build orchestrator Docker image"
+	@echo "  docker-push             - Build and push orchestrator image to ECR"
 	@echo "  docker-build-runner     - Build runner Docker image (local arch)"
 	@echo "  docker-push-runner      - Build and push runner image to ECR (multi-arch)"
 	@echo "  run-server              - Run server locally"
