@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -275,7 +276,10 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if value == "" {
 		return defaultValue
 	}
-	return value == "true" || value == "1" || value == "yes"
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return parsed
+	}
+	return defaultValue
 }
 
 func splitAndFilter(s string) []string {

@@ -963,16 +963,18 @@ func TestValidateSchedules(t *testing.T) {
 		{"nil schedules", nil, false},
 		{"empty schedules", []state.K8sPoolSchedule{}, false},
 		{"valid schedule", []state.K8sPoolSchedule{{StartHour: 9, EndHour: 17}}, false},
-		{"valid at max replicas", []state.K8sPoolSchedule{{Arm64Replicas: MaxReplicasPerArch, Amd64Replicas: MaxReplicasPerArch}}, false},
+		{"valid at max replicas", []state.K8sPoolSchedule{{StartHour: 9, EndHour: 17, Arm64Replicas: MaxReplicasPerArch, Amd64Replicas: MaxReplicasPerArch}}, false},
+		{"valid overnight schedule", []state.K8sPoolSchedule{{StartHour: 22, EndHour: 6}}, false},
 		{"invalid start hour high", []state.K8sPoolSchedule{{StartHour: 24}}, true},
 		{"invalid start hour negative", []state.K8sPoolSchedule{{StartHour: -1}}, true},
 		{"invalid end hour", []state.K8sPoolSchedule{{EndHour: 24}}, true},
+		{"start equals end", []state.K8sPoolSchedule{{StartHour: 9, EndHour: 9}}, true},
 		{"invalid day of week high", []state.K8sPoolSchedule{{DaysOfWeek: []int{7}}}, true},
 		{"invalid day of week negative", []state.K8sPoolSchedule{{DaysOfWeek: []int{-1}}}, true},
 		{"negative arm64", []state.K8sPoolSchedule{{Arm64Replicas: -1}}, true},
 		{"negative amd64", []state.K8sPoolSchedule{{Amd64Replicas: -1}}, true},
-		{"arm64 exceeds max", []state.K8sPoolSchedule{{Arm64Replicas: MaxReplicasPerArch + 1}}, true},
-		{"amd64 exceeds max", []state.K8sPoolSchedule{{Amd64Replicas: MaxReplicasPerArch + 1}}, true},
+		{"arm64 exceeds max", []state.K8sPoolSchedule{{StartHour: 9, EndHour: 17, Arm64Replicas: MaxReplicasPerArch + 1}}, true},
+		{"amd64 exceeds max", []state.K8sPoolSchedule{{StartHour: 9, EndHour: 17, Amd64Replicas: MaxReplicasPerArch + 1}}, true},
 	}
 
 	for _, tt := range tests {

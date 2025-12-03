@@ -197,6 +197,7 @@ func (m *K8sManager) placeholderDeploymentName(arch string) string {
 }
 
 // scaleDeployment scales a placeholder deployment and returns actual ready replicas.
+// No explicit retry logic: the 60s reconcile loop provides automatic retry for transient failures.
 func (m *K8sManager) scaleDeployment(ctx context.Context, deployName string, replicas int32) (int, error) {
 	namespace := m.config.KubeNamespace
 
@@ -387,6 +388,9 @@ func validateSchedules(schedules []state.K8sPoolSchedule) error {
 		}
 		if s.EndHour < 0 || s.EndHour > 23 {
 			return fmt.Errorf("schedule[%d]: end_hour must be 0-23, got %d", i, s.EndHour)
+		}
+		if s.StartHour == s.EndHour {
+			return fmt.Errorf("schedule[%d]: start_hour cannot equal end_hour (would never match)", i)
 		}
 		for j, day := range s.DaysOfWeek {
 			if day < 0 || day > 6 {
