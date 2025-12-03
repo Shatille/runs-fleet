@@ -31,6 +31,21 @@ runs-fleet has been installed!
 5. Valkey is running at:
    {{ include "runs-fleet.valkey.address" . }}
 {{- end }}
+{{- if .Values.warmPool.enabled }}
+
+WARM POOL:
+  Placeholder pods keep nodes warm for faster job startup (~5-10s vs ~60-90s).
+  PriorityClass: {{ .Values.warmPool.priorityClass.name }} (value: {{ .Values.warmPool.priorityClass.value }})
+  {{- if gt (int .Values.warmPool.placeholders.arm64.replicas) 0 }}
+  arm64 placeholders: {{ .Values.warmPool.placeholders.arm64.replicas }} ({{ .Values.warmPool.placeholders.arm64.resources.requests.cpu }} CPU, {{ .Values.warmPool.placeholders.arm64.resources.requests.memory }})
+  {{- end }}
+  {{- if gt (int .Values.warmPool.placeholders.amd64.replicas) 0 }}
+  amd64 placeholders: {{ .Values.warmPool.placeholders.amd64.replicas }} ({{ .Values.warmPool.placeholders.amd64.resources.requests.cpu }} CPU, {{ .Values.warmPool.placeholders.amd64.resources.requests.memory }})
+  {{- end }}
+
+  Check placeholder status:
+    kubectl get pods -l app.kubernetes.io/component=placeholder -n {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.karpenter.enabled }}
 
 KARPENTER SETUP:

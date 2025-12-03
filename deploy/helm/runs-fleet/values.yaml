@@ -95,9 +95,30 @@ metrics:
   enabled: true
   port: 9090
 
-# Pool configuration
-pool:
+# Warm pool configuration (placeholder pods for faster job startup)
+warmPool:
   enabled: false
+
+  # Placeholder pods keep nodes warm and images cached
+  # When a real job arrives, placeholder is preempted (~5-10s vs ~60-90s cold start)
+  placeholders:
+    arm64:
+      replicas: 0  # Number of placeholder pods for arm64
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+    amd64:
+      replicas: 0  # Number of placeholder pods for amd64
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+
+  # Priority class for placeholder pods (lower value = lower priority = evictable)
+  priorityClass:
+    name: runs-fleet-placeholder
+    value: -10  # Negative priority, easily preempted by real jobs
 
 # Coordinator configuration (for multi-replica deployments)
 coordinator:

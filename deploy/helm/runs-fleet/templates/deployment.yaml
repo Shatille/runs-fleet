@@ -64,7 +64,7 @@ spec:
             - name: RUNS_FLEET_METRICS_PORT
               value: {{ .Values.metrics.port | quote }}
             - name: RUNS_FLEET_POOL_ENABLED
-              value: {{ .Values.pool.enabled | quote }}
+              value: {{ .Values.warmPool.enabled | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "runs-fleet.secretName" . }}
