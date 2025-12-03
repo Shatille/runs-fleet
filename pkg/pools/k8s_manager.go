@@ -86,6 +86,9 @@ func (m *K8sManager) ReconcileLoop(ctx context.Context) {
 	}
 }
 
+// reconcileTimeout bounds K8s API call duration to prevent indefinite hangs.
+const reconcileTimeout = 30 * time.Second
+
 func (m *K8sManager) reconcile(ctx context.Context) {
 	// Hold RLock for entire operation to prevent TOCTOU race between leader check and K8s API calls.
 	// RLock blocks SetCoordinator but allows concurrent reads - acceptable tradeoff.
@@ -96,8 +99,12 @@ func (m *K8sManager) reconcile(ctx context.Context) {
 		return
 	}
 
+	// Timeout context prevents indefinite hangs on unresponsive K8s API.
+	timeoutCtx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+	defer cancel()
+
 	// Only reconcile the default pool (K8s has fixed deployments from Helm)
-	if err := m.reconcilePool(ctx, DefaultPoolName); err != nil {
+	if err := m.reconcilePool(timeoutCtx, DefaultPoolName); err != nil {
 		log.Printf("K8s pool manager: failed to reconcile pool %s: %v", DefaultPoolName, err)
 	}
 }
