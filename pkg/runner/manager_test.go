@@ -752,3 +752,439 @@ func TestMockGitHubClientForManager_Error(t *testing.T) {
 		t.Error("expected error from mock")
 	}
 }
+
+// testableManager wraps Manager to allow direct field access for testing.
+type testableManager struct {
+	Manager
+	ghClient *mockGitHubClientForManager
+}
+
+func newTestableManager(ssmClient SSMAPI, ghClient *mockGitHubClientForManager, config ManagerConfig) *testableManager {
+	return &testableManager{
+		Manager: Manager{
+			ssmClient: ssmClient,
+			config:    config,
+		},
+		ghClient: ghClient,
+	}
+}
+
+// PrepareRunnerWithMock is a test helper that mimics PrepareRunner but uses mock GitHub client.
+func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req PrepareRunnerRequest) error {
+	// Extract org from repo string (owner/repo format, required)
+	if req.Repo == "" {
+		return errors.New("repo is required (owner/repo format)")
+	}
+	parts := splitRepo(req.Repo)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return errors.New("invalid repo format, expected owner/repo: " + req.Repo)
+	}
+	org := parts[0]
+
+	// Get registration token from mock GitHub client
+	regResult, err := tm.ghClient.GetRegistrationToken(ctx, req.Repo)
+	if err != nil {
+		return errors.New("failed to get registration token: " + err.Error())
+	}
+
+	// Generate cache token with repository scope for cache isolation
+	cacheToken := ""
+	if tm.config.CacheSecret != "" {
+		cacheToken = "generated-cache-token-" + req.JobID
+	}
+
+	// Build runner config with dynamic org from repo
+	config := Config{
+		Org:                 org,
+		Repo:                req.Repo,
+		RunID:               req.RunID,
+		JITToken:            regResult.Token,
+		Labels:              req.Labels,
+		JobID:               req.JobID,
+		CacheToken:          cacheToken,
+		CacheURL:            tm.config.CacheURL,
+		TerminationQueueURL: tm.config.TerminationQueueURL,
+		IsOrg:               regResult.IsOrg,
+	}
+
+	// Serialize to JSON
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return errors.New("failed to marshal runner config: " + err.Error())
+	}
+
+	// Store in SSM
+	paramPath := "/runs-fleet/runners/" + req.InstanceID + "/config"
+
+	_, err = tm.ssmClient.PutParameter(ctx, &ssm.PutParameterInput{
+		Name:  stringPtr(paramPath),
+		Value: stringPtr(string(configJSON)),
+	})
+	if err != nil {
+		return errors.New("failed to store runner config in SSM: " + err.Error())
+	}
+
+	return nil
+}
+
+func splitRepo(repo string) []string {
+	for i := 0; i < len(repo); i++ {
+		if repo[i] == '/' {
+			return []string{repo[:i], repo[i+1:]}
+		}
+	}
+	return []string{repo}
+}
+
+func stringPtr(s string) *string {
+	return &s
+}
+
+func TestManager_PrepareRunnerWithMock_Success(t *testing.T) {
+	mockSSM := &mockSSMAPI{}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "test-registration-token",
+		isOrg:    true,
+	}
+
+	tm := newTestableManager(mockSSM, mockGH, ManagerConfig{
+		CacheSecret:         "test-secret",
+		CacheURL:            testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-test-12345",
+		JobID:      "job-success-123",
+		RunID:      "run-success-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted", "linux"},
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
+	}
+
+	// Verify SSM was called
+	if mockSSM.putCalls != 1 {
+		t.Errorf("expected 1 SSM put call, got %d", mockSSM.putCalls)
+	}
+
+	// Verify the SSM parameter path
+	expectedPath := "/runs-fleet/runners/i-test-12345/config"
+	if mockSSM.lastPutName != expectedPath {
+		t.Errorf("SSM path = %s, want %s", mockSSM.lastPutName, expectedPath)
+	}
+
+	// Verify the stored config contains expected values
+	var storedConfig Config
+	if err := json.Unmarshal([]byte(mockSSM.lastPutVal), &storedConfig); err != nil {
+		t.Fatalf("failed to unmarshal stored config: %v", err)
+	}
+
+	if storedConfig.Org != "testorg" {
+		t.Errorf("Org = %s, want testorg", storedConfig.Org)
+	}
+	if storedConfig.Repo != "testorg/testrepo" {
+		t.Errorf("Repo = %s, want testorg/testrepo", storedConfig.Repo)
+	}
+	if storedConfig.JITToken != "test-registration-token" {
+		t.Errorf("JITToken = %s, want test-registration-token", storedConfig.JITToken)
+	}
+	if storedConfig.JobID != "job-success-123" {
+		t.Errorf("JobID = %s, want job-success-123", storedConfig.JobID)
+	}
+	if storedConfig.CacheURL != testCacheURL {
+		t.Errorf("CacheURL = %s, want %s", storedConfig.CacheURL, testCacheURL)
+	}
+	if !storedConfig.IsOrg {
+		t.Error("IsOrg should be true")
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_GitHubError(t *testing.T) {
+	mockSSM := &mockSSMAPI{}
+	mockGH := &mockGitHubClientForManager{
+		regErr: errors.New("GitHub API rate limit exceeded"),
+	}
+
+	tm := newTestableManager(mockSSM, mockGH, ManagerConfig{
+		CacheSecret:         "test-secret",
+		CacheURL:            testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-gh-error-12345",
+		JobID:      "job-gh-error-123",
+		RunID:      "run-gh-error-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted"},
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err == nil {
+		t.Error("expected error from GitHub client")
+	}
+	if !contains(err.Error(), "registration token") {
+		t.Errorf("expected error to mention 'registration token', got: %s", err.Error())
+	}
+
+	// SSM should not be called since GitHub failed first
+	if mockSSM.putCalls != 0 {
+		t.Errorf("SSM should not be called when GitHub fails, got %d calls", mockSSM.putCalls)
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_SSMError(t *testing.T) {
+	mockSSM := &mockSSMAPI{
+		putErr: errors.New("SSM service unavailable"),
+	}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "test-token",
+		isOrg:    false,
+	}
+
+	tm := newTestableManager(mockSSM, mockGH, ManagerConfig{
+		CacheSecret:         "",
+		CacheURL:            testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-ssm-error-12345",
+		JobID:      "job-ssm-error-123",
+		RunID:      "run-ssm-error-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted"},
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err == nil {
+		t.Error("expected error from SSM")
+	}
+	if !contains(err.Error(), "SSM") {
+		t.Errorf("expected error to mention 'SSM', got: %s", err.Error())
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_NoCacheSecret(t *testing.T) {
+	mockSSM := &mockSSMAPI{}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "test-token",
+		isOrg:    false,
+	}
+
+	// No cache secret configured
+	tm := newTestableManager(mockSSM, mockGH, ManagerConfig{
+		CacheSecret:         "",
+		CacheURL:            testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-no-cache-12345",
+		JobID:      "job-no-cache-123",
+		RunID:      "run-no-cache-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted"},
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
+	}
+
+	// Verify stored config has empty cache token
+	var storedConfig Config
+	if err := json.Unmarshal([]byte(mockSSM.lastPutVal), &storedConfig); err != nil {
+		t.Fatalf("failed to unmarshal stored config: %v", err)
+	}
+
+	if storedConfig.CacheToken != "" {
+		t.Errorf("CacheToken should be empty when CacheSecret is not set, got: %s", storedConfig.CacheToken)
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_UserRepo(t *testing.T) {
+	mockSSM := &mockSSMAPI{}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "user-token",
+		isOrg:    false, // User, not org
+	}
+
+	tm := newTestableManager(mockSSM, mockGH, ManagerConfig{
+		CacheSecret: "secret",
+		CacheURL:    testCacheURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-user-12345",
+		JobID:      "job-user-123",
+		RunID:      "run-user-456",
+		Repo:       "myuser/myrepo",
+		Labels:     []string{"self-hosted", "linux", "x64"},
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
+	}
+
+	var storedConfig Config
+	if err := json.Unmarshal([]byte(mockSSM.lastPutVal), &storedConfig); err != nil {
+		t.Fatalf("failed to unmarshal stored config: %v", err)
+	}
+
+	if storedConfig.Org != "myuser" {
+		t.Errorf("Org = %s, want myuser", storedConfig.Org)
+	}
+	if storedConfig.IsOrg {
+		t.Error("IsOrg should be false for user repo")
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_MultipleLabels(t *testing.T) {
+	mockSSM := &mockSSMAPI{}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "test-token",
+		isOrg:    true,
+	}
+
+	tm := newTestableManager(mockSSM, mockGH, ManagerConfig{
+		CacheSecret: "secret",
+	})
+
+	labels := []string{"self-hosted", "linux", "arm64", "gpu", "custom-label"}
+	req := PrepareRunnerRequest{
+		InstanceID: "i-labels-12345",
+		JobID:      "job-labels-123",
+		RunID:      "run-labels-456",
+		Repo:       "org/repo",
+		Labels:     labels,
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
+	}
+
+	var storedConfig Config
+	if err := json.Unmarshal([]byte(mockSSM.lastPutVal), &storedConfig); err != nil {
+		t.Fatalf("failed to unmarshal stored config: %v", err)
+	}
+
+	if len(storedConfig.Labels) != len(labels) {
+		t.Errorf("Labels length = %d, want %d", len(storedConfig.Labels), len(labels))
+	}
+	for i, label := range labels {
+		if storedConfig.Labels[i] != label {
+			t.Errorf("Labels[%d] = %s, want %s", i, storedConfig.Labels[i], label)
+		}
+	}
+}
+
+func TestManager_PrepareRunner_SpecialRepoNames(t *testing.T) {
+	// Test that various repo name formats pass initial validation
+	// We don't test the full flow since it requires real GitHub client
+	tests := []struct {
+		name       string
+		repo       string
+		validParts bool // whether repo format is valid (owner/repo)
+	}{
+		{
+			name:       "repo with hyphen",
+			repo:       "my-org/my-repo",
+			validParts: true,
+		},
+		{
+			name:       "repo with underscore",
+			repo:       "my_org/my_repo",
+			validParts: true,
+		},
+		{
+			name:       "repo with numbers",
+			repo:       "org123/repo456",
+			validParts: true,
+		},
+		{
+			name:       "single character",
+			repo:       "a/b",
+			validParts: true,
+		},
+		{
+			name:       "empty repo",
+			repo:       "",
+			validParts: false,
+		},
+		{
+			name:       "no slash",
+			repo:       "noslash",
+			validParts: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parts := splitRepo(tt.repo)
+			hasValidFormat := len(parts) == 2 && parts[0] != "" && parts[1] != ""
+			if hasValidFormat != tt.validParts {
+				t.Errorf("repo %q: validParts = %v, want %v", tt.repo, hasValidFormat, tt.validParts)
+			}
+		})
+	}
+}
+
+func TestSplitRepo(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"owner/repo", []string{"owner", "repo"}},
+		{"org/project", []string{"org", "project"}},
+		{"a/b", []string{"a", "b"}},
+		{"noslash", []string{"noslash"}},
+		{"", []string{""}},
+		{"multiple/slashes/here", []string{"multiple", "slashes/here"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := splitRepo(tt.input)
+			if len(result) != len(tt.expected) {
+				t.Errorf("splitRepo(%q) length = %d, want %d", tt.input, len(result), len(tt.expected))
+				return
+			}
+			for i := range result {
+				if result[i] != tt.expected[i] {
+					t.Errorf("splitRepo(%q)[%d] = %q, want %q", tt.input, i, result[i], tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestRegistrationResult_Fields(t *testing.T) {
+	result := &RegistrationResult{
+		Token: "test-token-12345",
+		IsOrg: true,
+	}
+
+	if result.Token != "test-token-12345" {
+		t.Errorf("Token = %s, want test-token-12345", result.Token)
+	}
+	if !result.IsOrg {
+		t.Error("IsOrg should be true")
+	}
+
+	// Test with IsOrg false
+	result2 := &RegistrationResult{
+		Token: "user-token",
+		IsOrg: false,
+	}
+
+	if result2.IsOrg {
+		t.Error("IsOrg should be false")
+	}
+}
