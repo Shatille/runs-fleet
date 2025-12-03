@@ -99,6 +99,9 @@ type JobConfig struct {
 	RAMMax        float64  // Maximum RAM in GB (from ram= label, e.g., ram=8+32)
 	Families      []string // Instance families (from family= label, e.g., family=c7g+m7g)
 	OriginalLabel string   // Original runs-fleet label from workflow (for GitHub matching)
+
+	// Storage configuration
+	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
 }
 
 // DefaultRunnerSpecs maps runner spec names to EC2 instance types.
@@ -280,6 +283,16 @@ func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 			} else {
 				return false, fmt.Errorf("invalid backend label: must be 'ec2' or 'k8s', got %q", value)
 			}
+
+		case "disk":
+			diskGiB, err := strconv.Atoi(value)
+			if err != nil {
+				return false, fmt.Errorf("invalid disk label: %w", err)
+			}
+			if diskGiB < 1 || diskGiB > 16384 {
+				return false, fmt.Errorf("disk size must be between 1 and 16384 GiB, got %d", diskGiB)
+			}
+			cfg.StorageGiB = diskGiB
 		}
 	}
 

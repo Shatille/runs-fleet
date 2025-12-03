@@ -59,6 +59,7 @@ type LaunchSpec struct {
 	Environment   string // Environment tag (Phase 6: Per-stack environments)
 	OS            string // Operating system: linux, windows (Phase 4: Windows support)
 	Arch          string // Architecture: amd64, arm64
+	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
@@ -125,18 +126,30 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 				return nil, fmt.Errorf("cannot determine architecture for instance type %q: not in catalog", primaryType)
 			}
 		}
+		override := types.FleetLaunchTemplateOverridesRequest{
+			InstanceType: types.InstanceType(primaryType),
+			SubnetId:     aws.String(spec.SubnetID),
+		}
+		if spec.StorageGiB > 0 {
+			override.BlockDeviceMappings = []types.FleetBlockDeviceMappingRequest{
+				{
+					DeviceName: aws.String("/dev/xvda"),
+					Ebs: &types.FleetEbsBlockDeviceRequest{
+						VolumeSize:          aws.Int32(int32(spec.StorageGiB)),
+						VolumeType:          types.VolumeTypeGp3,
+						DeleteOnTermination: aws.Bool(true),
+						Encrypted:           aws.Bool(true),
+					},
+				},
+			}
+		}
 		req.LaunchTemplateConfigs = []types.FleetLaunchTemplateConfigRequest{
 			{
 				LaunchTemplateSpecification: &types.FleetLaunchTemplateSpecificationRequest{
 					LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(spec.OS, arch)),
 					Version:            aws.String("$Latest"),
 				},
-				Overrides: []types.FleetLaunchTemplateOverridesRequest{
-					{
-						InstanceType: types.InstanceType(primaryType),
-						SubnetId:     aws.String(spec.SubnetID),
-					},
-				},
+				Overrides: []types.FleetLaunchTemplateOverridesRequest{override},
 			},
 		}
 	} else {
@@ -233,7 +246,7 @@ func (m *Manager) buildLaunchTemplateConfigs(spec *LaunchSpec) ([]types.FleetLau
 			}
 		}
 		return []types.FleetLaunchTemplateConfigRequest{
-			m.buildSingleArchConfig(spec.OS, spec.Arch, instanceTypes, spec.SubnetID, maxOverridesPerConfig),
+			m.buildSingleArchConfig(spec.OS, spec.Arch, instanceTypes, spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
 		}, nil
 	}
 
@@ -255,24 +268,42 @@ func (m *Manager) buildLaunchTemplateConfigs(spec *LaunchSpec) ([]types.FleetLau
 	// Create a config for each architecture
 	configs := make([]types.FleetLaunchTemplateConfigRequest, 0, len(archs))
 	for _, arch := range archs {
-		configs = append(configs, m.buildSingleArchConfig(spec.OS, arch, groupedTypes[arch], spec.SubnetID, maxOverridesPerConfig))
+		configs = append(configs, m.buildSingleArchConfig(spec.OS, arch, groupedTypes[arch], spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig))
 	}
 
 	return configs, nil
 }
 
 // buildSingleArchConfig creates a single launch template config for one architecture.
-func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string, subnetID string, maxOverrides int) types.FleetLaunchTemplateConfigRequest {
+// If storageGiB > 0, adds block device mappings to override root volume size.
+func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string, subnetID string, storageGiB, maxOverrides int) types.FleetLaunchTemplateConfigRequest {
 	if len(instanceTypes) > maxOverrides {
 		instanceTypes = instanceTypes[:maxOverrides]
 	}
 
 	overrides := make([]types.FleetLaunchTemplateOverridesRequest, len(instanceTypes))
 	for i, instType := range instanceTypes {
-		overrides[i] = types.FleetLaunchTemplateOverridesRequest{
+		override := types.FleetLaunchTemplateOverridesRequest{
 			InstanceType: types.InstanceType(instType),
 			SubnetId:     aws.String(subnetID),
 		}
+
+		// Add custom storage if specified (overrides launch template default)
+		if storageGiB > 0 {
+			override.BlockDeviceMappings = []types.FleetBlockDeviceMappingRequest{
+				{
+					DeviceName: aws.String("/dev/xvda"),
+					Ebs: &types.FleetEbsBlockDeviceRequest{
+						VolumeSize:          aws.Int32(int32(storageGiB)),
+						VolumeType:          types.VolumeTypeGp3,
+						DeleteOnTermination: aws.Bool(true),
+						Encrypted:           aws.Bool(true),
+					},
+				},
+			}
+		}
+
+		overrides[i] = override
 	}
 
 	return types.FleetLaunchTemplateConfigRequest{

@@ -111,11 +111,29 @@ func (p *Provider) Name() string {
 }
 
 // CreateRunner creates a Kubernetes Pod for a runner.
-// Creates ConfigMap and Secret for agent config before Pod creation.
+// Creates ConfigMap, Secret, and PVC for agent config before Pod creation.
 // For private jobs, also creates a NetworkPolicy to restrict egress.
 func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
 	podName := sanitizePodName(spec.RunID)
 	namespace := p.config.KubeNamespace
+
+	// cleanup helper for failure cases
+	cleanup := func(includePod bool) {
+		if includePod {
+			if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
+				log.Printf("Failed to cleanup Pod %s: %v", podName, podErr)
+			}
+		}
+		if pvcErr := p.deleteRunnerPVC(ctx, podName); pvcErr != nil && !errors.IsNotFound(pvcErr) {
+			log.Printf("Failed to cleanup PVC %s: %v", pvcName(podName), pvcErr)
+		}
+		if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil && !errors.IsNotFound(secErr) {
+			log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
+		}
+		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil && !errors.IsNotFound(cmErr) {
+			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+		}
+	}
 
 	// Create ConfigMap with runner config (non-sensitive)
 	if err := p.createRunnerConfigMap(ctx, podName, spec); err != nil {
@@ -124,24 +142,21 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 
 	// Create Secret with sensitive data (JIT token, cache token)
 	if err := p.createRunnerSecret(ctx, podName, spec); err != nil {
-		// Cleanup ConfigMap on failure
-		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
-			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
-		}
+		cleanup(false)
 		return nil, fmt.Errorf("failed to create Secret for runner: %w", err)
+	}
+
+	// Create PVC for workspace storage (EBS via CSI driver)
+	if err := p.createRunnerPVC(ctx, podName, spec); err != nil {
+		cleanup(false)
+		return nil, fmt.Errorf("failed to create PVC for runner: %w", err)
 	}
 
 	pod := p.buildPodSpec(podName, spec)
 
 	created, err := p.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		// Cleanup ConfigMap and Secret on failure
-		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
-			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
-		}
-		if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil {
-			log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
-		}
+		cleanup(false)
 		return nil, fmt.Errorf("failed to create pod %s: %w", podName, err)
 	}
 
@@ -150,17 +165,8 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 		netpol := p.buildNetworkPolicy(podName, spec)
 		_, npErr := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
 		if npErr != nil {
-			// Private jobs require NetworkPolicy for security - clean up all resources and fail
 			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, npErr)
-			if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, created.Name, metav1.DeleteOptions{}); podErr != nil {
-				log.Printf("Failed to cleanup Pod %s: %v", created.Name, podErr)
-			}
-			if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil {
-				log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
-			}
-			if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil {
-				log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
-			}
+			cleanup(true)
 			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", npErr)
 		}
 	}
@@ -250,19 +256,83 @@ func (p *Provider) deleteRunnerSecret(ctx context.Context, podName string) error
 	return p.clientset.CoreV1().Secrets(p.config.KubeNamespace).Delete(ctx, secretName(podName), metav1.DeleteOptions{})
 }
 
+// pvcName returns the PVC name for a runner.
+func pvcName(podName string) string {
+	return podName + "-workspace"
+}
+
+// createRunnerPVC creates a PersistentVolumeClaim for runner workspace storage.
+// Uses EBS CSI driver via StorageClass for dynamic provisioning.
+func (p *Provider) createRunnerPVC(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
+	storageGiB := spec.StorageGiB
+	if storageGiB <= 0 {
+		storageGiB = defaultStorageGiB
+	}
+
+	storageQuantity := resource.MustParse(fmt.Sprintf("%dGi", storageGiB))
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName(podName),
+			Namespace: p.config.KubeNamespace,
+			Labels: map[string]string{
+				"app":                  "runs-fleet-runner",
+				"runs-fleet.io/run-id": spec.RunID,
+				"runs-fleet.io/pool":   spec.Pool,
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteOnce,
+			},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storageQuantity,
+				},
+			},
+		},
+	}
+
+	// Set StorageClass if configured (empty = cluster default)
+	if p.config.KubeStorageClass != "" {
+		pvc.Spec.StorageClassName = &p.config.KubeStorageClass
+	}
+
+	_, err := p.clientset.CoreV1().PersistentVolumeClaims(p.config.KubeNamespace).Create(ctx, pvc, metav1.CreateOptions{})
+	return err
+}
+
+// deleteRunnerPVC deletes the PVC for a runner.
+func (p *Provider) deleteRunnerPVC(ctx context.Context, podName string) error {
+	return p.clientset.CoreV1().PersistentVolumeClaims(p.config.KubeNamespace).Delete(ctx, pvcName(podName), metav1.DeleteOptions{})
+}
+
 // TerminateRunner deletes a Kubernetes Pod and its associated resources.
-// Cleans up: Pod, NetworkPolicy, ConfigMap, Secret.
+// Cleanup order: Pod first (releases volume), then NetworkPolicy, PVC, ConfigMap, Secret.
 // NotFound is treated as success for idempotency - termination is a desired end state.
 // Returns error if any cleanup operation fails (except NotFound).
 func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
 	namespace := p.config.KubeNamespace
 	var cleanupErrors []string
 
+	// Delete Pod first (releases PVC mount, allows CSI driver to detach volume)
+	// Continue with cleanup even if Pod deletion fails to avoid resource leaks
+	if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
+		log.Printf("Failed to delete Pod %s: %v", runnerID, podErr)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Pod: %v", podErr))
+	}
+
 	// Delete associated NetworkPolicy (may not exist for non-private jobs)
 	netpolName := networkPolicyName(runnerID)
 	if err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		log.Printf("Failed to delete NetworkPolicy %s: %v", netpolName, err)
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("NetworkPolicy: %v", err))
+	}
+
+	// Delete PVC after pod (CSI driver will detach and delete EBS volume)
+	if pvcErr := p.deleteRunnerPVC(ctx, runnerID); pvcErr != nil && !errors.IsNotFound(pvcErr) {
+		log.Printf("Failed to delete PVC for %s: %v", runnerID, pvcErr)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("PVC: %v", pvcErr))
 	}
 
 	// Delete ConfigMap
@@ -275,11 +345,6 @@ func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
 	if secErr := p.deleteRunnerSecret(ctx, runnerID); secErr != nil && !errors.IsNotFound(secErr) {
 		log.Printf("Failed to delete Secret for %s: %v", runnerID, secErr)
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Secret: %v", secErr))
-	}
-
-	// Delete Pod (primary operation)
-	if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
-		return fmt.Errorf("failed to delete pod %s: %w", runnerID, podErr)
 	}
 
 	if len(cleanupErrors) > 0 {
@@ -416,6 +481,14 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 						},
 					},
 				},
+				{
+					Name: "workspace",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: pvcName(name),
+						},
+					},
+				},
 			},
 			Containers: []corev1.Container{
 				{
@@ -443,6 +516,10 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 							Name:      "secrets",
 							MountPath: "/etc/runs-fleet/secrets",
 							ReadOnly:  true,
+						},
+						{
+							Name:      "workspace",
+							MountPath: "/runner/_work",
 						},
 					},
 				},
@@ -609,8 +686,8 @@ const (
 )
 
 // getResourceRequirements returns resource requests and limits from spec.
-// Uses spec.CPUCores, spec.MemoryGiB, spec.StorageGiB directly for K8s-native
-// resource management with Karpenter. Falls back to defaults if not specified.
+// Uses spec.CPUCores and spec.MemoryGiB for K8s-native resource management
+// with Karpenter. Storage is handled via PVC (not ephemeral storage).
 func (p *Provider) getResourceRequirements(spec *provider.RunnerSpec) corev1.ResourceRequirements {
 	cpu := spec.CPUCores
 	if cpu <= 0 {
@@ -622,26 +699,17 @@ func (p *Provider) getResourceRequirements(spec *provider.RunnerSpec) corev1.Res
 		mem = defaultMemoryGiB
 	}
 
-	storage := spec.StorageGiB
-	if storage <= 0 {
-		storage = defaultStorageGiB
-	}
-
 	cpuQuantity := resource.MustParse(fmt.Sprintf("%d", cpu))
-	// Use fractional format to preserve precision (e.g., 8.5Gi)
 	memQuantity := resource.MustParse(fmt.Sprintf("%.1fGi", mem))
-	storageQuantity := resource.MustParse(fmt.Sprintf("%dGi", storage))
 
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:              cpuQuantity,
-			corev1.ResourceMemory:           memQuantity,
-			corev1.ResourceEphemeralStorage: storageQuantity,
+			corev1.ResourceCPU:    cpuQuantity,
+			corev1.ResourceMemory: memQuantity,
 		},
 		Limits: corev1.ResourceList{
-			corev1.ResourceCPU:              cpuQuantity,
-			corev1.ResourceMemory:           memQuantity,
-			corev1.ResourceEphemeralStorage: storageQuantity,
+			corev1.ResourceCPU:    cpuQuantity,
+			corev1.ResourceMemory: memQuantity,
 		},
 	}
 }

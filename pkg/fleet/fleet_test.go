@@ -352,6 +352,135 @@ func TestGetLaunchTemplateForArch(t *testing.T) {
 	}
 }
 
+func TestCreateFleet_Storage(t *testing.T) {
+	tests := []struct {
+		name           string
+		spec           *LaunchSpec
+		config         *config.Config
+		wantStorageGiB int32
+		wantNoStorage  bool
+	}{
+		{
+			name: "Custom storage 100 GiB",
+			spec: &LaunchSpec{
+				RunID:        "run-1",
+				InstanceType: "t4g.medium",
+				SubnetID:     "subnet-1",
+				Spot:         true,
+				StorageGiB:   100,
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantStorageGiB: 100,
+		},
+		{
+			name: "Large storage 500 GiB",
+			spec: &LaunchSpec{
+				RunID:        "run-2",
+				InstanceType: "c7g.xlarge",
+				SubnetID:     "subnet-1",
+				Spot:         true,
+				StorageGiB:   500,
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantStorageGiB: 500,
+		},
+		{
+			name: "No storage specified (use launch template default)",
+			spec: &LaunchSpec{
+				RunID:        "run-3",
+				InstanceType: "t4g.medium",
+				SubnetID:     "subnet-1",
+				Spot:         true,
+				StorageGiB:   0,
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantNoStorage: true,
+		},
+		{
+			name: "Storage with on-demand",
+			spec: &LaunchSpec{
+				RunID:        "run-4",
+				InstanceType: "c7g.xlarge",
+				SubnetID:     "subnet-1",
+				Spot:         false,
+				StorageGiB:   200,
+				Arch:         "arm64",
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantStorageGiB: 200,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEC2Client{
+				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+					if len(params.LaunchTemplateConfigs) > 0 && len(params.LaunchTemplateConfigs[0].Overrides) > 0 {
+						override := params.LaunchTemplateConfigs[0].Overrides[0]
+
+						if tt.wantNoStorage {
+							if len(override.BlockDeviceMappings) > 0 {
+								t.Errorf("BlockDeviceMappings should be empty when StorageGiB=0")
+							}
+						} else {
+							if len(override.BlockDeviceMappings) == 0 {
+								t.Errorf("BlockDeviceMappings should not be empty when StorageGiB=%d", tt.wantStorageGiB)
+							} else {
+								bdm := override.BlockDeviceMappings[0]
+								if aws.ToString(bdm.DeviceName) != "/dev/xvda" {
+									t.Errorf("DeviceName = %v, want /dev/xvda", aws.ToString(bdm.DeviceName))
+								}
+								if bdm.Ebs == nil {
+									t.Error("Ebs block device settings should not be nil")
+								} else {
+									if aws.ToInt32(bdm.Ebs.VolumeSize) != tt.wantStorageGiB {
+										t.Errorf("VolumeSize = %d, want %d", aws.ToInt32(bdm.Ebs.VolumeSize), tt.wantStorageGiB)
+									}
+									if bdm.Ebs.VolumeType != types.VolumeTypeGp3 {
+										t.Errorf("VolumeType = %v, want gp3", bdm.Ebs.VolumeType)
+									}
+									if !aws.ToBool(bdm.Ebs.DeleteOnTermination) {
+										t.Error("DeleteOnTermination should be true")
+									}
+									if !aws.ToBool(bdm.Ebs.Encrypted) {
+										t.Error("Encrypted should be true")
+									}
+								}
+							}
+						}
+					}
+
+					return &ec2.CreateFleetOutput{
+						Instances: []types.CreateFleetInstance{
+							{
+								InstanceIds: []string{"i-123456789"},
+							},
+						},
+					}, nil
+				},
+			}
+
+			manager := &Manager{
+				ec2Client: mock,
+				config:    tt.config,
+			}
+
+			_, err := manager.CreateFleet(context.Background(), tt.spec)
+			if err != nil {
+				t.Errorf("CreateFleet() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildLaunchTemplateConfigs(t *testing.T) {
 	tests := []struct {
 		name              string
