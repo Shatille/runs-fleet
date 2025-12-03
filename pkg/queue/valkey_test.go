@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -775,5 +776,287 @@ func TestValkeyClient_StreamMessageBuilding(t *testing.T) {
 	}
 	if msg.Attributes["TraceID"] != "trace-id" {
 		t.Errorf("TraceID = %s, want trace-id", msg.Attributes["TraceID"])
+	}
+}
+
+// setupTestValkey creates a miniredis server and ValkeyClient for testing
+func setupTestValkey(t *testing.T) (*ValkeyClient, *miniredis.Miniredis) {
+	t.Helper()
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	vc := NewValkeyClientWithRedis(client, testStreamName, testGroupName, testConsumerName)
+	return vc, mr
+}
+
+func TestValkeyClient_Integration_Ping(t *testing.T) {
+	vc, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	if err := vc.Ping(ctx); err != nil {
+		t.Errorf("Ping should succeed: %v", err)
+	}
+}
+
+func TestValkeyClient_Integration_Close(t *testing.T) {
+	vc, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	if err := vc.Close(); err != nil {
+		t.Errorf("Close should succeed: %v", err)
+	}
+}
+
+func TestValkeyClient_Integration_SendMessage(t *testing.T) {
+	vc, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	// Ensure consumer group exists
+	if err := vc.ensureConsumerGroup(ctx); err != nil {
+		t.Fatalf("failed to create consumer group: %v", err)
+	}
+
+	// Send a message - this doesn't require blocking receive
+	job := &JobMessage{
+		JobID:        "job-send-test",
+		RunID:        "run-send-test",
+		Repo:         "test/repo",
+		InstanceType: "t4g.medium",
+		Pool:         "default",
+		Spot:         true,
+		TraceID:      "trace-send-123",
+		SpanID:       "span-send-456",
+	}
+
+	if err := vc.SendMessage(ctx, job); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Verify the stream has data using raw Redis commands (non-blocking)
+	result, err := vc.client.XLen(ctx, testStreamName).Result()
+	if err != nil {
+		t.Fatalf("XLen failed: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("expected 1 message in stream, got %d", result)
+	}
+}
+
+func TestValkeyClient_Integration_EnsureConsumerGroup(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	// Create first consumer
+	vc1 := NewValkeyClientWithRedis(client, testStreamName, testGroupName, "consumer-1")
+	ctx := context.Background()
+
+	if err := vc1.ensureConsumerGroup(ctx); err != nil {
+		t.Fatalf("failed to create consumer group: %v", err)
+	}
+
+	// Second call should not error (BUSYGROUP case)
+	if err := vc1.ensureConsumerGroup(ctx); err != nil {
+		t.Fatalf("second ensureConsumerGroup should not error: %v", err)
+	}
+}
+
+func TestValkeyClient_Integration_DeleteMessage(t *testing.T) {
+	vc, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	if err := vc.ensureConsumerGroup(ctx); err != nil {
+		t.Fatalf("failed to create consumer group: %v", err)
+	}
+
+	// Delete a message that doesn't exist - should not error (XACK returns 0)
+	err := vc.DeleteMessage(ctx, "9999999999999-0")
+	if err != nil {
+		t.Errorf("DeleteMessage for nonexistent message should not error: %v", err)
+	}
+}
+
+func TestNewValkeyClient_Integration(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	cfg := ValkeyConfig{
+		Addr:       mr.Addr(),
+		Stream:     "integration-stream",
+		Group:      "integration-group",
+		ConsumerID: "integration-consumer",
+	}
+
+	vc, err := NewValkeyClient(cfg)
+	if err != nil {
+		t.Fatalf("NewValkeyClient failed: %v", err)
+	}
+	defer func() { _ = vc.Close() }()
+
+	// Verify the client is working
+	ctx := context.Background()
+	if err := vc.Ping(ctx); err != nil {
+		t.Errorf("Ping failed: %v", err)
+	}
+}
+
+func TestNewValkeyClient_EmptyConsumerID(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	cfg := ValkeyConfig{
+		Addr:       mr.Addr(),
+		Stream:     "uuid-stream",
+		Group:      "uuid-group",
+		ConsumerID: "", // Should generate UUID
+	}
+
+	vc, err := NewValkeyClient(cfg)
+	if err != nil {
+		t.Fatalf("NewValkeyClient failed: %v", err)
+	}
+	defer func() { _ = vc.Close() }()
+
+	// ConsumerID should be set to a UUID
+	if vc.consumerID == "" {
+		t.Error("consumerID should be generated when empty")
+	}
+}
+
+func TestValkeyClient_Integration_XAddValues(t *testing.T) {
+	vc, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	if err := vc.ensureConsumerGroup(ctx); err != nil {
+		t.Fatalf("failed to create consumer group: %v", err)
+	}
+
+	// Send with full trace context
+	job := &JobMessage{
+		JobID:    "job-xadd-test",
+		RunID:    "run-xadd-test",
+		TraceID:  "trace-xadd-123",
+		SpanID:   "span-xadd-456",
+		ParentID: "parent-xadd-789",
+	}
+
+	if err := vc.SendMessage(ctx, job); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Use XRange to read without blocking (direct stream access)
+	msgs, err := vc.client.XRange(ctx, testStreamName, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("XRange failed: %v", err)
+	}
+
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	// Verify trace context was stored
+	if msgs[0].Values["trace_id"] != "trace-xadd-123" {
+		t.Errorf("trace_id = %v, want trace-xadd-123", msgs[0].Values["trace_id"])
+	}
+	if msgs[0].Values["span_id"] != "span-xadd-456" {
+		t.Errorf("span_id = %v, want span-xadd-456", msgs[0].Values["span_id"])
+	}
+}
+
+func TestValkeyClient_Integration_MessageBody(t *testing.T) {
+	vc, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	if err := vc.ensureConsumerGroup(ctx); err != nil {
+		t.Fatalf("failed to create consumer group: %v", err)
+	}
+
+	originalJob := &JobMessage{
+		JobID:         "job-body-test",
+		RunID:         "run-body-test",
+		Repo:          "owner/repo",
+		InstanceType:  "c6g.xlarge",
+		Pool:          "compute",
+		Private:       true,
+		Spot:          false,
+		RunnerSpec:    "4cpu-linux-arm64",
+		OriginalLabel: "self-hosted",
+		RetryCount:    3,
+		ForceOnDemand: true,
+		Region:        "us-west-2",
+		Environment:   "staging",
+		OS:            "linux",
+		Arch:          "arm64",
+		InstanceTypes: []string{"c6g.xlarge", "c6g.2xlarge"},
+	}
+
+	if err := vc.SendMessage(ctx, originalJob); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Use XRange to read the message body directly (no blocking)
+	msgs, err := vc.client.XRange(ctx, testStreamName, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("XRange failed: %v", err)
+	}
+
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	// Parse the message body
+	body, ok := msgs[0].Values["body"].(string)
+	if !ok {
+		t.Fatal("body should be a string")
+	}
+
+	var parsedJob JobMessage
+	if err := json.Unmarshal([]byte(body), &parsedJob); err != nil {
+		t.Fatalf("failed to parse message body: %v", err)
+	}
+
+	// Verify all fields
+	if parsedJob.JobID != originalJob.JobID {
+		t.Errorf("JobID = %s, want %s", parsedJob.JobID, originalJob.JobID)
+	}
+	if parsedJob.RunID != originalJob.RunID {
+		t.Errorf("RunID = %s, want %s", parsedJob.RunID, originalJob.RunID)
+	}
+	if parsedJob.InstanceType != originalJob.InstanceType {
+		t.Errorf("InstanceType = %s, want %s", parsedJob.InstanceType, originalJob.InstanceType)
+	}
+	if parsedJob.Private != originalJob.Private {
+		t.Errorf("Private = %v, want %v", parsedJob.Private, originalJob.Private)
+	}
+	if parsedJob.RetryCount != originalJob.RetryCount {
+		t.Errorf("RetryCount = %d, want %d", parsedJob.RetryCount, originalJob.RetryCount)
 	}
 }
