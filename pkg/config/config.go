@@ -66,8 +66,7 @@ type Config struct {
 	KubeNodeSelector       map[string]string // Default node selector for runners
 	KubeRunnerImage        string            // Container image for runner pods
 	KubeIdleTimeoutMinutes int               // Idle timeout for K8s pods (default: 10)
-	KubeReleaseName        string            // Helm release name for deployment naming
-	KubeWarmPoolEnabled    bool              // Enable K8s warm pool management
+	KubeReleaseName string // Helm release name for deployment naming
 
 	// Valkey queue configuration (K8s mode only)
 	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
@@ -138,8 +137,7 @@ func Load() (*Config, error) {
 		KubeServiceAccount:     getEnv("RUNS_FLEET_KUBE_SERVICE_ACCOUNT", "runs-fleet-runner"),
 		KubeRunnerImage:        getEnv("RUNS_FLEET_KUBE_RUNNER_IMAGE", ""),
 		KubeIdleTimeoutMinutes: kubeIdleTimeoutMinutes,
-		KubeReleaseName:        getEnv("RUNS_FLEET_KUBE_RELEASE_NAME", "runs-fleet"),
-		KubeWarmPoolEnabled:    getEnvBool("RUNS_FLEET_KUBE_WARM_POOL_ENABLED", false),
+		KubeReleaseName: getEnv("RUNS_FLEET_KUBE_RELEASE_NAME", "runs-fleet"),
 
 		// Valkey queue (K8s mode)
 		ValkeyAddr:     getEnv("RUNS_FLEET_VALKEY_ADDR", "valkey:6379"),

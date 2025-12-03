@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-orchestrator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.orchestrator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "runs-fleet.orchestrator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "runs-fleet.orchestrator.selectorLabels" . | nindent 8 }}
+        sidecar.istio.io/inject: {{ .Values.istio.sidecarInjection | quote }}
+    spec:
+      serviceAccountName: {{ include "runs-fleet.orchestrator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.orchestrator.securityContext | nindent 8 }}
+      containers:
+        - name: orchestrator
+          image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.orchestrator.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          env:
+            - name: RUNS_FLEET_MODE
+              value: "k8s"
+            - name: RUNS_FLEET_KUBE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUNS_FLEET_KUBE_SERVICE_ACCOUNT
+              value: {{ include "runs-fleet.runner.serviceAccountName" . }}
+            - name: RUNS_FLEET_KUBE_RUNNER_IMAGE
+              value: "{{ .Values.runner.image.repository }}:{{ .Values.runner.image.tag }}"
+            {{- if .Values.valkey.enabled }}
+            - name: RUNS_FLEET_VALKEY_ADDR
+              value: {{ include "runs-fleet.valkey.address" . }}
+            {{- end }}
+            - name: RUNS_FLEET_COORDINATOR_ENABLED
+              value: {{ .Values.coordinator.enabled | quote }}
+            - name: RUNS_FLEET_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUNS_FLEET_GITHUB_APP_ID
+              value: {{ .Values.github.appId | quote }}
+            - name: RUNS_FLEET_LOG_LEVEL
+              value: {{ .Values.logging.level }}
+            - name: RUNS_FLEET_LOG_FORMAT
+              value: {{ .Values.logging.format }}
+            - name: RUNS_FLEET_METRICS_ENABLED
+              value: {{ .Values.metrics.enabled | quote }}
+            - name: RUNS_FLEET_METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            - name: RUNS_FLEET_POOL_ENABLED
+              value: {{ .Values.warmPool.enabled | quote }}
+            - name: RUNS_FLEET_KUBE_RELEASE_NAME
+              value: {{ include "runs-fleet.fullname" . }}
+          envFrom:
+            - secretRef:
+                name: {{ include "runs-fleet.secretName" . }}
+          resources:
+            {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.orchestrator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if gt (int .Values.orchestrator.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-orchestrator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "runs-fleet.orchestrator.selectorLabels" . | nindent 6 }}
+{{- end }}

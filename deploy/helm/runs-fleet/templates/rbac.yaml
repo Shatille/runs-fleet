@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "runs-fleet.orchestrator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "runs-fleet.runner.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.runner.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-orchestrator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  {{- if .Values.warmPool.enabled }}
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "update", "patch"]
+    resourceNames:
+      - {{ include "runs-fleet.fullname" . }}-placeholder-arm64
+      - {{ include "runs-fleet.fullname" . }}-placeholder-amd64
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-orchestrator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "runs-fleet.orchestrator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "runs-fleet.fullname" . }}-orchestrator
+  apiGroup: rbac.authorization.k8s.io

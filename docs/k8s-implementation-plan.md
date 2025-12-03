@@ -811,23 +811,28 @@ pkg/provider/
 | Makefile targets | ✅ Done | docker-build-runner, docker-build-runner-local, docker-push-runner |
 | Push to registry | ✅ Done | ECR via GitHub Actions workflow |
 
-### Phase 7: K8s Deployment Manifests 🔴 NOT STARTED
+### Phase 7: Helm Chart ✅ COMPLETE
 | Item | Status | Notes |
 |------|--------|-------|
-| `deploy/k8s/namespace.yaml` | 🔴 TODO | runs-fleet namespace |
-| `deploy/k8s/rbac.yaml` | 🔴 TODO | ServiceAccount, Role, RoleBinding for orchestrator |
-| `deploy/k8s/runner-rbac.yaml` | 🔴 TODO | ServiceAccount for runner pods |
-| `deploy/k8s/deployment.yaml` | 🔴 TODO | Orchestrator deployment |
-| `deploy/k8s/configmap.yaml` | 🔴 TODO | Orchestrator config |
-| `deploy/k8s/secrets.yaml` | 🔴 TODO | GitHub App credentials template |
-| `deploy/k8s/valkey.yaml` | 🔴 TODO | Valkey StatefulSet (copy from docs) |
+| `deploy/helm/runs-fleet/Chart.yaml` | ✅ Done | Helm chart metadata |
+| `deploy/helm/runs-fleet/values.yaml` | ✅ Done | Configurable values with defaults |
+| `deploy/helm/runs-fleet/templates/_helpers.tpl` | ✅ Done | Template helper functions |
+| `deploy/helm/runs-fleet/templates/rbac.yaml` | ✅ Done | Orchestrator ServiceAccount, Role, RoleBinding |
+| `deploy/helm/runs-fleet/templates/runner-rbac.yaml` | ✅ Done | Runner ServiceAccount |
+| `deploy/helm/runs-fleet/templates/deployment.yaml` | ✅ Done | Orchestrator Deployment with env config |
+| `deploy/helm/runs-fleet/templates/service.yaml` | ✅ Done | Orchestrator ClusterIP Service |
+| `deploy/helm/runs-fleet/templates/secrets.yaml` | ✅ Done | GitHub App credentials Secret |
+| `deploy/helm/runs-fleet/templates/valkey.yaml` | ✅ Done | Valkey StatefulSet (conditional) |
+| `deploy/helm/runs-fleet/templates/ingress.yaml` | ✅ Done | Webhook Ingress (conditional) |
+| `deploy/helm/runs-fleet/templates/NOTES.txt` | ✅ Done | Post-install instructions |
+| `deploy/helm/runs-fleet/templates/istio-*.yaml` | ✅ Done | Istio VirtualService, DestinationRule, PeerAuthentication (conditional) |
 
-### Phase 8: Karpenter Setup 🔴 NOT STARTED
+### Phase 8: Karpenter Setup ✅ COMPLETE
 | Item | Status | Notes |
 |------|--------|-------|
-| NodePool for runners | 🔴 TODO | Spot-first, arm64/amd64 |
-| EC2NodeClass | 🔴 TODO | AMI, security groups, subnet selection |
-| Documentation | 🔴 TODO | Setup guide for EKS + Karpenter |
+| `deploy/helm/runs-fleet/templates/karpenter-nodepool.yaml` | ✅ Done | Spot-first, arm64/amd64, configurable requirements |
+| `deploy/helm/runs-fleet/templates/karpenter-ec2nodeclass.yaml` | ✅ Done | AMI, security groups, subnet selection, IMDSv2 |
+| Documentation | ✅ Done | NOTES.txt includes Karpenter prerequisites and verification |
 
 ---
 
@@ -841,11 +846,9 @@ pkg/provider/
 | 4. Queue Abstraction | ✅ Complete | 100% |
 | 5. Agent K8s Support | ✅ Complete | 100% |
 | 6. Runner Docker Image | ✅ Complete | 100% |
-| 7. K8s Deployment Manifests | 🔴 Not Started | 0% |
-| 8. Karpenter Setup | 🔴 Not Started | 0% |
+| 7. Helm Chart | ✅ Complete | 100% |
+| 8. Karpenter Setup | ✅ Complete | 100% |
 
-**Overall Progress: ~75%**
+**Overall Progress: 100%**
 
-**Next Steps (in order):**
-1. K8s Deployment Manifests (Phase 7)
-2. Karpenter Setup (Phase 8)
+**K8s Migration Complete!**

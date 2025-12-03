@@ -1,0 +1,112 @@
+{{- if .Values.warmPool.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-placeholder-arm64
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: placeholder
+    runs-fleet.io/arch: arm64
+spec:
+  replicas: {{ .Values.warmPool.placeholders.arm64.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "runs-fleet.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: placeholder
+      runs-fleet.io/arch: arm64
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "runs-fleet.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: placeholder
+        runs-fleet.io/arch: arm64
+        sidecar.istio.io/inject: "false"
+    spec:
+      priorityClassName: {{ .Values.warmPool.priorityClass.name }}
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: {{ include "runs-fleet.runner.serviceAccountName" . }}
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+      containers:
+        - name: placeholder
+          image: "{{ .Values.runner.image.repository }}:{{ .Values.runner.image.tag }}"
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              {{- toYaml .Values.warmPool.placeholders.arm64.resources.requests | nindent 14 }}
+            limits:
+              {{- toYaml .Values.warmPool.placeholders.arm64.resources.requests | nindent 14 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-placeholder-amd64
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: placeholder
+    runs-fleet.io/arch: amd64
+spec:
+  replicas: {{ .Values.warmPool.placeholders.amd64.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "runs-fleet.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: placeholder
+      runs-fleet.io/arch: amd64
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "runs-fleet.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: placeholder
+        runs-fleet.io/arch: amd64
+        sidecar.istio.io/inject: "false"
+    spec:
+      priorityClassName: {{ .Values.warmPool.priorityClass.name }}
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: {{ include "runs-fleet.runner.serviceAccountName" . }}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      containers:
+        - name: placeholder
+          image: "{{ .Values.runner.image.repository }}:{{ .Values.runner.image.tag }}"
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              {{- toYaml .Values.warmPool.placeholders.amd64.resources.requests | nindent 14 }}
+            limits:
+              {{- toYaml .Values.warmPool.placeholders.amd64.resources.requests | nindent 14 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.warmPool.priorityClass.name }}
+  labels:
+    {{- include "runs-fleet.labels" . | nindent 4 }}
+value: {{ .Values.warmPool.priorityClass.value }}
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "Low priority class for runs-fleet placeholder pods. These pods keep nodes warm and are preempted when real jobs arrive."
+{{- end }}

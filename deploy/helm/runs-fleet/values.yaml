@@ -1,0 +1,270 @@
+# runs-fleet Helm chart values
+
+# Orchestrator configuration
+orchestrator:
+  image:
+    repository: runs-fleet
+    tag: latest
+    pullPolicy: Always
+
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  # Pod security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+  # Container security context
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  nodeSelector:
+    kubernetes.io/os: linux
+
+  tolerations: []
+
+  affinity: {}
+
+# Runner configuration
+runner:
+  image:
+    repository: runs-fleet-runner
+    tag: latest
+
+  serviceAccountName: runs-fleet-runner
+
+# GitHub App configuration
+github:
+  appId: "" # Required: GitHub App ID
+  privateKey: "" # Required: GitHub App private key (PEM format)
+  webhookSecret: "" # Required: Webhook secret
+
+# Valkey (Redis-compatible) configuration
+valkey:
+  enabled: true
+
+  image:
+    repository: valkey/valkey
+    tag: 8-alpine
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: "" # Use default if empty
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  host: runs-fleet.example.com
+  tls:
+    enabled: false
+    secretName: runs-fleet-tls
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+
+# Metrics configuration
+metrics:
+  enabled: true
+  port: 9090
+
+# Warm pool configuration (placeholder pods for faster job startup)
+warmPool:
+  enabled: false
+
+  # Placeholder pods keep nodes warm and images cached
+  # When a real job arrives, placeholder is preempted (~5-10s vs ~60-90s cold start)
+  placeholders:
+    arm64:
+      replicas: 0 # Number of placeholder pods for arm64
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+    amd64:
+      replicas: 0 # Number of placeholder pods for amd64
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+
+  # Priority class for placeholder pods (lower value = lower priority = evictable)
+  priorityClass:
+    name: runs-fleet-placeholder
+    value: -10 # Negative priority, easily preempted by real jobs
+
+# Coordinator configuration (for multi-replica deployments)
+coordinator:
+  enabled: true
+
+# Istio service mesh configuration
+istio:
+  enabled: false
+
+  # Sidecar injection (disabled by default, enable if mesh observability needed)
+  sidecarInjection: false
+
+  # Gateway for ingress traffic
+  gateway:
+    enabled: false
+    host: runs-fleet.example.com
+    # TLS mode: SIMPLE (terminate at gateway), PASSTHROUGH, or empty for HTTP
+    tls:
+      enabled: true
+      mode: SIMPLE
+      credentialName: runs-fleet-tls # Secret containing TLS cert
+
+  # Certificate (requires cert-manager)
+  certificate:
+    enabled: false
+    issuerRef:
+      name: letsencrypt-prod
+      kind: ClusterIssuer
+    # secretName defaults to gateway.tls.credentialName
+
+  # VirtualService for traffic management
+  virtualService:
+    enabled: false
+    # If gateway.enabled, automatically uses the dedicated gateway
+    # Otherwise, specify external gateways here
+    gateways: []
+    # - istio-system/default-gateway
+    hosts: []
+    # - runs-fleet.example.com (defaults to gateway.host if gateway enabled)
+
+  # DestinationRule for traffic policies
+  destinationRule:
+    enabled: false
+    trafficPolicy:
+      connectionPool:
+        http:
+          h2UpgradePolicy: UPGRADE
+          http1MaxPendingRequests: 100
+          http2MaxRequests: 1000
+      outlierDetection:
+        consecutive5xxErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+
+# Karpenter configuration (requires Karpenter v1.0+ installed on EKS)
+karpenter:
+  enabled: false
+
+  # NodePool configuration
+  nodePool:
+    name: runs-fleet-runners
+    # Node expiration (forces periodic refresh, prevents stale nodes)
+    expireAfter: 720h # 30 days
+    # Disruption settings
+    disruption:
+      consolidationPolicy: WhenEmpty
+      consolidateAfter: 30s
+    # Resource limits for this pool
+    limits:
+      cpu: "10000"
+      memory: 20480Gi
+    # Weight for scheduling priority (higher = preferred)
+    weight: 10
+
+  # EC2NodeClass configuration (set enabled: false to use existing EC2NodeClass)
+  ec2NodeClass:
+    enabled: true
+    name: runs-fleet-runners
+    # AMI configuration
+    amiFamily: AL2023
+    amiSelectorTerms: []
+    # - id: ami-0123456789abcdef0  # Specific AMI ID
+    # - name: "amazon-eks-node-al2023-*"  # AMI name pattern
+
+    # Instance profile for runner nodes (required)
+    instanceProfile: "" # e.g., KarpenterNodeInstanceProfile-my-cluster
+
+    # Subnet selection (required)
+    subnetSelectorTerms: []
+    # - tags:
+    #     karpenter.sh/discovery: my-cluster
+    # - id: subnet-0123456789abcdef0
+
+    # Security group selection (required)
+    securityGroupSelectorTerms: []
+    # - tags:
+    #     karpenter.sh/discovery: my-cluster
+    # - id: sg-0123456789abcdef0
+
+    # Block device mappings
+    blockDeviceMappings:
+      - deviceName: /dev/xvda
+        ebs:
+          volumeSize: 50Gi
+          volumeType: gp3
+          encrypted: true
+          deleteOnTermination: true
+
+    # Metadata options (IMDSv2 required)
+    metadataOptions:
+      httpEndpoint: enabled
+      httpProtocolIPv6: disabled
+      httpPutResponseHopLimit: 2
+      httpTokens: required # IMDSv2
+
+    # User data for node initialization (optional)
+    userData: ""
+
+  # Instance requirements
+  requirements:
+    # Architectures to use
+    architectures:
+      - arm64
+      - amd64
+    # Capacity types (spot preferred)
+    capacityTypes:
+      - spot
+      - on-demand
+    # Instance categories
+    instanceCategories:
+      - c # Compute optimized
+      - m # General purpose
+      - r # Memory optimized
+    # Instance families (optional, more specific than categories)
+    instanceFamilies: []
+    # - c7g
+    # - c6g
+    # - m7g
+    # Instance sizes
+    instanceSizes:
+      - medium
+      - large
+      - xlarge
+      - 2xlarge
+    # CPU limits
+    minCpu: 2
+    maxCpu: 16
+    # Operating system
+    os: linux
