@@ -18,7 +18,7 @@ Cache endpoints (`/_apis/artifactcache/*` and `/_artifacts/*`) are protected by 
    token = payload + "." + hex(signature)
    ```
 
-2. **Token Distribution**: The token is included in the runner config stored in SSM, alongside the JIT token.
+2. **Token Distribution**: The token is included in the runner config stored in SSM (EC2) or ConfigMap (K8s).
 
 3. **Token Validation**: Cache requests must include the token via:
    - `X-Cache-Token` header (preferred), OR
@@ -36,7 +36,7 @@ Enable cache authentication by setting:
 RUNS_FLEET_CACHE_SECRET=<your-secret-key>
 ```
 
-**Important:** Generate a strong random secret (32+ characters recommended):
+Generate a strong random secret (32+ characters recommended):
 ```bash
 openssl rand -hex 32
 ```
@@ -46,8 +46,7 @@ openssl rand -hex 32
 - **Unforgeable**: Tokens cannot be generated without knowledge of the server secret
 - **Job-scoped**: Each token is tied to a specific job/instance combination
 - **Ephemeral**: Tokens are valid only while the job is active
-- **Zero AWS Cost**: Validation is pure computation (no API calls)
-- **Fully Stateless**: Server needs no token storage - validation is pure HMAC recomputation
+- **Stateless**: Server needs no token storage - validation is pure HMAC recomputation
 - **Multi-instance Safe**: Works across multiple server instances without shared state
 
 ### Backwards Compatibility
@@ -55,30 +54,48 @@ openssl rand -hex 32
 If `RUNS_FLEET_CACHE_SECRET` is not set:
 - Authentication is **disabled** (warning logged at startup)
 - All cache requests are allowed (legacy behavior)
-- A warning is logged: `WARNING: Cache authentication disabled`
 
-### Remaining Recommendations
+## TLS Configuration
 
-While authentication is now implemented, consider these additional hardening measures:
+### Kubernetes (Helm)
 
-1. **Network Isolation**: Deploy in private subnet for defense-in-depth
-2. **Rate Limiting**: Add rate limiting per token (not yet implemented)
-3. **Audit Logging**: Log all cache operations to CloudWatch (partial)
-4. **S3 Lifecycle**: Set aggressive retention policies (7-day recommended)
+TLS is supported via Ingress or Istio Gateway:
 
-## Other Security Items
+```yaml
+# Ingress TLS
+ingress:
+  enabled: true
+  tls:
+    enabled: true
+    secretName: runs-fleet-tls
 
-### Medium Priority
+# Istio Gateway TLS
+istio:
+  gateway:
+    tls:
+      enabled: true
+      credentialName: runs-fleet-tls
+```
 
-1. **Request size validation** - ✅ DONE (MaxBytesReader set to 1MB)
-2. **Path traversal protection** - ✅ DONE (validateKey checks for `..`, `/`, `\`)
-3. **Information disclosure** - ✅ DONE (generic error messages)
-4. **Cache size validation** - ⚠️ PARTIAL (decoded but not enforced)
+### ECS/Fargate
 
-### Future Enhancements
+Configure TLS termination at the ALB via Terraform (infrastructure concern).
 
-- Add HTTPS/TLS termination at ALB
-- Implement request signing (similar to S3)
-- Add audit logging to CloudWatch Logs
-- Enable S3 bucket versioning for rollback
-- Add CloudFront for cache distribution (reduce S3 costs)
+## Kubernetes Security
+
+When deploying on Kubernetes:
+
+1. **RBAC**: ServiceAccount with minimal permissions (pods, configmaps in namespace only)
+2. **Network Policies**: Restrict egress to required endpoints (GitHub API, container registry)
+3. **Pod Security**: Non-root containers, read-only root filesystem where possible
+4. **Secrets**: Use Kubernetes Secrets or external secret managers for sensitive config
+
+## Remaining Hardening
+
+| Item | Status |
+|------|--------|
+| Cache size validation | ⚠️ PARTIAL (decoded but not enforced) |
+| Rate limiting per token | Not implemented |
+| Structured audit logging | Partial (log.Printf) |
+| S3 bucket versioning | Infrastructure concern |
+| CloudFront cache distribution | Not implemented |
