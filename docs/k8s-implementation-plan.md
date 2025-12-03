@@ -789,24 +789,27 @@ pkg/provider/
 | Server main.go integration | ✅ Done | `initJobQueue()` selects SQS or Valkey based on backend |
 | Valkey K8s manifests | ✅ Done | StatefulSet + Service in docs |
 
-### Phase 5: Agent K8s Support 🔄 IN PROGRESS
+### Phase 5: Agent K8s Support ✅ COMPLETE
 | Item | Status | Notes |
 |------|--------|-------|
 | `pkg/agent/config.go` | ✅ Done | FileConfigFetcher, FetchK8sConfig, IsK8sEnvironment |
-| `pkg/agent/termination.go` interface | 🔴 TODO | Extract Terminator interface |
-| `pkg/agent/termination_k8s.go` | 🔴 TODO | K8sTerminator (clean exit) |
-| `pkg/agent/telemetry.go` interface | 🔴 TODO | Extract TelemetryClient interface |
-| `pkg/agent/telemetry_valkey.go` | 🔴 TODO | ValkeyTelemetry implementation |
-| `cmd/agent/main.go` wiring | 🔴 TODO | Backend detection, conditional setup |
-| K8s provider ConfigMap/Secret creation | 🔴 TODO | CreateRunner creates config volumes |
-| K8s provider volume mounts in Pod | 🔴 TODO | Mount ConfigMap/Secret to agent |
+| `pkg/agent/termination.go` interface | ✅ Done | InstanceTerminator interface, EC2Terminator renamed |
+| `pkg/agent/termination_k8s.go` | ✅ Done | K8sTerminator (sends telemetry, clean exit) |
+| `pkg/agent/telemetry.go` interface | ✅ Done | TelemetryClient interface, status constants, DetermineCompletionStatus helper |
+| `pkg/agent/telemetry_valkey.go` | ✅ Done | ValkeyTelemetry using Redis Streams |
+| `cmd/agent/main.go` wiring | ✅ Done | IsK8sEnvironment detection, initK8sMode/initEC2Mode split |
+| K8s provider ConfigMap/Secret creation | ✅ Done | createRunnerConfigMap, createRunnerSecret with JITToken validation |
+| K8s provider volume mounts in Pod | ✅ Done | /etc/runs-fleet/config and /etc/runs-fleet/secrets |
+| K8s provider cleanup on failure | ✅ Done | Atomic cleanup with error logging |
 
-### Phase 6: Runner Docker Image 🔴 NOT STARTED
+### Phase 6: Runner Docker Image ✅ COMPLETE
 | Item | Status | Notes |
 |------|--------|-------|
-| `docker/runner/Dockerfile` | 🔴 TODO | Base image + agent binary |
-| Multi-arch build (arm64/amd64) | 🔴 TODO | GitHub Actions workflow |
-| Push to registry | 🔴 TODO | ECR or GHCR |
+| `docker/runner/Dockerfile` | ✅ Done | Ubuntu 22.04 + GitHub Actions runner + runs-fleet agent |
+| `docker/runner/entrypoint.sh` | ✅ Done | Entrypoint script for pod startup |
+| Multi-arch build (arm64/amd64) | ✅ Done | `.github/workflows/build-runner.yml` with buildx |
+| Makefile targets | ✅ Done | docker-build-runner, docker-build-runner-local, docker-push-runner |
+| Push to registry | ✅ Done | ECR via GitHub Actions workflow |
 
 ### Phase 7: K8s Deployment Manifests 🔴 NOT STARTED
 | Item | Status | Notes |
@@ -836,15 +839,13 @@ pkg/provider/
 | 2. Label & Config Support | ✅ Complete | 100% |
 | 3. Kubernetes Provider | ✅ Complete | 100% |
 | 4. Queue Abstraction | ✅ Complete | 100% |
-| 5. Agent K8s Support | 🔄 In Progress | ~15% |
-| 6. Runner Docker Image | 🔴 Not Started | 0% |
+| 5. Agent K8s Support | ✅ Complete | 100% |
+| 6. Runner Docker Image | ✅ Complete | 100% |
 | 7. K8s Deployment Manifests | 🔴 Not Started | 0% |
 | 8. Karpenter Setup | 🔴 Not Started | 0% |
 
-**Overall Progress: ~55%**
+**Overall Progress: ~75%**
 
 **Next Steps (in order):**
-1. Complete Agent K8s Support (Phase 5)
-2. Create Runner Docker Image (Phase 6) - prerequisite for testing
-3. K8s Deployment Manifests (Phase 7)
-4. Karpenter Setup (Phase 8)
+1. K8s Deployment Manifests (Phase 7)
+2. Karpenter Setup (Phase 8)
