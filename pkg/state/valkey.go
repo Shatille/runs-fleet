@@ -135,9 +135,7 @@ func (s *ValkeyStateStore) GetK8sPoolConfig(ctx context.Context, poolName string
 	return &config, nil
 }
 
-// SaveK8sPoolConfig saves pool configuration to Valkey.
-// Pipeline order: add to index first, then set data.
-// On partial failure, orphaned index entry is handled by GetK8sPoolConfig returning nil.
+// SaveK8sPoolConfig saves pool configuration to Valkey atomically.
 func (s *ValkeyStateStore) SaveK8sPoolConfig(ctx context.Context, config *K8sPoolConfig) error {
 	if config == nil {
 		return fmt.Errorf("pool config cannot be nil")
@@ -152,7 +150,8 @@ func (s *ValkeyStateStore) SaveK8sPoolConfig(ctx context.Context, config *K8sPoo
 		return fmt.Errorf("failed to marshal pool config: %w", err)
 	}
 
-	pipe := s.client.Pipeline()
+	// TxPipeline wraps in MULTI/EXEC for atomic execution
+	pipe := s.client.TxPipeline()
 	pipe.SAdd(ctx, s.poolsIndexKey(), config.PoolName)
 	pipe.Set(ctx, s.poolKey(config.PoolName), data, 0)
 
@@ -164,15 +163,14 @@ func (s *ValkeyStateStore) SaveK8sPoolConfig(ctx context.Context, config *K8sPoo
 	return nil
 }
 
-// DeleteK8sPoolConfig removes pool configuration from Valkey.
-// Pipeline order: remove from index first, then delete data.
-// On partial failure, orphaned data is acceptable (not listed, eventually cleaned).
+// DeleteK8sPoolConfig removes pool configuration from Valkey atomically.
 func (s *ValkeyStateStore) DeleteK8sPoolConfig(ctx context.Context, poolName string) error {
 	if poolName == "" {
 		return fmt.Errorf("pool name cannot be empty")
 	}
 
-	pipe := s.client.Pipeline()
+	// TxPipeline wraps in MULTI/EXEC for atomic execution
+	pipe := s.client.TxPipeline()
 	pipe.SRem(ctx, s.poolsIndexKey(), poolName)
 	pipe.Del(ctx, s.poolKey(poolName))
 
