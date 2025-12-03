@@ -1,0 +1,15 @@
+{{- if and .Values.istio.enabled .Values.istio.peerAuthentication.enabled }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "runs-fleet.orchestrator.selectorLabels" . | nindent 6 }}
+  mtls:
+    mode: {{ .Values.istio.peerAuthentication.mtls.mode }}
+{{- end }}

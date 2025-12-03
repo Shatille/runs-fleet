@@ -1,0 +1,159 @@
+# runs-fleet Helm chart values
+
+# Orchestrator configuration
+orchestrator:
+  image:
+    repository: runs-fleet
+    tag: latest
+    pullPolicy: Always
+
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  # Pod security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+  # Container security context
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  nodeSelector:
+    kubernetes.io/os: linux
+
+  tolerations: []
+
+  affinity: {}
+
+# Runner configuration
+runner:
+  image:
+    repository: runs-fleet-runner
+    tag: latest
+
+  serviceAccountName: runs-fleet-runner
+
+# GitHub App configuration
+github:
+  appId: ""  # Required: GitHub App ID
+  privateKey: ""  # Required: GitHub App private key (PEM format)
+  webhookSecret: ""  # Required: Webhook secret
+
+# Valkey (Redis-compatible) configuration
+valkey:
+  enabled: true
+
+  image:
+    repository: valkey/valkey
+    tag: 8-alpine
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""  # Use default if empty
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  host: runs-fleet.example.com
+  tls:
+    enabled: false
+    secretName: runs-fleet-tls
+
+# Logging configuration
+logging:
+  level: info
+  format: json
+
+# Metrics configuration
+metrics:
+  enabled: true
+  port: 9090
+
+# Pool configuration
+pool:
+  enabled: false
+
+# Coordinator configuration (for multi-replica deployments)
+coordinator:
+  enabled: true
+
+# Istio service mesh configuration
+istio:
+  enabled: false
+
+  # Sidecar injection (disabled by default, enable if mesh observability needed)
+  sidecarInjection: false
+
+  # Gateway for ingress traffic
+  gateway:
+    enabled: false
+    host: runs-fleet.example.com
+    # TLS mode: SIMPLE (terminate at gateway), PASSTHROUGH, or empty for HTTP
+    tls:
+      enabled: true
+      mode: SIMPLE
+      credentialName: runs-fleet-tls  # Secret containing TLS cert
+
+  # Certificate (requires cert-manager)
+  certificate:
+    enabled: false
+    issuerRef:
+      name: letsencrypt-prod
+      kind: ClusterIssuer
+    # secretName defaults to gateway.tls.credentialName
+
+  # VirtualService for traffic management
+  virtualService:
+    enabled: false
+    # If gateway.enabled, automatically uses the dedicated gateway
+    # Otherwise, specify external gateways here
+    gateways: []
+    # - istio-system/default-gateway
+    hosts: []
+    # - runs-fleet.example.com (defaults to gateway.host if gateway enabled)
+
+  # DestinationRule for traffic policies
+  destinationRule:
+    enabled: false
+    trafficPolicy:
+      connectionPool:
+        http:
+          h2UpgradePolicy: UPGRADE
+          http1MaxPendingRequests: 100
+          http2MaxRequests: 1000
+      outlierDetection:
+        consecutive5xxErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+
+  # PeerAuthentication for mTLS
+  peerAuthentication:
+    enabled: false
+    mtls:
+      mode: STRICT  # STRICT, PERMISSIVE, or DISABLE

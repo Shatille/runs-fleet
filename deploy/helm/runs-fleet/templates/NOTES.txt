@@ -1,0 +1,26 @@
+runs-fleet has been installed!
+
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/webhook
+{{- else }}
+  kubectl port-forward svc/{{ include "runs-fleet.fullname" . }}-orchestrator 8080:8080 -n {{ .Release.Namespace }}
+  Then visit: http://localhost:8080/webhook
+{{- end }}
+
+2. Configure your GitHub App webhook to point to:
+   {{ if .Values.ingress.enabled }}https://{{ .Values.ingress.host }}/webhook{{ else }}<your-external-url>/webhook{{ end }}
+
+3. View logs:
+   kubectl logs -f deployment/{{ include "runs-fleet.fullname" . }}-orchestrator -n {{ .Release.Namespace }}
+
+4. Check orchestrator status:
+   kubectl get pods -l app.kubernetes.io/component=orchestrator -n {{ .Release.Namespace }}
+
+{{- if .Values.valkey.enabled }}
+
+5. Valkey is running at:
+   {{ include "runs-fleet.valkey.address" . }}
+{{- end }}
+
+For more information, visit: https://github.com/Shatille/runs-fleet

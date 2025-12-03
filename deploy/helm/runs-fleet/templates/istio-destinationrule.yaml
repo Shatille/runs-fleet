@@ -1,0 +1,15 @@
+{{- if and .Values.istio.enabled .Values.istio.destinationRule.enabled }}
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+spec:
+  host: {{ include "runs-fleet.fullname" . }}-orchestrator
+  {{- with .Values.istio.destinationRule.trafficPolicy }}
+  trafficPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
