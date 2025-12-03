@@ -1,7 +1,7 @@
-# Multi-stage build for runs-fleet server and agent
+# Multi-stage build for runs-fleet orchestrator server
 # Optimized for cross-compilation with buildx
 
-# Stage 1: Build Go binaries
+# Stage 1: Build server binary
 # Use BUILDPLATFORM to run Go compiler natively (not under QEMU)
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
@@ -25,15 +25,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-server ./cmd/server
 
-# Build agent binaries for both architectures
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags "-s -w -X main.version=$VERSION" \
-    -o /bin/runs-fleet-agent-linux-amd64 ./cmd/agent
-
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-    -ldflags "-s -w -X main.version=$VERSION" \
-    -o /bin/runs-fleet-agent-linux-arm64 ./cmd/agent
-
 # Stage 2: Final runtime image
 FROM alpine:3.19
 
@@ -42,10 +33,8 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
 
-# Copy binaries from builder
+# Copy server binary from builder
 COPY --from=builder /bin/runs-fleet-server /app/server
-COPY --from=builder /bin/runs-fleet-agent-linux-amd64 /app/agent-linux-amd64
-COPY --from=builder /bin/runs-fleet-agent-linux-arm64 /app/agent-linux-arm64
 
 # Create non-root user
 RUN addgroup -g 1000 runs-fleet && \

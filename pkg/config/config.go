@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -52,6 +53,7 @@ type Config struct {
 	MaxRuntimeMinutes  int
 	LogLevel           string
 	LaunchTemplateName string
+	RunnerImage        string // Container image for EC2 runners (ECR URL)
 
 	CoordinatorEnabled bool
 	InstanceID         string
@@ -125,6 +127,7 @@ func Load() (*Config, error) {
 		MaxRuntimeMinutes:  maxRuntimeMinutes,
 		LogLevel:           getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
 		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
+		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 
 		CoordinatorEnabled: getEnvBool("RUNS_FLEET_COORDINATOR_ENABLED", false),
 		InstanceID:         getEnv("RUNS_FLEET_INSTANCE_ID", ""),
@@ -238,6 +241,26 @@ func (c *Config) validateEC2Config() error {
 	}
 	if len(c.PublicSubnetIDs) == 0 && len(c.PrivateSubnetIDs) == 0 {
 		return fmt.Errorf("at least one of RUNS_FLEET_PUBLIC_SUBNET_IDS or RUNS_FLEET_PRIVATE_SUBNET_IDS is required for EC2 backend")
+	}
+	if c.RunnerImage == "" {
+		return fmt.Errorf("RUNS_FLEET_RUNNER_IMAGE is required for EC2 backend")
+	}
+	if err := validateECRImageURL(c.RunnerImage); err != nil {
+		return fmt.Errorf("RUNS_FLEET_RUNNER_IMAGE: %w", err)
+	}
+	return nil
+}
+
+// ecrImageURLPattern matches valid ECR image URLs:
+// <account-id>.dkr.ecr.<region>.amazonaws.com/<repo>[:<tag>][@sha256:<digest>]
+var ecrImageURLPattern = regexp.MustCompile(`^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-z0-9][a-z0-9._/-]*[a-z0-9](:[a-zA-Z0-9._-]+)?(@sha256:[a-f0-9]{64})?$`)
+
+func validateECRImageURL(url string) error {
+	if !strings.Contains(url, ".dkr.ecr.") || !strings.Contains(url, ".amazonaws.com/") {
+		return fmt.Errorf("must be an ECR URL (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag), got %q", url)
+	}
+	if !ecrImageURLPattern.MatchString(url) {
+		return fmt.Errorf("invalid ECR URL format: %q", url)
 	}
 	return nil
 }

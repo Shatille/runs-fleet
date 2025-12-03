@@ -17,7 +17,6 @@ env:
   ECR_REPOSITORY: runs-fleet
   ECS_CLUSTER: shavakan
   ECS_SERVICE: runs-fleet-server
-  S3_CONFIG_BUCKET: shavakan-runs-fleet-config
 
 jobs:
   test:
@@ -196,33 +195,6 @@ jobs:
 
           docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      - name: Extract agent binaries
-        env:
-          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
-        run: |
-          docker pull --platform linux/amd64 $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
-          CONTAINER_ID=$(docker create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64)
-          docker cp $CONTAINER_ID:/app/agent-linux-amd64 ./agent-linux-amd64
-          docker cp $CONTAINER_ID:/app/agent-linux-arm64 ./agent-linux-arm64
-          docker rm $CONTAINER_ID
-
-      - name: Upload agent binaries to S3
-        env:
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
-        run: |
-          aws s3 cp ./agent-linux-amd64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$IMAGE_TAG/runs-fleet-agent-linux-amd64
-
-          aws s3 cp ./agent-linux-arm64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$IMAGE_TAG/runs-fleet-agent-linux-arm64
-
-          aws s3 cp ./agent-linux-amd64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/runs-fleet-agent-linux-amd64
-
-          aws s3 cp ./agent-linux-arm64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/runs-fleet-agent-linux-arm64
 
       - name: Update ECS task definition and service
         env:
