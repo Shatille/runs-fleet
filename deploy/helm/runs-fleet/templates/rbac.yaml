@@ -29,6 +29,14 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "delete", "get", "list", "watch"]
+  {{- if .Values.warmPool.enabled }}
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "update", "patch"]
+    resourceNames:
+      - {{ include "runs-fleet.fullname" . }}-placeholder-arm64
+      - {{ include "runs-fleet.fullname" . }}-placeholder-amd64
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

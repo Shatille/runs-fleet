@@ -1,5 +1,4 @@
 {{- if .Values.warmPool.enabled }}
-{{- if gt (int .Values.warmPool.placeholders.arm64.replicas) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,9 +48,7 @@ spec:
             capabilities:
               drop:
                 - ALL
-{{- end }}
 ---
-{{- if gt (int .Values.warmPool.placeholders.amd64.replicas) 0 }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -101,5 +98,4 @@ spec:
             capabilities:
               drop:
                 - ALL
-{{- end }}
 {{- end }}
