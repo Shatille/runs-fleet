@@ -339,6 +339,8 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 		Arch:        jobConfig.Arch,        // Phase 4: Architecture support
 		// Flexible instance selection (Phase 10)
 		InstanceTypes: jobConfig.InstanceTypes,
+		// Storage configuration
+		StorageGiB: jobConfig.StorageGiB,
 	}
 
 	if err := q.SendMessage(ctx, msg); err != nil {
@@ -552,6 +554,8 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 		Environment: job.Environment, // Phase 6: Per-stack environments
 		OS:          job.OS,          // Phase 4: Windows support
 		Arch:        job.Arch,        // Phase 4: Architecture support
+		// Storage configuration
+		StorageGiB: job.StorageGiB,
 	}
 
 	instanceIDs, err := createFleetWithRetry(ctx, f, spec)
@@ -791,6 +795,7 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 		Private:      job.Private,
 		Environment:  job.Environment,
 		RetryCount:   job.RetryCount,
+		StorageGiB:   job.StorageGiB,
 	}
 
 	result, err := createK8sRunnerWithRetry(ctx, p, spec)

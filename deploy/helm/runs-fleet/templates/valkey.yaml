@@ -1,0 +1,108 @@
+{{- if .Values.valkey.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-valkey
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.valkey.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "runs-fleet.fullname" . }}-valkey
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "runs-fleet.valkey.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "runs-fleet.valkey.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: valkey
+          image: "{{ .Values.valkey.image.repository }}:{{ .Values.valkey.image.tag }}"
+          imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          args:
+            - "--appendonly"
+            - "yes"
+            - "--save"
+            - "60"
+            - "1"
+          resources:
+            {{- toYaml .Values.valkey.resources | nindent 12 }}
+          livenessProbe:
+            exec:
+              command:
+                - valkey-cli
+                - ping
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - valkey-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      nodeSelector:
+        kubernetes.io/os: linux
+  {{- if .Values.valkey.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "runs-fleet.valkey.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.valkey.persistence.storageClass }}
+        storageClassName: {{ .Values.valkey.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.valkey.persistence.size }}
+  {{- else }}
+  volumes:
+    - name: data
+      emptyDir:
+        sizeLimit: {{ .Values.valkey.persistence.size }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "runs-fleet.fullname" . }}-valkey
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "runs-fleet.valkey.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "runs-fleet.valkey.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+{{- end }}

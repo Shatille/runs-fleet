@@ -1,0 +1,21 @@
+runs-fleet installed.
+
+Webhook URL:
+{{- if .Values.istio.gateway.enabled }}
+  https://{{ .Values.istio.gateway.host }}/webhook
+{{- else if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}/webhook
+{{- else }}
+  kubectl port-forward svc/{{ include "runs-fleet.fullname" . }}-orchestrator 8080:8080 -n {{ .Release.Namespace }}
+  http://localhost:8080/webhook
+{{- end }}
+
+Logs: kubectl logs -f deploy/{{ include "runs-fleet.fullname" . }}-orchestrator -n {{ .Release.Namespace }}
+{{- if .Values.warmPool.enabled }}
+
+Warm pool: kubectl get pods -l app.kubernetes.io/component=placeholder -n {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.karpenter.enabled }}
+
+Karpenter: kubectl get nodepools,ec2nodeclasses
+{{- end }}

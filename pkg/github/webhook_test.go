@@ -413,6 +413,18 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 			name:   "Windows with ARM64 architecture",
 			labels: []string{"runs-fleet=12345/runner=2cpu-windows-arm64"},
 		},
+		{
+			name:   "Invalid disk value (non-numeric)",
+			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=abc"},
+		},
+		{
+			name:   "Invalid disk value (zero)",
+			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=0"},
+		},
+		{
+			name:   "Invalid disk value (too large)",
+			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=65000"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -458,6 +470,74 @@ func TestParseLabels_Backend(t *testing.T) {
 			}
 			if !tt.wantErr && got.Backend != tt.wantBackend {
 				t.Errorf("ParseLabels() Backend = %v, want %v", got.Backend, tt.wantBackend)
+			}
+		})
+	}
+}
+
+func TestParseLabels_Storage(t *testing.T) {
+	tests := []struct {
+		name           string
+		labels         []string
+		wantStorageGiB int
+		wantErr        bool
+	}{
+		{
+			name:           "Custom disk size",
+			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=100"},
+			wantStorageGiB: 100,
+		},
+		{
+			name:           "Large disk size",
+			labels:         []string{"runs-fleet=12345/runner=4cpu-linux-arm64/disk=500"},
+			wantStorageGiB: 500,
+		},
+		{
+			name:           "Maximum valid size (16 TiB gp3 limit)",
+			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=16384"},
+			wantStorageGiB: 16384,
+		},
+		{
+			name:           "Minimum valid size",
+			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=1"},
+			wantStorageGiB: 1,
+		},
+		{
+			name:           "No disk specified (default)",
+			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+			wantStorageGiB: 0,
+		},
+		{
+			name:           "Disk with other options",
+			labels:         []string{"runs-fleet=12345/runner=4cpu-linux-amd64/disk=200/spot=false/pool=ci"},
+			wantStorageGiB: 200,
+		},
+		{
+			name:           "Flexible spec with disk",
+			labels:         []string{"runs-fleet=12345/cpu=4/arch=arm64/disk=150"},
+			wantStorageGiB: 150,
+		},
+		{
+			name:           "Flexible spec CPU range with disk",
+			labels:         []string{"runs-fleet=12345/cpu=4+8/ram=8+32/arch=arm64/disk=300"},
+			wantStorageGiB: 300,
+		},
+		{
+			name:           "Flexible spec no arch with disk",
+			labels:         []string{"runs-fleet=12345/cpu=4/disk=250"},
+			wantStorageGiB: 250,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got.StorageGiB != tt.wantStorageGiB {
+				t.Errorf("ParseLabels() StorageGiB = %v, want %v", got.StorageGiB, tt.wantStorageGiB)
 			}
 		})
 	}
