@@ -50,7 +50,7 @@ spec:
           operator: Lte
           values:
             - {{ .Values.karpenter.requirements.maxCpu | quote }}
-      expireAfter: Never
+      expireAfter: {{ .Values.karpenter.nodePool.expireAfter }}
   disruption:
     consolidationPolicy: {{ .Values.karpenter.nodePool.disruption.consolidationPolicy }}
     consolidateAfter: {{ .Values.karpenter.nodePool.disruption.consolidateAfter }}

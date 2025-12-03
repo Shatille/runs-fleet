@@ -1,4 +1,10 @@
 {{- if and .Values.istio.enabled .Values.istio.virtualService.enabled }}
+{{- if and (not .Values.istio.gateway.enabled) (not .Values.istio.virtualService.hosts) }}
+{{- fail "istio.virtualService requires either istio.gateway.enabled=true or istio.virtualService.hosts to be configured" }}
+{{- end }}
+{{- if and (not .Values.istio.gateway.enabled) (not .Values.istio.virtualService.gateways) }}
+{{- fail "istio.virtualService requires either istio.gateway.enabled=true or istio.virtualService.gateways to be configured" }}
+{{- end }}
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:

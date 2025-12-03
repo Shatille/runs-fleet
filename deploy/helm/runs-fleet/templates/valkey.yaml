@@ -85,7 +85,8 @@ spec:
   {{- else }}
   volumes:
     - name: data
-      emptyDir: {}
+      emptyDir:
+        sizeLimit: {{ .Values.valkey.persistence.size }}
   {{- end }}
 ---
 apiVersion: v1

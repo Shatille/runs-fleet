@@ -165,6 +165,8 @@ karpenter:
   # NodePool configuration
   nodePool:
     name: runs-fleet-runners
+    # Node expiration (forces periodic refresh, prevents stale nodes)
+    expireAfter: 720h  # 30 days
     # Disruption settings
     disruption:
       consolidationPolicy: WhenEmpty

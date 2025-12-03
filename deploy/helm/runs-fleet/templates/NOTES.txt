@@ -61,4 +61,11 @@ ISTIO SETUP:
 {{- end }}
 {{- end }}
 
+SECURITY NOTICE:
+  GitHub App credentials (privateKey, webhookSecret) are stored in a Kubernetes Secret.
+  For production deployments, consider using external secret management:
+  - Sealed Secrets: https://sealed-secrets.netlify.app/
+  - External Secrets Operator: https://external-secrets.io/
+  - HashiCorp Vault: https://www.vaultproject.io/
+
 For more information, visit: https://github.com/Shatille/runs-fleet
