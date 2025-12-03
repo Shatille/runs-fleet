@@ -157,3 +157,97 @@ istio:
     enabled: false
     mtls:
       mode: STRICT  # STRICT, PERMISSIVE, or DISABLE
+
+# Karpenter configuration (requires Karpenter v1.0+ installed on EKS)
+karpenter:
+  enabled: false
+
+  # NodePool configuration
+  nodePool:
+    name: runs-fleet-runners
+    # Disruption settings
+    disruption:
+      consolidationPolicy: WhenEmpty
+      consolidateAfter: 30s
+    # Resource limits for this pool
+    limits:
+      cpu: "1000"
+      memory: 2000Gi
+    # Weight for scheduling priority (higher = preferred)
+    weight: 10
+
+  # EC2NodeClass configuration (set enabled: false to use existing EC2NodeClass)
+  ec2NodeClass:
+    enabled: true
+    name: runs-fleet-runners
+    # AMI configuration
+    amiFamily: AL2023
+    amiSelectorTerms: []
+    # - id: ami-0123456789abcdef0  # Specific AMI ID
+    # - name: "amazon-eks-node-al2023-*"  # AMI name pattern
+
+    # Instance profile for runner nodes (required)
+    instanceProfile: ""  # e.g., KarpenterNodeInstanceProfile-my-cluster
+
+    # Subnet selection (required)
+    subnetSelectorTerms: []
+    # - tags:
+    #     karpenter.sh/discovery: my-cluster
+    # - id: subnet-0123456789abcdef0
+
+    # Security group selection (required)
+    securityGroupSelectorTerms: []
+    # - tags:
+    #     karpenter.sh/discovery: my-cluster
+    # - id: sg-0123456789abcdef0
+
+    # Block device mappings
+    blockDeviceMappings:
+      - deviceName: /dev/xvda
+        ebs:
+          volumeSize: 50Gi
+          volumeType: gp3
+          encrypted: true
+          deleteOnTermination: true
+
+    # Metadata options (IMDSv2 required)
+    metadataOptions:
+      httpEndpoint: enabled
+      httpProtocolIPv6: disabled
+      httpPutResponseHopLimit: 2
+      httpTokens: required  # IMDSv2
+
+    # User data for node initialization (optional)
+    userData: ""
+
+  # Instance requirements
+  requirements:
+    # Architectures to use
+    architectures:
+      - arm64
+      - amd64
+    # Capacity types (spot preferred)
+    capacityTypes:
+      - spot
+      - on-demand
+    # Instance categories
+    instanceCategories:
+      - c  # Compute optimized
+      - m  # General purpose
+      - r  # Memory optimized
+    # Instance families (optional, more specific than categories)
+    instanceFamilies: []
+    # - c7g
+    # - c6g
+    # - m7g
+    # Instance sizes
+    instanceSizes:
+      - medium
+      - large
+      - xlarge
+      - 2xlarge
+    # CPU limits
+    minCpu: 2
+    maxCpu: 16
+    # Operating system
+    os: linux

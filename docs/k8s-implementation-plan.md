@@ -827,12 +827,12 @@ pkg/provider/
 | `deploy/helm/runs-fleet/templates/NOTES.txt` | ✅ Done | Post-install instructions |
 | `deploy/helm/runs-fleet/templates/istio-*.yaml` | ✅ Done | Istio VirtualService, DestinationRule, PeerAuthentication (conditional) |
 
-### Phase 8: Karpenter Setup 🔴 NOT STARTED
+### Phase 8: Karpenter Setup ✅ COMPLETE
 | Item | Status | Notes |
 |------|--------|-------|
-| NodePool for runners | 🔴 TODO | Spot-first, arm64/amd64 |
-| EC2NodeClass | 🔴 TODO | AMI, security groups, subnet selection |
-| Documentation | 🔴 TODO | Setup guide for EKS + Karpenter |
+| `deploy/helm/runs-fleet/templates/karpenter-nodepool.yaml` | ✅ Done | Spot-first, arm64/amd64, configurable requirements |
+| `deploy/helm/runs-fleet/templates/karpenter-ec2nodeclass.yaml` | ✅ Done | AMI, security groups, subnet selection, IMDSv2 |
+| Documentation | ✅ Done | NOTES.txt includes Karpenter prerequisites and verification |
 
 ---
 
@@ -847,9 +847,8 @@ pkg/provider/
 | 5. Agent K8s Support | ✅ Complete | 100% |
 | 6. Runner Docker Image | ✅ Complete | 100% |
 | 7. Helm Chart | ✅ Complete | 100% |
-| 8. Karpenter Setup | 🔴 Not Started | 0% |
+| 8. Karpenter Setup | ✅ Complete | 100% |
 
-**Overall Progress: ~87.5%**
+**Overall Progress: 100%**
 
-**Next Steps:**
-1. Karpenter Setup (Phase 8) - NodePool, EC2NodeClass, documentation
+**K8s Migration Complete!**
