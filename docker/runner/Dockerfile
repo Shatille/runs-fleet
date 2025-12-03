@@ -60,6 +60,10 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
     && rm -rf /var/lib/apt/lists/*
 
 # Create runner user with restricted sudo (apt only for workflow package installs)
+# SECURITY NOTE: Sudo access is intentional to support workflows needing build deps.
+# - Restricted from NOPASSWD:ALL (GitHub default) to apt-only commands
+# - Ephemeral containers mitigate persistence risk
+# - High-security deployments: consider restricting apt sources or using allowlisted packages
 RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
