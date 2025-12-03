@@ -288,3 +288,295 @@ func TestK8sPoolSchedule_TimeFields(t *testing.T) {
 			retrieved.UpdatedAt, before, after)
 	}
 }
+
+func TestNewValkeyStateStoreWithClient_DefaultPrefix(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	// Empty prefix should default to "runs-fleet:"
+	store := NewValkeyStateStoreWithClient(client, "")
+	if store.keyPrefix != "runs-fleet:" {
+		t.Errorf("keyPrefix = %q, want %q", store.keyPrefix, "runs-fleet:")
+	}
+}
+
+func TestNewValkeyStateStoreWithClient_CustomPrefix(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	store := NewValkeyStateStoreWithClient(client, "custom:")
+	if store.keyPrefix != "custom:" {
+		t.Errorf("keyPrefix = %q, want %q", store.keyPrefix, "custom:")
+	}
+}
+
+func TestValkeyStateStore_PoolKey(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	store := NewValkeyStateStoreWithClient(client, "test:")
+
+	// Test internal key generation
+	key := store.poolKey("my-pool")
+	expected := "test:pool:my-pool"
+	if key != expected {
+		t.Errorf("poolKey() = %q, want %q", key, expected)
+	}
+}
+
+func TestValkeyStateStore_PoolsIndexKey(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	store := NewValkeyStateStoreWithClient(client, "prefix:")
+
+	key := store.poolsIndexKey()
+	expected := "prefix:pools:index"
+	if key != expected {
+		t.Errorf("poolsIndexKey() = %q, want %q", key, expected)
+	}
+}
+
+func TestValkeyStateStore_UpdateConfig(t *testing.T) {
+	store, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	// Initial config
+	config := &K8sPoolConfig{
+		PoolName:      "update-test",
+		Arm64Replicas: 2,
+		Amd64Replicas: 1,
+	}
+
+	if err := store.SaveK8sPoolConfig(ctx, config); err != nil {
+		t.Fatalf("initial SaveK8sPoolConfig failed: %v", err)
+	}
+
+	// Update config
+	config.Arm64Replicas = 5
+	config.Amd64Replicas = 3
+
+	if err := store.SaveK8sPoolConfig(ctx, config); err != nil {
+		t.Fatalf("update SaveK8sPoolConfig failed: %v", err)
+	}
+
+	retrieved, err := store.GetK8sPoolConfig(ctx, "update-test")
+	if err != nil {
+		t.Fatalf("GetK8sPoolConfig failed: %v", err)
+	}
+
+	if retrieved.Arm64Replicas != 5 {
+		t.Errorf("Arm64Replicas = %d, want 5", retrieved.Arm64Replicas)
+	}
+	if retrieved.Amd64Replicas != 3 {
+		t.Errorf("Amd64Replicas = %d, want 3", retrieved.Amd64Replicas)
+	}
+}
+
+func TestValkeyStateStore_ListEmptyPools(t *testing.T) {
+	store, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	pools, err := store.ListK8sPools(ctx)
+	if err != nil {
+		t.Fatalf("ListK8sPools failed: %v", err)
+	}
+
+	if len(pools) != 0 {
+		t.Errorf("expected 0 pools, got %d", len(pools))
+	}
+}
+
+func TestValkeyStateStore_Close(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
+	store := NewValkeyStateStoreWithClient(client, "test:")
+
+	// Close should not error
+	if err := store.Close(); err != nil {
+		t.Errorf("Close() error = %v", err)
+	}
+}
+
+func TestValkeyStateStore_AllResourceFields(t *testing.T) {
+	store, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	config := &K8sPoolConfig{
+		PoolName:           "full-config",
+		Arm64Replicas:      4,
+		Amd64Replicas:      2,
+		IdleTimeoutMinutes: 30,
+		Resources: K8sResourceRequests{
+			CPU:    "4",
+			Memory: "8Gi",
+		},
+	}
+
+	if err := store.SaveK8sPoolConfig(ctx, config); err != nil {
+		t.Fatalf("SaveK8sPoolConfig failed: %v", err)
+	}
+
+	retrieved, err := store.GetK8sPoolConfig(ctx, "full-config")
+	if err != nil {
+		t.Fatalf("GetK8sPoolConfig failed: %v", err)
+	}
+
+	if retrieved.Resources.CPU != "4" {
+		t.Errorf("Resources.CPU = %q, want %q", retrieved.Resources.CPU, "4")
+	}
+	if retrieved.Resources.Memory != "8Gi" {
+		t.Errorf("Resources.Memory = %q, want %q", retrieved.Resources.Memory, "8Gi")
+	}
+}
+
+func TestK8sPoolSchedule_AllFields(t *testing.T) {
+	schedule := K8sPoolSchedule{
+		Name:          "night-shift",
+		StartHour:     22,
+		EndHour:       6,
+		DaysOfWeek:    []int{1, 2, 3, 4, 5},
+		Arm64Replicas: 1,
+		Amd64Replicas: 1,
+	}
+
+	if schedule.Name != "night-shift" {
+		t.Errorf("Name = %q, want %q", schedule.Name, "night-shift")
+	}
+	if schedule.StartHour != 22 {
+		t.Errorf("StartHour = %d, want 22", schedule.StartHour)
+	}
+	if schedule.EndHour != 6 {
+		t.Errorf("EndHour = %d, want 6", schedule.EndHour)
+	}
+	if len(schedule.DaysOfWeek) != 5 {
+		t.Errorf("DaysOfWeek length = %d, want 5", len(schedule.DaysOfWeek))
+	}
+}
+
+func TestK8sResourceRequests_EmptyFields(t *testing.T) {
+	resources := K8sResourceRequests{}
+
+	if resources.CPU != "" {
+		t.Errorf("CPU should be empty, got %q", resources.CPU)
+	}
+	if resources.Memory != "" {
+		t.Errorf("Memory should be empty, got %q", resources.Memory)
+	}
+}
+
+func TestValkeyOptions_AllFields(t *testing.T) {
+	opts := ValkeyOptions{
+		Addr:     "localhost:6379",
+		Password: "secret",
+		DB:       1,
+		UseTLS:   true,
+	}
+
+	if opts.Addr != "localhost:6379" {
+		t.Errorf("Addr = %q, want %q", opts.Addr, "localhost:6379")
+	}
+	if opts.Password != "secret" {
+		t.Errorf("Password = %q, want %q", opts.Password, "secret")
+	}
+	if opts.DB != 1 {
+		t.Errorf("DB = %d, want 1", opts.DB)
+	}
+	if !opts.UseTLS {
+		t.Error("UseTLS should be true")
+	}
+}
+
+func TestValkeyStateStore_DeleteNonexistentPool(t *testing.T) {
+	store, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	// Deleting a nonexistent pool should not error
+	err := store.DeleteK8sPoolConfig(ctx, "nonexistent-pool")
+	if err != nil {
+		t.Errorf("DeleteK8sPoolConfig for nonexistent pool error = %v", err)
+	}
+}
+
+func TestValkeyStateStore_UpdatePoolState_MultipleUpdates(t *testing.T) {
+	store, mr := setupTestValkey(t)
+	defer mr.Close()
+
+	ctx := context.Background()
+
+	// Multiple updates should overwrite
+	for i := 0; i < 3; i++ {
+		err := store.UpdateK8sPoolState(ctx, "multi-update", i, i*2)
+		if err != nil {
+			t.Fatalf("UpdateK8sPoolState iteration %d failed: %v", i, err)
+		}
+	}
+
+	// Verify state key exists
+	stateKey := "test:pool-state:multi-update"
+	exists := mr.Exists(stateKey)
+	if !exists {
+		t.Error("pool state key should exist after updates")
+	}
+}
+
+func TestK8sPoolConfig_ZeroValues(t *testing.T) {
+	config := K8sPoolConfig{}
+
+	if config.PoolName != "" {
+		t.Errorf("PoolName should be empty, got %q", config.PoolName)
+	}
+	if config.Arm64Replicas != 0 {
+		t.Errorf("Arm64Replicas = %d, want 0", config.Arm64Replicas)
+	}
+	if config.Amd64Replicas != 0 {
+		t.Errorf("Amd64Replicas = %d, want 0", config.Amd64Replicas)
+	}
+	if !config.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt should be zero value")
+	}
+}
