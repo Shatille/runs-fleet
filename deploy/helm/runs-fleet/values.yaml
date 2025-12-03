@@ -7,7 +7,7 @@ orchestrator:
     tag: latest
     pullPolicy: Always
 
-  replicas: 1
+  replicas: 2
 
   resources:
     requests:
@@ -49,9 +49,9 @@ runner:
 
 # GitHub App configuration
 github:
-  appId: ""  # Required: GitHub App ID
-  privateKey: ""  # Required: GitHub App private key (PEM format)
-  webhookSecret: ""  # Required: Webhook secret
+  appId: "" # Required: GitHub App ID
+  privateKey: "" # Required: GitHub App private key (PEM format)
+  webhookSecret: "" # Required: Webhook secret
 
 # Valkey (Redis-compatible) configuration
 valkey:
@@ -73,7 +73,7 @@ valkey:
   persistence:
     enabled: true
     size: 1Gi
-    storageClass: ""  # Use default if empty
+    storageClass: "" # Use default if empty
 
 # Ingress configuration
 ingress:
@@ -103,13 +103,13 @@ warmPool:
   # When a real job arrives, placeholder is preempted (~5-10s vs ~60-90s cold start)
   placeholders:
     arm64:
-      replicas: 0  # Number of placeholder pods for arm64
+      replicas: 0 # Number of placeholder pods for arm64
       resources:
         requests:
           cpu: "2"
           memory: 4Gi
     amd64:
-      replicas: 0  # Number of placeholder pods for amd64
+      replicas: 0 # Number of placeholder pods for amd64
       resources:
         requests:
           cpu: "2"
@@ -118,7 +118,7 @@ warmPool:
   # Priority class for placeholder pods (lower value = lower priority = evictable)
   priorityClass:
     name: runs-fleet-placeholder
-    value: -10  # Negative priority, easily preempted by real jobs
+    value: -10 # Negative priority, easily preempted by real jobs
 
 # Coordinator configuration (for multi-replica deployments)
 coordinator:
@@ -139,7 +139,7 @@ istio:
     tls:
       enabled: true
       mode: SIMPLE
-      credentialName: runs-fleet-tls  # Secret containing TLS cert
+      credentialName: runs-fleet-tls # Secret containing TLS cert
 
   # Certificate (requires cert-manager)
   certificate:
@@ -173,12 +173,6 @@ istio:
         interval: 30s
         baseEjectionTime: 30s
 
-  # PeerAuthentication for mTLS
-  peerAuthentication:
-    enabled: false
-    mtls:
-      mode: STRICT  # STRICT, PERMISSIVE, or DISABLE
-
 # Karpenter configuration (requires Karpenter v1.0+ installed on EKS)
 karpenter:
   enabled: false
@@ -187,15 +181,15 @@ karpenter:
   nodePool:
     name: runs-fleet-runners
     # Node expiration (forces periodic refresh, prevents stale nodes)
-    expireAfter: 720h  # 30 days
+    expireAfter: 720h # 30 days
     # Disruption settings
     disruption:
       consolidationPolicy: WhenEmpty
       consolidateAfter: 30s
     # Resource limits for this pool
     limits:
-      cpu: "1000"
-      memory: 2000Gi
+      cpu: "10000"
+      memory: 20480Gi
     # Weight for scheduling priority (higher = preferred)
     weight: 10
 
@@ -210,7 +204,7 @@ karpenter:
     # - name: "amazon-eks-node-al2023-*"  # AMI name pattern
 
     # Instance profile for runner nodes (required)
-    instanceProfile: ""  # e.g., KarpenterNodeInstanceProfile-my-cluster
+    instanceProfile: "" # e.g., KarpenterNodeInstanceProfile-my-cluster
 
     # Subnet selection (required)
     subnetSelectorTerms: []
@@ -238,7 +232,7 @@ karpenter:
       httpEndpoint: enabled
       httpProtocolIPv6: disabled
       httpPutResponseHopLimit: 2
-      httpTokens: required  # IMDSv2
+      httpTokens: required # IMDSv2
 
     # User data for node initialization (optional)
     userData: ""
@@ -255,9 +249,9 @@ karpenter:
       - on-demand
     # Instance categories
     instanceCategories:
-      - c  # Compute optimized
-      - m  # General purpose
-      - r  # Memory optimized
+      - c # Compute optimized
+      - m # General purpose
+      - r # Memory optimized
     # Instance families (optional, more specific than categories)
     instanceFamilies: []
     # - c7g

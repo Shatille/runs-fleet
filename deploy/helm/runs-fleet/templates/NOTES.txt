@@ -1,86 +1,21 @@
-runs-fleet has been installed!
+runs-fleet installed.
 
-1. Get the application URL:
-{{- if .Values.istio.enabled }}
+Webhook URL:
 {{- if .Values.istio.gateway.enabled }}
-  http{{ if .Values.istio.gateway.tls.enabled }}s{{ end }}://{{ .Values.istio.gateway.host }}/webhook
-{{- end }}
+  https://{{ .Values.istio.gateway.host }}/webhook
 {{- else if .Values.ingress.enabled }}
-  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/webhook
+  https://{{ .Values.ingress.host }}/webhook
 {{- else }}
   kubectl port-forward svc/{{ include "runs-fleet.fullname" . }}-orchestrator 8080:8080 -n {{ .Release.Namespace }}
-  Then visit: http://localhost:8080/webhook
+  http://localhost:8080/webhook
 {{- end }}
 
-2. Configure your GitHub App webhook to point to:
-{{- if and .Values.istio.enabled .Values.istio.gateway.enabled }}
-   https://{{ .Values.istio.gateway.host }}/webhook
-{{- else if .Values.ingress.enabled }}
-   https://{{ .Values.ingress.host }}/webhook
-{{- else }}
-   <your-external-url>/webhook
-{{- end }}
-
-3. View logs:
-   kubectl logs -f deployment/{{ include "runs-fleet.fullname" . }}-orchestrator -n {{ .Release.Namespace }}
-
-4. Check orchestrator status:
-   kubectl get pods -l app.kubernetes.io/component=orchestrator -n {{ .Release.Namespace }}
-{{- if .Values.valkey.enabled }}
-
-5. Valkey is running at:
-   {{ include "runs-fleet.valkey.address" . }}
-{{- end }}
+Logs: kubectl logs -f deploy/{{ include "runs-fleet.fullname" . }}-orchestrator -n {{ .Release.Namespace }}
 {{- if .Values.warmPool.enabled }}
 
-WARM POOL:
-  Placeholder pods keep nodes warm for faster job startup (~5-10s vs ~60-90s).
-  PriorityClass: {{ .Values.warmPool.priorityClass.name }} (value: {{ .Values.warmPool.priorityClass.value }})
-  {{- if gt (int .Values.warmPool.placeholders.arm64.replicas) 0 }}
-  arm64 placeholders: {{ .Values.warmPool.placeholders.arm64.replicas }} ({{ .Values.warmPool.placeholders.arm64.resources.requests.cpu }} CPU, {{ .Values.warmPool.placeholders.arm64.resources.requests.memory }})
-  {{- end }}
-  {{- if gt (int .Values.warmPool.placeholders.amd64.replicas) 0 }}
-  amd64 placeholders: {{ .Values.warmPool.placeholders.amd64.replicas }} ({{ .Values.warmPool.placeholders.amd64.resources.requests.cpu }} CPU, {{ .Values.warmPool.placeholders.amd64.resources.requests.memory }})
-  {{- end }}
-
-  Check placeholder status:
-    kubectl get pods -l app.kubernetes.io/component=placeholder -n {{ .Release.Namespace }}
+Warm pool: kubectl get pods -l app.kubernetes.io/component=placeholder -n {{ .Release.Namespace }}
 {{- end }}
 {{- if .Values.karpenter.enabled }}
 
-KARPENTER SETUP:
-  NodePool: {{ .Values.karpenter.nodePool.name }}
-  EC2NodeClass: {{ .Values.karpenter.ec2NodeClass.name }}
-
-  Prerequisites:
-  - Karpenter v1.0+ installed on EKS cluster
-  - IAM instance profile: {{ .Values.karpenter.ec2NodeClass.instanceProfile | default "<not configured>" }}
-  - Subnets and security groups tagged for Karpenter discovery
-
-  Verify Karpenter resources:
-    kubectl get nodepools
-    kubectl get ec2nodeclasses
+Karpenter: kubectl get nodepools,ec2nodeclasses
 {{- end }}
-{{- if .Values.istio.enabled }}
-
-ISTIO SETUP:
-  Sidecar injection: {{ .Values.istio.sidecarInjection }}
-{{- if .Values.istio.gateway.enabled }}
-  Gateway: {{ include "runs-fleet.fullname" . }}
-{{- end }}
-{{- if .Values.istio.virtualService.enabled }}
-  VirtualService: {{ include "runs-fleet.fullname" . }}
-{{- end }}
-{{- if .Values.istio.certificate.enabled }}
-  Certificate: {{ include "runs-fleet.fullname" . }} (via cert-manager)
-{{- end }}
-{{- end }}
-
-SECURITY NOTICE:
-  GitHub App credentials (privateKey, webhookSecret) are stored in a Kubernetes Secret.
-  For production deployments, consider using external secret management:
-  - Sealed Secrets: https://sealed-secrets.netlify.app/
-  - External Secrets Operator: https://external-secrets.io/
-  - HashiCorp Vault: https://www.vaultproject.io/
-
-For more information, visit: https://github.com/Shatille/runs-fleet
