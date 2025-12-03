@@ -861,3 +861,438 @@ func TestJobTracer_NestedSpans(_ *testing.T) {
 	span2.End()
 	span1.End()
 }
+
+func TestConfig_EnabledField(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+	}{
+		{"enabled true", true},
+		{"enabled false", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Enabled:       tt.enabled,
+				Endpoint:      "localhost:4317",
+				SamplingRatio: 1.0,
+			}
+
+			if cfg.Enabled != tt.enabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.enabled)
+			}
+		})
+	}
+}
+
+func TestInit_WithNilConfig_ReturnsDisabledProvider(t *testing.T) {
+	provider, err := Init(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if provider == nil {
+		t.Fatal("Init() returned nil provider")
+	}
+
+	if provider.IsEnabled() {
+		t.Error("provider should be disabled for nil config")
+	}
+
+	if provider.provider != nil {
+		t.Error("internal provider should be nil for disabled provider")
+	}
+}
+
+func TestInit_WithDisabledConfig_ReturnsDisabledProvider(t *testing.T) {
+	cfg := &Config{
+		Enabled:       false,
+		Endpoint:      "localhost:4317",
+		SamplingRatio: 0.5,
+	}
+
+	provider, err := Init(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if provider.IsEnabled() {
+		t.Error("provider should be disabled when config.Enabled is false")
+	}
+}
+
+func TestProvider_Shutdown_DisabledProvider(t *testing.T) {
+	provider := &Provider{
+		provider: nil,
+		enabled:  false,
+	}
+
+	err := provider.Shutdown(context.Background())
+	if err != nil {
+		t.Errorf("Shutdown() error = %v, want nil", err)
+	}
+}
+
+func TestProvider_Shutdown_WithContext(t *testing.T) {
+	// Test shutdown with cancelled context for disabled provider
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	provider := &Provider{
+		provider: nil,
+		enabled:  false,
+	}
+
+	// Should still succeed for nil provider
+	err := provider.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Shutdown() with cancelled context error = %v", err)
+	}
+}
+
+func TestLoadConfig_EmptyEndpoint(t *testing.T) {
+	// Save and restore environment
+	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	defer func() {
+		_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
+	}()
+
+	// Set empty endpoint
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	cfg := LoadConfig()
+
+	if cfg.Enabled {
+		t.Error("LoadConfig() should return disabled config for empty endpoint")
+	}
+}
+
+func TestLoadConfig_SamplingRatioEdgeCases(t *testing.T) {
+	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	originalRatio := os.Getenv("OTEL_TRACE_SAMPLING_RATIO")
+	defer func() {
+		_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
+		_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", originalRatio)
+	}()
+
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
+
+	tests := []struct {
+		name          string
+		ratio         string
+		expectedRatio float64
+	}{
+		{"very small positive", "0.0001", 0.0001},
+		{"almost one", "0.9999", 0.9999},
+		{"scientific notation positive", "1e-4", 0.0001},
+		{"with spaces", " 0.5 ", 0.5}, // Sscanf handles leading/trailing spaces
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", tt.ratio)
+
+			cfg := LoadConfig()
+
+			if cfg.SamplingRatio != tt.expectedRatio {
+				t.Errorf("SamplingRatio = %f, want %f", cfg.SamplingRatio, tt.expectedRatio)
+			}
+		})
+	}
+}
+
+func TestAddEvent_WithContext(_ *testing.T) {
+	// Create a proper span context
+	ctx, span := StartSpan(context.Background(), "test-event-span")
+	defer span.End()
+
+	// Add event with no attributes - should not panic
+	AddEvent(ctx, "empty-event")
+
+	// Add event with single attribute
+	AddEvent(ctx, "single-attr-event", attribute.String("key", "value"))
+
+	// Add event with multiple attributes
+	AddEvent(ctx, "multi-attr-event",
+		attribute.String("string-key", "string-value"),
+		attribute.Int("int-key", 42),
+		attribute.Bool("bool-key", true),
+	)
+}
+
+func TestSetAttributes_WithContext(_ *testing.T) {
+	ctx, span := StartSpan(context.Background(), "test-attrs-span")
+	defer span.End()
+
+	// Set no attributes - should not panic
+	SetAttributes(ctx)
+
+	// Set single attribute
+	SetAttributes(ctx, attribute.String("key", "value"))
+
+	// Set multiple attributes of different types
+	SetAttributes(ctx,
+		attribute.String("str", "value"),
+		attribute.Int("int", 123),
+		attribute.Int64("int64", 9876543210),
+		attribute.Float64("float", 3.14159),
+		attribute.Bool("bool", true),
+	)
+}
+
+func TestRecordError_NilError(_ *testing.T) {
+	ctx, span := StartSpan(context.Background(), "test-error-span")
+	defer span.End()
+
+	// Should not panic with nil error
+	RecordError(ctx, nil)
+}
+
+func TestRecordError_WithError(_ *testing.T) {
+	ctx, span := StartSpan(context.Background(), "test-error-span")
+	defer span.End()
+
+	// Test various error types
+	testErrors := []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		os.ErrNotExist,
+		os.ErrPermission,
+	}
+
+	for _, err := range testErrors {
+		RecordError(ctx, err)
+	}
+}
+
+func TestExtractTraceContext_EmptyMap(t *testing.T) {
+	carrier := make(map[string]string)
+
+	ctx := ExtractTraceContext(context.Background(), carrier)
+	if ctx == nil {
+		t.Error("ExtractTraceContext() should not return nil")
+	}
+}
+
+func TestInjectExtractTraceContext_Roundtrip(t *testing.T) {
+	// Create a span with context
+	ctx, span := StartSpan(context.Background(), "roundtrip-span")
+	defer span.End()
+
+	// Inject
+	carrier := InjectTraceContext(ctx)
+
+	// Extract
+	extractedCtx := ExtractTraceContext(context.Background(), carrier)
+
+	if extractedCtx == nil {
+		t.Error("ExtractTraceContext() returned nil")
+	}
+}
+
+func TestWithTimeout_VariousDurations(t *testing.T) {
+	tests := []struct {
+		name      string
+		duration  time.Duration
+		operation string
+	}{
+		{"millisecond", 100 * time.Millisecond, "fast-op"},
+		{"second", 1 * time.Second, "medium-op"},
+		{"minute", 1 * time.Minute, "slow-op"},
+		{"zero", 0, "instant-op"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := WithTimeout(context.Background(), tt.duration, tt.operation)
+			defer cancel()
+
+			if ctx == nil {
+				t.Error("WithTimeout() returned nil context")
+			}
+
+			_, hasDeadline := ctx.Deadline()
+			if !hasDeadline {
+				t.Error("WithTimeout() should set deadline")
+			}
+		})
+	}
+}
+
+func TestJobTracer_StartJobSpan_Attributes(t *testing.T) {
+	tracer := NewJobTracer()
+
+	tests := []struct {
+		name  string
+		jobID string
+		runID string
+	}{
+		{"normal IDs", "job-123", "run-456"},
+		{"empty IDs", "", ""},
+		{"long IDs", "job-very-long-identifier-12345678901234567890", "run-very-long-identifier-12345678901234567890"},
+		{"special chars", "job-abc_def.123", "run-xyz_uvw.789"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, span := tracer.StartJobSpan(context.Background(), tt.jobID, tt.runID)
+			if ctx == nil || span == nil {
+				t.Error("StartJobSpan() returned nil")
+			}
+			span.End()
+		})
+	}
+}
+
+func TestJobTracer_StartFleetSpan_Attributes(t *testing.T) {
+	tracer := NewJobTracer()
+
+	tests := []struct {
+		name         string
+		instanceType string
+		pool         string
+	}{
+		{"normal values", "m5.large", "default"},
+		{"empty values", "", ""},
+		{"complex instance type", "m6g.8xlarge", "gpu-pool-large"},
+		{"with underscore", "t4g_medium", "my_custom_pool"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, span := tracer.StartFleetSpan(context.Background(), tt.instanceType, tt.pool)
+			if ctx == nil || span == nil {
+				t.Error("StartFleetSpan() returned nil")
+			}
+			span.End()
+		})
+	}
+}
+
+func TestHTTPMiddleware_Fields(t *testing.T) {
+	middleware := NewHTTPMiddleware()
+
+	if middleware == nil {
+		t.Fatal("NewHTTPMiddleware() returned nil")
+	}
+
+	// Verify the tracer field is set
+	if middleware.tracer == nil {
+		t.Error("HTTPMiddleware.tracer should not be nil")
+	}
+}
+
+func TestStartSpan_ReturnsValidSpan(t *testing.T) {
+	ctx, span := StartSpan(context.Background(), "valid-span")
+	if ctx == nil {
+		t.Error("StartSpan() returned nil context")
+	}
+	if span == nil {
+		t.Error("StartSpan() returned nil span")
+	}
+
+	// Verify span can be ended without panic
+	span.End()
+
+	// Verify span from context after ending
+	retrievedSpan := SpanFromContext(ctx)
+	if retrievedSpan == nil {
+		t.Error("SpanFromContext() returned nil after span.End()")
+	}
+}
+
+func TestTracer_DifferentNames(t *testing.T) {
+	names := []string{
+		"http",
+		"job",
+		"fleet",
+		"custom-tracer",
+		"runs-fleet",
+		"",
+	}
+
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			tracer := Tracer(name)
+			if tracer == nil {
+				t.Errorf("Tracer(%q) returned nil", name)
+			}
+		})
+	}
+}
+
+func TestProvider_EnabledStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider *Provider
+		expected bool
+	}{
+		{
+			name:     "enabled true",
+			provider: &Provider{enabled: true},
+			expected: true,
+		},
+		{
+			name:     "enabled false",
+			provider: &Provider{enabled: false},
+			expected: false,
+		},
+		{
+			name:     "enabled with nil internal provider",
+			provider: &Provider{enabled: true, provider: nil},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.provider.IsEnabled() != tt.expected {
+				t.Errorf("IsEnabled() = %v, want %v", tt.provider.IsEnabled(), tt.expected)
+			}
+		})
+	}
+}
+
+func TestServiceConstants(t *testing.T) {
+	// Verify service constants have expected values
+	if serviceName == "" {
+		t.Error("serviceName should not be empty")
+	}
+	if serviceVersion == "" {
+		t.Error("serviceVersion should not be empty")
+	}
+
+	// Verify specific values
+	if serviceName != "runs-fleet" {
+		t.Errorf("serviceName = %s, want runs-fleet", serviceName)
+	}
+	if serviceVersion != "1.0.0" {
+		t.Errorf("serviceVersion = %s, want 1.0.0", serviceVersion)
+	}
+}
+
+func TestConcurrentSpanCreation(_ *testing.T) {
+	// Test concurrent span creation doesn't cause race conditions
+	done := make(chan bool)
+	tracerJob := NewJobTracer()
+
+	for i := 0; i < 20; i++ {
+		go func(id int) {
+			ctx, span := StartSpan(context.Background(), "concurrent-test")
+			AddEvent(ctx, "event", attribute.Int("id", id))
+			SetAttributes(ctx, attribute.String("worker", "worker-"+string(rune('A'+id%26))))
+
+			// Also test job tracer concurrently
+			_, jobSpan := tracerJob.StartJobSpan(ctx, "job", "run")
+			jobSpan.End()
+
+			span.End()
+			done <- true
+		}(i)
+	}
+
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+}
