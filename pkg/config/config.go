@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -65,6 +66,8 @@ type Config struct {
 	KubeNodeSelector       map[string]string // Default node selector for runners
 	KubeRunnerImage        string            // Container image for runner pods
 	KubeIdleTimeoutMinutes int               // Idle timeout for K8s pods (default: 10)
+	KubeReleaseName        string            // Helm release name for deployment naming
+	KubeWarmPoolEnabled    bool              // Enable K8s warm pool management
 
 	// Valkey queue configuration (K8s mode only)
 	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
@@ -118,12 +121,12 @@ func Load() (*Config, error) {
 		SecurityGroupID:    getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
 		InstanceProfileARN: getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
 		KeyName:            getEnv("RUNS_FLEET_KEY_NAME", ""),
-		SpotEnabled:        getEnv("RUNS_FLEET_SPOT_ENABLED", "true") == "true",
+		SpotEnabled:        getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
 		MaxRuntimeMinutes:  maxRuntimeMinutes,
 		LogLevel:           getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
 		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 
-		CoordinatorEnabled: getEnv("RUNS_FLEET_COORDINATOR_ENABLED", "false") == "true",
+		CoordinatorEnabled: getEnvBool("RUNS_FLEET_COORDINATOR_ENABLED", false),
 		InstanceID:         getEnv("RUNS_FLEET_INSTANCE_ID", ""),
 
 		CacheSecret: getEnv("RUNS_FLEET_CACHE_SECRET", ""),
@@ -135,6 +138,8 @@ func Load() (*Config, error) {
 		KubeServiceAccount:     getEnv("RUNS_FLEET_KUBE_SERVICE_ACCOUNT", "runs-fleet-runner"),
 		KubeRunnerImage:        getEnv("RUNS_FLEET_KUBE_RUNNER_IMAGE", ""),
 		KubeIdleTimeoutMinutes: kubeIdleTimeoutMinutes,
+		KubeReleaseName:        getEnv("RUNS_FLEET_KUBE_RELEASE_NAME", "runs-fleet"),
+		KubeWarmPoolEnabled:    getEnvBool("RUNS_FLEET_KUBE_WARM_POOL_ENABLED", false),
 
 		// Valkey queue (K8s mode)
 		ValkeyAddr:     getEnv("RUNS_FLEET_VALKEY_ADDR", "valkey:6379"),
@@ -264,6 +269,17 @@ func getEnvInt(key string, defaultValue int) (int, error) {
 		return result, nil
 	}
 	return defaultValue, nil
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return parsed
+	}
+	return defaultValue
 }
 
 func splitAndFilter(s string) []string {
