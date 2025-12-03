@@ -279,46 +279,40 @@ func TestGetResourceRequirements(t *testing.T) {
 	p := NewProviderWithClient(nil, cfg)
 
 	tests := []struct {
-		name        string
-		spec        *provider.RunnerSpec
-		wantCPU     string
-		wantMem     string
-		wantStorage string
+		name    string
+		spec    *provider.RunnerSpec
+		wantCPU string
+		wantMem string
 	}{
 		{
-			name:        "explicit resources",
-			spec:        &provider.RunnerSpec{CPUCores: 4, MemoryGiB: 8, StorageGiB: 50},
-			wantCPU:     "4",
-			wantMem:     "8Gi",
-			wantStorage: "50Gi",
+			name:    "explicit resources",
+			spec:    &provider.RunnerSpec{CPUCores: 4, MemoryGiB: 8, StorageGiB: 50},
+			wantCPU: "4",
+			wantMem: "8Gi",
 		},
 		{
-			name:        "large resources",
-			spec:        &provider.RunnerSpec{CPUCores: 8, MemoryGiB: 32, StorageGiB: 100},
-			wantCPU:     "8",
-			wantMem:     "32Gi",
-			wantStorage: "100Gi",
+			name:    "large resources",
+			spec:    &provider.RunnerSpec{CPUCores: 8, MemoryGiB: 32, StorageGiB: 100},
+			wantCPU: "8",
+			wantMem: "32Gi",
 		},
 		{
-			name:        "fractional memory",
-			spec:        &provider.RunnerSpec{CPUCores: 4, MemoryGiB: 8.5, StorageGiB: 50},
-			wantCPU:     "4",
-			wantMem:     "8704Mi", // 8.5 * 1024 = 8704Mi
-			wantStorage: "50Gi",
+			name:    "fractional memory",
+			spec:    &provider.RunnerSpec{CPUCores: 4, MemoryGiB: 8.5, StorageGiB: 50},
+			wantCPU: "4",
+			wantMem: "8704Mi", // 8.5 * 1024 = 8704Mi
 		},
 		{
-			name:        "defaults when zero",
-			spec:        &provider.RunnerSpec{},
-			wantCPU:     "2",
-			wantMem:     "4Gi",
-			wantStorage: "30Gi",
+			name:    "defaults when zero",
+			spec:    &provider.RunnerSpec{},
+			wantCPU: "2",
+			wantMem: "4Gi",
 		},
 		{
-			name:        "partial spec uses defaults",
-			spec:        &provider.RunnerSpec{CPUCores: 4},
-			wantCPU:     "4",
-			wantMem:     "4Gi",
-			wantStorage: "30Gi",
+			name:    "partial spec uses defaults",
+			spec:    &provider.RunnerSpec{CPUCores: 4},
+			wantCPU: "4",
+			wantMem: "4Gi",
 		},
 	}
 
@@ -326,7 +320,7 @@ func TestGetResourceRequirements(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			resources := p.getResourceRequirements(tt.spec)
 
-			// Check requests
+			// Check requests (storage handled via PVC, not ephemeral)
 			cpu := resources.Requests[corev1.ResourceCPU]
 			if cpu.String() != tt.wantCPU {
 				t.Errorf("CPU request = %v, want %v", cpu.String(), tt.wantCPU)
@@ -335,11 +329,6 @@ func TestGetResourceRequirements(t *testing.T) {
 			mem := resources.Requests[corev1.ResourceMemory]
 			if mem.String() != tt.wantMem {
 				t.Errorf("Memory request = %v, want %v", mem.String(), tt.wantMem)
-			}
-
-			storage := resources.Requests[corev1.ResourceEphemeralStorage]
-			if storage.String() != tt.wantStorage {
-				t.Errorf("Storage request = %v, want %v", storage.String(), tt.wantStorage)
 			}
 
 			// Check limits match requests
@@ -351,11 +340,6 @@ func TestGetResourceRequirements(t *testing.T) {
 			memLimit := resources.Limits[corev1.ResourceMemory]
 			if memLimit.String() != tt.wantMem {
 				t.Errorf("Memory limit = %v, want %v", memLimit.String(), tt.wantMem)
-			}
-
-			storageLimit := resources.Limits[corev1.ResourceEphemeralStorage]
-			if storageLimit.String() != tt.wantStorage {
-				t.Errorf("Storage limit = %v, want %v", storageLimit.String(), tt.wantStorage)
 			}
 		})
 	}
@@ -843,6 +827,179 @@ func TestCreateRunner_NonPrivate_SkipsNetworkPolicy(t *testing.T) {
 
 	if len(netpols.Items) != 0 {
 		t.Errorf("Non-private runner should not create NetworkPolicy, found %d", len(netpols.Items))
+	}
+}
+
+func TestCreateRunner_CreatesPVC(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:      "run-pvc-test",
+		JobID:      "job-123",
+		Repo:       "org/repo",
+		Arch:       "arm64",
+		OS:         "linux",
+		StorageGiB: 50,
+		JITToken:   "test-jit-token",
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	// Verify PVC was created
+	pvc, err := clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(result.RunnerIDs[0]), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC should exist: %v", err)
+	}
+
+	// Verify PVC size
+	storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if storage.String() != "50Gi" {
+		t.Errorf("PVC storage = %s, want 50Gi", storage.String())
+	}
+
+	// Verify PVC labels
+	if pvc.Labels["runs-fleet.io/run-id"] != "run-pvc-test" {
+		t.Errorf("PVC run-id label = %s, want run-pvc-test", pvc.Labels["runs-fleet.io/run-id"])
+	}
+
+	// Verify pod has workspace volume mount
+	pod, err := clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), result.RunnerIDs[0], metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Pod should exist: %v", err)
+	}
+
+	workspaceFound := false
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		if mount.Name == "workspace" && mount.MountPath == "/runner/_work" {
+			workspaceFound = true
+			break
+		}
+	}
+	if !workspaceFound {
+		t.Error("Pod should have workspace volume mounted at /runner/_work")
+	}
+}
+
+func TestTerminateRunner_DeletesPVC(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:      "run-pvc-cleanup",
+		JobID:      "job-123",
+		Repo:       "org/repo",
+		Arch:       "arm64",
+		StorageGiB: 30,
+		JITToken:   "test-jit-token",
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	runnerID := result.RunnerIDs[0]
+
+	// Verify PVC exists before termination
+	_, err = clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(runnerID), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC should exist before termination: %v", err)
+	}
+
+	// Terminate runner
+	err = p.TerminateRunner(context.Background(), runnerID)
+	if err != nil {
+		t.Fatalf("TerminateRunner() error = %v", err)
+	}
+
+	// Verify PVC was deleted
+	_, err = clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(runnerID), metav1.GetOptions{})
+	if err == nil {
+		t.Error("PVC should be deleted after termination")
+	}
+}
+
+func TestCreateRunner_PVCDefaultStorage(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:    "run-default-storage",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		JITToken: "test-jit-token",
+		// StorageGiB not set - should use default
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	// Verify PVC uses default storage (30Gi)
+	pvc, err := clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(result.RunnerIDs[0]), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC should exist: %v", err)
+	}
+
+	storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if storage.String() != "30Gi" {
+		t.Errorf("PVC storage = %s, want 30Gi (default)", storage.String())
+	}
+}
+
+func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+		KubeStorageClass:   "gp3-csi",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:      "run-storage-class",
+		JobID:      "job-123",
+		Repo:       "org/repo",
+		Arch:       "arm64",
+		StorageGiB: 50,
+		JITToken:   "test-jit-token",
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	pvc, err := clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(result.RunnerIDs[0]), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("PVC should exist: %v", err)
+	}
+
+	// Verify storage class is set
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "gp3-csi" {
+		t.Errorf("PVC StorageClassName = %v, want gp3-csi", pvc.Spec.StorageClassName)
 	}
 }
 

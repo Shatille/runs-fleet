@@ -121,7 +121,9 @@ runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
 | `4cpu-linux-amd64` | c6i.xlarge | 4 | 8GB | 50GB |
 | `8cpu-linux-amd64` | c6i.2xlarge | 8 | 16GB | 100GB |
 
-Add `/large-disk` modifier for 200GB disk: `runner=4cpu-linux-arm64/large-disk`
+Custom disk size: `disk=<size>` in GiB (1-16384), e.g., `runner=4cpu-linux-arm64/disk=200`
+
+> **Cost note:** gp3 EBS storage costs ~$0.08/GB-month. Large disks add up quickly (e.g., 1TB = $80/month).
 
 ### Flexible Specs
 
@@ -142,6 +144,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
 | `ram=<n>` | Minimum RAM in GB |
 | `arch=<arch>` | Architecture: `arm64` or `amd64` (omit for both) |
 | `family=<list>` | Instance families (e.g., `family=c7g+m7g`) |
+| `disk=<size>` | Disk size in GiB (1-16384) |
 
 When `arch` is omitted, runs-fleet creates multiple EC2 Fleet launch template configurations (one per architecture) and lets EC2 choose based on `price-capacity-optimized` strategy. This maximizes spot availability across both ARM64 and AMD64 instance pools.
 

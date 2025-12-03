@@ -97,7 +97,7 @@ Instance specs:
 - `2cpu-linux-amd64` → t3.medium (2 vCPU, 4GB, 30GB disk)
 - `4cpu-linux-amd64` → c6i.xlarge (4 vCPU, 8GB, 50GB disk)
 - `8cpu-linux-amd64` → c6i.2xlarge (8 vCPU, 16GB, 100GB disk)
-- `/large-disk` → 200GB disk
+- `disk=<size>` → Custom disk in GiB (1-16384, gp3 max)
 
 ## Key Flows
 
