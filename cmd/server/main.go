@@ -225,19 +225,7 @@ func main() {
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})
 
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		if pinger, ok := jobQueue.(queue.Pinger); ok {
-			pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-			defer cancel()
-			if err := pinger.Ping(pingCtx); err != nil {
-				log.Printf("Readiness check failed: %v", err)
-				http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
-				return
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "OK\n")
-	})
+	mux.HandleFunc("/ready", makeReadinessHandler(jobQueue))
 
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
@@ -635,6 +623,24 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 	}
 
 	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
+}
+
+// makeReadinessHandler returns a handler that checks queue connectivity.
+// Pinger is optional: K8s/Valkey needs verification, EC2/SQS is AWS-managed.
+func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pinger, ok := q.(queue.Pinger); ok {
+			pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := pinger.Ping(pingCtx); err != nil {
+				log.Printf("Readiness check failed: %v", err)
+				http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "OK\n")
+	}
 }
 
 // buildRunnerLabel returns the runs-fleet label for GitHub runner registration.
