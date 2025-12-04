@@ -97,6 +97,10 @@ RUN chmod +x /entrypoint.sh
 # Set ownership
 RUN chown -R runner:runner /home/runner
 
+# Pre-create the actions-runner directory that the agent will use at runtime
+# The agent downloads/extracts to /opt/actions-runner, so runner user needs write access
+RUN mkdir -p /opt/actions-runner && chown runner:runner /opt/actions-runner
+
 USER runner
 
 ENTRYPOINT ["/entrypoint.sh"]
