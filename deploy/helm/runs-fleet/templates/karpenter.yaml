@@ -1,5 +1,5 @@
 {{- if .Values.karpenter.enabled }}
-{{- if .Values.karpenter.ec2NodeClass.enabled }}
+{{- if .Values.karpenter.ec2NodeClass.create }}
 {{- if not .Values.karpenter.ec2NodeClass.instanceProfile }}
 {{- fail "karpenter.ec2NodeClass.instanceProfile is required when EC2NodeClass is enabled" }}
 {{- end }}
@@ -51,7 +51,14 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/managed-by: runs-fleet
+        {{- with .Values.karpenter.nodePool.labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
+      {{- with .Values.karpenter.nodePool.taints }}
+      taints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
