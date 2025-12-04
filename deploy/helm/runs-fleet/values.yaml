@@ -46,6 +46,8 @@ runner:
     tag: latest
 
   serviceAccountName: runs-fleet-runner
+  serviceAccount:
+    annotations: {}
 
 # GitHub App configuration
 github:
@@ -180,6 +182,10 @@ karpenter:
   # NodePool configuration
   nodePool:
     name: runs-fleet-runners
+    # Labels to apply to nodes provisioned by this pool
+    labels: {}
+    # Taints to apply to nodes provisioned by this pool
+    taints: []
     # Node expiration (forces periodic refresh, prevents stale nodes)
     expireAfter: 720h # 30 days
     # Disruption settings
@@ -193,9 +199,9 @@ karpenter:
     # Weight for scheduling priority (higher = preferred)
     weight: 10
 
-  # EC2NodeClass configuration (set enabled: false to use existing EC2NodeClass)
+  # EC2NodeClass configuration (set create: false to use existing EC2NodeClass)
   ec2NodeClass:
-    enabled: true
+    create: true
     name: runs-fleet-runners
     # AMI configuration
     amiFamily: AL2023
