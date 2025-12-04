@@ -9,7 +9,7 @@ metadata:
     {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
 spec:
   selector:
-    istio: ingressgateway
+    {{- toYaml .Values.istio.gateway.selector | nindent 4 }}
   servers:
     - port:
         number: 443

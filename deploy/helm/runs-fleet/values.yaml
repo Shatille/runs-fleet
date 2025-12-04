@@ -138,6 +138,9 @@ istio:
   gateway:
     enabled: false
     host: runs-fleet.example.com
+    # Selector to target Istio ingress gateway pods
+    selector:
+      istio: ingressgateway
     # TLS mode: SIMPLE (terminate at gateway), PASSTHROUGH, or empty for HTTP
     tls:
       enabled: true
