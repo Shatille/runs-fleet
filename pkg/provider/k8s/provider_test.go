@@ -1035,5 +1035,89 @@ func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
 	}
 }
 
+func TestCreateRunner_IdempotentOnAlreadyExists(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:    "run-idempotent",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		JITToken: "test-jit-token",
+	}
+
+	// First call creates the runner
+	result1, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("First CreateRunner() error = %v", err)
+	}
+
+	// Second call should succeed (idempotent) even though resources exist
+	result2, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Second CreateRunner() error = %v, want success (idempotent)", err)
+	}
+
+	// Both should return the same runner ID
+	if result1.RunnerIDs[0] != result2.RunnerIDs[0] {
+		t.Errorf("Runner IDs differ: %s vs %s", result1.RunnerIDs[0], result2.RunnerIDs[0])
+	}
+}
+
+func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:    "run-pod-exists",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		Private:  true,
+		JITToken: "test-jit-token",
+	}
+
+	// Pre-create pod to simulate another instance already creating it
+	_, err := clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "runner-run-pod-exists",
+			Namespace: "runs-fleet",
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Failed to pre-create pod: %v", err)
+	}
+
+	// CreateRunner should succeed (idempotent)
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v, want success (idempotent)", err)
+	}
+
+	if result.RunnerIDs[0] != "runner-run-pod-exists" {
+		t.Errorf("Runner ID = %s, want runner-run-pod-exists", result.RunnerIDs[0])
+	}
+
+	// Verify NetworkPolicy is still created even when Pod already existed
+	netpolName := "runner-run-pod-exists-netpol"
+	_, err = clientset.NetworkingV1().NetworkPolicies("runs-fleet").Get(context.Background(), netpolName, metav1.GetOptions{})
+	if err != nil {
+		t.Errorf("NetworkPolicy not created for private job when Pod already existed: %v", err)
+	}
+}
+
 // Ensure Provider implements provider.Provider.
 var _ provider.Provider = (*Provider)(nil)
