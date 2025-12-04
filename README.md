@@ -117,9 +117,13 @@ runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
 | `2cpu-linux-arm64` | t4g.medium | 2 | 4GB | 30GB |
 | `4cpu-linux-arm64` | c7g.xlarge | 4 | 8GB | 50GB |
 | `8cpu-linux-arm64` | c7g.2xlarge | 8 | 16GB | 100GB |
+| `16cpu-linux-arm64` | c7g.4xlarge | 16 | 32GB | 200GB |
+| `32cpu-linux-arm64` | c7g.8xlarge | 32 | 64GB | 400GB |
 | `2cpu-linux-amd64` | t3.medium | 2 | 4GB | 30GB |
 | `4cpu-linux-amd64` | c6i.xlarge | 4 | 8GB | 50GB |
 | `8cpu-linux-amd64` | c6i.2xlarge | 8 | 16GB | 100GB |
+| `16cpu-linux-amd64` | c6i.4xlarge | 16 | 32GB | 200GB |
+| `32cpu-linux-amd64` | c6i.8xlarge | 32 | 64GB | 400GB |
 
 Custom disk size: `disk=<size>` in GiB (1-16384), e.g., `runner=4cpu-linux-arm64/disk=200`
 

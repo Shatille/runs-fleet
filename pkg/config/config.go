@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -14,6 +15,14 @@ const (
 	BackendEC2 = "ec2"
 	BackendK8s = "k8s"
 )
+
+// Toleration represents a Kubernetes toleration for runner pods.
+type Toleration struct {
+	Key      string `json:"key"`
+	Operator string `json:"operator,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Effect   string `json:"effect,omitempty"`
+}
 
 // Config holds all application configuration loaded from environment variables.
 type Config struct {
@@ -66,6 +75,7 @@ type Config struct {
 	KubeNamespace          string            // Default namespace for runners
 	KubeServiceAccount     string            // ServiceAccount for runner pods
 	KubeNodeSelector       map[string]string // Default node selector for runners
+	KubeTolerations        []Toleration      // Tolerations for runner pods
 	KubeRunnerImage        string            // Container image for runner pods
 	KubeIdleTimeoutMinutes int               // Idle timeout for K8s pods (default: 10)
 	KubeReleaseName        string            // Helm release name for deployment naming
@@ -185,6 +195,16 @@ func Load() (*Config, error) {
 			cfg.KubeNodeSelector = nodeSelector
 		} else {
 			cfg.KubeNodeSelector = make(map[string]string)
+		}
+
+		// Parse tolerations JSON
+		tolerationsStr := getEnv("RUNS_FLEET_KUBE_TOLERATIONS", "")
+		if tolerationsStr != "" {
+			tolerations, err := parseTolerations(tolerationsStr)
+			if err != nil {
+				return nil, fmt.Errorf("config error: %w", err)
+			}
+			cfg.KubeTolerations = tolerations
 		}
 	}
 
@@ -478,4 +498,19 @@ func isValidK8sLabelValue(s string) bool {
 		}
 	}
 	return true
+}
+
+// parseTolerations parses a JSON array of tolerations.
+// Example: [{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"}]
+func parseTolerations(s string) ([]Toleration, error) {
+	if s == "" {
+		return nil, nil
+	}
+
+	var tolerations []Toleration
+	if err := json.Unmarshal([]byte(s), &tolerations); err != nil {
+		return nil, fmt.Errorf("invalid tolerations JSON: %w", err)
+	}
+
+	return tolerations, nil
 }

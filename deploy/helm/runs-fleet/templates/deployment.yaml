@@ -67,6 +67,28 @@ spec:
               value: {{ .Values.warmPool.enabled | quote }}
             - name: RUNS_FLEET_KUBE_RELEASE_NAME
               value: {{ include "runs-fleet.fullname" . }}
+            - name: RUNS_FLEET_KUBE_DIND_IMAGE
+              value: {{ .Values.docker.image | quote }}
+            {{- if .Values.docker.registryMirror }}
+            - name: RUNS_FLEET_KUBE_REGISTRY_MIRROR
+              value: {{ .Values.docker.registryMirror | quote }}
+            {{- end }}
+            {{- if .Values.docker.daemonJSONConfigMap }}
+            - name: RUNS_FLEET_KUBE_DAEMON_JSON_CONFIGMAP
+              value: {{ .Values.docker.daemonJSONConfigMap | quote }}
+            {{- end }}
+            - name: RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS
+              value: {{ .Values.docker.waitSeconds | quote }}
+            - name: RUNS_FLEET_KUBE_DOCKER_GROUP_GID
+              value: {{ .Values.docker.groupGID | quote }}
+            {{- if .Values.runner.nodeSelector }}
+            - name: RUNS_FLEET_KUBE_NODE_SELECTOR
+              value: {{ include "runs-fleet.nodeSelector.string" . | quote }}
+            {{- end }}
+            {{- if .Values.runner.tolerations }}
+            - name: RUNS_FLEET_KUBE_TOLERATIONS
+              value: {{ .Values.runner.tolerations | toJson | quote }}
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "runs-fleet.secretName" . }}

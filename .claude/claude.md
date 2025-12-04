@@ -94,9 +94,13 @@ Instance specs:
 - `2cpu-linux-arm64` → t4g.medium (2 vCPU, 4GB, 30GB disk)
 - `4cpu-linux-arm64` → c7g.xlarge (4 vCPU, 8GB, 50GB disk)
 - `8cpu-linux-arm64` → c7g.2xlarge (8 vCPU, 16GB, 100GB disk)
+- `16cpu-linux-arm64` → c7g.4xlarge (16 vCPU, 32GB, 200GB disk)
+- `32cpu-linux-arm64` → c7g.8xlarge (32 vCPU, 64GB, 400GB disk)
 - `2cpu-linux-amd64` → t3.medium (2 vCPU, 4GB, 30GB disk)
 - `4cpu-linux-amd64` → c6i.xlarge (4 vCPU, 8GB, 50GB disk)
 - `8cpu-linux-amd64` → c6i.2xlarge (8 vCPU, 16GB, 100GB disk)
+- `16cpu-linux-amd64` → c6i.4xlarge (16 vCPU, 32GB, 200GB disk)
+- `32cpu-linux-amd64` → c6i.8xlarge (32 vCPU, 64GB, 400GB disk)
 - `disk=<size>` → Custom disk in GiB (1-16384, gp3 max)
 
 ## Key Flows
