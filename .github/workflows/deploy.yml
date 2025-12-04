@@ -20,30 +20,20 @@ env:
 
 jobs:
   test:
-    name: Test & Coverage Badge
+    name: Test
     runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: stable
           cache: true
-
-      - name: Run tests with coverage
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Extract coverage percentage
-        id: coverage
+      - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - id: coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
-          echo "Coverage: $COVERAGE%"
-
-      - name: Update coverage badge
-        uses: schneegans/dynamic-badges-action@v1.7.0
+      - uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: 089a4c604db357e35ee33f10be5a1bbf
@@ -54,184 +44,98 @@ jobs:
           minColorRange: 50
           maxColorRange: 90
 
-  version:
-    name: Calculate Version
+  build:
+    name: Build & Push
+    needs: test
     runs-on: ubuntu-latest
     outputs:
-      new_version: ${{ steps.get_version.outputs.new_version }}
-      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+      version: ${{ steps.version.outputs.new_version }}
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
 
-      - name: Get latest version from ECR
-        id: get_version
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Calculate version
+        id: version
         run: |
-          ECR_OUTPUT=$(aws ecr describe-images \
-            --repository-name $ECR_REPOSITORY \
-            --region $AWS_REGION \
-            --query 'imageDetails[*].imageTags[]' \
-            --output text 2>/dev/null) || ECR_OUTPUT=""
+          LATEST=$(aws ecr describe-images --repository-name $ECR_REPOSITORY \
+            --query 'imageDetails[*].imageTags[]' --output text 2>/dev/null | \
+            tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
 
-          LATEST_TAG=$(echo "$ECR_OUTPUT" | tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
-
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No existing version tags found, starting with v0.0.1"
+          if [ -z "$LATEST" ]; then
             NEW_VERSION="v0.0.1"
           else
-            echo "Latest ECR tag: $LATEST_TAG"
-            VERSION=${LATEST_TAG#v}
+            VERSION=${LATEST#v}
             MAJOR=$(echo $VERSION | cut -d. -f1)
             MINOR=$(echo $VERSION | cut -d. -f2)
             PATCH=$(echo $VERSION | cut -d. -f3)
-
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+            NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
-
-          if aws ecr describe-images --repository-name $ECR_REPOSITORY --region $AWS_REGION \
-            --image-ids imageTag=$NEW_VERSION >/dev/null 2>&1; then
-            echo "Version $NEW_VERSION already exists in ECR"
-            exit 1
-          fi
-
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "New version: $NEW_VERSION"
 
-  build-arm64:
-    name: Build (arm64)
-    needs: version
-    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push
+      - name: Build and push (multi-arch)
         env:
-          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          VERSION: ${{ steps.version.outputs.new_version }}
         run: |
-          docker build \
-            --platform linux/arm64 \
-            --build-arg VERSION=$IMAGE_TAG \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64 \
-            .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION=$VERSION \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            --push .
 
-  build-amd64:
-    name: Build (amd64)
-    needs: version
+  deploy:
+    name: Deploy to ECS
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
+      - name: Update ECS service
         env:
-          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
-        run: |
-          docker build \
-            --platform linux/amd64 \
-            --build-arg VERSION=$IMAGE_TAG \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64 \
-            .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
-
-  manifest-and-deploy:
-    name: Create Manifest & Deploy
-    needs: [version, build-arm64, build-amd64]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Create and push manifest
-        env:
-          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
-        run: |
-          docker manifest create $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64 \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
-
-          docker manifest create $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-arm64 \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-amd64
-
-          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      - name: Update ECS task definition and service
-        env:
-          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition runs-fleet-server \
-            --query 'taskDefinition' \
-            --output json)
+            --query 'taskDefinition' --output json)
 
           NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
-            --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
-            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+            --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$VERSION" \
+            '.containerDefinitions[0].image = $IMAGE |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                 .compatibilities, .registeredAt, .registeredBy)')
 
           NEW_TASK_ARN=$(aws ecs register-task-definition \
             --cli-input-json "$NEW_TASK_DEF" \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-
-          echo "Registered new task definition: $NEW_TASK_ARN"
+            --query 'taskDefinition.taskDefinitionArn' --output text)
 
           aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
-            --task-definition "$NEW_TASK_ARN" \
-            --region ${{ env.AWS_REGION }}
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition "$NEW_TASK_ARN"
 
-      - name: Deployment summary
+      - name: Summary
         env:
-          IMAGE_TAG: ${{ needs.version.outputs.new_version }}
-          ECR_REGISTRY: ${{ needs.version.outputs.ecr_registry }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: \`$IMAGE_TAG\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: \`$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Platforms**: \`linux/arm64\`, \`linux/amd64\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Cluster**: \`${{ env.ECS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Service**: \`${{ env.ECS_SERVICE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- Image: \`$ECR_REGISTRY/$ECR_REPOSITORY:$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Platforms: linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
