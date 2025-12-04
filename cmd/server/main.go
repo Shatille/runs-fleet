@@ -568,8 +568,8 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 
 	fleetCreated = true
 
-	// Save job records in DynamoDB for spot interruption tracking
-	if dbc != nil {
+	// Save job records in DynamoDB for spot interruption tracking (only if jobs table is configured)
+	if dbc != nil && dbc.HasJobsTable() {
 		for _, instanceID := range instanceIDs {
 			jobRecord := &db.JobRecord{
 				JobID:        job.JobID,
@@ -851,8 +851,8 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 
 	podCreated = true
 
-	// Save job records in DynamoDB with retry
-	if dbc != nil {
+	// Save job records in DynamoDB with retry (only if jobs table is configured)
+	if dbc != nil && dbc.HasJobsTable() {
 		for _, runnerID := range result.RunnerIDs {
 			jobRecord := &db.JobRecord{
 				JobID:        job.JobID,
