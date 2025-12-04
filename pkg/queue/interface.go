@@ -6,6 +6,11 @@ import (
 	"context"
 )
 
+// Pinger is an optional interface for health checking queue connectivity.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 // Queue defines the interface for message queue operations.
 // Implementations must provide FIFO semantics per message group.
 type Queue interface {

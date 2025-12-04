@@ -225,6 +225,20 @@ func main() {
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})
 
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if pinger, ok := jobQueue.(queue.Pinger); ok {
+			pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := pinger.Ping(pingCtx); err != nil {
+				log.Printf("Readiness check failed: %v", err)
+				http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "OK\n")
+	})
+
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
 
