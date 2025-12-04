@@ -123,7 +123,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		AWSRegion:      getEnv("AWS_REGION", "ap-northeast-1"),
-		DefaultBackend: getEnv("RUNS_FLEET_DEFAULT_BACKEND", BackendEC2),
+		DefaultBackend: getEnv("RUNS_FLEET_MODE", BackendEC2),
 
 		GitHubWebhookSecret:  getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
 		GitHubAppID:          getEnv("RUNS_FLEET_GITHUB_APP_ID", ""),
