@@ -51,9 +51,10 @@ runner:
 
 # GitHub App configuration
 github:
-  appId: "" # Required: GitHub App ID
-  privateKey: "" # Required: GitHub App private key (PEM format)
-  webhookSecret: "" # Required: Webhook secret
+  appId: "" # Required: GitHub App ID (ignored if existingSecret is set)
+  privateKey: "" # Required: GitHub App private key (ignored if existingSecret is set)
+  webhookSecret: "" # Required: Webhook secret (ignored if existingSecret is set)
+  existingSecret: "" # Use existing secret instead of creating one (e.g., from VaultSecretMap)
 
 # Valkey (Redis-compatible) configuration
 valkey:

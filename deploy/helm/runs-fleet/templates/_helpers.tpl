@@ -113,5 +113,20 @@ Valkey address
 Secret name
 */}}
 {{- define "runs-fleet.secretName" -}}
+{{- if .Values.github.existingSecret -}}
+{{ .Values.github.existingSecret }}
+{{- else -}}
 {{ include "runs-fleet.fullname" . }}-secrets
+{{- end -}}
+{{- end }}
+
+{{/*
+Node selector as string (key=value,key=value format)
+*/}}
+{{- define "runs-fleet.nodeSelector.string" -}}
+{{- $selectors := list -}}
+{{- range $key, $value := .Values.runner.nodeSelector -}}
+{{- $selectors = append $selectors (printf "%s=%s" $key $value) -}}
+{{- end -}}
+{{- join "," $selectors -}}
 {{- end }}
