@@ -741,6 +741,37 @@ func TestGetPoolConfig_DynamoDBError(t *testing.T) {
 	}
 }
 
+func TestHasJobsTable(t *testing.T) {
+	tests := []struct {
+		name      string
+		jobsTable string
+		want      bool
+	}{
+		{
+			name:      "returns true when jobs table is configured",
+			jobsTable: "my-jobs-table",
+			want:      true,
+		},
+		{
+			name:      "returns false when jobs table is empty",
+			jobsTable: "",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: &MockDynamoDBAPI{},
+				jobsTable:    tt.jobsTable,
+			}
+			if got := client.HasJobsTable(); got != tt.want {
+				t.Errorf("HasJobsTable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGetJobByInstance_NoJobsTable(t *testing.T) {
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
