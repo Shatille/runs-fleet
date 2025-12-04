@@ -44,25 +44,17 @@ jobs:
           minColorRange: 50
           maxColorRange: 90
 
-  build:
-    name: Build & Push
+  version:
+    name: Calculate Version
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
     outputs:
       version: ${{ steps.version.outputs.new_version }}
     steps:
-      - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
 
       - name: Calculate version
         id: version
@@ -82,22 +74,74 @@ jobs:
           fi
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build and push (multi-arch)
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: version
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-${{ matrix.arch }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ steps.version.outputs.new_version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           docker buildx build \
-            --platform linux/amd64,linux/arm64 \
+            --platform linux/${{ matrix.arch }} \
+            --provenance=false \
             --build-arg VERSION=$VERSION \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-${{ matrix.arch }} \
             --push .
+
+  manifest:
+    name: Create Manifest
+    needs: [version, build]
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
+    outputs:
+      version: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: Create and push manifest
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker manifest create --amend $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64
+
+          docker manifest create --amend $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64
+
+          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION
+          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
   deploy:
     name: Deploy to ECS
-    needs: build
-    runs-on: ubuntu-latest
+    needs: manifest
+    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -110,7 +154,7 @@ jobs:
       - name: Update ECS service
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.manifest.outputs.version }}
         run: |
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition runs-fleet-server \
@@ -133,7 +177,7 @@ jobs:
 
       - name: Summary
         env:
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.manifest.outputs.version }}
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           echo "### Deployed $VERSION" >> $GITHUB_STEP_SUMMARY
