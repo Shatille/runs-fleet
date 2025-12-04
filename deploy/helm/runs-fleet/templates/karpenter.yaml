@@ -50,7 +50,7 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/managed-by: runs-fleet
+        runs-fleet.io/managed-by: runs-fleet
         {{- with .Values.karpenter.nodePool.labels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
