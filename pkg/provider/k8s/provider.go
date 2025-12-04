@@ -162,8 +162,8 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 
 	pod := p.buildPodSpec(podName, spec)
 
-	created, err := p.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
+	_, err := p.clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
 		cleanup(false)
 		return nil, fmt.Errorf("failed to create pod %s: %w", podName, err)
 	}
@@ -172,7 +172,7 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 	if spec.Private {
 		netpol := p.buildNetworkPolicy(podName, spec)
 		_, npErr := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
-		if npErr != nil {
+		if npErr != nil && !errors.IsAlreadyExists(npErr) {
 			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, npErr)
 			cleanup(true)
 			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", npErr)
@@ -180,7 +180,7 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 	}
 
 	return &provider.RunnerResult{
-		RunnerIDs: []string{created.Name},
+		RunnerIDs: []string{podName},
 		ProviderData: map[string]string{
 			"namespace": namespace,
 			"private":   fmt.Sprintf("%t", spec.Private),
@@ -199,6 +199,7 @@ func secretName(podName string) string {
 }
 
 // createRunnerConfigMap creates a ConfigMap with non-sensitive runner config.
+// Returns nil if ConfigMap already exists (idempotent for multi-instance deployments).
 func (p *Provider) createRunnerConfigMap(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
 	labelsJSON := "[]"
 	if len(spec.Labels) > 0 {
@@ -225,10 +226,14 @@ func (p *Provider) createRunnerConfigMap(ctx context.Context, podName string, sp
 	}
 
 	_, err := p.clientset.CoreV1().ConfigMaps(p.config.KubeNamespace).Create(ctx, cm, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		return nil
+	}
 	return err
 }
 
 // createRunnerSecret creates a Secret with sensitive runner config.
+// Returns nil if Secret already exists (idempotent for multi-instance deployments).
 func (p *Provider) createRunnerSecret(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
 	if spec.JITToken == "" {
 		return fmt.Errorf("JITToken is required for runner registration")
@@ -251,6 +256,9 @@ func (p *Provider) createRunnerSecret(ctx context.Context, podName string, spec 
 	}
 
 	_, err := p.clientset.CoreV1().Secrets(p.config.KubeNamespace).Create(ctx, secret, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		return nil
+	}
 	return err
 }
 
@@ -271,6 +279,7 @@ func pvcName(podName string) string {
 
 // createRunnerPVC creates a PersistentVolumeClaim for runner workspace storage.
 // Uses EBS CSI driver via StorageClass for dynamic provisioning.
+// Returns nil if PVC already exists (idempotent for multi-instance deployments).
 func (p *Provider) createRunnerPVC(ctx context.Context, podName string, spec *provider.RunnerSpec) error {
 	storageGiB := spec.StorageGiB
 	if storageGiB <= 0 {
@@ -307,6 +316,9 @@ func (p *Provider) createRunnerPVC(ctx context.Context, podName string, spec *pr
 	}
 
 	_, err := p.clientset.CoreV1().PersistentVolumeClaims(p.config.KubeNamespace).Create(ctx, pvc, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		return nil
+	}
 	return err
 }
 
