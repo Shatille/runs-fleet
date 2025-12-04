@@ -41,6 +41,12 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 	}
 }
 
+// HasJobsTable returns true if the jobs table is configured.
+// Use this to check before calling SaveJob or other job-related methods.
+func (c *Client) HasJobsTable() bool {
+	return c.jobsTable != ""
+}
+
 // jobRecord represents a job stored in DynamoDB.
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
