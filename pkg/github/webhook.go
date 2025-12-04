@@ -107,17 +107,23 @@ type JobConfig struct {
 // DefaultRunnerSpecs maps runner spec names to EC2 instance types.
 var DefaultRunnerSpecs = map[string]string{
 	// Linux ARM64
-	"2cpu-linux-arm64": "t4g.medium",
-	"4cpu-linux-arm64": "c7g.xlarge",
-	"8cpu-linux-arm64": "c7g.2xlarge",
+	"2cpu-linux-arm64":  "t4g.medium",
+	"4cpu-linux-arm64":  "c7g.xlarge",
+	"8cpu-linux-arm64":  "c7g.2xlarge",
+	"16cpu-linux-arm64": "c7g.4xlarge",
+	"32cpu-linux-arm64": "c7g.8xlarge",
 	// Linux amd64
-	"2cpu-linux-amd64": "t3.medium",
-	"4cpu-linux-amd64": "c6i.xlarge",
-	"8cpu-linux-amd64": "c6i.2xlarge",
+	"2cpu-linux-amd64":  "t3.medium",
+	"4cpu-linux-amd64":  "c6i.xlarge",
+	"8cpu-linux-amd64":  "c6i.2xlarge",
+	"16cpu-linux-amd64": "c6i.4xlarge",
+	"32cpu-linux-amd64": "c6i.8xlarge",
 	// Windows amd64 (Phase 4)
-	"2cpu-windows-amd64": "t3.medium",
-	"4cpu-windows-amd64": "m6i.xlarge",
-	"8cpu-windows-amd64": "m6i.2xlarge",
+	"2cpu-windows-amd64":  "t3.medium",
+	"4cpu-windows-amd64":  "m6i.xlarge",
+	"8cpu-windows-amd64":  "m6i.2xlarge",
+	"16cpu-windows-amd64": "m6i.4xlarge",
+	"32cpu-windows-amd64": "m6i.8xlarge",
 }
 
 // SpotDiversificationTypes maps runner specs to alternative instance types for spot capacity.
@@ -132,18 +138,30 @@ var SpotDiversificationTypes = map[string][]string{
 	"4cpu-linux-arm64": {"c7g.xlarge", "m7g.xlarge", "c6g.xlarge"},
 	// Linux ARM64 - 8 vCPU sustained-performance options
 	"8cpu-linux-arm64": {"c7g.2xlarge", "m7g.2xlarge", "c6g.2xlarge"},
+	// Linux ARM64 - 16 vCPU sustained-performance options
+	"16cpu-linux-arm64": {"c7g.4xlarge", "m7g.4xlarge", "c6g.4xlarge"},
+	// Linux ARM64 - 32 vCPU sustained-performance options
+	"32cpu-linux-arm64": {"c7g.8xlarge", "m7g.8xlarge", "c6g.8xlarge"},
 	// Linux amd64 - 2 vCPU options (burstable OK for short jobs)
 	"2cpu-linux-amd64": {"t3.medium", "t3.large"},
 	// Linux amd64 - 4 vCPU sustained-performance options
 	"4cpu-linux-amd64": {"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
 	// Linux amd64 - 8 vCPU sustained-performance options
 	"8cpu-linux-amd64": {"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
+	// Linux amd64 - 16 vCPU sustained-performance options
+	"16cpu-linux-amd64": {"c6i.4xlarge", "m6i.4xlarge", "c7i.4xlarge"},
+	// Linux amd64 - 32 vCPU sustained-performance options
+	"32cpu-linux-amd64": {"c6i.8xlarge", "m6i.8xlarge", "c7i.8xlarge"},
 	// Windows amd64 - 2 vCPU options (burstable OK for short jobs)
 	"2cpu-windows-amd64": {"t3.medium", "t3.large"},
 	// Windows amd64 - 4 vCPU sustained-performance options
 	"4cpu-windows-amd64": {"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
 	// Windows amd64 - 8 vCPU sustained-performance options
 	"8cpu-windows-amd64": {"m6i.2xlarge", "m7i.2xlarge", "c6i.2xlarge"},
+	// Windows amd64 - 16 vCPU sustained-performance options
+	"16cpu-windows-amd64": {"m6i.4xlarge", "m7i.4xlarge", "c6i.4xlarge"},
+	// Windows amd64 - 32 vCPU sustained-performance options
+	"32cpu-windows-amd64": {"m6i.8xlarge", "m7i.8xlarge", "c6i.8xlarge"},
 }
 
 // ParseLabels extracts runner configuration from runs-fleet= workflow job labels.

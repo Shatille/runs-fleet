@@ -640,10 +640,33 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	return pod
 }
 
-// buildTolerations creates tolerations for spot/preemptible nodes.
-// Supports common cloud provider taints for spot instances.
+// buildTolerations creates tolerations for runner pods.
+// Includes user-configured tolerations and spot/preemptible node tolerations.
 func (p *Provider) buildTolerations(spec *provider.RunnerSpec) []corev1.Toleration {
 	var tolerations []corev1.Toleration
+
+	// Add user-configured tolerations first
+	for _, t := range p.config.KubeTolerations {
+		tol := corev1.Toleration{
+			Key:   t.Key,
+			Value: t.Value,
+		}
+		switch t.Operator {
+		case "Exists":
+			tol.Operator = corev1.TolerationOpExists
+		default:
+			tol.Operator = corev1.TolerationOpEqual
+		}
+		switch t.Effect {
+		case "NoSchedule":
+			tol.Effect = corev1.TaintEffectNoSchedule
+		case "PreferNoSchedule":
+			tol.Effect = corev1.TaintEffectPreferNoSchedule
+		case "NoExecute":
+			tol.Effect = corev1.TaintEffectNoExecute
+		}
+		tolerations = append(tolerations, tol)
+	}
 
 	if spec.Spot {
 		// GKE preemptible/spot nodes
