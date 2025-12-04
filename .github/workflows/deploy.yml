@@ -74,8 +74,11 @@ jobs:
           if [ -z "$LATEST" ]; then
             NEW_VERSION="v0.0.1"
           else
-            PATCH=$(echo ${LATEST#v} | cut -d. -f3)
-            NEW_VERSION="v0.0.$((PATCH + 1))"
+            VERSION=${LATEST#v}
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+            NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
