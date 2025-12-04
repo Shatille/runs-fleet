@@ -135,6 +135,14 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 		}
 	}
 
+	// Validate daemon.json ConfigMap exists if configured
+	if p.config.KubeDaemonJSONConfigMap != "" {
+		_, err := p.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, p.config.KubeDaemonJSONConfigMap, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("daemon.json ConfigMap %q not found: %w", p.config.KubeDaemonJSONConfigMap, err)
+		}
+	}
+
 	// Create ConfigMap with runner config (non-sensitive)
 	if err := p.createRunnerConfigMap(ctx, podName, spec); err != nil {
 		return nil, fmt.Errorf("failed to create ConfigMap for runner: %w", err)
@@ -388,7 +396,7 @@ func (p *Provider) DescribeRunner(ctx context.Context, runnerID string) (*provid
 	return state, nil
 }
 
-// buildPodSpec creates a Pod specification for a runner.
+// buildPodSpec creates a Pod specification for a runner with DinD sidecar.
 func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.Pod {
 	labels := map[string]string{
 		"app":                         "runs-fleet-runner",
@@ -405,6 +413,12 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	}
 	if spec.Private {
 		labels["runs-fleet.io/private"] = "true"
+	}
+
+	// Karpenter annotations to prevent disruption during job execution
+	annotations := map[string]string{
+		"karpenter.sh/do-not-evict":   "true",
+		"karpenter.sh/do-not-disrupt": "true",
 	}
 
 	// Merge default node selector with config
@@ -426,12 +440,14 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	// Resource requests from spec (Karpenter provisions nodes based on these)
 	resources := p.getResourceRequirements(spec)
 
-	// Build environment variables
+	// Build environment variables for runner container
 	envVars := []corev1.EnvVar{
 		{Name: "RUNS_FLEET_RUN_ID", Value: spec.RunID},
 		{Name: "RUNS_FLEET_JOB_ID", Value: spec.JobID},
 		{Name: "RUNS_FLEET_REPO", Value: spec.Repo},
 		{Name: "RUNS_FLEET_POOL", Value: spec.Pool},
+		{Name: "DOCKER_HOST", Value: "unix:///var/run/docker.sock"},
+		{Name: "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS", Value: fmt.Sprintf("%d", p.config.KubeDockerWaitSeconds)},
 	}
 
 	// Add Valkey address for telemetry if configured
@@ -442,54 +458,164 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 		}
 	}
 
+	// Build volumes: base volumes + DinD volumes
+	volumes := []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName(name),
+					},
+				},
+			},
+		},
+		{
+			Name: "secrets",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: secretName(name),
+				},
+			},
+		},
+		{
+			Name: "workspace",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: pvcName(name),
+				},
+			},
+		},
+		// DinD shared volumes
+		{
+			Name: "dind-sock",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: "dind-externals",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+
+	// Add daemon.json ConfigMap volume if configured
+	if p.config.KubeDaemonJSONConfigMap != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "daemon-json",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: p.config.KubeDaemonJSONConfigMap,
+					},
+				},
+			},
+		})
+	}
+
+	// Runner container volume mounts
+	runnerVolumeMounts := []corev1.VolumeMount{
+		{Name: "config", MountPath: "/etc/runs-fleet/config", ReadOnly: true},
+		{Name: "secrets", MountPath: "/etc/runs-fleet/secrets", ReadOnly: true},
+		{Name: "workspace", MountPath: "/runner/_work"},
+		{Name: "dind-sock", MountPath: "/var/run"},
+		{Name: "dind-externals", MountPath: "/home/runner/externals"},
+	}
+
+	// DinD container volume mounts
+	dindVolumeMounts := []corev1.VolumeMount{
+		{Name: "workspace", MountPath: "/runner/_work"},
+		{Name: "dind-sock", MountPath: "/var/run"},
+		{Name: "dind-externals", MountPath: "/home/runner/externals"},
+	}
+	if p.config.KubeDaemonJSONConfigMap != "" {
+		dindVolumeMounts = append(dindVolumeMounts, corev1.VolumeMount{
+			Name:      "daemon-json",
+			MountPath: "/etc/docker/daemon.json",
+			SubPath:   "daemon.json",
+			ReadOnly:  true,
+		})
+	}
+
+	// Build DinD container args
+	dindArgs := []string{
+		"dockerd",
+		"--host=unix:///var/run/docker.sock",
+		"--group=$(DOCKER_GROUP_GID)",
+		"--storage-driver=overlay2",
+	}
+	// Add registry mirror if configured
+	if p.config.KubeRegistryMirror != "" {
+		dindArgs = append(dindArgs, "--registry-mirror="+p.config.KubeRegistryMirror)
+	}
+
+	// Init container copies runner externals to shared volume
+	initContainer := corev1.Container{
+		Name:            "init-dind-externals",
+		Image:           p.config.KubeRunnerImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "dind-externals", MountPath: "/home/runner/tmpDir"},
+		},
+	}
+
+	// DinD sidecar container - privileged required for Docker daemon.
+	// Resource limits match runner container to prevent resource starvation.
+	dindContainer := corev1.Container{
+		Name:            "dind",
+		Image:           p.config.KubeDindImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Args:            dindArgs,
+		Env: []corev1.EnvVar{
+			{
+				Name:  "DOCKER_GROUP_GID",
+				Value: fmt.Sprintf("%d", p.config.KubeDockerGroupGID),
+			},
+		},
+		Resources: resources,
+		SecurityContext: &corev1.SecurityContext{
+			Privileged: ptr.To(true),
+		},
+		VolumeMounts: dindVolumeMounts,
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: p.config.KubeNamespace,
-			Labels:    labels,
+			Name:        name,
+			Namespace:   p.config.KubeNamespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: p.config.KubeServiceAccount,
 			RestartPolicy:      corev1.RestartPolicyNever,
 			NodeSelector:       nodeSelector,
 			Tolerations:        tolerations,
+			InitContainers:     []corev1.Container{initContainer},
 			SecurityContext: &corev1.PodSecurityContext{
-				// Note: RunAsNonRoot disabled - GitHub Actions runner requires root for
-				// package installation, Docker operations, and workspace permissions.
-				// Enable RunAsNonRoot only with a pre-configured non-root runner image.
 				FSGroup: ptr.To(int64(1000)),
 				SeccompProfile: &corev1.SeccompProfile{
 					Type: corev1.SeccompProfileTypeRuntimeDefault,
 				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "config",
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: configMapName(name),
-							},
-						},
-					},
-				},
-				{
-					Name: "secrets",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: secretName(name),
-						},
-					},
-				},
-				{
-					Name: "workspace",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: pvcName(name),
-						},
-					},
+				// Enable binding to privileged ports (< 1024) for services like nginx
+				Sysctls: []corev1.Sysctl{
+					{Name: "net.ipv4.ip_unprivileged_port_start", Value: "0"},
 				},
 			},
+			Volumes: volumes,
 			Containers: []corev1.Container{
 				{
 					Name:            "runner",
@@ -498,31 +624,15 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 					Resources:       resources,
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false),
-						// ReadOnlyRootFilesystem false: GitHub Actions runners need writable
-						// workspace at /runner/_work and temp directories for build artifacts.
-						ReadOnlyRootFilesystem: ptr.To(false),
+						ReadOnlyRootFilesystem:   ptr.To(false),
 						Capabilities: &corev1.Capabilities{
 							Drop: []corev1.Capability{"ALL"},
 						},
 					},
-					Env: envVars,
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "config",
-							MountPath: "/etc/runs-fleet/config",
-							ReadOnly:  true,
-						},
-						{
-							Name:      "secrets",
-							MountPath: "/etc/runs-fleet/secrets",
-							ReadOnly:  true,
-						},
-						{
-							Name:      "workspace",
-							MountPath: "/runner/_work",
-						},
-					},
+					Env:          envVars,
+					VolumeMounts: runnerVolumeMounts,
 				},
+				dindContainer,
 			},
 		},
 	}

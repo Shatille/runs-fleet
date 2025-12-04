@@ -204,24 +204,80 @@ func TestValidateK8sConfig(t *testing.T) {
 		{
 			name: "valid K8s config",
 			cfg: &Config{
-				KubeNamespace:   "runs-fleet",
-				KubeRunnerImage: "runner:latest",
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 120,
+				KubeDockerGroupGID:    123,
 			},
 			wantErr: false,
 		},
 		{
 			name: "missing namespace",
 			cfg: &Config{
-				KubeNamespace:   "",
-				KubeRunnerImage: "runner:latest",
+				KubeNamespace:         "",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 120,
+				KubeDockerGroupGID:    123,
 			},
 			wantErr: true,
 		},
 		{
 			name: "missing runner image",
 			cfg: &Config{
-				KubeNamespace:   "runs-fleet",
-				KubeRunnerImage: "",
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "",
+				KubeDockerWaitSeconds: 120,
+				KubeDockerGroupGID:    123,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid docker wait seconds too low",
+			cfg: &Config{
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 5,
+				KubeDockerGroupGID:    123,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid docker wait seconds too high",
+			cfg: &Config{
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 500,
+				KubeDockerGroupGID:    123,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid docker group GID zero",
+			cfg: &Config{
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 120,
+				KubeDockerGroupGID:    0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid docker group GID upper bound",
+			cfg: &Config{
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 120,
+				KubeDockerGroupGID:    65535,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid docker group GID overflow",
+			cfg: &Config{
+				KubeNamespace:         "runs-fleet",
+				KubeRunnerImage:       "runner:latest",
+				KubeDockerWaitSeconds: 120,
+				KubeDockerGroupGID:    65536,
 			},
 			wantErr: true,
 		},
