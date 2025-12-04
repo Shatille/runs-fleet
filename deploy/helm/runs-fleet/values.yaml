@@ -270,8 +270,8 @@ karpenter:
       - large
       - xlarge
       - 2xlarge
-    # CPU limits
-    minCpu: 2
-    maxCpu: 16
+    # CPU limits (Gt/Lt are exclusive, so >1 means >=2, <17 means <=16)
+    minCpu: 1
+    maxCpu: 17
     # Operating system
     os: linux

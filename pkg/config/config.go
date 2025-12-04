@@ -229,7 +229,7 @@ func (c *Config) IsK8sBackend() bool {
 func (c *Config) Validate() error {
 	// Validate backend selection
 	if c.DefaultBackend != "" && c.DefaultBackend != BackendEC2 && c.DefaultBackend != BackendK8s {
-		return fmt.Errorf("RUNS_FLEET_DEFAULT_BACKEND must be 'ec2' or 'k8s', got %q", c.DefaultBackend)
+		return fmt.Errorf("RUNS_FLEET_MODE must be 'ec2' or 'k8s', got %q", c.DefaultBackend)
 	}
 
 	// Common validation

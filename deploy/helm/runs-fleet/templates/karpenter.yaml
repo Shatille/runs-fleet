@@ -91,11 +91,11 @@ spec:
           values:
             {{- toYaml .Values.karpenter.requirements.instanceSizes | nindent 12 }}
         - key: karpenter.k8s.aws/instance-cpu
-          operator: Gte
+          operator: Gt
           values:
             - {{ .Values.karpenter.requirements.minCpu | quote }}
         - key: karpenter.k8s.aws/instance-cpu
-          operator: Lte
+          operator: Lt
           values:
             - {{ .Values.karpenter.requirements.maxCpu | quote }}
       expireAfter: {{ .Values.karpenter.nodePool.expireAfter }}
