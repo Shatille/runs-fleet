@@ -803,6 +803,27 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 	log.Printf("Processing K8s job for run %s (os=%s, arch=%s, pool=%s)",
 		job.RunID, job.OS, job.Arch, job.Pool)
 
+	// Get registration token from GitHub before creating pod
+	var jitToken string
+	if rm == nil {
+		log.Printf("Runner manager not initialized for K8s job %s", job.RunID)
+		poisonMessage = true
+		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing"); metricErr != nil {
+			log.Printf("Failed to publish runner manager missing metric: %v", metricErr)
+		}
+		return
+	}
+	regResult, err := rm.GetRegistrationToken(ctx, job.Repo)
+	if err != nil {
+		log.Printf("Failed to get registration token for K8s job %s: %v", job.RunID, err)
+		poisonMessage = true
+		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-registration-token"); metricErr != nil {
+			log.Printf("Failed to publish registration token failure metric: %v", metricErr)
+		}
+		return
+	}
+	jitToken = regResult.Token
+
 	spec := &provider.RunnerSpec{
 		RunID:        job.RunID,
 		JobID:        job.JobID,
@@ -816,6 +837,7 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 		Environment:  job.Environment,
 		RetryCount:   job.RetryCount,
 		StorageGiB:   job.StorageGiB,
+		JITToken:     jitToken,
 	}
 
 	result, err := createK8sRunnerWithRetry(ctx, p, spec)
@@ -858,23 +880,6 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 				if metricErr := m.PublishSchedulingFailure(ctx, "k8s-job-record-save"); metricErr != nil {
 					log.Printf("Failed to publish job record save failure metric: %v", metricErr)
 				}
-			}
-		}
-	}
-
-	// Prepare runner config for each pod (via SSM or ConfigMap - future enhancement)
-	if rm != nil {
-		for _, runnerID := range result.RunnerIDs {
-			label := buildRunnerLabel(&job)
-			prepareReq := runner.PrepareRunnerRequest{
-				InstanceID: runnerID,
-				JobID:      job.JobID,
-				RunID:      job.RunID,
-				Repo:       job.Repo,
-				Labels:     []string{label},
-			}
-			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
-				log.Printf("Failed to prepare runner config for pod %s: %v", runnerID, err)
 			}
 		}
 	}

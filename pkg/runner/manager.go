@@ -155,3 +155,10 @@ func (m *Manager) CleanupRunner(ctx context.Context, instanceID string) error {
 
 	return nil
 }
+
+// GetRegistrationToken gets a registration token for GitHub Actions runners.
+// Used by K8s backend to get JIT token before pod creation.
+// EC2 backend uses PrepareRunner instead (handles SSM storage).
+func (m *Manager) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
+	return m.github.GetRegistrationToken(ctx, repo)
+}
