@@ -71,6 +71,13 @@ type Config struct {
 	KubeReleaseName        string            // Helm release name for deployment naming
 	KubeStorageClass       string            // StorageClass for runner PVCs (empty = default)
 
+	// DinD (Docker-in-Docker) configuration for K8s runners
+	KubeDindImage           string // DinD sidecar image (default: docker:dind)
+	KubeDaemonJSONConfigMap string // ConfigMap name for daemon.json (optional)
+	KubeDockerWaitSeconds   int    // Seconds to wait for Docker daemon (default: 120, range: 10-300)
+	KubeDockerGroupGID      int    // Docker socket group GID (default: 123)
+	KubeRegistryMirror      string // Docker registry mirror URL (optional)
+
 	// Valkey queue configuration (K8s mode only)
 	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
 	ValkeyPassword string // Optional password
@@ -85,6 +92,16 @@ func Load() (*Config, error) {
 	}
 
 	kubeIdleTimeoutMinutes, err := getEnvInt("RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES", 10)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
+	kubeDockerWaitSeconds, err := getEnvInt("RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS", 120)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
+	kubeDockerGroupGID, err := getEnvInt("RUNS_FLEET_KUBE_DOCKER_GROUP_GID", 123)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
@@ -143,6 +160,13 @@ func Load() (*Config, error) {
 		KubeIdleTimeoutMinutes: kubeIdleTimeoutMinutes,
 		KubeReleaseName:        getEnv("RUNS_FLEET_KUBE_RELEASE_NAME", "runs-fleet"),
 		KubeStorageClass:       getEnv("RUNS_FLEET_KUBE_STORAGE_CLASS", ""),
+
+		// K8s DinD configuration
+		KubeDindImage:           getEnv("RUNS_FLEET_KUBE_DIND_IMAGE", "docker:dind"),
+		KubeDaemonJSONConfigMap: getEnv("RUNS_FLEET_KUBE_DAEMON_JSON_CONFIGMAP", ""),
+		KubeDockerWaitSeconds:   kubeDockerWaitSeconds,
+		KubeDockerGroupGID:      kubeDockerGroupGID,
+		KubeRegistryMirror:      getEnv("RUNS_FLEET_KUBE_REGISTRY_MIRROR", ""),
 
 		// Valkey queue (K8s mode)
 		ValkeyAddr:     getEnv("RUNS_FLEET_VALKEY_ADDR", "valkey:6379"),
@@ -272,6 +296,12 @@ func (c *Config) validateK8sConfig() error {
 	}
 	if c.KubeRunnerImage == "" {
 		return fmt.Errorf("RUNS_FLEET_KUBE_RUNNER_IMAGE is required for K8s backend")
+	}
+	if c.KubeDockerWaitSeconds < 10 || c.KubeDockerWaitSeconds > 300 {
+		return fmt.Errorf("RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS must be between 10 and 300, got %d", c.KubeDockerWaitSeconds)
+	}
+	if c.KubeDockerGroupGID < 1 || c.KubeDockerGroupGID > 65535 {
+		return fmt.Errorf("RUNS_FLEET_KUBE_DOCKER_GROUP_GID must be between 1 and 65535, got %d", c.KubeDockerGroupGID)
 	}
 	return nil
 }

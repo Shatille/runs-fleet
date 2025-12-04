@@ -1003,5 +1003,37 @@ func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
 	}
 }
 
+func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	cfg := &config.Config{
+		KubeNamespace:           "runs-fleet",
+		KubeRunnerImage:         "runner:latest",
+		KubeDindImage:           "docker:dind",
+		KubeDockerWaitSeconds:   120,
+		KubeDockerGroupGID:      123,
+		KubeDaemonJSONConfigMap: "missing-daemon-json",
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:    "run-configmap-test",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		OS:       "linux",
+		Pool:     "default",
+		JITToken: "test-jit-token",
+	}
+
+	_, err := p.CreateRunner(context.Background(), spec)
+	if err == nil {
+		t.Fatal("CreateRunner() should fail when daemon.json ConfigMap doesn't exist")
+	}
+
+	if !strings.Contains(err.Error(), "daemon.json ConfigMap") {
+		t.Errorf("Error should mention daemon.json ConfigMap, got: %v", err)
+	}
+}
+
 // Ensure Provider implements provider.Provider.
 var _ provider.Provider = (*Provider)(nil)
