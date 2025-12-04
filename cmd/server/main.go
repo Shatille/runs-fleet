@@ -828,6 +828,7 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 		RunID:        job.RunID,
 		JobID:        job.JobID,
 		Repo:         job.Repo,
+		Labels:       []string{buildRunnerLabel(&job)},
 		Pool:         job.Pool,
 		OS:           job.OS,
 		Arch:         job.Arch,
