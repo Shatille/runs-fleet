@@ -109,6 +109,7 @@
 
             jq
             yq
+            actionlint
           ];
 
           shellHook = ''
