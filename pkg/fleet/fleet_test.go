@@ -608,6 +608,69 @@ func TestBuildTags(t *testing.T) {
 			},
 			wantAbsent: []string{"runs-fleet:pool"},
 		},
+		{
+			name:   "With region tag",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID:  "run-123",
+				Region: "us-west-2",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+				"runs-fleet:region":  "us-west-2",
+			},
+		},
+		{
+			name:   "Empty region should not create tag",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID:  "run-123",
+				Region: "",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+			},
+			wantAbsent: []string{"runs-fleet:region"},
+		},
+		{
+			name: "With config-based tags",
+			config: &config.Config{
+				RunnerImage:         "ghcr.io/org/runner:latest",
+				TerminationQueueURL: "https://sqs.us-west-2.amazonaws.com/123/term-queue",
+				CacheURL:            "https://cache.example.com",
+				ConfigBucketName:    "my-config-bucket",
+			},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":              "run-123",
+				"runs-fleet:managed":             "true",
+				"runs-fleet:runner-image":        "ghcr.io/org/runner:latest",
+				"runs-fleet:termination-queue-url": "https://sqs.us-west-2.amazonaws.com/123/term-queue",
+				"runs-fleet:cache-url":           "https://cache.example.com",
+				"runs-fleet:config-bucket":       "my-config-bucket",
+			},
+		},
+		{
+			name:   "Empty config values should not create tags",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+			},
+			wantAbsent: []string{
+				"runs-fleet:runner-image",
+				"runs-fleet:termination-queue-url",
+				"runs-fleet:cache-url",
+				"runs-fleet:config-bucket",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -635,6 +698,49 @@ func TestBuildTags(t *testing.T) {
 				if _, exists := tagMap[absentKey]; exists {
 					t.Errorf("tag %q should not exist", absentKey)
 				}
+			}
+		})
+	}
+}
+
+func TestGetPrimaryInstanceType(t *testing.T) {
+	tests := []struct {
+		name string
+		spec *LaunchSpec
+		want string
+	}{
+		{
+			name: "Uses first from InstanceTypes array",
+			spec: &LaunchSpec{
+				InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
+				InstanceType:  "fallback.type",
+			},
+			want: "c7g.xlarge",
+		},
+		{
+			name: "Falls back to InstanceType when array empty",
+			spec: &LaunchSpec{
+				InstanceTypes: []string{},
+				InstanceType:  "t4g.medium",
+			},
+			want: "t4g.medium",
+		},
+		{
+			name: "Falls back to InstanceType when array nil",
+			spec: &LaunchSpec{
+				InstanceTypes: nil,
+				InstanceType:  "c7g.large",
+			},
+			want: "c7g.large",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{}
+			got := m.getPrimaryInstanceType(tt.spec)
+			if got != tt.want {
+				t.Errorf("getPrimaryInstanceType() = %q, want %q", got, tt.want)
 			}
 		})
 	}
