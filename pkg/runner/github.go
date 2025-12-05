@@ -21,10 +21,13 @@ import (
 )
 
 const (
-	maxRetries     = 3
-	baseRetryDelay = 500 * time.Millisecond
-	maxRetryDelay  = 10 * time.Second
+	maxRetries    = 3
+	maxRetryDelay = 10 * time.Second
 )
+
+// baseRetryDelay is the base delay for retry backoff.
+// Exposed as a variable to allow testing with shorter durations.
+var baseRetryDelay = 500 * time.Millisecond
 
 // isRetryableError returns true if the HTTP response indicates a retryable error.
 func isRetryableError(resp *http.Response, err error) bool {

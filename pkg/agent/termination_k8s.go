@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// k8sTerminationDelay is the delay before pod termination to allow telemetry to be sent.
+// Exposed as a variable to allow testing with shorter durations.
+var k8sTerminationDelay = 1 * time.Second
+
 // K8sTerminator handles termination for Kubernetes pods.
 // In K8s, pods terminate naturally when the process exits, so this implementation
 // only sends telemetry and returns - the caller should exit cleanly after.
@@ -44,7 +48,7 @@ func (t *K8sTerminator) TerminateInstance(ctx context.Context, podName string, s
 	}
 
 	// Small delay to ensure telemetry is sent
-	time.Sleep(1 * time.Second)
+	time.Sleep(k8sTerminationDelay)
 
 	t.logger.Printf("Pod %s will terminate when process exits", podName)
 	return nil

@@ -26,6 +26,10 @@ const (
 	StatusInterrupted = "interrupted"
 )
 
+// telemetryRetryBaseDelay is the base delay for retry backoff.
+// Exposed as a variable to allow testing with shorter durations.
+var telemetryRetryBaseDelay = 1 * time.Second
+
 // DetermineCompletionStatus returns the appropriate status based on job result.
 func DetermineCompletionStatus(interruptedBy string, exitCode int) string {
 	if interruptedBy != "" {
@@ -119,7 +123,7 @@ func (t *Telemetry) sendMessage(ctx context.Context, status JobStatus) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			backoff := time.Duration(1<<uint(attempt)) * telemetryRetryBaseDelay
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():

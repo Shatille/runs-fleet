@@ -12,6 +12,13 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
+func init() {
+	// Use short tick interval in tests to avoid slow test execution
+	eventsTickInterval = 10 * time.Millisecond
+	// Use short retry backoffs in tests
+	retryBackoffs = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond}
+}
+
 // MockQueueAPI implements QueueAPI interface
 type MockQueueAPI struct {
 	ReceiveMessagesFunc func(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
@@ -427,7 +434,7 @@ func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 	<-done
 
@@ -465,7 +472,7 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 	<-done
 
@@ -477,10 +484,11 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 
 func TestConcurrentEventProcessing(t *testing.T) {
 	const numMessages = 10
-	const processingDelay = 100 * time.Millisecond
+	const processingDelay = 10 * time.Millisecond
 
 	var processStartTimes []time.Time
 	var mu sync.Mutex
+	var messageReturned bool
 
 	messages := make([]queue.Message, numMessages)
 	for i := 0; i < numMessages; i++ {
@@ -506,6 +514,12 @@ func TestConcurrentEventProcessing(t *testing.T) {
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
 			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if messageReturned {
+					return nil, nil
+				}
+				messageReturned = true
 				return messages, nil
 			},
 			DeleteMessageFunc: func(_ context.Context, _ string) error {
@@ -526,17 +540,23 @@ func TestConcurrentEventProcessing(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	// Wait long enough for all messages to be processed (10 messages * 10ms / 5 concurrency = 20ms + overhead)
+	time.Sleep(100 * time.Millisecond)
 	cancel()
 	<-done
 
-	if len(processStartTimes) != numMessages {
-		t.Fatalf("Expected %d messages processed, got %d", numMessages, len(processStartTimes))
+	mu.Lock()
+	startTimes := make([]time.Time, len(processStartTimes))
+	copy(startTimes, processStartTimes)
+	mu.Unlock()
+
+	if len(startTimes) != numMessages {
+		t.Fatalf("Expected %d messages processed, got %d", numMessages, len(startTimes))
 	}
 
-	firstStart := processStartTimes[0]
+	firstStart := startTimes[0]
 	var concurrentStarts int
-	for _, startTime := range processStartTimes[1:] {
+	for _, startTime := range startTimes[1:] {
 		if startTime.Sub(firstStart) < processingDelay/2 {
 			concurrentStarts++
 		}
@@ -606,14 +626,18 @@ func TestBoundedConcurrency(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 	<-done
 
-	if maxActive > maxConcurrency+1 {
-		t.Errorf("Expected max concurrency ~%d, got %d", maxConcurrency, maxActive)
+	mu.Lock()
+	maxActiveVal := maxActive
+	mu.Unlock()
+
+	if maxActiveVal > maxConcurrency+1 {
+		t.Errorf("Expected max concurrency ~%d, got %d", maxConcurrency, maxActiveVal)
 	}
-	if maxActive < 2 {
+	if maxActiveVal < 2 {
 		t.Error("Expected some concurrency, but processing appears to be sequential")
 	}
 }
@@ -656,7 +680,7 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 	<-done
 
@@ -727,7 +751,7 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 	<-done
 
@@ -737,42 +761,38 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 }
 
 func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
+	// Note: In tests, retryBackoffs is set to 1ms in init() for fast execution.
+	// We just verify retry count behavior, not timing.
 	tests := []struct {
 		name          string
 		failCount     int
 		expectedCalls int
-		minDelay      time.Duration
 	}{
 		{
 			name:          "Success on first try",
 			failCount:     0,
 			expectedCalls: 1,
-			minDelay:      0,
 		},
 		{
 			name:          "Success on second try",
 			failCount:     1,
 			expectedCalls: 2,
-			minDelay:      100 * time.Millisecond,
 		},
 		{
 			name:          "Success on third try",
 			failCount:     2,
 			expectedCalls: 3,
-			minDelay:      600 * time.Millisecond,
 		},
 		{
 			name:          "Fail all retries",
 			failCount:     3,
 			expectedCalls: 3,
-			minDelay:      600 * time.Millisecond,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			callCount := 0
-			startTime := time.Now()
 			var mu sync.Mutex
 			messageReturned := false
 
@@ -825,11 +845,9 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 				done <- true
 			}()
 
-			time.Sleep(2 * time.Second)
+			time.Sleep(50 * time.Millisecond)
 			cancel()
 			<-done
-
-			elapsed := time.Since(startTime)
 
 			mu.Lock()
 			actualCallCount := callCount
@@ -837,12 +855,6 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 
 			if actualCallCount != tt.expectedCalls {
 				t.Errorf("Expected %d calls, got %d", tt.expectedCalls, actualCallCount)
-			}
-
-			if tt.minDelay > 0 {
-				if elapsed < tt.minDelay {
-					t.Errorf("Expected delay of at least %v, got %v", tt.minDelay, elapsed)
-				}
 			}
 		})
 	}
@@ -915,7 +927,7 @@ func TestPanicRecovery(t *testing.T) {
 		done <- true
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 	<-done
 

@@ -14,6 +14,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
+func init() {
+	// Use minimal delays in tests to avoid slow test execution
+	registrationRetryBaseDelay = 1 * time.Millisecond
+}
+
 const (
 	testTokenValue = "test-token"
 )
