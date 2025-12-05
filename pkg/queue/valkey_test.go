@@ -1060,3 +1060,8 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 		t.Errorf("RetryCount = %d, want %d", parsedJob.RetryCount, originalJob.RetryCount)
 	}
 }
+
+// Note: ReceiveMessages integration tests are skipped because miniredis
+// doesn't properly support XREADGROUP with consumer groups. The ReceiveMessages
+// function is tested through unit tests that verify argument construction and
+// message parsing logic without requiring actual Redis stream operations.
