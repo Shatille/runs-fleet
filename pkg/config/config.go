@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -93,6 +94,15 @@ type Config struct {
 	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
 	ValkeyPassword string // Optional password
 	ValkeyDB       int    // Database number (default: 0)
+
+	// Metrics configuration
+	MetricsNamespace         string   // Metric namespace/prefix (default: "RunsFleet" for CloudWatch, "runs_fleet" for others)
+	MetricsCloudWatchEnabled bool     // Enable CloudWatch metrics (default: true)
+	MetricsPrometheusEnabled bool     // Enable Prometheus /metrics endpoint
+	MetricsPrometheusPath    string   // HTTP path for Prometheus /metrics endpoint (default: "/metrics")
+	MetricsDatadogEnabled    bool     // Enable Datadog DogStatsD metrics
+	MetricsDatadogAddr       string   // DogStatsD address (default: "127.0.0.1:8125")
+	MetricsDatadogTags       []string // Global Datadog tags
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -184,6 +194,15 @@ func Load() (*Config, error) {
 		ValkeyAddr:     getEnv("RUNS_FLEET_VALKEY_ADDR", "valkey:6379"),
 		ValkeyPassword: getEnv("RUNS_FLEET_VALKEY_PASSWORD", ""),
 		ValkeyDB:       valkeyDB,
+
+		// Metrics
+		MetricsNamespace:         getEnv("RUNS_FLEET_METRICS_NAMESPACE", ""),
+		MetricsCloudWatchEnabled: getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
+		MetricsPrometheusEnabled: getEnvBool("RUNS_FLEET_METRICS_PROMETHEUS_ENABLED", false),
+		MetricsPrometheusPath:    getEnv("RUNS_FLEET_METRICS_PROMETHEUS_PATH", "/metrics"),
+		MetricsDatadogEnabled:    getEnvBool("RUNS_FLEET_METRICS_DATADOG_ENABLED", false),
+		MetricsDatadogAddr:       getEnv("RUNS_FLEET_METRICS_DATADOG_ADDR", "127.0.0.1:8125"),
+		MetricsDatadogTags:       splitAndFilter(getEnv("RUNS_FLEET_METRICS_DATADOG_TAGS", "")),
 	}
 
 	// Parse node selector with validation (only for K8s backend)
@@ -283,6 +302,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Metrics validation
+	if err := c.validateMetricsConfig(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -336,6 +360,41 @@ func (c *Config) validateK8sConfig() error {
 	}
 	if c.KubeDockerGroupGID < 1 || c.KubeDockerGroupGID > 65535 {
 		return fmt.Errorf("RUNS_FLEET_KUBE_DOCKER_GROUP_GID must be between 1 and 65535, got %d", c.KubeDockerGroupGID)
+	}
+	return nil
+}
+
+// validateMetricsConfig validates metrics-specific configuration.
+func (c *Config) validateMetricsConfig() error {
+	if c.MetricsDatadogEnabled {
+		if c.MetricsDatadogAddr == "" {
+			return fmt.Errorf("RUNS_FLEET_METRICS_DATADOG_ADDR is required when Datadog metrics are enabled")
+		}
+		if err := validateHostPort(c.MetricsDatadogAddr); err != nil {
+			return fmt.Errorf("RUNS_FLEET_METRICS_DATADOG_ADDR: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateHostPort validates that addr is a valid host:port format (IPv4 or IPv6).
+func validateHostPort(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("address cannot be empty")
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid format %q: %w", addr, err)
+	}
+	if host == "" {
+		return fmt.Errorf("invalid format %q: host cannot be empty", addr)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port %d out of range (1-65535)", port)
 	}
 	return nil
 }

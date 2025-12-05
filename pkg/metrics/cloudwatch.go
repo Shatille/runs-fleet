@@ -1,4 +1,3 @@
-// Package metrics publishes CloudWatch metrics.
 package metrics
 
 import (
@@ -16,92 +15,111 @@ type CloudWatchAPI interface {
 	PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error)
 }
 
-// Publisher publishes metrics to CloudWatch.
-type Publisher struct {
+// CloudWatchPublisher publishes metrics to AWS CloudWatch.
+type CloudWatchPublisher struct {
 	client    CloudWatchAPI
 	namespace string
 }
 
+// Ensure CloudWatchPublisher implements Publisher.
+var _ Publisher = (*CloudWatchPublisher)(nil)
+
 // NewPublisher creates a CloudWatch metrics publisher.
-func NewPublisher(cfg aws.Config) *Publisher {
-	return &Publisher{
+// Deprecated: Use NewCloudWatchPublisher instead.
+func NewPublisher(cfg aws.Config) *CloudWatchPublisher {
+	return NewCloudWatchPublisher(cfg)
+}
+
+// NewCloudWatchPublisher creates a CloudWatch metrics publisher.
+func NewCloudWatchPublisher(cfg aws.Config) *CloudWatchPublisher {
+	return NewCloudWatchPublisherWithNamespace(cfg, "RunsFleet")
+}
+
+// NewCloudWatchPublisherWithNamespace creates a CloudWatch metrics publisher with custom namespace.
+func NewCloudWatchPublisherWithNamespace(cfg aws.Config, namespace string) *CloudWatchPublisher {
+	return &CloudWatchPublisher{
 		client:    cloudwatch.NewFromConfig(cfg),
-		namespace: "RunsFleet",
+		namespace: namespace,
 	}
 }
 
+// Close implements Publisher.Close. CloudWatch client doesn't require cleanup.
+func (p *CloudWatchPublisher) Close() error {
+	return nil
+}
+
 // PublishQueueDepth publishes queue depth metric.
-func (p *Publisher) PublishQueueDepth(ctx context.Context, depth float64) error {
+func (p *CloudWatchPublisher) PublishQueueDepth(ctx context.Context, depth float64) error {
 	return p.putGaugeMetric(ctx, "QueueDepth", depth, types.StandardUnitCount)
 }
 
 // PublishFleetSizeIncrement publishes fleet size increment metric.
-func (p *Publisher) PublishFleetSizeIncrement(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishFleetSizeIncrement(ctx context.Context) error {
 	return p.putMetric(ctx, "FleetSizeIncrement", 1, types.StandardUnitCount)
 }
 
 // PublishFleetSizeDecrement publishes fleet size decrement metric.
-func (p *Publisher) PublishFleetSizeDecrement(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishFleetSizeDecrement(ctx context.Context) error {
 	return p.putMetric(ctx, "FleetSizeDecrement", 1, types.StandardUnitCount)
 }
 
 // PublishJobDuration publishes job duration metric.
-func (p *Publisher) PublishJobDuration(ctx context.Context, durationSeconds int) error {
+func (p *CloudWatchPublisher) PublishJobDuration(ctx context.Context, durationSeconds int) error {
 	return p.putMetric(ctx, "JobDuration", float64(durationSeconds), types.StandardUnitSeconds)
 }
 
 // PublishJobSuccess publishes job success metric.
-func (p *Publisher) PublishJobSuccess(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishJobSuccess(ctx context.Context) error {
 	return p.putMetric(ctx, "JobSuccess", 1, types.StandardUnitCount)
 }
 
 // PublishJobFailure publishes job failure metric.
-func (p *Publisher) PublishJobFailure(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishJobFailure(ctx context.Context) error {
 	return p.putMetric(ctx, "JobFailure", 1, types.StandardUnitCount)
 }
 
 // PublishJobQueued publishes job queued metric.
-func (p *Publisher) PublishJobQueued(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishJobQueued(ctx context.Context) error {
 	return p.putMetric(ctx, "JobQueued", 1, types.StandardUnitCount)
 }
 
 // PublishSpotInterruption publishes spot interruption metric.
-func (p *Publisher) PublishSpotInterruption(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishSpotInterruption(ctx context.Context) error {
 	return p.putMetric(ctx, "SpotInterruptions", 1, types.StandardUnitCount)
 }
 
 // PublishMessageDeletionFailure publishes message deletion failure metric.
-func (p *Publisher) PublishMessageDeletionFailure(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishMessageDeletionFailure(ctx context.Context) error {
 	return p.putMetric(ctx, "MessageDeletionFailures", 1, types.StandardUnitCount)
 }
 
 // PublishCacheHit publishes cache hit metric.
-func (p *Publisher) PublishCacheHit(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishCacheHit(ctx context.Context) error {
 	return p.putMetric(ctx, "CacheHits", 1, types.StandardUnitCount)
 }
 
 // PublishCacheMiss publishes cache miss metric.
-func (p *Publisher) PublishCacheMiss(ctx context.Context) error {
+func (p *CloudWatchPublisher) PublishCacheMiss(ctx context.Context) error {
 	return p.putMetric(ctx, "CacheMisses", 1, types.StandardUnitCount)
 }
 
 // PublishOrphanedInstancesTerminated publishes orphaned instances terminated metric.
-func (p *Publisher) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
+func (p *CloudWatchPublisher) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
 	return p.putMetric(ctx, "OrphanedInstancesTerminated", float64(count), types.StandardUnitCount)
 }
 
 // PublishSSMParametersDeleted publishes SSM parameters deleted metric.
-func (p *Publisher) PublishSSMParametersDeleted(ctx context.Context, count int) error {
+func (p *CloudWatchPublisher) PublishSSMParametersDeleted(ctx context.Context, count int) error {
 	return p.putMetric(ctx, "SSMParametersDeleted", float64(count), types.StandardUnitCount)
 }
 
 // PublishJobRecordsArchived publishes job records archived metric.
-func (p *Publisher) PublishJobRecordsArchived(ctx context.Context, count int) error {
+func (p *CloudWatchPublisher) PublishJobRecordsArchived(ctx context.Context, count int) error {
 	return p.putMetric(ctx, "JobRecordsArchived", float64(count), types.StandardUnitCount)
 }
 
 // PublishPoolUtilization publishes pool utilization metric with pool name dimension.
-func (p *Publisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
+func (p *CloudWatchPublisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{
@@ -126,7 +144,7 @@ func (p *Publisher) PublishPoolUtilization(ctx context.Context, poolName string,
 }
 
 // PublishSchedulingFailure publishes scheduling failure metric with task type dimension.
-func (p *Publisher) PublishSchedulingFailure(ctx context.Context, taskType string) error {
+func (p *CloudWatchPublisher) PublishSchedulingFailure(ctx context.Context, taskType string) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{
@@ -151,7 +169,7 @@ func (p *Publisher) PublishSchedulingFailure(ctx context.Context, taskType strin
 }
 
 // PublishCircuitBreakerTriggered publishes circuit breaker triggered metric.
-func (p *Publisher) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error {
+func (p *CloudWatchPublisher) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{
@@ -175,7 +193,7 @@ func (p *Publisher) PublishCircuitBreakerTriggered(ctx context.Context, instance
 	return nil
 }
 
-func (p *Publisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
+func (p *CloudWatchPublisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{
@@ -193,7 +211,7 @@ func (p *Publisher) putMetric(ctx context.Context, name string, value float64, u
 	return nil
 }
 
-func (p *Publisher) putGaugeMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
+func (p *CloudWatchPublisher) putGaugeMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{

@@ -93,7 +93,39 @@ func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
 	return queue.NewSQSClient(awsCfg, cfg.QueueURL)
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher *metrics.Publisher) (*housekeeping.Handler, *housekeeping.Scheduler) {
+func initRunnerManager(awsCfg aws.Config, cfg *config.Config) *runner.Manager {
+	if cfg.GitHubAppID == "" || cfg.GitHubAppPrivateKey == "" {
+		log.Println("WARNING: Runner manager not initialized - GitHub App credentials not configured")
+		return nil
+	}
+	githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
+	if err != nil {
+		log.Fatalf("Failed to create GitHub client: %v", err)
+	}
+	rm := runner.NewManager(awsCfg, githubClient, runner.ManagerConfig{
+		CacheSecret:         cfg.CacheSecret,
+		CacheURL:            cfg.CacheURL,
+		TerminationQueueURL: cfg.TerminationQueueURL,
+	})
+	log.Println("Runner manager initialized for SSM configuration")
+	return rm
+}
+
+func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Config, fm *fleet.Manager, eh *events.Handler) *circuit.Breaker {
+	if cfg.CircuitBreakerTable == "" || fm == nil {
+		return nil
+	}
+	cb := circuit.NewBreaker(awsCfg, cfg.CircuitBreakerTable)
+	cb.StartCacheCleanup(ctx)
+	fm.SetCircuitBreaker(cb)
+	if eh != nil {
+		eh.SetCircuitBreaker(cb)
+	}
+	log.Printf("Circuit breaker initialized with table: %s", cfg.CircuitBreakerTable)
+	return cb
+}
+
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher metrics.Publisher) (*housekeeping.Handler, *housekeeping.Scheduler) {
 	if cfg.HousekeepingQueueURL == "" {
 		return nil, nil
 	}
@@ -117,6 +149,60 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher *m
 	return handler, scheduler
 }
 
+func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http.Handler) {
+	var publishers []metrics.Publisher
+	var prometheusHandler http.Handler
+
+	if cfg.MetricsCloudWatchEnabled {
+		namespace := cfg.MetricsNamespace
+		if namespace == "" {
+			namespace = "RunsFleet"
+		}
+		publishers = append(publishers, metrics.NewCloudWatchPublisherWithNamespace(awsCfg, namespace))
+		log.Println("CloudWatch metrics enabled")
+	}
+
+	if cfg.MetricsPrometheusEnabled {
+		namespace := cfg.MetricsNamespace
+		if namespace == "" {
+			namespace = "runs_fleet"
+		}
+		prom := metrics.NewPrometheusPublisher(metrics.PrometheusConfig{Namespace: namespace})
+		publishers = append(publishers, prom)
+		prometheusHandler = prom.Handler()
+		log.Println("Prometheus metrics enabled")
+	}
+
+	if cfg.MetricsDatadogEnabled {
+		namespace := cfg.MetricsNamespace
+		if namespace == "" {
+			namespace = "runs_fleet"
+		}
+		dd, err := metrics.NewDatadogPublisher(metrics.DatadogConfig{
+			Address:   cfg.MetricsDatadogAddr,
+			Namespace: namespace,
+			Tags:      cfg.MetricsDatadogTags,
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to create Datadog metrics publisher: %v (continuing without Datadog)", err)
+		} else {
+			publishers = append(publishers, dd)
+			log.Printf("Datadog metrics enabled (addr: %s)", cfg.MetricsDatadogAddr)
+		}
+	}
+
+	if len(publishers) == 0 {
+		log.Println("No metrics backends enabled")
+		return metrics.NoopPublisher{}, nil
+	}
+
+	if len(publishers) == 1 {
+		return publishers[0], prometheusHandler
+	}
+
+	return metrics.NewMultiPublisher(publishers...), prometheusHandler
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -138,7 +224,8 @@ func main() {
 
 	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
-	metricsPublisher := metrics.NewPublisher(awsCfg)
+
+	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
 
 	// Backend-specific initialization
 	var fleetManager *fleet.Manager
@@ -181,16 +268,7 @@ func main() {
 		k8sPoolProvider.SetCoordinator(coord)
 	}
 
-	var circuitBreaker *circuit.Breaker
-	if cfg.CircuitBreakerTable != "" && fleetManager != nil {
-		circuitBreaker = circuit.NewBreaker(awsCfg, cfg.CircuitBreakerTable)
-		circuitBreaker.StartCacheCleanup(ctx)
-		fleetManager.SetCircuitBreaker(circuitBreaker)
-		if eventHandler != nil {
-			eventHandler.SetCircuitBreaker(circuitBreaker)
-		}
-		log.Printf("Circuit breaker initialized with table: %s", cfg.CircuitBreakerTable)
-	}
+	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
 
 	// EC2-specific handlers (SSM-based termination and EC2 housekeeping)
 	var terminationHandler *termination.Handler
@@ -205,22 +283,7 @@ func main() {
 		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher)
 	}
 
-	// Initialize runner manager for SSM configuration
-	var runnerManager *runner.Manager
-	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
-		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
-		if err != nil {
-			log.Fatalf("Failed to create GitHub client: %v", err)
-		}
-		runnerManager = runner.NewManager(awsCfg, githubClient, runner.ManagerConfig{
-			CacheSecret:         cfg.CacheSecret,
-			CacheURL:            cfg.CacheURL,
-			TerminationQueueURL: cfg.TerminationQueueURL,
-		})
-		log.Println("Runner manager initialized for SSM configuration")
-	} else {
-		log.Println("WARNING: Runner manager not initialized - GitHub App credentials not configured")
-	}
+	runnerManager := initRunnerManager(awsCfg, cfg)
 
 	mux := http.NewServeMux()
 
@@ -230,6 +293,11 @@ func main() {
 	})
 
 	mux.HandleFunc("/ready", makeReadinessHandler(jobQueue))
+
+	if prometheusHandler != nil {
+		mux.Handle(cfg.MetricsPrometheusPath, prometheusHandler)
+		log.Printf("Prometheus metrics enabled at %s", cfg.MetricsPrometheusPath)
+	}
 
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
@@ -316,10 +384,14 @@ func main() {
 		log.Fatalf("Server shutdown failed: %v", err)
 	}
 
+	if err := metricsPublisher.Close(); err != nil {
+		log.Printf("Metrics publisher close failed: %v", err)
+	}
+
 	log.Println("Server stopped")
 }
 
-func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, m *metrics.Publisher) error {
+func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, m metrics.Publisher) error {
 	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
 
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
@@ -370,7 +442,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 	return nil
 }
 
-func runWorker(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {
+func runWorker(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {
 	log.Println("Starting worker loop...")
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -492,7 +564,7 @@ func createK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provid
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
-func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, cfg *config.Config, subnetIndex *uint64) {
+func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
@@ -669,7 +741,7 @@ func buildRunnerLabel(job *queue.JobMessage) string {
 
 // housekeepingMetricsAdapter adapts metrics.Publisher to housekeeping.MetricsAPI.
 type housekeepingMetricsAdapter struct {
-	publisher *metrics.Publisher
+	publisher metrics.Publisher
 }
 
 func (h *housekeepingMetricsAdapter) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
@@ -690,7 +762,7 @@ func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context,
 
 // K8s backend functions
 
-func runK8sWorker(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config) {
+func runK8sWorker(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config) {
 	log.Println("Starting K8s worker loop...")
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
@@ -751,7 +823,7 @@ func runK8sWorker(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.P
 	}
 }
 
-func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m *metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, _ *config.Config) {
+func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, _ *config.Config) {
 	startTime := time.Now()
 	podCreated := false
 	poisonMessage := false
