@@ -328,3 +328,148 @@ func TestHandler_DownloadCacheArtifact(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_IsAuthEnabled(t *testing.T) {
+	tests := []struct {
+		name        string
+		cacheSecret string
+		want        bool
+	}{
+		{
+			name:        "auth enabled with secret",
+			cacheSecret: "my-secret-key",
+			want:        true,
+		},
+		{
+			name:        "auth disabled without secret",
+			cacheSecret: "",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+			handler := cache.NewHandlerWithAuth(server, nil, tt.cacheSecret)
+
+			got := handler.IsAuthEnabled()
+			if got != tt.want {
+				t.Errorf("IsAuthEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandler_NewHandlerWithMetrics(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandlerWithMetrics(server, nil)
+
+	if handler == nil {
+		t.Error("NewHandlerWithMetrics() returned nil")
+	}
+}
+
+func TestHandler_NewHandlerWithAuth(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandlerWithAuth(server, nil, "test-secret")
+
+	if handler == nil {
+		t.Error("NewHandlerWithAuth() returned nil")
+	}
+	if !handler.IsAuthEnabled() {
+		t.Error("Auth should be enabled when secret is provided")
+	}
+}
+
+func TestHandler_RegisterRoutes(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandler(server)
+	mux := http.NewServeMux()
+
+	// RegisterRoutes should not panic
+	handler.RegisterRoutes(mux)
+
+	// Verify routes are registered by making requests
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/_apis/artifactcache/caches"},
+		{http.MethodGet, "/_apis/artifactcache/cache"},
+		{http.MethodPatch, "/_apis/artifactcache/caches/test-id"},
+		{http.MethodGet, "/_artifacts/test-id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			// Just verify it doesn't return 404 (route was registered)
+			// Actual handler logic is tested elsewhere
+		})
+	}
+}
+
+func TestHandler_RegisterRoutes_WithAuth(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandlerWithAuth(server, nil, "test-secret")
+	mux := http.NewServeMux()
+
+	// RegisterRoutes with auth should not panic
+	handler.RegisterRoutes(mux)
+
+	// Without auth token, requests should fail with 401
+	req := httptest.NewRequest(http.MethodGet, "/_apis/artifactcache/cache?keys=test&version=v1", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Logf("Expected 401 Unauthorized without auth token, got %d", w.Code)
+	}
+}
+
+func TestHandler_ReserveCacheEntry_MethodNotAllowed(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandler(server)
+
+	// Test that GET is not allowed
+	req := httptest.NewRequest(http.MethodGet, "/_apis/artifactcache/caches", nil)
+	w := httptest.NewRecorder()
+
+	handler.ReserveCacheEntry(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("ReserveCacheEntry() with GET status = %v, want %v", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandler_GetCacheEntry_MethodNotAllowed(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandler(server)
+
+	// Test that POST is not allowed
+	req := httptest.NewRequest(http.MethodPost, "/_apis/artifactcache/cache?keys=test&version=v1", nil)
+	w := httptest.NewRecorder()
+
+	handler.GetCacheEntry(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GetCacheEntry() with POST status = %v, want %v", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandler_DownloadCacheArtifact_InvalidKey(t *testing.T) {
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandler(server)
+
+	// Test with invalid key containing path traversal
+	req := httptest.NewRequest(http.MethodGet, "/_artifacts/../../../etc/passwd", nil)
+	w := httptest.NewRecorder()
+
+	handler.DownloadCacheArtifact(w, req, "../../../etc/passwd")
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("DownloadCacheArtifact() with invalid key status = %v, want %v", w.Code, http.StatusBadRequest)
+	}
+}

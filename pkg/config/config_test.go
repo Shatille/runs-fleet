@@ -450,6 +450,148 @@ func TestValidateInvalidBackend(t *testing.T) {
 	}
 }
 
+func TestParseTolerations(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    []Toleration
+		wantErr bool
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "single toleration",
+			input: `[{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"}]`,
+			want: []Toleration{
+				{Key: "dedicated", Operator: "Equal", Value: "github-actions", Effect: "NoSchedule"},
+			},
+		},
+		{
+			name:  "multiple tolerations",
+			input: `[{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"},{"key":"node-type","operator":"Exists","effect":"NoExecute"}]`,
+			want: []Toleration{
+				{Key: "dedicated", Operator: "Equal", Value: "github-actions", Effect: "NoSchedule"},
+				{Key: "node-type", Operator: "Exists", Effect: "NoExecute"},
+			},
+		},
+		{
+			name:  "toleration with only key",
+			input: `[{"key":"special-node"}]`,
+			want: []Toleration{
+				{Key: "special-node"},
+			},
+		},
+		{
+			name:  "toleration with Exists operator",
+			input: `[{"key":"gpu","operator":"Exists"}]`,
+			want: []Toleration{
+				{Key: "gpu", Operator: "Exists"},
+			},
+		},
+		{
+			name:    "invalid JSON",
+			input:   "not-valid-json",
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON structure",
+			input:   `{"key":"value"}`,
+			wantErr: true,
+		},
+		{
+			name:  "empty array",
+			input: `[]`,
+			want:  []Toleration{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTolerations(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseTolerations() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("parseTolerations() length = %v, want %v", len(got), len(tt.want))
+				return
+			}
+			for i, w := range tt.want {
+				if got[i].Key != w.Key || got[i].Operator != w.Operator ||
+					got[i].Value != w.Value || got[i].Effect != w.Effect {
+					t.Errorf("parseTolerations()[%d] = %+v, want %+v", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestGetEnvBool(t *testing.T) {
+	tests := []struct {
+		name         string
+		envKey       string
+		envValue     string
+		defaultValue bool
+		want         bool
+	}{
+		{"empty returns default true", "TEST_BOOL_EMPTY", "", true, true},
+		{"empty returns default false", "TEST_BOOL_EMPTY2", "", false, false},
+		{"true string", "TEST_BOOL_TRUE", "true", false, true},
+		{"false string", "TEST_BOOL_FALSE", "false", true, false},
+		{"1 is true", "TEST_BOOL_ONE", "1", false, true},
+		{"0 is false", "TEST_BOOL_ZERO", "0", true, false},
+		{"TRUE uppercase", "TEST_BOOL_UPPER", "TRUE", false, true},
+		{"FALSE uppercase", "TEST_BOOL_UPPER_F", "FALSE", true, false},
+		{"invalid returns default", "TEST_BOOL_INVALID", "invalid", true, true},
+		{"yes is invalid", "TEST_BOOL_YES", "yes", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envValue != "" {
+				os.Setenv(tt.envKey, tt.envValue)
+				defer os.Unsetenv(tt.envKey)
+			}
+			if got := getEnvBool(tt.envKey, tt.defaultValue); got != tt.want {
+				t.Errorf("getEnvBool(%q, %v) = %v, want %v", tt.envKey, tt.defaultValue, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitAndFilter(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"", []string{}},
+		{"a,b,c", []string{"a", "b", "c"}},
+		{" a , b , c ", []string{"a", "b", "c"}},
+		{"single", []string{"single"}},
+		{"a,,b", []string{"a", "b"}},
+		{" , , ", []string{}},
+		{"subnet-1,subnet-2,subnet-3", []string{"subnet-1", "subnet-2", "subnet-3"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitAndFilter(tt.input)
+			if len(got) != len(tt.want) {
+				t.Errorf("splitAndFilter(%q) length = %v, want %v", tt.input, len(got), len(tt.want))
+				return
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("splitAndFilter(%q)[%d] = %q, want %q", tt.input, i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateECRImageURL(t *testing.T) {
 	tests := []struct {
 		name    string
