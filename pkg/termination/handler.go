@@ -53,6 +53,10 @@ type Message struct {
 	InterruptedBy   string    `json:"interrupted_by,omitempty"`
 }
 
+// handlerTickInterval is the interval for the termination handler loop.
+// Exposed as a variable to allow testing with shorter durations.
+var handlerTickInterval = 1 * time.Second
+
 // Handler processes termination notifications from agents.
 type Handler struct {
 	queueClient QueueAPI
@@ -81,7 +85,7 @@ func (h *Handler) Run(ctx context.Context) {
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(handlerTickInterval)
 	defer ticker.Stop()
 
 	for {

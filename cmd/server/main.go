@@ -41,9 +41,13 @@ import (
 
 const (
 	maxDeleteRetries      = 3
-	retryDelay            = 1 * time.Second
 	maxFleetCreateRetries = 3
-	fleetRetryBaseDelay   = 2 * time.Second
+)
+
+// Retry delays - variables to allow testing with shorter durations.
+var (
+	retryDelay          = 1 * time.Second
+	fleetRetryBaseDelay = 2 * time.Second
 )
 
 type stdLogger struct{}

@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+func init() {
+	// Use minimal delays in tests to avoid slow test execution
+	baseRetryDelay = 1 * time.Millisecond
+}
+
 const (
 	testPathOrgInstallation    = "/orgs/myorg/installation"
 	testPathUserInstallation   = "/users/myuser/installation"
@@ -765,6 +770,11 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 	}
 	client.baseURL = server.URL
 
+	// Save original delay and use a longer one for this test to allow cancellation during backoff
+	originalDelay := baseRetryDelay
+	baseRetryDelay = 50 * time.Millisecond
+	defer func() { baseRetryDelay = originalDelay }()
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
@@ -774,7 +784,7 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 	}()
 
 	// Wait for first attempt to fail, then cancel during backoff
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	cancel()
 
 	select {

@@ -26,6 +26,10 @@ type Logger interface {
 	Println(v ...interface{})
 }
 
+// registrationRetryBaseDelay is the base delay for retry backoff.
+// Exposed as a variable to allow testing with shorter durations.
+var registrationRetryBaseDelay = 1 * time.Second
+
 // RunnerConfig represents configuration for registering a runner.
 type RunnerConfig struct {
 	Org         string   `json:"org"`
@@ -69,7 +73,7 @@ func (r *Registrar) FetchConfig(ctx context.Context, parameterPath string) (*Run
 	// Retry up to 3 times with backoff
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			backoff := time.Duration(1<<uint(attempt)) * registrationRetryBaseDelay
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():

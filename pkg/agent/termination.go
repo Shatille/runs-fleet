@@ -14,6 +14,10 @@ const (
 	TelemetryTimeout = 30 * time.Second
 )
 
+// ec2TerminationDelay is the delay before EC2 termination to allow telemetry to be queued.
+// Exposed as a variable to allow testing with shorter durations.
+var ec2TerminationDelay = 2 * time.Second
+
 // InstanceTerminator defines the interface for instance termination.
 // Implementations handle backend-specific termination (EC2 API vs K8s pod exit).
 type InstanceTerminator interface {
@@ -74,7 +78,7 @@ func (t *EC2Terminator) TerminateInstance(ctx context.Context, instanceID string
 	}
 
 	// Small delay to ensure telemetry is queued
-	time.Sleep(2 * time.Second)
+	time.Sleep(ec2TerminationDelay)
 
 	// Terminate the instance
 	t.logger.Printf("Terminating instance %s...", instanceID)

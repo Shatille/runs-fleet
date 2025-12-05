@@ -12,6 +12,11 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+func init() {
+	// Use minimal delays in tests to avoid slow test execution
+	k8sTerminationDelay = 1 * time.Millisecond
+}
+
 // mockTelemetryClient implements TelemetryClient for testing K8sTerminator.
 type mockTelemetryClient struct {
 	mu                  sync.Mutex

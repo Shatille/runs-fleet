@@ -14,6 +14,14 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
+// eventsTickInterval is the interval for the events handler loop.
+// Exposed as a variable to allow testing with shorter durations.
+var eventsTickInterval = 1 * time.Second
+
+// retryBackoffs are the delays between retry attempts.
+// Exposed as a variable to allow testing with shorter durations.
+var retryBackoffs = []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
+
 // QueueAPI provides queue operations for event processing.
 type QueueAPI interface {
 	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
@@ -105,7 +113,7 @@ type StateChangeDetail struct {
 // Run starts the event handler loop.
 func (h *Handler) Run(ctx context.Context) {
 	log.Println("Starting event handler loop...")
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(eventsTickInterval)
 	defer ticker.Stop()
 
 	const maxConcurrency = 5
@@ -221,17 +229,16 @@ func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 }
 
 func (h *Handler) retryWithBackoff(ctx context.Context, operation func(context.Context) error) error {
-	backoffs := []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
 	var lastErr error
 
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			backoffIdx := attempt - 1
-			if backoffIdx >= len(backoffs) {
-				backoffIdx = len(backoffs) - 1
+			if backoffIdx >= len(retryBackoffs) {
+				backoffIdx = len(retryBackoffs) - 1
 			}
 			select {
-			case <-time.After(backoffs[backoffIdx]):
+			case <-time.After(retryBackoffs[backoffIdx]):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
