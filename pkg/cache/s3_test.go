@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -533,6 +534,72 @@ func TestWithScope(t *testing.T) {
 	}
 }
 
+func TestNewServerWithClientsAndScope_InvalidScope(t *testing.T) {
+	mockS3 := &MockS3API{}
+	mockPresign := &MockPresignAPI{}
+
+	// Invalid scope should result in empty scope
+	server := NewServerWithClientsAndScope(mockS3, mockPresign, "test-bucket", "../etc")
+	if server.defaultScope != "" {
+		t.Errorf("Invalid scope should be rejected, got %q", server.defaultScope)
+	}
+
+	// Valid scope should be accepted
+	server = NewServerWithClientsAndScope(mockS3, mockPresign, "test-bucket", "org/repo")
+	if server.defaultScope != "org/repo" {
+		t.Errorf("Valid scope should be set, got %q", server.defaultScope)
+	}
+}
+
+func TestSetScope(t *testing.T) {
+	server := &Server{cacheBucketName: "test-bucket"}
+
+	// Valid scope should succeed
+	if err := server.SetScope("org/repo"); err != nil {
+		t.Errorf("SetScope with valid scope failed: %v", err)
+	}
+	if server.defaultScope != "org/repo" {
+		t.Errorf("SetScope should set scope, got %q", server.defaultScope)
+	}
+
+	// Empty scope is valid
+	if err := server.SetScope(""); err != nil {
+		t.Errorf("SetScope with empty scope failed: %v", err)
+	}
+
+	// Invalid scope should fail
+	if err := server.SetScope("../etc"); err == nil {
+		t.Error("SetScope should reject path traversal")
+	}
+
+	// Too many parts should fail
+	if err := server.SetScope("org/repo/extra"); err == nil {
+		t.Error("SetScope should reject too many parts")
+	}
+}
+
+func TestWithScope_InvalidScope(t *testing.T) {
+	original := &Server{
+		cacheBucketName: "test-bucket",
+		defaultScope:    "original-scope",
+	}
+
+	// Path traversal attempt should return original server
+	result := original.WithScope("../../../etc")
+	if result != original {
+		t.Error("WithScope with path traversal should return original server")
+	}
+	if result.defaultScope != "original-scope" {
+		t.Errorf("Scope should be unchanged, got %q", result.defaultScope)
+	}
+
+	// Too many parts should return original server
+	result = original.WithScope("org/repo/extra")
+	if result != original {
+		t.Error("WithScope with too many parts should return original server")
+	}
+}
+
 func TestCreateCacheEntry(t *testing.T) {
 	server := &Server{cacheBucketName: "test-bucket"}
 
@@ -589,6 +656,141 @@ func TestCreateCacheEntry(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("CreateCacheEntry() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateKey(t *testing.T) {
+	maxKeyLen := 504
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"valid simple key", "my-cache-key", false},
+		{"valid key with slashes", "npm/cache/key", false},
+		{"valid key with dots", "my.cache.key", false},
+		{"valid key at max length", strings.Repeat("a", maxKeyLen), false},
+		{"empty key", "", true},
+		{"key exceeds max length", strings.Repeat("a", maxKeyLen+1), true},
+		{"key with double dots", "path/../traversal", true},
+		{"key with backslash", "path\\windows", true},
+		{"key with null byte", "key\x00null", true},
+		{"key starting with slash", "/absolute/path", true},
+		{"key with consecutive slashes", "path//to/key", false},
+		{"key with trailing slash", "path/to/", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateKey(tt.key)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateVersion(t *testing.T) {
+	maxVersionLen := 512
+	tests := []struct {
+		name    string
+		version string
+		wantErr bool
+	}{
+		{"valid simple version", "v1.0.0", false},
+		{"valid hash version", "abc123def456", false},
+		{"valid version with dashes", "sha256-abc123", false},
+		{"valid version at max length", strings.Repeat("a", maxVersionLen), false},
+		{"empty version", "", true},
+		{"version exceeds max length", strings.Repeat("a", maxVersionLen+1), true},
+		{"version with double dots", "v1..0", true},
+		{"version with backslash", "v1\\0", true},
+		{"version with null byte", "v1\x00null", true},
+		{"version starting with slash", "/v1.0.0", true},
+		{"version with consecutive slashes", "v1//0", false},
+		{"version with trailing slash", "v1.0/", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateVersion(tt.version)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateVersion(%q) error = %v, wantErr %v", tt.version, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		scope   string
+		wantErr bool
+	}{
+		{"empty scope", "", false},
+		{"valid org only", "myorg", false},
+		{"valid org/repo", "myorg/myrepo", false},
+		{"scope with double dots", "../escape", true},
+		{"scope with backslash", "org\\repo", true},
+		{"scope with null byte", "org\x00repo", true},
+		{"scope starting with slash", "/org/repo", true},
+		{"scope with too many parts", "org/repo/extra", true},
+		{"scope with trailing slash", "org/", true},
+		{"scope with consecutive slashes", "org//repo", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateScope(tt.scope)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateScope(%q) error = %v, wantErr %v", tt.scope, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildCachePrefix(t *testing.T) {
+	tests := []struct {
+		name      string
+		scope     string
+		version   string
+		keyPrefix string
+		want      string
+	}{
+		{
+			name:      "without scope",
+			scope:     "",
+			version:   "v1",
+			keyPrefix: "npm-",
+			want:      "caches/v1/npm-",
+		},
+		{
+			name:      "with scope",
+			scope:     "owner/repo",
+			version:   "v1",
+			keyPrefix: "npm-",
+			want:      "caches/owner/repo/v1/npm-",
+		},
+		{
+			name:      "empty key prefix",
+			scope:     "",
+			version:   "v1",
+			keyPrefix: "",
+			want:      "caches/v1/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				cacheBucketName: "test-bucket",
+				defaultScope:    tt.scope,
+			}
+			got := server.buildCachePrefix(tt.version, tt.keyPrefix)
+			if got != tt.want {
+				t.Errorf("buildCachePrefix() = %q, want %q", got, tt.want)
 			}
 		})
 	}

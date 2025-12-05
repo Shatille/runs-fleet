@@ -47,24 +47,38 @@ func NewServer(cfg aws.Config, bucketName string) *Server {
 
 // NewServerWithScope creates a new cache server with repository scoping.
 // Scope should be in format "org/repo" for repo-level isolation or "org" for org-level sharing.
+// If the scope is invalid, the server is created with no scope (empty string).
 func NewServerWithScope(cfg aws.Config, bucketName, scope string) *Server {
 	client := s3.NewFromConfig(cfg)
+	validScope := scope
+	if err := validateScope(scope); err != nil {
+		validScope = ""
+	}
 	return &Server{
 		s3Client:        client,
 		presignClient:   s3.NewPresignClient(client),
 		cacheBucketName: bucketName,
-		defaultScope:    scope,
+		defaultScope:    validScope,
 	}
 }
 
 // SetScope sets the cache scope for repository isolation.
-func (s *Server) SetScope(scope string) {
+// Returns an error if the scope is invalid.
+func (s *Server) SetScope(scope string) error {
+	if err := validateScope(scope); err != nil {
+		return fmt.Errorf("invalid scope: %w", err)
+	}
 	s.defaultScope = scope
+	return nil
 }
 
 // WithScope returns a shallow copy of the server with the specified scope.
 // This is useful for per-request scoping without modifying the original server.
+// If the scope is invalid, returns the original server unchanged.
 func (s *Server) WithScope(scope string) *Server {
+	if err := validateScope(scope); err != nil {
+		return s
+	}
 	return &Server{
 		s3Client:        s.s3Client,
 		presignClient:   s.presignClient,
@@ -122,6 +136,30 @@ func validateVersion(s string) error {
 	}
 	if strings.HasPrefix(s, "/") {
 		return fmt.Errorf("version cannot start with /")
+	}
+	return nil
+}
+
+func validateScope(s string) error {
+	if s == "" {
+		return nil // Empty scope is valid (no isolation)
+	}
+	if strings.Contains(s, "..") || strings.Contains(s, "\\") || strings.ContainsRune(s, 0) {
+		return fmt.Errorf("scope contains invalid characters")
+	}
+	if strings.HasPrefix(s, "/") {
+		return fmt.Errorf("scope cannot start with /")
+	}
+	// Scope should be "org" or "org/repo" format
+	parts := strings.Split(s, "/")
+	if len(parts) > 2 {
+		return fmt.Errorf("scope must be 'org' or 'org/repo' format")
+	}
+	// Reject empty parts (e.g., "org/" or "org//repo")
+	for _, part := range parts {
+		if part == "" {
+			return fmt.Errorf("scope cannot contain empty parts")
+		}
 	}
 	return nil
 }
@@ -276,11 +314,16 @@ func NewServerWithClients(s3Client S3API, presignClient PresignAPI, bucketName s
 }
 
 // NewServerWithClientsAndScope creates a cache server with custom clients and scope for testing.
+// If the scope is invalid, the server is created with no scope (empty string).
 func NewServerWithClientsAndScope(s3Client S3API, presignClient PresignAPI, bucketName, scope string) *Server {
+	validScope := scope
+	if err := validateScope(scope); err != nil {
+		validScope = ""
+	}
 	return &Server{
 		s3Client:        s3Client,
 		presignClient:   presignClient,
 		cacheBucketName: bucketName,
-		defaultScope:    scope,
+		defaultScope:    validScope,
 	}
 }
