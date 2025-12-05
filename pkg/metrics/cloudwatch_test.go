@@ -460,3 +460,34 @@ func TestPublishMetricsError(t *testing.T) {
 		t.Error("PublishJobSuccess() should return error when CloudWatch fails")
 	}
 }
+
+func TestCloudWatchPublisher_Close(t *testing.T) {
+	publisher := &CloudWatchPublisher{
+		client:    &MockCloudWatchAPI{},
+		namespace: "RunsFleet",
+	}
+
+	err := publisher.Close()
+	if err != nil {
+		t.Errorf("Close() error = %v, want nil", err)
+	}
+}
+
+func TestCloudWatchPublisher_FieldsWithMock(t *testing.T) {
+	mockClient := &MockCloudWatchAPI{}
+	publisher := &CloudWatchPublisher{
+		client:    mockClient,
+		namespace: "CustomNamespace",
+	}
+
+	if publisher.namespace != "CustomNamespace" {
+		t.Errorf("namespace = %s, want CustomNamespace", publisher.namespace)
+	}
+	if publisher.client == nil {
+		t.Error("client should not be nil")
+	}
+}
+
+func TestCloudWatchPublisher_ImplementsInterface(_ *testing.T) {
+	var _ Publisher = (*CloudWatchPublisher)(nil)
+}
