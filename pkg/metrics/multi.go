@@ -3,9 +3,13 @@ package metrics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
+	"time"
 )
+
+const publishTimeout = 5 * time.Second
 
 // MultiPublisher publishes metrics to multiple backends simultaneously.
 // All Publisher interface methods are documented on the Publisher interface.
@@ -51,10 +55,22 @@ func (m *MultiPublisher) publishAll(fn func(p Publisher) error) error {
 		wg.Add(1)
 		go func(pub Publisher) {
 			defer wg.Done()
-			if err := fn(pub); err != nil {
-				log.Printf("metrics publish error: %v", err)
+			done := make(chan error, 1)
+			go func() {
+				done <- fn(pub)
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					log.Printf("metrics publish error: %v", err)
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+			case <-time.After(publishTimeout):
+				log.Printf("metrics publish timeout after %v", publishTimeout)
 				mu.Lock()
-				errs = append(errs, err)
+				errs = append(errs, fmt.Errorf("publish timeout after %v", publishTimeout))
 				mu.Unlock()
 			}
 		}(p)
