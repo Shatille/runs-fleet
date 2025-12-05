@@ -1,14 +1,21 @@
 package github
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
+const testWebhookSecret = "test-secret"
+
 func TestValidateSignature(t *testing.T) {
-	secret := "test-secret"
+	secret := testWebhookSecret
 	payload := []byte("test-payload")
 
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -66,6 +73,148 @@ func TestValidateSignature(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseWebhook(t *testing.T) {
+	secret := testWebhookSecret
+
+	// Create a valid signature for a payload
+	signPayload := func(payload []byte) string {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(payload)
+		return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	}
+
+	// Valid workflow_job event payload (minimal)
+	validPayload := []byte(`{"action":"queued","workflow_job":{"id":123,"run_id":456,"labels":["self-hosted"]}}`)
+	validSignature := signPayload(validPayload)
+
+	tests := []struct {
+		name        string
+		event       string
+		signature   string
+		body        []byte
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "valid workflow_job event",
+			event:     "workflow_job",
+			signature: validSignature,
+			body:      validPayload,
+			wantErr:   false,
+		},
+		{
+			name:        "missing event header",
+			event:       "",
+			signature:   validSignature,
+			body:        validPayload,
+			wantErr:     true,
+			errContains: "missing X-GitHub-Event",
+		},
+		{
+			name:        "missing signature header",
+			event:       "workflow_job",
+			signature:   "",
+			body:        validPayload,
+			wantErr:     true,
+			errContains: "invalid or missing signature",
+		},
+		{
+			name:        "invalid signature prefix",
+			event:       "workflow_job",
+			signature:   "sha1=invalid",
+			body:        validPayload,
+			wantErr:     true,
+			errContains: "invalid or missing signature",
+		},
+		{
+			name:        "signature mismatch",
+			event:       "workflow_job",
+			signature:   "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+			body:        validPayload,
+			wantErr:     true,
+			errContains: "validation failed",
+		},
+		{
+			name:        "invalid JSON payload",
+			event:       "workflow_job",
+			signature:   signPayload([]byte("not-json")),
+			body:        []byte("not-json"),
+			wantErr:     true,
+			errContains: "invalid character",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(tt.body))
+			if tt.event != "" {
+				req.Header.Set("X-GitHub-Event", tt.event)
+			}
+			if tt.signature != "" {
+				req.Header.Set("X-Hub-Signature-256", tt.signature)
+			}
+
+			result, err := ParseWebhook(req, secret)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseWebhook() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("ParseWebhook() error = %v, want error containing %q", err, tt.errContains)
+			}
+			if !tt.wantErr && result == nil {
+				t.Error("ParseWebhook() returned nil for valid webhook")
+			}
+		})
+	}
+}
+
+func TestParseWebhook_BodySizeLimit(t *testing.T) {
+	secret := testWebhookSecret
+
+	// Create a payload that exceeds the size limit (1MB + 1 byte)
+	largePayload := bytes.Repeat([]byte("a"), 1024*1024+1)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(largePayload)
+	signature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(largePayload))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", signature)
+
+	_, err := ParseWebhook(req, secret)
+	if err == nil {
+		t.Error("ParseWebhook() should reject oversized body")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("ParseWebhook() error should mention size limit, got: %v", err)
+	}
+}
+
+func TestParseWebhook_ReadError(t *testing.T) {
+	secret := testWebhookSecret
+
+	// Create a request with an erroring body
+	req := httptest.NewRequest(http.MethodPost, "/webhook", &errorReader{})
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", "sha256=test")
+
+	_, err := ParseWebhook(req, secret)
+	if err == nil {
+		t.Error("ParseWebhook() should return error on read failure")
+	}
+	if !strings.Contains(err.Error(), "failed to read") {
+		t.Errorf("ParseWebhook() error should mention read failure, got: %v", err)
+	}
+}
+
+// errorReader is an io.Reader that always returns an error.
+type errorReader struct{}
+
+func (e *errorReader) Read(_ []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 func TestParseLabels(t *testing.T) {
