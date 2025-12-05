@@ -26,8 +26,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -o /bin/runs-fleet-agent ./cmd/agent
 
 # Stage 2: Runner image
-# Pin to specific digest for reproducible builds (ubuntu:22.04 as of 2024-12)
-FROM ubuntu:22.04@sha256:0e5e4a57c2499249aafc3b40fcd541e9a456aab7296681a3994d631587203f97
+# Pin to specific digest for reproducible builds (ubuntu:24.04 as of 2025-12)
+FROM ubuntu:24.04@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
 
 ARG RUNNER_VERSION
 ARG TARGETARCH
@@ -37,8 +37,8 @@ ENV RUNNER_ALLOW_RUNASROOT=1
 
 WORKDIR /home/runner
 
-# Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install dependencies and apply security updates
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
