@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -585,6 +586,195 @@ func TestSplitAndFilter(t *testing.T) {
 			for i, w := range tt.want {
 				if got[i] != w {
 					t.Errorf("splitAndFilter(%q)[%d] = %q, want %q", tt.input, i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestParseTags(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    map[string]string
+		wantErr bool
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "single tag",
+			input: `{"Team":"platform"}`,
+			want:  map[string]string{"Team": "platform"},
+		},
+		{
+			name:  "multiple tags",
+			input: `{"Team":"platform","Project":"ci-runners","CostCenter":"engineering"}`,
+			want: map[string]string{
+				"Team":       "platform",
+				"Project":    "ci-runners",
+				"CostCenter": "engineering",
+			},
+		},
+		{
+			name:  "empty object",
+			input: `{}`,
+			want:  map[string]string{},
+		},
+		{
+			name:  "tag with spaces in value",
+			input: `{"Description":"GitHub Actions Runner"}`,
+			want:  map[string]string{"Description": "GitHub Actions Runner"},
+		},
+		{
+			name:    "invalid JSON",
+			input:   "not-valid-json",
+			wantErr: true,
+		},
+		{
+			name:    "array instead of object",
+			input:   `["tag1","tag2"]`,
+			wantErr: true,
+		},
+		{
+			name:    "nested object",
+			input:   `{"outer":{"inner":"value"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "aws prefix rejected",
+			input:   `{"aws:createdBy":"user"}`,
+			wantErr: true,
+		},
+		{
+			name:    "AWS prefix case insensitive",
+			input:   `{"AWS:createdBy":"user"}`,
+			wantErr: true,
+		},
+		{
+			name:    "runs-fleet prefix rejected",
+			input:   `{"runs-fleet:custom":"value"}`,
+			wantErr: true,
+		},
+		{
+			name:    "runs-fleet prefix case insensitive",
+			input:   `{"Runs-Fleet:custom":"value"}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty key rejected",
+			input:   `{"":"value"}`,
+			wantErr: true,
+		},
+	}
+
+	// Generate long strings for boundary tests
+	longKey129 := strings.Repeat("k", 129)
+	longKey128 := strings.Repeat("k", 128)
+	longVal257 := strings.Repeat("v", 257)
+	longVal256 := strings.Repeat("v", 256)
+
+	boundaryTests := []struct {
+		name    string
+		input   string
+		want    map[string]string
+		wantErr bool
+	}{
+		{
+			name:    "key exceeds 128 chars",
+			input:   `{"` + longKey129 + `":"value"}`,
+			wantErr: true,
+		},
+		{
+			name:  "key at 128 chars allowed",
+			input: `{"` + longKey128 + `":"value"}`,
+			want:  map[string]string{longKey128: "value"},
+		},
+		{
+			name:    "value exceeds 256 chars",
+			input:   `{"key":"` + longVal257 + `"}`,
+			wantErr: true,
+		},
+		{
+			name:  "value at 256 chars allowed",
+			input: `{"key":"` + longVal256 + `"}`,
+			want:  map[string]string{"key": longVal256},
+		},
+	}
+	tests = append(tests, boundaryTests...)
+
+	// Test 35 custom tag limit (AWS 50 - 15 reserved for system tags)
+	t.Run("tag count limit", func(t *testing.T) {
+		// 35 tags should pass
+		tags35 := make(map[string]string, 35)
+		for i := 0; i < 35; i++ {
+			tags35[strings.Repeat("a", i+1)] = "v"
+		}
+		json35 := "{"
+		first := true
+		for k, v := range tags35 {
+			if !first {
+				json35 += ","
+			}
+			json35 += `"` + k + `":"` + v + `"`
+			first = false
+		}
+		json35 += "}"
+		got, err := parseTags(json35)
+		if err != nil {
+			t.Errorf("35 tags should be allowed, got error: %v", err)
+		}
+		if len(got) != 35 {
+			t.Errorf("expected 35 tags, got %d", len(got))
+		}
+
+		// 36 tags should fail
+		tags36 := make(map[string]string, 36)
+		for i := 0; i < 36; i++ {
+			tags36[strings.Repeat("b", i+1)] = "v"
+		}
+		json36 := "{"
+		first = true
+		for k, v := range tags36 {
+			if !first {
+				json36 += ","
+			}
+			json36 += `"` + k + `":"` + v + `"`
+			first = false
+		}
+		json36 += "}"
+		_, err = parseTags(json36)
+		if err == nil {
+			t.Error("36 tags should be rejected (exceeds 35 custom tag limit)")
+		}
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTags(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseTags() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+			if tt.want == nil && got != nil {
+				t.Errorf("parseTags() = %v, want nil", got)
+				return
+			}
+			if tt.want != nil && got == nil {
+				t.Errorf("parseTags() = nil, want %v", tt.want)
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("parseTags() length = %v, want %v", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("parseTags()[%q] = %q, want %q", k, got[k], v)
 				}
 			}
 		})

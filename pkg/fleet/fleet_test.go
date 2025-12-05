@@ -514,6 +514,132 @@ func TestIsValidWindowsInstanceType(t *testing.T) {
 	}
 }
 
+func TestBuildTags(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     *config.Config
+		spec       *LaunchSpec
+		wantTags   map[string]string
+		wantAbsent []string
+	}{
+		{
+			name:   "Basic tags",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+			},
+		},
+		{
+			name:   "With pool",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+				Pool:  "default",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+				"runs-fleet:pool":    "default",
+			},
+		},
+		{
+			name: "With custom tags",
+			config: &config.Config{
+				Tags: map[string]string{
+					"team":        "platform",
+					"project":     "ci-runners",
+					"cost-center": "engineering",
+				},
+			},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+				"team":               "platform",
+				"project":            "ci-runners",
+				"cost-center":        "engineering",
+			},
+		},
+		{
+			name: "With OS and arch",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+				OS:    "linux",
+				Arch:  "arm64",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+				"runs-fleet:os":      "linux",
+				"runs-fleet:arch":    "arm64",
+			},
+		},
+		{
+			name: "With environment",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID:       "run-123",
+				Environment: "production",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":      "run-123",
+				"runs-fleet:managed":     "true",
+				"runs-fleet:environment": "production",
+				"Environment":            "production",
+			},
+		},
+		{
+			name:   "Empty pool should not create tag",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: "run-123",
+				Pool:  "",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:managed": "true",
+			},
+			wantAbsent: []string{"runs-fleet:pool"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{config: tt.config}
+			tags := m.buildTags(tt.spec)
+
+			// Convert to map for easier checking
+			tagMap := make(map[string]string)
+			for _, tag := range tags {
+				tagMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+			}
+
+			// Check expected tags exist
+			for wantKey, wantValue := range tt.wantTags {
+				if gotValue, exists := tagMap[wantKey]; !exists {
+					t.Errorf("tag %q not found", wantKey)
+				} else if gotValue != wantValue {
+					t.Errorf("tag %q = %q, want %q", wantKey, gotValue, wantValue)
+				}
+			}
+
+			// Check absent tags
+			for _, absentKey := range tt.wantAbsent {
+				if _, exists := tagMap[absentKey]; exists {
+					t.Errorf("tag %q should not exist", absentKey)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildLaunchTemplateConfigs(t *testing.T) {
 	tests := []struct {
 		name              string

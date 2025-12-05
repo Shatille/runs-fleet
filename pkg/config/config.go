@@ -62,7 +62,8 @@ type Config struct {
 	MaxRuntimeMinutes  int
 	LogLevel           string
 	LaunchTemplateName string
-	RunnerImage        string // Container image for EC2 runners (ECR URL)
+	RunnerImage        string            // Container image for EC2 runners (ECR URL)
+	Tags               map[string]string // Custom tags for EC2 resources
 
 	CoordinatorEnabled bool
 	InstanceID         string
@@ -155,6 +156,7 @@ func Load() (*Config, error) {
 		LogLevel:           getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
 		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
+		Tags:               make(map[string]string),
 
 		CoordinatorEnabled: getEnvBool("RUNS_FLEET_COORDINATOR_ENABLED", false),
 		InstanceID:         getEnv("RUNS_FLEET_INSTANCE_ID", ""),
@@ -205,6 +207,18 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("config error: %w", err)
 			}
 			cfg.KubeTolerations = tolerations
+		}
+	}
+
+	// Parse custom tags for EC2 resources (EC2 backend only)
+	if cfg.IsEC2Backend() {
+		tagsStr := getEnv("RUNS_FLEET_TAGS", "")
+		if tagsStr != "" {
+			tags, err := parseTags(tagsStr)
+			if err != nil {
+				return nil, fmt.Errorf("config error: %w", err)
+			}
+			cfg.Tags = tags
 		}
 	}
 
@@ -513,4 +527,71 @@ func parseTolerations(s string) ([]Toleration, error) {
 	}
 
 	return tolerations, nil
+}
+
+// parseTags parses a JSON object of key-value tags.
+// Example: {"Environment":"production","Team":"platform","CostCenter":"12345"}
+// Validates AWS EC2 tag constraints: max 50 tags, key max 128 chars, value max 256 chars.
+// Rejects reserved prefixes: "aws:" and "runs-fleet:".
+func parseTags(s string) (map[string]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+
+	var tags map[string]string
+	if err := json.Unmarshal([]byte(s), &tags); err != nil {
+		return nil, fmt.Errorf("invalid tags JSON: %w", err)
+	}
+
+	if err := validateTags(tags); err != nil {
+		return nil, err
+	}
+
+	return tags, nil
+}
+
+func validateTags(tags map[string]string) error {
+	const (
+		// AWS EC2 allows 50 tags max. System adds up to 12 tags:
+		// - runs-fleet:run-id (always)
+		// - runs-fleet:managed (always)
+		// - runs-fleet:pool (conditional)
+		// - runs-fleet:os (conditional)
+		// - runs-fleet:arch (conditional)
+		// - runs-fleet:region (conditional)
+		// - runs-fleet:environment (conditional)
+		// - Environment (conditional, mirrors runs-fleet:environment)
+		// - runs-fleet:runner-image (conditional)
+		// - runs-fleet:termination-queue-url (conditional)
+		// - runs-fleet:cache-url (conditional)
+		// - runs-fleet:config-bucket (conditional)
+		// Reserve 15 for system tags to be safe, allowing 35 custom tags
+		maxTags     = 35
+		maxKeyLen   = 128
+		maxValueLen = 256
+	)
+
+	if len(tags) > maxTags {
+		return fmt.Errorf("maximum %d custom tags allowed (AWS limit minus system tags), got %d", maxTags, len(tags))
+	}
+
+	for key, value := range tags {
+		if key == "" {
+			return fmt.Errorf("tag key cannot be empty")
+		}
+		if len(key) > maxKeyLen {
+			return fmt.Errorf("tag key %q exceeds %d characters", key, maxKeyLen)
+		}
+		if len(value) > maxValueLen {
+			return fmt.Errorf("tag value for key %q exceeds %d characters", key, maxValueLen)
+		}
+		if strings.HasPrefix(strings.ToLower(key), "aws:") {
+			return fmt.Errorf("tag key %q uses reserved 'aws:' prefix", key)
+		}
+		if strings.HasPrefix(strings.ToLower(key), "runs-fleet:") {
+			return fmt.Errorf("tag key %q uses reserved 'runs-fleet:' prefix", key)
+		}
+	}
+
+	return nil
 }
