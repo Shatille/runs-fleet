@@ -5,6 +5,11 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+  {{- with .Values.orchestrator.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- if eq .Values.mode "k8s" }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -17,6 +22,7 @@ metadata:
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -26,6 +32,8 @@ metadata:
   labels:
     {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
 rules:
+  {{- if eq .Values.mode "k8s" }}
+  # K8s mode: Full permissions for runner pod management
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list", "watch"]
@@ -51,6 +59,12 @@ rules:
     resourceNames:
       - {{ include "runs-fleet.fullname" . }}-placeholder-arm64
       - {{ include "runs-fleet.fullname" . }}-placeholder-amd64
+  {{- end }}
+  {{- else }}
+  # EC2 mode: Minimal permissions (only read secrets for GitHub credentials)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

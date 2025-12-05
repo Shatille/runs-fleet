@@ -1,4 +1,4 @@
-{{- if .Values.warmPool.enabled }}
+{{- if and .Values.warmPool.enabled (eq .Values.mode "k8s") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

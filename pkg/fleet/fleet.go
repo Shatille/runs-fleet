@@ -398,6 +398,14 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		})
 	}
 
+	// Add custom tags from configuration
+	for key, value := range m.config.Tags {
+		tags = append(tags, types.Tag{
+			Key:   aws.String(key),
+			Value: aws.String(value),
+		})
+	}
+
 	return tags
 }
 

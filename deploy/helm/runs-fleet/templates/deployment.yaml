@@ -1,3 +1,27 @@
+{{- include "runs-fleet.validateMode" . -}}
+{{- if eq .Values.mode "ec2" }}
+{{- if not .Values.aws.queueUrl }}
+{{- fail "aws.queueUrl is required when mode is 'ec2'" }}
+{{- end }}
+{{- if not .Values.aws.vpcId }}
+{{- fail "aws.vpcId is required when mode is 'ec2'" }}
+{{- end }}
+{{- if not .Values.aws.securityGroupId }}
+{{- fail "aws.securityGroupId is required when mode is 'ec2'" }}
+{{- end }}
+{{- if not .Values.aws.instanceProfileArn }}
+{{- fail "aws.instanceProfileArn is required when mode is 'ec2'" }}
+{{- end }}
+{{- if not .Values.aws.runnerImage }}
+{{- fail "aws.runnerImage is required when mode is 'ec2'" }}
+{{- end }}
+{{- if and (not .Values.aws.publicSubnetIds) (not .Values.aws.privateSubnetIds) }}
+{{- fail "at least one of aws.publicSubnetIds or aws.privateSubnetIds is required when mode is 'ec2'" }}
+{{- end }}
+{{- end }}
+{{- if and (eq .Values.mode "k8s") (not .Values.valkey.enabled) }}
+{{- fail "valkey.enabled must be true when mode is 'k8s'" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,8 +57,87 @@ spec:
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
           env:
+            # Mode selection
             - name: RUNS_FLEET_MODE
-              value: "k8s"
+              value: {{ .Values.mode | quote }}
+            {{- if eq .Values.mode "ec2" }}
+            # EC2 mode: AWS configuration
+            - name: AWS_REGION
+              value: {{ .Values.aws.region | quote }}
+            # Network
+            - name: RUNS_FLEET_VPC_ID
+              value: {{ .Values.aws.vpcId | quote }}
+            - name: RUNS_FLEET_PUBLIC_SUBNET_IDS
+              value: {{ .Values.aws.publicSubnetIds | join "," | quote }}
+            - name: RUNS_FLEET_PRIVATE_SUBNET_IDS
+              value: {{ .Values.aws.privateSubnetIds | join "," | quote }}
+            - name: RUNS_FLEET_SECURITY_GROUP_ID
+              value: {{ .Values.aws.securityGroupId | quote }}
+            - name: RUNS_FLEET_INSTANCE_PROFILE_ARN
+              value: {{ .Values.aws.instanceProfileArn | quote }}
+            # SQS queues
+            - name: RUNS_FLEET_QUEUE_URL
+              value: {{ .Values.aws.queueUrl | quote }}
+            {{- if .Values.aws.queueDlqUrl }}
+            - name: RUNS_FLEET_QUEUE_DLQ_URL
+              value: {{ .Values.aws.queueDlqUrl | quote }}
+            {{- end }}
+            {{- if .Values.aws.poolQueueUrl }}
+            - name: RUNS_FLEET_POOL_QUEUE_URL
+              value: {{ .Values.aws.poolQueueUrl | quote }}
+            {{- end }}
+            {{- if .Values.aws.eventsQueueUrl }}
+            - name: RUNS_FLEET_EVENTS_QUEUE_URL
+              value: {{ .Values.aws.eventsQueueUrl | quote }}
+            {{- end }}
+            {{- if .Values.aws.terminationQueueUrl }}
+            - name: RUNS_FLEET_TERMINATION_QUEUE_URL
+              value: {{ .Values.aws.terminationQueueUrl | quote }}
+            {{- end }}
+            {{- if .Values.aws.housekeepingQueueUrl }}
+            - name: RUNS_FLEET_HOUSEKEEPING_QUEUE_URL
+              value: {{ .Values.aws.housekeepingQueueUrl | quote }}
+            {{- end }}
+            # DynamoDB tables
+            - name: RUNS_FLEET_LOCKS_TABLE
+              value: {{ .Values.aws.locksTable | quote }}
+            - name: RUNS_FLEET_JOBS_TABLE
+              value: {{ .Values.aws.jobsTable | quote }}
+            {{- if .Values.aws.poolsTable }}
+            - name: RUNS_FLEET_POOLS_TABLE
+              value: {{ .Values.aws.poolsTable | quote }}
+            {{- end }}
+            - name: RUNS_FLEET_CIRCUIT_BREAKER_TABLE
+              value: {{ .Values.aws.circuitBreakerTable | quote }}
+            # S3 buckets
+            {{- if .Values.aws.cacheBucket }}
+            - name: RUNS_FLEET_CACHE_BUCKET
+              value: {{ .Values.aws.cacheBucket | quote }}
+            {{- end }}
+            {{- if .Values.aws.configBucket }}
+            - name: RUNS_FLEET_CONFIG_BUCKET
+              value: {{ .Values.aws.configBucket | quote }}
+            {{- end }}
+            # EC2 runner settings
+            - name: RUNS_FLEET_RUNNER_IMAGE
+              value: {{ .Values.aws.runnerImage | quote }}
+            - name: RUNS_FLEET_LAUNCH_TEMPLATE_NAME
+              value: {{ .Values.aws.launchTemplateName | quote }}
+            - name: RUNS_FLEET_SPOT_ENABLED
+              value: {{ .Values.aws.spotEnabled | quote }}
+            - name: RUNS_FLEET_MAX_RUNTIME_MINUTES
+              value: {{ .Values.aws.maxRuntimeMinutes | quote }}
+            {{- if .Values.aws.keyName }}
+            - name: RUNS_FLEET_KEY_NAME
+              value: {{ .Values.aws.keyName | quote }}
+            {{- end }}
+            {{- if .Values.aws.tags }}
+            - name: RUNS_FLEET_TAGS
+              value: {{ .Values.aws.tags | toJson | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.mode "k8s" }}
+            # K8s mode: Kubernetes configuration
             - name: RUNS_FLEET_KUBE_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -43,30 +146,9 @@ spec:
               value: {{ include "runs-fleet.runner.serviceAccountName" . }}
             - name: RUNS_FLEET_KUBE_RUNNER_IMAGE
               value: "{{ .Values.runner.image.repository }}:{{ .Values.runner.image.tag }}"
-            {{- if .Values.valkey.enabled }}
-            - name: RUNS_FLEET_VALKEY_ADDR
-              value: {{ include "runs-fleet.valkey.address" . }}
-            {{- end }}
-            - name: RUNS_FLEET_COORDINATOR_ENABLED
-              value: {{ .Values.coordinator.enabled | quote }}
-            - name: RUNS_FLEET_INSTANCE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: RUNS_FLEET_GITHUB_APP_ID
-              value: {{ .Values.github.appId | quote }}
-            - name: RUNS_FLEET_LOG_LEVEL
-              value: {{ .Values.logging.level }}
-            - name: RUNS_FLEET_LOG_FORMAT
-              value: {{ .Values.logging.format }}
-            - name: RUNS_FLEET_METRICS_ENABLED
-              value: {{ .Values.metrics.enabled | quote }}
-            - name: RUNS_FLEET_METRICS_PORT
-              value: {{ .Values.metrics.port | quote }}
-            - name: RUNS_FLEET_POOL_ENABLED
-              value: {{ .Values.warmPool.enabled | quote }}
             - name: RUNS_FLEET_KUBE_RELEASE_NAME
               value: {{ include "runs-fleet.fullname" . }}
+            # DinD configuration
             - name: RUNS_FLEET_KUBE_DIND_IMAGE
               value: {{ .Values.docker.image | quote }}
             {{- if .Values.docker.registryMirror }}
@@ -89,6 +171,30 @@ spec:
             - name: RUNS_FLEET_KUBE_TOLERATIONS
               value: {{ .Values.runner.tolerations | toJson | quote }}
             {{- end }}
+            {{- end }}
+            # Common configuration (both modes)
+            {{- if .Values.valkey.enabled }}
+            - name: RUNS_FLEET_VALKEY_ADDR
+              value: {{ include "runs-fleet.valkey.address" . }}
+            {{- end }}
+            - name: RUNS_FLEET_COORDINATOR_ENABLED
+              value: {{ .Values.coordinator.enabled | quote }}
+            - name: RUNS_FLEET_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUNS_FLEET_GITHUB_APP_ID
+              value: {{ .Values.github.appId | quote }}
+            - name: RUNS_FLEET_LOG_LEVEL
+              value: {{ .Values.logging.level }}
+            - name: RUNS_FLEET_LOG_FORMAT
+              value: {{ .Values.logging.format }}
+            - name: RUNS_FLEET_METRICS_ENABLED
+              value: {{ .Values.metrics.enabled | quote }}
+            - name: RUNS_FLEET_METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            - name: RUNS_FLEET_POOL_ENABLED
+              value: {{ .Values.warmPool.enabled | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "runs-fleet.secretName" . }}
