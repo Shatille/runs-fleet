@@ -96,6 +96,18 @@ func (m *MockMetricsAPI) PublishMessageDeletionFailure(ctx context.Context) erro
 	return nil
 }
 
+// MockCircuitBreakerAPI implements CircuitBreakerAPI interface
+type MockCircuitBreakerAPI struct {
+	RecordInterruptionFunc func(ctx context.Context, instanceType string) error
+}
+
+func (m *MockCircuitBreakerAPI) RecordInterruption(ctx context.Context, instanceType string) error {
+	if m.RecordInterruptionFunc != nil {
+		return m.RecordInterruptionFunc(ctx, instanceType)
+	}
+	return nil
+}
+
 func TestProcessEvent(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1189,5 +1201,195 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	}
 	if capturedMessage.RunnerSpec != expectedJob.RunnerSpec {
 		t.Errorf("RunnerSpec: expected %s, got %s", expectedJob.RunnerSpec, capturedMessage.RunnerSpec)
+	}
+}
+
+func TestNewHandler(t *testing.T) {
+	mockQueue := &MockQueueAPI{}
+	mockDB := &MockDBAPI{}
+	mockMetrics := &MockMetricsAPI{}
+	cfg := &config.Config{}
+
+	handler := NewHandler(mockQueue, mockDB, mockMetrics, cfg)
+
+	if handler == nil {
+		t.Fatal("NewHandler() returned nil")
+	}
+	if handler.queueClient != mockQueue {
+		t.Error("NewHandler() did not set queueClient")
+	}
+	if handler.dbClient != mockDB {
+		t.Error("NewHandler() did not set dbClient")
+	}
+	if handler.metrics != mockMetrics {
+		t.Error("NewHandler() did not set metrics")
+	}
+	if handler.config != cfg {
+		t.Error("NewHandler() did not set config")
+	}
+	if handler.circuitBreaker != nil {
+		t.Error("NewHandler() should not set circuitBreaker initially")
+	}
+}
+
+func TestHandler_SetCircuitBreaker(t *testing.T) {
+	handler := &Handler{
+		queueClient: &MockQueueAPI{},
+		dbClient:    &MockDBAPI{},
+		metrics:     &MockMetricsAPI{},
+		config:      &config.Config{},
+	}
+
+	if handler.circuitBreaker != nil {
+		t.Error("circuitBreaker should be nil initially")
+	}
+
+	mockCB := &MockCircuitBreakerAPI{}
+	handler.SetCircuitBreaker(mockCB)
+
+	if handler.circuitBreaker != mockCB {
+		t.Error("SetCircuitBreaker() did not set circuitBreaker")
+	}
+}
+
+func TestNewHandler_WithNilValues(t *testing.T) {
+	handler := NewHandler(nil, nil, nil, nil)
+
+	if handler == nil {
+		t.Fatal("NewHandler() returned nil with nil parameters")
+	}
+	if handler.queueClient != nil {
+		t.Error("queueClient should be nil")
+	}
+	if handler.dbClient != nil {
+		t.Error("dbClient should be nil")
+	}
+	if handler.metrics != nil {
+		t.Error("metrics should be nil")
+	}
+	if handler.config != nil {
+		t.Error("config should be nil")
+	}
+}
+
+func TestHandler_Structure(t *testing.T) {
+	mockQueue := &MockQueueAPI{}
+	mockDB := &MockDBAPI{}
+	mockMetrics := &MockMetricsAPI{}
+	mockCB := &MockCircuitBreakerAPI{}
+	cfg := &config.Config{}
+
+	handler := &Handler{
+		queueClient:    mockQueue,
+		dbClient:       mockDB,
+		metrics:        mockMetrics,
+		config:         cfg,
+		circuitBreaker: mockCB,
+	}
+
+	if handler.queueClient != mockQueue {
+		t.Error("queueClient not set correctly")
+	}
+	if handler.dbClient != mockDB {
+		t.Error("dbClient not set correctly")
+	}
+	if handler.metrics != mockMetrics {
+		t.Error("metrics not set correctly")
+	}
+	if handler.config != cfg {
+		t.Error("config not set correctly")
+	}
+	if handler.circuitBreaker != mockCB {
+		t.Error("circuitBreaker not set correctly")
+	}
+}
+
+func TestEventBridgeEvent_Structure(t *testing.T) {
+	event := EventBridgeEvent{
+		Version:    "0",
+		ID:         "test-id",
+		DetailType: "EC2 Spot Instance Interruption Warning",
+		Source:     "aws.ec2",
+		Account:    "123456789012",
+		Region:     "us-east-1",
+		Resources:  []string{"arn:aws:ec2:us-east-1:123456789012:instance/i-1234567890abcdef0"},
+	}
+
+	if event.Version != "0" {
+		t.Errorf("Version = %s, want 0", event.Version)
+	}
+	if event.ID != "test-id" {
+		t.Errorf("ID = %s, want test-id", event.ID)
+	}
+	if event.DetailType != "EC2 Spot Instance Interruption Warning" {
+		t.Errorf("DetailType = %s, want EC2 Spot Instance Interruption Warning", event.DetailType)
+	}
+	if event.Source != "aws.ec2" {
+		t.Errorf("Source = %s, want aws.ec2", event.Source)
+	}
+	if event.Account != "123456789012" {
+		t.Errorf("Account = %s, want 123456789012", event.Account)
+	}
+	if event.Region != "us-east-1" {
+		t.Errorf("Region = %s, want us-east-1", event.Region)
+	}
+	if len(event.Resources) != 1 {
+		t.Errorf("Resources length = %d, want 1", len(event.Resources))
+	}
+}
+
+func TestSpotInterruptionDetail_Structure(t *testing.T) {
+	detail := SpotInterruptionDetail{
+		InstanceID:     "i-1234567890abcdef0",
+		InstanceAction: "terminate",
+	}
+
+	if detail.InstanceID != "i-1234567890abcdef0" {
+		t.Errorf("InstanceID = %s, want i-1234567890abcdef0", detail.InstanceID)
+	}
+	if detail.InstanceAction != "terminate" {
+		t.Errorf("InstanceAction = %s, want terminate", detail.InstanceAction)
+	}
+}
+
+func TestJobInfo_Structure(t *testing.T) {
+	info := JobInfo{
+		JobID:        "job-123",
+		RunID:        "run-456",
+		Repo:         "owner/repo",
+		InstanceType: "t4g.medium",
+		Pool:         "default",
+		Private:      true,
+		Spot:         false,
+		RunnerSpec:   "2cpu-linux-arm64",
+		RetryCount:   2,
+	}
+
+	if info.JobID != "job-123" {
+		t.Errorf("JobID = %s, want job-123", info.JobID)
+	}
+	if info.RunID != "run-456" {
+		t.Errorf("RunID = %s, want run-456", info.RunID)
+	}
+	if info.Repo != "owner/repo" {
+		t.Errorf("Repo = %s, want owner/repo", info.Repo)
+	}
+	if info.InstanceType != "t4g.medium" {
+		t.Errorf("InstanceType = %s, want t4g.medium", info.InstanceType)
+	}
+	if info.Pool != "default" {
+		t.Errorf("Pool = %s, want default", info.Pool)
+	}
+	if !info.Private {
+		t.Error("Private should be true")
+	}
+	if info.Spot {
+		t.Error("Spot should be false")
+	}
+	if info.RunnerSpec != "2cpu-linux-arm64" {
+		t.Errorf("RunnerSpec = %s, want 2cpu-linux-arm64", info.RunnerSpec)
+	}
+	if info.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, want 2", info.RetryCount)
 	}
 }

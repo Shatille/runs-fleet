@@ -481,6 +481,39 @@ func TestCreateFleet_Storage(t *testing.T) {
 	}
 }
 
+func TestIsValidWindowsInstanceType(t *testing.T) {
+	tests := []struct {
+		instanceType string
+		want         bool
+	}{
+		// Valid Windows instance types
+		{"t3.medium", true},
+		{"t3.large", true},
+		{"t3.xlarge", true},
+		{"m6i.large", true},
+		{"m6i.xlarge", true},
+		{"m6i.2xlarge", true},
+		{"c6i.large", true},
+		{"c6i.xlarge", true},
+		{"c6i.2xlarge", true},
+		// Invalid Windows instance types
+		{"t4g.medium", false}, // ARM64, not supported for Windows
+		{"c7g.xlarge", false}, // ARM64, not supported for Windows
+		{"t3.micro", false},   // Too small
+		{"m6i.4xlarge", false},
+		{"invalid", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.instanceType, func(t *testing.T) {
+			if got := IsValidWindowsInstanceType(tt.instanceType); got != tt.want {
+				t.Errorf("IsValidWindowsInstanceType(%q) = %v, want %v", tt.instanceType, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildLaunchTemplateConfigs(t *testing.T) {
 	tests := []struct {
 		name              string
