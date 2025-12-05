@@ -12,6 +12,8 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+const testNamespace = "test-ns"
+
 func init() {
 	// Use minimal delays in tests to avoid slow test execution
 	k8sTerminationDelay = 1 * time.Millisecond
@@ -68,7 +70,7 @@ func TestNewK8sTerminator(t *testing.T) {
 	telemetry := &mockTelemetryClient{}
 	clientset := fake.NewSimpleClientset()
 
-	terminator := NewK8sTerminator(clientset, "test-ns", telemetry, logger)
+	terminator := NewK8sTerminator(clientset, testNamespace, telemetry, logger)
 
 	if terminator == nil {
 		t.Fatal("NewK8sTerminator() returned nil")
@@ -82,8 +84,8 @@ func TestNewK8sTerminator(t *testing.T) {
 	if terminator.clientset == nil {
 		t.Error("NewK8sTerminator() did not set clientset")
 	}
-	if terminator.namespace != "test-ns" {
-		t.Errorf("NewK8sTerminator() namespace = %q, want %q", terminator.namespace, "test-ns")
+	if terminator.namespace != testNamespace {
+		t.Errorf("NewK8sTerminator() namespace = %q, want %q", terminator.namespace, testNamespace)
 	}
 }
 
@@ -328,7 +330,7 @@ func TestFormatPanicValue(t *testing.T) {
 
 func TestK8sTerminator_CleanupResources(t *testing.T) {
 	t.Run("deletes secret and configmap", func(t *testing.T) {
-		namespace := "test-ns"
+		namespace := testNamespace
 		podName := "runner-12345"
 		secretName := podName + "-secrets"
 		configMapName := podName + "-config"
@@ -374,7 +376,7 @@ func TestK8sTerminator_CleanupResources(t *testing.T) {
 	})
 
 	t.Run("handles missing resources gracefully", func(t *testing.T) {
-		namespace := "test-ns"
+		namespace := testNamespace
 		podName := "runner-nonexistent"
 
 		// Create fake clientset with no resources
@@ -408,7 +410,7 @@ func TestK8sTerminator_CleanupResources(t *testing.T) {
 	})
 
 	t.Run("cleanup with telemetry", func(t *testing.T) {
-		namespace := "test-ns"
+		namespace := testNamespace
 		podName := "runner-with-telemetry"
 		secretName := podName + "-secrets"
 		configMapName := podName + "-config"

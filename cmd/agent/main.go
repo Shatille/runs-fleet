@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
@@ -168,15 +169,10 @@ func initK8sMode(ctx context.Context, logger *stdLogger) (*agentConfig, error) {
 // getK8sNamespace returns the namespace the pod is running in.
 // Reads from the downward API file or falls back to "default".
 func getK8sNamespace() string {
-	// Try environment variable first (if set by user)
-	if ns := os.Getenv("RUNS_FLEET_NAMESPACE"); ns != "" {
-		return ns
-	}
-
 	// Read from service account namespace file (standard K8s location)
 	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 	if err == nil {
-		return string(data)
+		return strings.TrimSpace(string(data))
 	}
 
 	return "default"
