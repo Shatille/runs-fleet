@@ -1,4 +1,4 @@
-{{- if .Values.karpenter.enabled }}
+{{- if and .Values.karpenter.enabled (eq .Values.mode "k8s") }}
 {{- if .Values.karpenter.ec2NodeClass.create }}
 {{- if not .Values.karpenter.ec2NodeClass.instanceProfile }}
 {{- fail "karpenter.ec2NodeClass.instanceProfile is required when EC2NodeClass is enabled" }}

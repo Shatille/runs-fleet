@@ -130,3 +130,12 @@ Node selector as string (key=value,key=value format)
 {{- end -}}
 {{- join "," $selectors -}}
 {{- end }}
+
+{{/*
+Validate mode selection
+*/}}
+{{- define "runs-fleet.validateMode" -}}
+{{- if and (ne .Values.mode "ec2") (ne .Values.mode "k8s") -}}
+{{- fail "mode must be 'ec2' or 'k8s'" -}}
+{{- end -}}
+{{- end }}

@@ -1,5 +1,52 @@
 # runs-fleet Helm chart values
 
+# Mode selection: ec2 (direct EC2 Fleet) or k8s (Karpenter pods)
+mode: ec2
+
+# AWS configuration (required for mode: ec2)
+aws:
+  region: ap-northeast-1
+
+  # Network
+  vpcId: ""
+  publicSubnetIds: []
+  privateSubnetIds: []
+  securityGroupId: ""
+  instanceProfileArn: ""
+
+  # SQS queues
+  queueUrl: ""
+  queueDlqUrl: ""
+  poolQueueUrl: ""
+  eventsQueueUrl: ""
+  terminationQueueUrl: ""
+  housekeepingQueueUrl: ""
+
+  # DynamoDB tables
+  locksTable: "runs-fleet-locks"
+  jobsTable: "runs-fleet-jobs"
+  poolsTable: "runs-fleet-pools"
+  circuitBreakerTable: "runs-fleet-circuit-state"
+
+  # S3 buckets
+  cacheBucket: ""
+  configBucket: ""
+
+  # EC2 runner settings
+  runnerImage: ""
+  launchTemplateName: "runs-fleet-runner"
+  spotEnabled: true
+  maxRuntimeMinutes: 360
+  keyName: ""
+
+  # Custom tags for EC2 resources (cost allocation, ownership, etc.)
+  # AWS recommends PascalCase for Cost Allocation Tags
+  tags: {}
+  # Example:
+  #   Team: platform
+  #   Project: ci-runners
+  #   CostCenter: engineering
+
 # Orchestrator configuration
 orchestrator:
   image:
@@ -8,6 +55,10 @@ orchestrator:
     pullPolicy: Always
 
   replicas: 2
+
+  serviceAccount:
+    annotations: {}
+    # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/runs-fleet
 
   resources:
     requests:
@@ -39,7 +90,7 @@ orchestrator:
 
   affinity: {}
 
-# Runner configuration
+# Runner configuration (mode: k8s only)
 runner:
   image:
     repository: runs-fleet-runner
@@ -49,6 +100,17 @@ runner:
   serviceAccount:
     annotations: {}
 
+  nodeSelector: {}
+  tolerations: []
+
+# Docker-in-Docker configuration (mode: k8s only)
+docker:
+  image: docker:dind
+  registryMirror: ""
+  daemonJSONConfigMap: ""
+  waitSeconds: 120
+  groupGID: 123
+
 # GitHub App configuration
 github:
   appId: "" # Required: GitHub App ID (ignored if existingSecret is set)
@@ -56,9 +118,9 @@ github:
   webhookSecret: "" # Required: Webhook secret (ignored if existingSecret is set)
   existingSecret: "" # Use existing secret instead of creating one (e.g., from VaultSecretMap)
 
-# Valkey (Redis-compatible) configuration
+# Valkey (Redis-compatible) configuration (mode: k8s only)
 valkey:
-  enabled: true
+  enabled: false
 
   image:
     repository: valkey/valkey
@@ -98,7 +160,7 @@ metrics:
   enabled: true
   port: 9090
 
-# Warm pool configuration (placeholder pods for faster job startup)
+# Warm pool configuration (mode: k8s only, placeholder pods for faster job startup)
 warmPool:
   enabled: false
 
@@ -179,7 +241,7 @@ istio:
         interval: 30s
         baseEjectionTime: 30s
 
-# Karpenter configuration (requires Karpenter v1.0+ installed on EKS)
+# Karpenter configuration (mode: k8s only, requires Karpenter v1.0+ installed on EKS)
 karpenter:
   enabled: false
 
