@@ -619,7 +619,8 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 			Tolerations:        tolerations,
 			InitContainers:     []corev1.Container{initContainer},
 			SecurityContext: &corev1.PodSecurityContext{
-				FSGroup: ptr.To(int64(1000)),
+				FSGroup:            ptr.To(int64(1000)),
+				SupplementalGroups: []int64{int64(p.config.KubeDockerGroupGID)},
 				SeccompProfile: &corev1.SeccompProfile{
 					Type: corev1.SeccompProfileTypeRuntimeDefault,
 				},
