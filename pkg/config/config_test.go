@@ -781,6 +781,96 @@ func TestParseTags(t *testing.T) {
 	}
 }
 
+func TestValidateHostPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		wantErr bool
+	}{
+		{"valid IPv4", "127.0.0.1:8125", false},
+		{"valid hostname", "localhost:8125", false},
+		{"valid hostname with domain", "datadog.example.com:8125", false},
+		{"valid IPv6", "[::1]:8125", false},
+		{"valid port 1", "localhost:1", false},
+		{"valid port 65535", "localhost:65535", false},
+		{"valid hostname uppercase", "LOCALHOST:8125", false},
+		{"empty address", "", true},
+		{"missing port", "localhost", true},
+		{"empty host", ":8125", true},
+		{"port zero", "localhost:0", true},
+		{"port negative", "localhost:-1", true},
+		{"port too high", "localhost:65536", true},
+		{"port non-numeric", "localhost:abc", true},
+		{"invalid format", "not-valid", true},
+		{"multiple colons without brackets", "::1:8125", true},
+		{"malformed IPv6 missing bracket", "[::1:8125", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateHostPort(tt.addr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateHostPort(%q) error = %v, wantErr %v", tt.addr, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMetricsConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{
+			name: "datadog disabled",
+			cfg: &Config{
+				MetricsDatadogEnabled: false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "datadog enabled with valid address",
+			cfg: &Config{
+				MetricsDatadogEnabled: true,
+				MetricsDatadogAddr:    "127.0.0.1:8125",
+			},
+			wantErr: false,
+		},
+		{
+			name: "datadog enabled missing address",
+			cfg: &Config{
+				MetricsDatadogEnabled: true,
+				MetricsDatadogAddr:    "",
+			},
+			wantErr: true,
+		},
+		{
+			name: "datadog enabled invalid address",
+			cfg: &Config{
+				MetricsDatadogEnabled: true,
+				MetricsDatadogAddr:    "invalid-address",
+			},
+			wantErr: true,
+		},
+		{
+			name: "datadog enabled invalid port",
+			cfg: &Config{
+				MetricsDatadogEnabled: true,
+				MetricsDatadogAddr:    "localhost:99999",
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.validateMetricsConfig()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMetricsConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateECRImageURL(t *testing.T) {
 	tests := []struct {
 		name    string
