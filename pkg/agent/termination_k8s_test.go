@@ -6,6 +6,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // mockTelemetryClient implements TelemetryClient for testing K8sTerminator.
@@ -57,8 +61,9 @@ func TestK8sTerminator_ImplementsInstanceTerminator(_ *testing.T) {
 func TestNewK8sTerminator(t *testing.T) {
 	logger := &mockLogger{}
 	telemetry := &mockTelemetryClient{}
+	clientset := fake.NewSimpleClientset()
 
-	terminator := NewK8sTerminator(telemetry, logger)
+	terminator := NewK8sTerminator(clientset, "test-ns", telemetry, logger)
 
 	if terminator == nil {
 		t.Fatal("NewK8sTerminator() returned nil")
@@ -69,12 +74,18 @@ func TestNewK8sTerminator(t *testing.T) {
 	if terminator.logger == nil {
 		t.Error("NewK8sTerminator() did not set logger")
 	}
+	if terminator.clientset == nil {
+		t.Error("NewK8sTerminator() did not set clientset")
+	}
+	if terminator.namespace != "test-ns" {
+		t.Errorf("NewK8sTerminator() namespace = %q, want %q", terminator.namespace, "test-ns")
+	}
 }
 
 func TestNewK8sTerminator_NilTelemetry(t *testing.T) {
 	logger := &mockLogger{}
 
-	terminator := NewK8sTerminator(nil, logger)
+	terminator := NewK8sTerminator(nil, "default", nil, logger)
 
 	if terminator == nil {
 		t.Fatal("NewK8sTerminator() returned nil")
@@ -82,13 +93,16 @@ func TestNewK8sTerminator_NilTelemetry(t *testing.T) {
 	if terminator.telemetry != nil {
 		t.Error("NewK8sTerminator() should allow nil telemetry")
 	}
+	if terminator.clientset != nil {
+		t.Error("NewK8sTerminator() should allow nil clientset")
+	}
 }
 
 func TestK8sTerminator_TerminateInstance(t *testing.T) {
 	t.Run("with telemetry", func(t *testing.T) {
 		logger := &mockLogger{}
 		telemetry := &mockTelemetryClient{}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		status := JobStatus{
 			InstanceID:      "pod-123",
@@ -113,7 +127,7 @@ func TestK8sTerminator_TerminateInstance(t *testing.T) {
 
 	t.Run("without telemetry", func(t *testing.T) {
 		logger := &mockLogger{}
-		terminator := NewK8sTerminator(nil, logger)
+		terminator := NewK8sTerminator(nil, "default", nil, logger)
 
 		status := JobStatus{
 			InstanceID: "pod-123",
@@ -134,7 +148,7 @@ func TestK8sTerminator_TerminateInstance(t *testing.T) {
 		telemetry := &mockTelemetryClient{
 			sendCompletedErr: errors.New("telemetry failed"),
 		}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		status := JobStatus{
 			InstanceID: "pod-123",
@@ -155,7 +169,7 @@ func TestK8sTerminator_TerminateWithStatus(t *testing.T) {
 	t.Run("success status", func(t *testing.T) {
 		logger := &mockLogger{}
 		telemetry := &mockTelemetryClient{}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		err := terminator.TerminateWithStatus("pod-123", "success", 0, 60*time.Second, "")
 		if err != nil {
@@ -180,7 +194,7 @@ func TestK8sTerminator_TerminateWithStatus(t *testing.T) {
 	t.Run("failure status", func(t *testing.T) {
 		logger := &mockLogger{}
 		telemetry := &mockTelemetryClient{}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		err := terminator.TerminateWithStatus("pod-456", "failure", 1, 30*time.Second, "job failed")
 		if err != nil {
@@ -204,7 +218,7 @@ func TestK8sTerminator_TerminateOnPanic(t *testing.T) {
 	t.Run("string panic", func(t *testing.T) {
 		logger := &mockLogger{}
 		telemetry := &mockTelemetryClient{}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		terminator.TerminateOnPanic("pod-789", "job-999", "test panic message")
 
@@ -229,7 +243,7 @@ func TestK8sTerminator_TerminateOnPanic(t *testing.T) {
 	t.Run("error panic", func(t *testing.T) {
 		logger := &mockLogger{}
 		telemetry := &mockTelemetryClient{}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		terminator.TerminateOnPanic("pod-123", "job-456", errors.New("error panic"))
 
@@ -242,7 +256,7 @@ func TestK8sTerminator_TerminateOnPanic(t *testing.T) {
 	t.Run("other panic type", func(t *testing.T) {
 		logger := &mockLogger{}
 		telemetry := &mockTelemetryClient{}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		terminator.TerminateOnPanic("pod-123", "job-456", 12345)
 
@@ -257,7 +271,7 @@ func TestK8sTerminator_TerminateOnPanic(t *testing.T) {
 		telemetry := &mockTelemetryClient{
 			sendCompletedErr: errors.New("failed"),
 		}
-		terminator := NewK8sTerminator(telemetry, logger)
+		terminator := NewK8sTerminator(nil, "default", telemetry, logger)
 
 		// Should not panic even if telemetry fails
 		terminator.TerminateOnPanic("pod-123", "job-456", "panic")
@@ -305,4 +319,131 @@ func TestFormatPanicValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestK8sTerminator_CleanupResources(t *testing.T) {
+	t.Run("deletes secret and configmap", func(t *testing.T) {
+		namespace := "test-ns"
+		podName := "runner-12345"
+		secretName := podName + "-secrets"
+		configMapName := podName + "-config"
+
+		// Create fake clientset with pre-existing resources
+		clientset := fake.NewSimpleClientset(
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: namespace,
+				},
+			},
+			&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      configMapName,
+					Namespace: namespace,
+				},
+			},
+		)
+
+		logger := &mockLogger{}
+		terminator := NewK8sTerminator(clientset, namespace, nil, logger)
+
+		ctx := context.Background()
+		status := JobStatus{InstanceID: podName}
+
+		err := terminator.TerminateInstance(ctx, podName, status)
+		if err != nil {
+			t.Fatalf("TerminateInstance() error = %v", err)
+		}
+
+		// Verify Secret was deleted
+		_, err = clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if err == nil {
+			t.Error("Secret should have been deleted")
+		}
+
+		// Verify ConfigMap was deleted
+		_, err = clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
+		if err == nil {
+			t.Error("ConfigMap should have been deleted")
+		}
+	})
+
+	t.Run("handles missing resources gracefully", func(t *testing.T) {
+		namespace := "test-ns"
+		podName := "runner-nonexistent"
+
+		// Create fake clientset with no resources
+		clientset := fake.NewSimpleClientset()
+
+		logger := &mockLogger{}
+		terminator := NewK8sTerminator(clientset, namespace, nil, logger)
+
+		ctx := context.Background()
+		status := JobStatus{InstanceID: podName}
+
+		// Should not error when resources don't exist
+		err := terminator.TerminateInstance(ctx, podName, status)
+		if err != nil {
+			t.Fatalf("TerminateInstance() should not error for missing resources, got: %v", err)
+		}
+	})
+
+	t.Run("skips cleanup when clientset is nil", func(t *testing.T) {
+		logger := &mockLogger{}
+		terminator := NewK8sTerminator(nil, "default", nil, logger)
+
+		ctx := context.Background()
+		status := JobStatus{InstanceID: "pod-123"}
+
+		// Should not panic or error
+		err := terminator.TerminateInstance(ctx, "pod-123", status)
+		if err != nil {
+			t.Fatalf("TerminateInstance() should not error with nil clientset, got: %v", err)
+		}
+	})
+
+	t.Run("cleanup with telemetry", func(t *testing.T) {
+		namespace := "test-ns"
+		podName := "runner-with-telemetry"
+		secretName := podName + "-secrets"
+		configMapName := podName + "-config"
+
+		clientset := fake.NewSimpleClientset(
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      secretName,
+					Namespace: namespace,
+				},
+			},
+			&corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      configMapName,
+					Namespace: namespace,
+				},
+			},
+		)
+
+		logger := &mockLogger{}
+		telemetry := &mockTelemetryClient{}
+		terminator := NewK8sTerminator(clientset, namespace, telemetry, logger)
+
+		ctx := context.Background()
+		status := JobStatus{InstanceID: podName, ExitCode: 0}
+
+		err := terminator.TerminateInstance(ctx, podName, status)
+		if err != nil {
+			t.Fatalf("TerminateInstance() error = %v", err)
+		}
+
+		// Verify resources were cleaned up
+		_, err = clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if err == nil {
+			t.Error("Secret should have been deleted")
+		}
+
+		// Verify telemetry was sent
+		if telemetry.getCompletedCalls() != 1 {
+			t.Errorf("expected 1 SendJobCompleted call, got %d", telemetry.getCompletedCalls())
+		}
+	})
 }

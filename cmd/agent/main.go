@@ -12,6 +12,8 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/agent"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 type stdLogger struct{}
@@ -122,6 +124,23 @@ func initK8sMode(ctx context.Context, logger *stdLogger) (*agentConfig, error) {
 	}
 	ac.runnerConfig = runnerConfig
 
+	// Create Kubernetes clientset for cleanup operations
+	var clientset kubernetes.Interface
+	namespace := getK8sNamespace()
+
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		logger.Printf("Warning: failed to create in-cluster config: %v (cleanup will be skipped)", err)
+	} else {
+		clientset, err = kubernetes.NewForConfig(restConfig)
+		if err != nil {
+			logger.Printf("Warning: failed to create Kubernetes clientset: %v (cleanup will be skipped)", err)
+			clientset = nil
+		} else {
+			logger.Printf("Kubernetes client initialized for namespace: %s", namespace)
+		}
+	}
+
 	// Valkey telemetry (required when configured)
 	valkeyAddr := os.Getenv("RUNS_FLEET_VALKEY_ADDR")
 	if valkeyAddr != "" {
@@ -142,8 +161,25 @@ func initK8sMode(ctx context.Context, logger *stdLogger) (*agentConfig, error) {
 		}
 	}
 
-	ac.terminator = agent.NewK8sTerminator(ac.telemetry, logger)
+	ac.terminator = agent.NewK8sTerminator(clientset, namespace, ac.telemetry, logger)
 	return ac, nil
+}
+
+// getK8sNamespace returns the namespace the pod is running in.
+// Reads from the downward API file or falls back to "default".
+func getK8sNamespace() string {
+	// Try environment variable first (if set by user)
+	if ns := os.Getenv("RUNS_FLEET_NAMESPACE"); ns != "" {
+		return ns
+	}
+
+	// Read from service account namespace file (standard K8s location)
+	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err == nil {
+		return string(data)
+	}
+
+	return "default"
 }
 
 // initEC2Mode initializes components for EC2 mode.
