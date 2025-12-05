@@ -140,9 +140,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 const (
 	// maxScheduleRetries is the maximum number of retry attempts for scheduling a task.
 	maxScheduleRetries = 3
-	// baseRetryDelay is the initial delay before the first retry.
-	baseRetryDelay = 1 * time.Second
 )
+
+// schedulerBaseRetryDelay is the initial delay before the first retry.
+// Exposed as a variable to allow testing with shorter durations.
+var schedulerBaseRetryDelay = 1 * time.Second
 
 // scheduleTask sends a housekeeping task message to the queue with retry logic.
 func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
@@ -162,7 +164,7 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 	for attempt := 0; attempt < maxScheduleRetries; attempt++ {
 		if attempt > 0 {
 			// Exponential backoff: 1s, 2s, 4s...
-			backoff := baseRetryDelay * time.Duration(1<<uint(attempt-1))
+			backoff := schedulerBaseRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():

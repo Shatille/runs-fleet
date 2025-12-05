@@ -13,6 +13,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
+func init() {
+	// Use short tick interval in tests to avoid slow test execution
+	handlerTickInterval = 10 * time.Millisecond
+}
+
 // Test constants to satisfy goconst
 const (
 	testReceiptTermination = "test-receipt"
@@ -693,8 +698,8 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for the ticker to fire (handler has 1-second ticker)
-	time.Sleep(1200 * time.Millisecond)
+	// Wait for the ticker to fire (using short test interval)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 
 	select {
@@ -728,8 +733,8 @@ func TestHandler_Run_ReceiveError(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for ticker to fire
-	time.Sleep(1200 * time.Millisecond)
+	// Wait for ticker to fire (using short test interval)
+	time.Sleep(50 * time.Millisecond)
 	cancel()
 
 	select {

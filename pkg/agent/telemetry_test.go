@@ -11,6 +11,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+func init() {
+	// Use minimal delays in tests to avoid slow test execution
+	telemetryRetryBaseDelay = 1 * time.Millisecond
+}
+
 // Test status constants to satisfy goconst
 const (
 	testStatusSuccess = "success"
