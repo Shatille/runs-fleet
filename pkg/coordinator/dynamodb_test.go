@@ -250,3 +250,204 @@ func TestDynamoDBCoordinator_StartStop(t *testing.T) {
 		t.Fatalf("Stop() error = %v", err)
 	}
 }
+
+func TestDynamoDBCoordinator_ReleaseLock_NotLeader(t *testing.T) {
+	logger := &testLogger{t: t}
+	updateCalled := false
+	mockDB := &mockDynamoDBClient{
+		updateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			updateCalled = true
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+	// isLeader is false by default
+
+	coord.releaseLock(context.Background())
+
+	if updateCalled {
+		t.Error("releaseLock() should not call UpdateItem when not leader")
+	}
+}
+
+func TestDynamoDBCoordinator_ReleaseLock_UpdateError(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{
+		updateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, fmt.Errorf("network error")
+		},
+	}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+	coord.setLeader(true)
+
+	// Should not panic and should set leader to false
+	coord.releaseLock(context.Background())
+
+	if coord.IsLeader() {
+		t.Error("releaseLock() should set isLeader to false even on error")
+	}
+}
+
+func TestDynamoDBCoordinator_SetLeader_Transitions(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+
+	// Test false -> true transition
+	coord.setLeader(true)
+	if !coord.IsLeader() {
+		t.Error("setLeader(true) should make IsLeader() return true")
+	}
+
+	// Test true -> true (no change)
+	coord.setLeader(true)
+	if !coord.IsLeader() {
+		t.Error("setLeader(true) again should keep IsLeader() true")
+	}
+
+	// Test true -> false transition
+	coord.setLeader(false)
+	if coord.IsLeader() {
+		t.Error("setLeader(false) should make IsLeader() return false")
+	}
+
+	// Test false -> false (no change)
+	coord.setLeader(false)
+	if coord.IsLeader() {
+		t.Error("setLeader(false) again should keep IsLeader() false")
+	}
+}
+
+func TestDynamoDBCoordinator_AcquireLock_PutError(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{
+		putItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, fmt.Errorf("DynamoDB service error")
+		},
+	}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+
+	acquired, err := coord.acquireLock(context.Background())
+	if err == nil {
+		t.Error("acquireLock() should return error on DynamoDB error")
+	}
+	if acquired {
+		t.Error("acquireLock() should return false on error")
+	}
+}
+
+func TestDynamoDBCoordinator_RenewLock_UpdateError(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{
+		updateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, fmt.Errorf("DynamoDB service error")
+		},
+	}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+	coord.setLeader(true)
+
+	err := coord.renewLock(context.Background())
+	if err == nil {
+		t.Error("renewLock() should return error on DynamoDB error")
+	}
+}
+
+func TestNewDynamoDBCoordinator(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{}
+	cfg := DefaultConfig("test-instance")
+
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+
+	if coord == nil {
+		t.Fatal("NewDynamoDBCoordinator() returned nil")
+	}
+	if coord.IsLeader() {
+		t.Error("new coordinator should not be leader")
+	}
+	if coord.config.InstanceID != cfg.InstanceID {
+		t.Errorf("InstanceID = %s, want %s", coord.config.InstanceID, cfg.InstanceID)
+	}
+}
+
+func TestDynamoDBCoordinator_Interface(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{}
+	cfg := DefaultConfig("test-instance")
+
+	// Verify DynamoDBCoordinator implements Coordinator interface
+	var _ Coordinator = NewDynamoDBCoordinator(cfg, mockDB, logger)
+}
+
+func TestLockRecord_Structure(t *testing.T) {
+	record := lockRecord{
+		LockID:     "test-lock",
+		Owner:      "test-owner",
+		ExpiresAt:  1234567890,
+		AcquiredAt: 1234567800,
+	}
+
+	if record.LockID != "test-lock" {
+		t.Errorf("LockID = %s, want test-lock", record.LockID)
+	}
+	if record.Owner != "test-owner" {
+		t.Errorf("Owner = %s, want test-owner", record.Owner)
+	}
+	if record.ExpiresAt != 1234567890 {
+		t.Errorf("ExpiresAt = %d, want 1234567890", record.ExpiresAt)
+	}
+	if record.AcquiredAt != 1234567800 {
+		t.Errorf("AcquiredAt = %d, want 1234567800", record.AcquiredAt)
+	}
+}
+
+func TestDynamoDBCoordinator_AttemptLeadership_AlreadyLeader(t *testing.T) {
+	logger := &testLogger{t: t}
+	putCalled := false
+	mockDB := &mockDynamoDBClient{
+		putItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			putCalled = true
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+	coord.setLeader(true) // Already leader
+
+	coord.attemptLeadership(context.Background())
+
+	if putCalled {
+		t.Error("attemptLeadership() should not try to acquire lock when already leader")
+	}
+}
+
+func TestDynamoDBCoordinator_AttemptLeadership_AcquireFail(t *testing.T) {
+	logger := &testLogger{t: t}
+	mockDB := &mockDynamoDBClient{
+		putItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{
+				Message: aws.String("Lock held by another instance"),
+			}
+		},
+	}
+
+	cfg := DefaultConfig("test-instance")
+	coord := NewDynamoDBCoordinator(cfg, mockDB, logger)
+
+	coord.attemptLeadership(context.Background())
+
+	if coord.IsLeader() {
+		t.Error("attemptLeadership() should not set leader when acquisition fails")
+	}
+}

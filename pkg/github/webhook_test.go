@@ -668,3 +668,97 @@ func TestParseLabels_OriginalLabel(t *testing.T) {
 		})
 	}
 }
+
+func TestIsWindowsRunner(t *testing.T) {
+	tests := []struct {
+		runnerSpec string
+		want       bool
+	}{
+		{"2cpu-windows-amd64", true},
+		{"4cpu-windows-amd64", true},
+		{"8cpu-windows-amd64", true},
+		{"2cpu-linux-arm64", false},
+		{"4cpu-linux-amd64", false},
+		{"8cpu-linux-arm64", false},
+		{"windows", true},
+		{"linux", false},
+		{"", false},
+		{"custom-windows-runner", true},
+		{"windowsless", true}, // contains "windows"
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runnerSpec, func(t *testing.T) {
+			if got := IsWindowsRunner(tt.runnerSpec); got != tt.want {
+				t.Errorf("IsWindowsRunner(%q) = %v, want %v", tt.runnerSpec, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseRunnerOSArch(t *testing.T) {
+	tests := []struct {
+		runnerSpec string
+		wantOS     string
+		wantArch   string
+	}{
+		{"2cpu-linux-arm64", "linux", "arm64"},
+		{"4cpu-linux-amd64", "linux", "amd64"},
+		{"2cpu-windows-amd64", "windows", "amd64"},
+		{"8cpu-linux-arm64", "linux", "arm64"},
+		{"custom-spec", "linux", ""},
+		{"", "linux", ""},
+		{"linux-only", "linux", ""},
+		{"windows-only", "windows", ""},
+		{"arm64-only", "linux", "arm64"},
+		{"amd64-only", "linux", "amd64"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runnerSpec, func(t *testing.T) {
+			gotOS, gotArch := parseRunnerOSArch(tt.runnerSpec)
+			if gotOS != tt.wantOS {
+				t.Errorf("parseRunnerOSArch(%q) OS = %q, want %q", tt.runnerSpec, gotOS, tt.wantOS)
+			}
+			if gotArch != tt.wantArch {
+				t.Errorf("parseRunnerOSArch(%q) Arch = %q, want %q", tt.runnerSpec, gotArch, tt.wantArch)
+			}
+		})
+	}
+}
+
+func TestResolveInstanceType(t *testing.T) {
+	tests := []struct {
+		runnerSpec   string
+		wantInstance string
+	}{
+		{"2cpu-linux-arm64", "t4g.medium"},
+		{"4cpu-linux-arm64", "c7g.xlarge"},
+		{"8cpu-linux-arm64", "c7g.2xlarge"},
+		{"16cpu-linux-arm64", "c7g.4xlarge"},
+		{"32cpu-linux-arm64", "c7g.8xlarge"},
+		{"2cpu-linux-amd64", "t3.medium"},
+		{"4cpu-linux-amd64", "c6i.xlarge"},
+		{"8cpu-linux-amd64", "c6i.2xlarge"},
+		{"16cpu-linux-amd64", "c6i.4xlarge"},
+		{"32cpu-linux-amd64", "c6i.8xlarge"},
+		{"2cpu-windows-amd64", "t3.medium"},
+		{"4cpu-windows-amd64", "m6i.xlarge"},
+		{"unknown-spec", "t4g.medium"},      // fallback
+		{"2cpu-linux-arm64-extra", "t4g.medium"},
+		{"4cpu-linux-arm64-custom", "c7g.xlarge"},
+		{"4cpu-linux-amd64-variant", "c6i.xlarge"},
+		{"8cpu-linux-arm64-big", "c7g.2xlarge"},
+		{"8cpu-linux-amd64-big", "c6i.2xlarge"},
+		{"some-windows-runner", "m6i.xlarge"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runnerSpec, func(t *testing.T) {
+			got := resolveInstanceType(tt.runnerSpec)
+			if got != tt.wantInstance {
+				t.Errorf("resolveInstanceType(%q) = %q, want %q", tt.runnerSpec, got, tt.wantInstance)
+			}
+		})
+	}
+}

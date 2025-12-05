@@ -389,3 +389,171 @@ func TestPushEvent_GetModifiedFiles_DeduplicatesAcrossCommits(t *testing.T) {
 		t.Errorf("expected 2 unique files, got %d", len(files))
 	}
 }
+
+func TestNewGitHubClient(t *testing.T) {
+	client := NewGitHubClient(nil)
+
+	if client == nil {
+		t.Error("NewGitHubClient() returned nil")
+	}
+}
+
+func TestNewGitHubClient_WithMockClient(t *testing.T) {
+	// Test that we can create a GitHubClient with a nil github.Client
+	// This just tests the constructor, not the actual API calls
+	ghClient := NewGitHubClient(nil)
+
+	if ghClient == nil {
+		t.Fatal("NewGitHubClient() should not return nil")
+	}
+
+	// The client field should be nil
+	if ghClient.client != nil {
+		t.Error("client field should be nil when passed nil")
+	}
+}
+
+func TestGitHubClient_Structure(t *testing.T) {
+	// Test the GitHubClient struct can be created with nil client
+	client := &GitHubClient{
+		client: nil,
+	}
+
+	// Verify the struct was created with expected field value
+	if client.client != nil {
+		t.Error("client field should be nil")
+	}
+}
+
+func TestHTTPClientGitHub_EmptyToken(t *testing.T) {
+	// Test creating an HTTP client with an empty token
+	client := NewHTTPClientGitHub("")
+
+	if client.token != "" {
+		t.Errorf("expected empty token, got '%s'", client.token)
+	}
+
+	if client.httpClient == nil {
+		t.Error("httpClient should not be nil")
+	}
+}
+
+func TestHTTPClientGitHub_BaseURL(t *testing.T) {
+	client := NewHTTPClientGitHub("token")
+
+	expectedURL := "https://api.github.com"
+	if client.baseURL != expectedURL {
+		t.Errorf("expected baseURL '%s', got '%s'", expectedURL, client.baseURL)
+	}
+}
+
+func TestPushEvent_GetBranch_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		ref      string
+		expected string
+	}{
+		{
+			name:     "just refs/heads prefix",
+			ref:      "refs/heads/",
+			expected: "refs/heads/", // Returns as-is when no branch after prefix
+		},
+		{
+			name:     "refs/heads with slash at end",
+			ref:      "refs/heads/branch/",
+			expected: "branch/",
+		},
+		{
+			name:     "deeply nested branch",
+			ref:      "refs/heads/feature/team/user/branch",
+			expected: "feature/team/user/branch",
+		},
+		{
+			name:     "just refs/",
+			ref:      "refs/",
+			expected: "refs/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := PushEvent{Ref: tt.ref}
+			branch := event.GetBranch()
+			if branch != tt.expected {
+				t.Errorf("GetBranch() = %q, expected %q", branch, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCommit_EmptyFields(t *testing.T) {
+	commit := Commit{
+		ID:       "",
+		Added:    nil,
+		Modified: nil,
+		Removed:  nil,
+	}
+
+	if commit.ID != "" {
+		t.Error("ID should be empty")
+	}
+	if commit.Added != nil {
+		t.Error("Added should be nil")
+	}
+	if commit.Modified != nil {
+		t.Error("Modified should be nil")
+	}
+	if commit.Removed != nil {
+		t.Error("Removed should be nil")
+	}
+}
+
+func TestPushEvent_GetModifiedFiles_NilCommits(t *testing.T) {
+	event := PushEvent{
+		Commits: nil,
+	}
+
+	files := event.GetModifiedFiles()
+	if len(files) != 0 {
+		t.Errorf("expected 0 files for nil commits, got %d", len(files))
+	}
+}
+
+func TestPushEvent_GetModifiedFiles_EmptySlices(t *testing.T) {
+	event := PushEvent{
+		Commits: []Commit{
+			{
+				Added:    []string{},
+				Modified: []string{},
+				Removed:  []string{},
+			},
+		},
+	}
+
+	files := event.GetModifiedFiles()
+	if len(files) != 0 {
+		t.Errorf("expected 0 files for empty slices, got %d", len(files))
+	}
+}
+
+func TestRepoInfo_EmptyFields(t *testing.T) {
+	info := RepoInfo{}
+
+	if info.Owner.Login != "" {
+		t.Error("Owner.Login should be empty")
+	}
+	if info.Name != "" {
+		t.Error("Name should be empty")
+	}
+	if info.FullName != "" {
+		t.Error("FullName should be empty")
+	}
+}
+
+func TestOwnerInfo(t *testing.T) {
+	owner := OwnerInfo{Login: "test-user"}
+
+	if owner.Login != "test-user" {
+		t.Errorf("expected Login 'test-user', got '%s'", owner.Login)
+	}
+}
