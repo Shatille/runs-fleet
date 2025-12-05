@@ -38,8 +38,8 @@ var dns1123LabelRegex = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // sanitizePodName ensures pod name is DNS-1123 compliant.
 // Converts to lowercase, replaces invalid chars with dashes, truncates to 63 chars.
-func sanitizePodName(runID string) string {
-	name := "runner-" + strings.ToLower(runID)
+func sanitizePodName(jobID string) string {
+	name := "runner-" + strings.ToLower(jobID)
 	// Replace sequences of invalid chars with single dash
 	name = dns1123LabelRegex.ReplaceAllString(name, "-")
 	// Collapse consecutive dashes
@@ -114,7 +114,7 @@ func (p *Provider) Name() string {
 // Creates ConfigMap, Secret, and PVC for agent config before Pod creation.
 // For private jobs, also creates a NetworkPolicy to restrict egress.
 func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
-	podName := sanitizePodName(spec.RunID)
+	podName := sanitizePodName(spec.JobID)
 	namespace := p.config.KubeNamespace
 
 	// cleanup helper for failure cases
@@ -413,6 +413,7 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 	labels := map[string]string{
 		"app":                         "runs-fleet-runner",
 		"runs-fleet.io/run-id":        spec.RunID,
+		"runs-fleet.io/job-id":        spec.JobID,
 		"runs-fleet.io/pool":          spec.Pool,
 		"runs-fleet.io/arch":          spec.Arch,
 		"runs-fleet.io/os":            spec.OS,
@@ -776,7 +777,7 @@ func (p *Provider) buildNetworkPolicy(podName string, spec *provider.RunnerSpec)
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"runs-fleet.io/run-id":  spec.RunID,
+					"runs-fleet.io/job-id":  spec.JobID,
 					"runs-fleet.io/private": "true",
 				},
 			},
