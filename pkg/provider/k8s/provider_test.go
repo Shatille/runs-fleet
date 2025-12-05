@@ -1119,5 +1119,67 @@ func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
 	}
 }
 
+func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
+	cfg := &config.Config{
+		KubeNamespace:       "runs-fleet",
+		KubeRunnerImage:     "runner:latest",
+		KubeDindImage:       "docker:dind",
+		KubeDockerGroupGID:  999,
+		KubeDockerWaitSeconds: 120,
+	}
+	p := NewProviderWithClient(fake.NewSimpleClientset(), cfg)
+	spec := &provider.RunnerSpec{
+		RunID:    "test-gid",
+		JobID:    "job-123",
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		JITToken: "test-token",
+	}
+
+	pod := p.buildPodSpec("test-pod", spec)
+
+	// Verify SupplementalGroups contains the docker GID
+	if pod.Spec.SecurityContext == nil {
+		t.Fatal("Pod SecurityContext is nil")
+	}
+	gidFound := false
+	for _, gid := range pod.Spec.SecurityContext.SupplementalGroups {
+		if gid == int64(cfg.KubeDockerGroupGID) {
+			gidFound = true
+			break
+		}
+	}
+	if !gidFound {
+		t.Errorf("Docker GID %d not found in SupplementalGroups %v", cfg.KubeDockerGroupGID, pod.Spec.SecurityContext.SupplementalGroups)
+	}
+
+	// Find DinD container and verify env var matches
+	var dindContainer *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == "dind" {
+			dindContainer = &pod.Spec.Containers[i]
+			break
+		}
+	}
+	if dindContainer == nil {
+		t.Fatal("DinD container not found")
+	}
+
+	envFound := false
+	expectedGID := fmt.Sprintf("%d", cfg.KubeDockerGroupGID)
+	for _, env := range dindContainer.Env {
+		if env.Name == "DOCKER_GROUP_GID" {
+			if env.Value != expectedGID {
+				t.Errorf("DOCKER_GROUP_GID = %s, want %s", env.Value, expectedGID)
+			}
+			envFound = true
+			break
+		}
+	}
+	if !envFound {
+		t.Error("DOCKER_GROUP_GID env var not found in DinD container")
+	}
+}
+
 // Ensure Provider implements provider.Provider.
 var _ provider.Provider = (*Provider)(nil)
