@@ -828,3 +828,208 @@ func TestUpdatePoolState_ConditionalCheckFailed(t *testing.T) {
 		t.Error("UpdatePoolState() should return error when pool does not exist")
 	}
 }
+
+func TestClient_Structure(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "my-pools-table",
+		jobsTable:    "my-jobs-table",
+	}
+
+	if client.poolsTable != "my-pools-table" {
+		t.Errorf("poolsTable = %s, want my-pools-table", client.poolsTable)
+	}
+	if client.jobsTable != "my-jobs-table" {
+		t.Errorf("jobsTable = %s, want my-jobs-table", client.jobsTable)
+	}
+}
+
+func TestJobRecord_Structure(t *testing.T) {
+	job := JobRecord{
+		JobID:        "job-123",
+		RunID:        "run-456",
+		Repo:         "owner/repo",
+		InstanceID:   "i-abc123",
+		InstanceType: "t4g.medium",
+		Pool:         "default",
+		Private:      true,
+		Spot:         false,
+		RunnerSpec:   "2cpu-linux-arm64",
+		RetryCount:   2,
+	}
+
+	if job.JobID != "job-123" {
+		t.Errorf("JobID = %s, want job-123", job.JobID)
+	}
+	if job.RunID != "run-456" {
+		t.Errorf("RunID = %s, want run-456", job.RunID)
+	}
+	if job.Repo != "owner/repo" {
+		t.Errorf("Repo = %s, want owner/repo", job.Repo)
+	}
+	if job.InstanceID != "i-abc123" {
+		t.Errorf("InstanceID = %s, want i-abc123", job.InstanceID)
+	}
+	if job.InstanceType != "t4g.medium" {
+		t.Errorf("InstanceType = %s, want t4g.medium", job.InstanceType)
+	}
+	if job.Pool != "default" {
+		t.Errorf("Pool = %s, want default", job.Pool)
+	}
+	if !job.Private {
+		t.Error("Private should be true")
+	}
+	if job.Spot {
+		t.Error("Spot should be false")
+	}
+	if job.RunnerSpec != "2cpu-linux-arm64" {
+		t.Errorf("RunnerSpec = %s, want 2cpu-linux-arm64", job.RunnerSpec)
+	}
+	if job.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, want 2", job.RetryCount)
+	}
+}
+
+func TestPoolConfig_Structure(t *testing.T) {
+	cfg := PoolConfig{
+		PoolName:           "test-pool",
+		InstanceType:       "c6g.xlarge",
+		DesiredRunning:     10,
+		DesiredStopped:     5,
+		IdleTimeoutMinutes: 30,
+		Environment:        "production",
+		Region:             "us-west-2",
+	}
+
+	if cfg.PoolName != "test-pool" {
+		t.Errorf("PoolName = %s, want test-pool", cfg.PoolName)
+	}
+	if cfg.InstanceType != "c6g.xlarge" {
+		t.Errorf("InstanceType = %s, want c6g.xlarge", cfg.InstanceType)
+	}
+	if cfg.DesiredRunning != 10 {
+		t.Errorf("DesiredRunning = %d, want 10", cfg.DesiredRunning)
+	}
+	if cfg.DesiredStopped != 5 {
+		t.Errorf("DesiredStopped = %d, want 5", cfg.DesiredStopped)
+	}
+	if cfg.IdleTimeoutMinutes != 30 {
+		t.Errorf("IdleTimeoutMinutes = %d, want 30", cfg.IdleTimeoutMinutes)
+	}
+	if cfg.Environment != "production" {
+		t.Errorf("Environment = %s, want production", cfg.Environment)
+	}
+	if cfg.Region != "us-west-2" {
+		t.Errorf("Region = %s, want us-west-2", cfg.Region)
+	}
+}
+
+
+func TestGetJobByInstance_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	_, err := client.GetJobByInstance(context.Background(), "i-123")
+	if err == nil {
+		t.Error("GetJobByInstance() should return error when DynamoDB fails")
+	}
+}
+
+func TestSaveJob_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveJob(context.Background(), &JobRecord{
+		JobID:      "job-123",
+		InstanceID: "i-123",
+	})
+	if err == nil {
+		t.Error("SaveJob() should return error when DynamoDB fails")
+	}
+}
+
+func TestMockDynamoDBAPI_DefaultBehavior(t *testing.T) {
+	mock := &MockDynamoDBAPI{}
+
+	// Test default GetItem returns empty output
+	getOutput, err := mock.GetItem(context.Background(), &dynamodb.GetItemInput{})
+	if err != nil {
+		t.Errorf("GetItem() unexpected error: %v", err)
+	}
+	if getOutput == nil {
+		t.Error("GetItem() should return non-nil output")
+	}
+
+	// Test default UpdateItem returns empty output
+	updateOutput, err := mock.UpdateItem(context.Background(), &dynamodb.UpdateItemInput{})
+	if err != nil {
+		t.Errorf("UpdateItem() unexpected error: %v", err)
+	}
+	if updateOutput == nil {
+		t.Error("UpdateItem() should return non-nil output")
+	}
+
+	// Test default Scan returns empty output
+	scanOutput, err := mock.Scan(context.Background(), &dynamodb.ScanInput{})
+	if err != nil {
+		t.Errorf("Scan() unexpected error: %v", err)
+	}
+	if scanOutput == nil {
+		t.Error("Scan() should return non-nil output")
+	}
+
+	// Test default Query returns empty output
+	queryOutput, err := mock.Query(context.Background(), &dynamodb.QueryInput{})
+	if err != nil {
+		t.Errorf("Query() unexpected error: %v", err)
+	}
+	if queryOutput == nil {
+		t.Error("Query() should return non-nil output")
+	}
+
+	// Test default PutItem returns empty output
+	putOutput, err := mock.PutItem(context.Background(), &dynamodb.PutItemInput{})
+	if err != nil {
+		t.Errorf("PutItem() unexpected error: %v", err)
+	}
+	if putOutput == nil {
+		t.Error("PutItem() should return non-nil output")
+	}
+}
+
+func TestUpdatePoolState_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	err := client.UpdatePoolState(context.Background(), "test-pool", 5, 2)
+	if err == nil {
+		t.Error("UpdatePoolState() should return error when DynamoDB fails")
+	}
+}
+

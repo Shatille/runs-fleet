@@ -360,3 +360,195 @@ func TestConstants(t *testing.T) {
 		t.Errorf("expected baseRetryDelay 1s, got %v", baseRetryDelay)
 	}
 }
+
+func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
+	sqsClient := &mockSchedulerSQSAPI{}
+	// Use very short intervals for testing
+	cfg := SchedulerConfig{
+		OrphanedInstancesInterval: 50 * time.Millisecond,
+		StaleSSMInterval:          50 * time.Millisecond,
+		OldJobsInterval:           50 * time.Millisecond,
+		PoolAuditInterval:         50 * time.Millisecond,
+		CostReportInterval:        50 * time.Millisecond,
+		DLQRedriveInterval:        50 * time.Millisecond,
+	}
+	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		scheduler.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for multiple ticker fires
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	<-done
+
+	// Should have scheduled multiple tasks
+	if sqsClient.sendCalls < 3 {
+		t.Errorf("expected at least 3 send calls, got %d", sqsClient.sendCalls)
+	}
+}
+
+func TestScheduler_scheduleTask_NoMetrics(t *testing.T) {
+	sqsClient := &mockSchedulerSQSAPI{
+		sendErr: errors.New("error"),
+	}
+	cfg := DefaultSchedulerConfig()
+	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
+	// No metrics set
+
+	// Should not panic when metrics is nil
+	scheduler.scheduleTask(context.Background(), TaskOrphanedInstances)
+
+	if sqsClient.sendCalls < maxScheduleRetries {
+		t.Errorf("expected %d retry calls, got %d", maxScheduleRetries, sqsClient.sendCalls)
+	}
+}
+
+func TestScheduler_scheduleTask_MetricsError(t *testing.T) {
+	sqsClient := &mockSchedulerSQSAPI{
+		sendErr: errors.New("error"),
+	}
+	cfg := DefaultSchedulerConfig()
+	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
+
+	metrics := &mockSchedulerMetrics{
+		err: errors.New("metrics error"),
+	}
+	scheduler.SetMetrics(metrics)
+
+	// Should not panic when metrics publishing fails
+	scheduler.scheduleTask(context.Background(), TaskOrphanedInstances)
+
+	// Should still have recorded the failure attempt
+	if len(metrics.failures) != 1 {
+		t.Errorf("expected 1 failure metric attempt, got %d", len(metrics.failures))
+	}
+}
+
+func TestScheduler_Structure(t *testing.T) {
+	sqsClient := &mockSchedulerSQSAPI{}
+	cfg := SchedulerConfig{
+		OrphanedInstancesInterval: 1 * time.Minute,
+		StaleSSMInterval:          2 * time.Minute,
+		OldJobsInterval:           3 * time.Minute,
+		PoolAuditInterval:         4 * time.Minute,
+		CostReportInterval:        5 * time.Minute,
+		DLQRedriveInterval:        6 * time.Minute,
+	}
+	queueURL := "https://sqs.example.com/test-queue"
+
+	scheduler := NewScheduler(sqsClient, queueURL, cfg)
+
+	if scheduler.queueURL != queueURL {
+		t.Errorf("queueURL = %s, want %s", scheduler.queueURL, queueURL)
+	}
+	if scheduler.config.OrphanedInstancesInterval != 1*time.Minute {
+		t.Errorf("OrphanedInstancesInterval = %v, want 1m", scheduler.config.OrphanedInstancesInterval)
+	}
+	if scheduler.config.StaleSSMInterval != 2*time.Minute {
+		t.Errorf("StaleSSMInterval = %v, want 2m", scheduler.config.StaleSSMInterval)
+	}
+	if scheduler.config.OldJobsInterval != 3*time.Minute {
+		t.Errorf("OldJobsInterval = %v, want 3m", scheduler.config.OldJobsInterval)
+	}
+	if scheduler.config.PoolAuditInterval != 4*time.Minute {
+		t.Errorf("PoolAuditInterval = %v, want 4m", scheduler.config.PoolAuditInterval)
+	}
+	if scheduler.config.CostReportInterval != 5*time.Minute {
+		t.Errorf("CostReportInterval = %v, want 5m", scheduler.config.CostReportInterval)
+	}
+	if scheduler.config.DLQRedriveInterval != 6*time.Minute {
+		t.Errorf("DLQRedriveInterval = %v, want 6m", scheduler.config.DLQRedriveInterval)
+	}
+}
+
+func TestMockSchedulerSQSAPI_Tracking(t *testing.T) {
+	mock := &mockSchedulerSQSAPI{}
+
+	body := "test message"
+	_, err := mock.SendMessage(context.Background(), &sqs.SendMessageInput{
+		MessageBody: &body,
+	})
+
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if mock.sendCalls != 1 {
+		t.Errorf("sendCalls = %d, want 1", mock.sendCalls)
+	}
+	if len(mock.messages) != 1 {
+		t.Errorf("messages length = %d, want 1", len(mock.messages))
+	}
+	if mock.messages[0] != body {
+		t.Errorf("message = %s, want %s", mock.messages[0], body)
+	}
+}
+
+func TestMockSchedulerMetrics_Tracking(t *testing.T) {
+	mock := &mockSchedulerMetrics{}
+
+	err := mock.PublishSchedulingFailure(context.Background(), "test-task")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(mock.failures) != 1 {
+		t.Errorf("failures length = %d, want 1", len(mock.failures))
+	}
+	if mock.failures[0] != "test-task" {
+		t.Errorf("failure = %s, want test-task", mock.failures[0])
+	}
+}
+
+func TestSchedulerConfig_ZeroValues(t *testing.T) {
+	cfg := SchedulerConfig{}
+
+	if cfg.OrphanedInstancesInterval != 0 {
+		t.Error("OrphanedInstancesInterval should be zero by default")
+	}
+	if cfg.StaleSSMInterval != 0 {
+		t.Error("StaleSSMInterval should be zero by default")
+	}
+	if cfg.OldJobsInterval != 0 {
+		t.Error("OldJobsInterval should be zero by default")
+	}
+	if cfg.PoolAuditInterval != 0 {
+		t.Error("PoolAuditInterval should be zero by default")
+	}
+	if cfg.CostReportInterval != 0 {
+		t.Error("CostReportInterval should be zero by default")
+	}
+	if cfg.DLQRedriveInterval != 0 {
+		t.Error("DLQRedriveInterval should be zero by default")
+	}
+}
+
+func TestScheduler_scheduleTask_MessageFormat(t *testing.T) {
+	sqsClient := &mockSchedulerSQSAPI{}
+	cfg := DefaultSchedulerConfig()
+	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
+
+	scheduler.scheduleTask(context.Background(), TaskPoolAudit)
+
+	if len(sqsClient.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(sqsClient.messages))
+	}
+
+	var msg Message
+	if err := json.Unmarshal([]byte(sqsClient.messages[0]), &msg); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+
+	if msg.TaskType != TaskPoolAudit {
+		t.Errorf("TaskType = %s, want %s", msg.TaskType, TaskPoolAudit)
+	}
+
+	if msg.Timestamp.IsZero() {
+		t.Error("Timestamp should not be zero")
+	}
+}
