@@ -401,7 +401,7 @@ func TestHandler_RegisterRoutes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+		t.Run(tt.method+" "+tt.path, func(_ *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)

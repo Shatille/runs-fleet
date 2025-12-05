@@ -553,8 +553,7 @@ func TestGetEnvBool(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
-				os.Setenv(tt.envKey, tt.envValue)
-				defer os.Unsetenv(tt.envKey)
+				t.Setenv(tt.envKey, tt.envValue)
 			}
 			if got := getEnvBool(tt.envKey, tt.defaultValue); got != tt.want {
 				t.Errorf("getEnvBool(%q, %v) = %v, want %v", tt.envKey, tt.defaultValue, got, tt.want)

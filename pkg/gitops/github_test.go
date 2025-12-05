@@ -414,13 +414,14 @@ func TestNewGitHubClient_WithMockClient(t *testing.T) {
 }
 
 func TestGitHubClient_Structure(t *testing.T) {
-	// Test the GitHubClient struct can be created
+	// Test the GitHubClient struct can be created with nil client
 	client := &GitHubClient{
 		client: nil,
 	}
 
-	if client == nil {
-		t.Error("GitHubClient should be created successfully")
+	// Verify the struct was created with expected field value
+	if client.client != nil {
+		t.Error("client field should be nil")
 	}
 }
 
