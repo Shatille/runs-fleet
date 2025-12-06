@@ -74,20 +74,19 @@ jobs:
               --query 'imageDetails[*].imageTags[]' --output text 2>/dev/null | \
               tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
 
-            if [ -z "$LATEST" ]; then
-              NEW_VERSION="v0.0.1"
-            else
-              VERSION=${LATEST#v}
-              MAJOR=$(echo $VERSION | cut -d. -f1)
-              MINOR=$(echo $VERSION | cut -d. -f2)
-              PATCH=$(echo $VERSION | cut -d. -f3)
+            VERSION=${LATEST#v}
+            if [ -z "$VERSION" ]; then
+              VERSION="0.0.0"
+            fi
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
 
-              BUMP="${{ inputs.bump || 'patch' }}"
-              if [ "$BUMP" = "minor" ]; then
-                NEW_VERSION="v${MAJOR}.$((MINOR + 1)).0"
-              else
-                NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
-              fi
+            BUMP="${{ inputs.bump || 'patch' }}"
+            if [ "$BUMP" = "minor" ]; then
+              NEW_VERSION="v${MAJOR}.$((MINOR + 1)).0"
+            else
+              NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
             fi
           fi
 
