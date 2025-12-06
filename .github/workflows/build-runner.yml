@@ -78,7 +78,7 @@ jobs:
             runner: ubuntu-latest
             platform: linux/amd64
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
             platform: linux/arm64
     steps:
       - name: Checkout code
