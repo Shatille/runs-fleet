@@ -59,6 +59,10 @@ type Publisher interface {
 
 	// PublishCircuitBreakerTriggered publishes a circuit breaker triggered event with instance type dimension.
 	PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error
+
+	// PublishJobClaimFailure publishes a job claim failure event that proceeded anyway.
+	// This tracks cases where DB claim failed but job processing continued for availability.
+	PublishJobClaimFailure(ctx context.Context) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -118,6 +122,9 @@ func (NoopPublisher) PublishSchedulingFailure(context.Context, string) error { r
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishCircuitBreakerTriggered(context.Context, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishJobClaimFailure(context.Context) error { return nil }
 
 // Ensure NoopPublisher implements Publisher.
 var _ Publisher = NoopPublisher{}

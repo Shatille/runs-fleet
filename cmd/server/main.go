@@ -88,7 +88,12 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 				log.Printf("Job %s already claimed (direct path)", job.JobID)
 				return false
 			}
-			log.Printf("Failed to claim job %s: %v (proceeding anyway)", job.JobID, err)
+			log.Printf("WARNING: Failed to claim job %s: %v (proceeding anyway for availability)", job.JobID, err)
+			if p.metrics != nil {
+				if metricErr := p.metrics.PublishJobClaimFailure(ctx); metricErr != nil {
+					log.Printf("Failed to publish job claim failure metric: %v", metricErr)
+				}
+			}
 		}
 	}
 
@@ -887,7 +892,10 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 				alreadyClaimed = true
 				return
 			}
-			log.Printf("Failed to claim job %s: %v (proceeding anyway)", job.JobID, err)
+			log.Printf("WARNING: Failed to claim job %s: %v (proceeding anyway for availability)", job.JobID, err)
+			if metricErr := m.PublishJobClaimFailure(ctx); metricErr != nil {
+				log.Printf("Failed to publish job claim failure metric: %v", metricErr)
+			}
 		}
 	}
 
