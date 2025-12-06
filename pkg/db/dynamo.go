@@ -14,6 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
+// ErrJobAlreadyClaimed is returned when attempting to claim a job that is already being processed.
+var ErrJobAlreadyClaimed = errors.New("job already claimed")
+
 // DynamoDBAPI defines DynamoDB operations for pool configuration storage.
 //
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -23,6 +26,7 @@ type DynamoDBAPI interface {
 	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
 	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 }
 
 // Client provides DynamoDB operations for pool configuration and state.
@@ -394,6 +398,76 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to save job record: %w", err)
+	}
+
+	return nil
+}
+
+// ClaimJob atomically claims a job for processing using conditional write.
+// Returns ErrJobAlreadyClaimed if the job is already being processed.
+// Uses a special instance_id format "claim:{job_id}" to track claims.
+func (c *Client) ClaimJob(ctx context.Context, jobID string) error {
+	if jobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	claimInstanceID := "claim:" + jobID
+	record := jobRecord{
+		InstanceID: claimInstanceID,
+		JobID:      jobID,
+		Status:     "claiming",
+		CreatedAt:  time.Now().Format(time.RFC3339),
+	}
+
+	item, err := attributevalue.MarshalMap(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal claim record: %w", err)
+	}
+
+	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(c.jobsTable),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(instance_id)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrJobAlreadyClaimed
+		}
+		return fmt.Errorf("failed to claim job: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteJobClaim removes a job claim record. Used for cleanup on processing failure.
+func (c *Client) DeleteJobClaim(ctx context.Context, jobID string) error {
+	if jobID == "" {
+		return fmt.Errorf("job ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	claimInstanceID := "claim:" + jobID
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"instance_id": claimInstanceID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete job claim: %w", err)
 	}
 
 	return nil

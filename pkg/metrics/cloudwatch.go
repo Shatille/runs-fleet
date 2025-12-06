@@ -193,6 +193,11 @@ func (p *CloudWatchPublisher) PublishCircuitBreakerTriggered(ctx context.Context
 	return nil
 }
 
+// PublishJobClaimFailure publishes job claim failure metric.
+func (p *CloudWatchPublisher) PublishJobClaimFailure(ctx context.Context) error {
+	return p.putMetric(ctx, "JobClaimFailures", 1, types.StandardUnitCount)
+}
+
 func (p *CloudWatchPublisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
