@@ -71,7 +71,7 @@ jobs:
     needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - arch: amd64
@@ -109,6 +109,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
           provenance: false
+          no-cache-filters: stage-1
 
   # Create multi-arch manifest
   manifest:

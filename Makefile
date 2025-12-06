@@ -67,7 +67,7 @@ docker-push: docker-build
 # Build runner Docker image
 RUNNER_IMAGE?=runs-fleet-runner
 RUNNER_TAG?=latest
-RUNNER_VERSION?=2.321.0
+RUNNER_VERSION?=2.330.0
 
 # Build runner image for local architecture only (for testing)
 docker-build-runner:
@@ -79,18 +79,38 @@ docker-build-runner:
 		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
 		.
 
-# Push runner image to ECR (multi-arch build + push in one step)
+# Push runner image to ECR (multi-arch build with fast-fail)
+# Builds architectures in parallel, fails immediately if either fails
 docker-push-runner:
 	@echo "Logging into ECR..."
 	aws ecr get-login-password --region $(AWS_REGION) | \
 		docker login --username AWS --password-stdin $(ECR_REGISTRY)
-	@echo "Building and pushing runner Docker image (multi-arch)..."
+	@echo "Building runner Docker image (multi-arch with fast-fail)..."
+	@$(MAKE) -j2 --output-sync=target \
+		_build-runner-amd64 \
+		_build-runner-arm64
+	@echo "Creating and pushing multi-arch manifest..."
+	docker buildx imagetools create -t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG) \
+		$(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-amd64 \
+		$(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-arm64
+
+_build-runner-amd64:
 	docker buildx build \
-		--platform linux/amd64,linux/arm64 \
+		--platform linux/amd64 \
 		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
 		--build-arg VERSION=$(RUNNER_TAG) \
 		-f docker/runner/Dockerfile \
-		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG) \
+		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-amd64 \
+		--push \
+		.
+
+_build-runner-arm64:
+	docker buildx build \
+		--platform linux/arm64 \
+		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg VERSION=$(RUNNER_TAG) \
+		-f docker/runner/Dockerfile \
+		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-arm64 \
 		--push \
 		.
 

@@ -67,15 +67,16 @@ RUN useradd -m -s /bin/bash runner \
 
 # Download and install GitHub Actions runner (pinned version for stability)
 ARG RUNNER_VERSION=2.330.0
-RUN RUNNER_ARCH=$(case "${TARGETARCH}" in \
-         "amd64") echo "x64" ;; \
-         "arm64") echo "arm64" ;; \
-         *) echo "ERROR: Unsupported architecture: ${TARGETARCH}" >&2 && exit 1 ;; esac) \
-    && echo "Installing GitHub Actions runner v${RUNNER_VERSION} for ${RUNNER_ARCH}" \
-    && curl -fsSL -o actions-runner.tar.gz \
-       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
-    && curl -fsSL -o checksums.txt \
-       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz.sha256" \
+RUN set -ex \
+    && case "${TARGETARCH}" in \
+         "amd64") RUNNER_ARCH="x64" ;; \
+         "arm64") RUNNER_ARCH="arm64" ;; \
+         *) echo "ERROR: Unsupported architecture: ${TARGETARCH}" >&2 && exit 1 ;; \
+       esac \
+    && RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+    && echo "Downloading: ${RUNNER_URL}" \
+    && curl -fsSL --retry 3 --retry-delay 5 -o actions-runner.tar.gz "${RUNNER_URL}" \
+    && curl -fsSL --retry 3 --retry-delay 5 -o checksums.txt "${RUNNER_URL}.sha256" \
     && echo "$(cat checksums.txt)  actions-runner.tar.gz" | sha256sum -c - \
     && tar xzf actions-runner.tar.gz \
     && rm actions-runner.tar.gz checksums.txt \
