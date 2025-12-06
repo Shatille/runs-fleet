@@ -1,4 +1,4 @@
-.PHONY: init build test lint clean docker-build docker-push docker-build-runner docker-push-runner
+.PHONY: init build test coverage lint clean docker-build docker-push docker-build-runner docker-push-runner
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
@@ -7,6 +7,7 @@ DOCKER_TAG?=latest
 AWS_REGION?=ap-northeast-1
 AWS_ACCOUNT_ID?=$(shell aws sts get-caller-identity --query Account --output text)
 ECR_REGISTRY?=$(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
+CPUS?=$(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 # Initialize project
 init:
@@ -28,13 +29,19 @@ build: build-server
 
 # Run tests
 test:
-	@echo "Running tests..."
-	go test -race -coverprofile=coverage.out ./...
+	@echo "Running tests with $(CPUS) CPUs..."
+	go test -race -parallel=$(CPUS) ./...
+
+# Run tests with coverage
+coverage:
+	@echo "Running tests with coverage ($(CPUS) CPUs)..."
+	go test -race -parallel=$(CPUS) -coverprofile=coverage.out -covermode=atomic ./...
 
 # Run linter
+LINT_TIMEOUT?=5m
 lint:
-	@echo "Running linter..."
-	CGO_ENABLED=0 golangci-lint run
+	@echo "Running linter with $(CPUS) CPUs..."
+	CGO_ENABLED=0 golangci-lint run --concurrency=$(CPUS) --timeout=$(LINT_TIMEOUT)
 
 # Clean build artifacts
 clean:
@@ -113,7 +120,8 @@ help:
 	@echo "  init                    - Initialize project (download deps, setup)"
 	@echo "  build-server            - Build server binary"
 	@echo "  build                   - Build all binaries"
-	@echo "  test                    - Run tests with coverage"
+	@echo "  test                    - Run tests"
+	@echo "  coverage                - Run tests with coverage"
 	@echo "  lint                    - Run golangci-lint"
 	@echo "  clean                   - Remove build artifacts"
 	@echo "  docker-build            - Build orchestrator Docker image"
