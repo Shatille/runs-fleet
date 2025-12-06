@@ -112,7 +112,9 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 	if err != nil {
 		log.Printf("Direct processing: failed to create fleet for job %s: %v", job.JobID, err)
 		if p.db != nil && p.db.HasJobsTable() {
-			_ = p.db.DeleteJobClaim(ctx, job.JobID)
+			if claimErr := p.db.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
+				log.Printf("Direct processing: failed to delete job claim for %s: %v", job.JobID, claimErr)
+			}
 		}
 		return false
 	}
@@ -911,7 +913,9 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 	if err != nil {
 		log.Printf("Failed to create fleet: %v", err)
 		if dbc != nil && dbc.HasJobsTable() {
-			_ = dbc.DeleteJobClaim(ctx, job.JobID)
+			if claimErr := dbc.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
+				log.Printf("Failed to delete job claim for %s: %v", job.JobID, claimErr)
+			}
 		}
 		return
 	}
