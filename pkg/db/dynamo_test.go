@@ -20,6 +20,7 @@ type MockDynamoDBAPI struct {
 	ScanFunc       func(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
 	QueryFunc      func(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	PutItemFunc    func(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	DeleteItemFunc func(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 }
 
 func (m *MockDynamoDBAPI) GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -55,6 +56,13 @@ func (m *MockDynamoDBAPI) PutItem(ctx context.Context, params *dynamodb.PutItemI
 		return m.PutItemFunc(ctx, params, optFns...)
 	}
 	return &dynamodb.PutItemOutput{}, nil
+}
+
+func (m *MockDynamoDBAPI) DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+	if m.DeleteItemFunc != nil {
+		return m.DeleteItemFunc(ctx, params, optFns...)
+	}
+	return &dynamodb.DeleteItemOutput{}, nil
 }
 
 func TestGetPoolConfig(t *testing.T) {
@@ -1121,3 +1129,146 @@ func TestMarkJobRequeued_DynamoDBError(t *testing.T) {
 	}
 }
 
+func TestClaimJob_Success(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(instance_id)" {
+				t.Error("ClaimJob() should use conditional expression")
+			}
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.ClaimJob(context.Background(), "job-123")
+	if err != nil {
+		t.Errorf("ClaimJob() unexpected error: %v", err)
+	}
+}
+
+func TestClaimJob_AlreadyClaimed(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{Message: nil}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.ClaimJob(context.Background(), "job-123")
+	if !errors.Is(err, ErrJobAlreadyClaimed) {
+		t.Errorf("ClaimJob() expected ErrJobAlreadyClaimed, got: %v", err)
+	}
+}
+
+func TestClaimJob_EmptyJobID(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.ClaimJob(context.Background(), "")
+	if err == nil {
+		t.Error("ClaimJob() should return error for empty job ID")
+	}
+}
+
+func TestClaimJob_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	err := client.ClaimJob(context.Background(), "job-123")
+	if err == nil {
+		t.Error("ClaimJob() should return error when jobs table not configured")
+	}
+}
+
+func TestClaimJob_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.ClaimJob(context.Background(), "job-123")
+	if err == nil {
+		t.Error("ClaimJob() should return error when DynamoDB fails")
+	}
+	if errors.Is(err, ErrJobAlreadyClaimed) {
+		t.Error("ClaimJob() should not return ErrJobAlreadyClaimed for generic DynamoDB errors")
+	}
+}
+
+func TestDeleteJobClaim_Success(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+			return &dynamodb.DeleteItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.DeleteJobClaim(context.Background(), "job-123")
+	if err != nil {
+		t.Errorf("DeleteJobClaim() unexpected error: %v", err)
+	}
+}
+
+func TestDeleteJobClaim_EmptyJobID(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.DeleteJobClaim(context.Background(), "")
+	if err == nil {
+		t.Error("DeleteJobClaim() should return error for empty job ID")
+	}
+}
+
+func TestDeleteJobClaim_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	err := client.DeleteJobClaim(context.Background(), "job-123")
+	if err == nil {
+		t.Error("DeleteJobClaim() should return error when jobs table not configured")
+	}
+}
+
+func TestDeleteJobClaim_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.DeleteJobClaim(context.Background(), "job-123")
+	if err == nil {
+		t.Error("DeleteJobClaim() should return error when DynamoDB fails")
+	}
+}
