@@ -65,13 +65,12 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
-# Download and install latest GitHub Actions runner
-# Fetches latest version from GitHub API and verifies checksum from release
+# Download and install GitHub Actions runner (pinned version for stability)
+ARG RUNNER_VERSION=2.330.0
 RUN RUNNER_ARCH=$(case "${TARGETARCH}" in \
          "amd64") echo "x64" ;; \
          "arm64") echo "arm64" ;; \
          *) echo "ERROR: Unsupported architecture: ${TARGETARCH}" >&2 && exit 1 ;; esac) \
-    && RUNNER_VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name' | sed 's/^v//') \
     && echo "Installing GitHub Actions runner v${RUNNER_VERSION} for ${RUNNER_ARCH}" \
     && curl -fsSL -o actions-runner.tar.gz \
        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \

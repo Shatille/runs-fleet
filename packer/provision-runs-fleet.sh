@@ -10,8 +10,7 @@ sudo mkdir -p /opt/actions-runner
 sudo chown ec2-user:ec2-user /opt/actions-runner
 cd /opt/actions-runner
 
-echo "==> Fetching latest GitHub Actions runner version"
-RUNNER_VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+RUNNER_VERSION="2.330.0"
 echo "==> Downloading GitHub Actions runner v${RUNNER_VERSION} (${ARCH})"
 curl -fsSL -o runner.tar.gz \
   "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz"
