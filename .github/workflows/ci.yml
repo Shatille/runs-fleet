@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     name: Build
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=2"
+    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +32,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=2"
+    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,9 @@ jobs:
           test -f ./bin/golangci-lint || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b ./bin v2.1.6
 
       - name: Lint
-        run: ./bin/golangci-lint run --timeout=5m
+        run: |
+          export PATH="./bin:$PATH"
+          make lint
 
   test:
     name: Test
@@ -85,9 +87,4 @@ jobs:
             go-build-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
-
-      - uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.out
-          fail_ci_if_error: false
+        run: make test

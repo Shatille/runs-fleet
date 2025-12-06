@@ -49,7 +49,7 @@ jobs:
           restore-keys: |
             go-build-${{ runner.os }}-${{ runner.arch }}-
 
-      - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - run: make coverage
 
       - id: coverage
         run: |
