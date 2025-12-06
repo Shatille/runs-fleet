@@ -431,64 +431,7 @@ func main() {
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
 
-	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		payload, err := gh.ParseWebhook(r, cfg.GitHubWebhookSecret)
-		if err != nil {
-			log.Printf("Webhook parsing failed: %v", err)
-			http.Error(w, "Bad request", http.StatusBadRequest)
-			return
-		}
-
-		processed := false
-		var response string
-		switch event := payload.(type) {
-		case *github.WorkflowJobEvent:
-			switch event.GetAction() {
-			case "queued":
-				jobMsg, err := handleWorkflowJob(r.Context(), event, jobQueue, metricsPublisher)
-				if err == nil && jobMsg != nil {
-					processed = true
-					response = "Job queued"
-					if directProcessor != nil && directProcessorSem != nil {
-						select {
-						case directProcessorSem <- struct{}{}:
-							go func() {
-								defer func() { <-directProcessorSem }()
-								directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
-								defer cancel()
-								directProcessor.processJobDirect(directCtx, jobMsg)
-							}()
-						default:
-							log.Printf("Direct processing at capacity, job %s will be processed via queue", jobMsg.JobID)
-						}
-					}
-				}
-			case "completed":
-				if event.GetWorkflowJob().GetConclusion() == "failure" {
-					requeued, err := handleJobFailure(r.Context(), event, jobQueue, dbClient, metricsPublisher)
-					if err != nil {
-						log.Printf("Failed to handle job failure: %v", err)
-					}
-					processed = requeued
-					if requeued {
-						response = "Job requeued"
-					}
-				}
-			}
-		}
-
-		w.WriteHeader(http.StatusOK)
-		if processed {
-			_, _ = fmt.Fprintf(w, "%s\n", response)
-		} else {
-			_, _ = fmt.Fprintf(w, "Event acknowledged\n")
-		}
-	})
+	mux.HandleFunc("/webhook", makeWebhookHandler(cfg, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem))
 
 	server := &http.Server{
 		Addr:         ":8080",
@@ -821,6 +764,57 @@ func createK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provid
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
 
+func saveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, instanceIDs []string) {
+	if dbc == nil || !dbc.HasJobsTable() {
+		return
+	}
+	for _, instanceID := range instanceIDs {
+		jobRecord := &db.JobRecord{
+			JobID:        job.JobID,
+			RunID:        job.RunID,
+			Repo:         job.Repo,
+			InstanceID:   instanceID,
+			InstanceType: job.InstanceType,
+			Pool:         job.Pool,
+			Private:      job.Private,
+			Spot:         job.Spot,
+			RunnerSpec:   job.RunnerSpec,
+			RetryCount:   job.RetryCount,
+		}
+		var saveErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond)
+			}
+		}
+		if saveErr != nil {
+			log.Printf("ERROR: Failed to save job record after retries for instance %s: %v (spot interruption tracking disabled)", instanceID, saveErr)
+		}
+	}
+}
+
+func prepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessage, instanceIDs []string) {
+	if rm == nil {
+		return
+	}
+	for _, instanceID := range instanceIDs {
+		label := buildRunnerLabel(job)
+		prepareReq := runner.PrepareRunnerRequest{
+			InstanceID: instanceID,
+			JobID:      job.JobID,
+			RunID:      job.RunID,
+			Repo:       job.Repo,
+			Labels:     []string{label},
+		}
+		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
+			log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
+		}
+	}
+}
+
 func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, cfg *config.Config, subnetIndex *uint64) {
 	startTime := time.Now()
 	fleetCreated := false
@@ -932,54 +926,8 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 
 	fleetCreated = true
 
-	// Save job records in DynamoDB for spot interruption tracking (only if jobs table is configured)
-	if dbc != nil && dbc.HasJobsTable() {
-		for _, instanceID := range instanceIDs {
-			jobRecord := &db.JobRecord{
-				JobID:        job.JobID,
-				RunID:        job.RunID,
-				Repo:         job.Repo,
-				InstanceID:   instanceID,
-				InstanceType: job.InstanceType,
-				Pool:         job.Pool,
-				Private:      job.Private,
-				Spot:         job.Spot,
-				RunnerSpec:   job.RunnerSpec,
-				RetryCount:   job.RetryCount,
-			}
-			// Retry SaveJob with exponential backoff (spot tracking is critical for job re-queueing)
-			var saveErr error
-			for attempt := 0; attempt < 3; attempt++ {
-				if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
-					break
-				}
-				if attempt < 2 {
-					time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond) // 100ms, 200ms
-				}
-			}
-			if saveErr != nil {
-				log.Printf("ERROR: Failed to save job record after retries for instance %s: %v (spot interruption tracking disabled)", instanceID, saveErr)
-			}
-		}
-	}
-
-	// Prepare runner config in SSM for each instance
-	if rm != nil {
-		for _, instanceID := range instanceIDs {
-			label := buildRunnerLabel(&job)
-			prepareReq := runner.PrepareRunnerRequest{
-				InstanceID: instanceID,
-				JobID:      job.JobID,
-				RunID:      job.RunID,
-				Repo:       job.Repo,
-				Labels:     []string{label},
-			}
-			if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
-				log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
-				// Continue anyway - the instance might still work if manually configured
-			}
-		}
-	}
+	saveJobRecords(ctx, dbc, &job, instanceIDs)
+	prepareRunners(ctx, rm, &job, instanceIDs)
 
 	// Mark instances as busy for idle timeout tracking
 	for _, instanceID := range instanceIDs {
@@ -1004,6 +952,78 @@ func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, "OK\n")
+	}
+}
+
+func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *jobProcessor, directProcessorSem chan struct{}) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		payload, err := gh.ParseWebhook(r, cfg.GitHubWebhookSecret)
+		if err != nil {
+			log.Printf("Webhook parsing failed: %v", err)
+			http.Error(w, "Bad request", http.StatusBadRequest)
+			return
+		}
+
+		processed, response := processWebhookEvent(r.Context(), payload, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem)
+
+		w.WriteHeader(http.StatusOK)
+		if processed {
+			_, _ = fmt.Fprintf(w, "%s\n", response)
+		} else {
+			_, _ = fmt.Fprintf(w, "Event acknowledged\n")
+		}
+	}
+}
+
+func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *jobProcessor, directProcessorSem chan struct{}) (bool, string) {
+	event, ok := payload.(*github.WorkflowJobEvent)
+	if !ok {
+		return false, ""
+	}
+
+	switch event.GetAction() {
+	case "queued":
+		jobMsg, err := handleWorkflowJob(ctx, event, jobQueue, metricsPublisher)
+		if err != nil || jobMsg == nil {
+			return false, ""
+		}
+		tryDirectProcessing(directProcessor, directProcessorSem, jobMsg)
+		return true, "Job queued"
+
+	case "completed":
+		if event.GetWorkflowJob().GetConclusion() != "failure" {
+			return false, ""
+		}
+		requeued, err := handleJobFailure(ctx, event, jobQueue, dbClient, metricsPublisher)
+		if err != nil {
+			log.Printf("Failed to handle job failure: %v", err)
+		}
+		if requeued {
+			return true, "Job requeued"
+		}
+	}
+	return false, ""
+}
+
+func tryDirectProcessing(directProcessor *jobProcessor, directProcessorSem chan struct{}, jobMsg *queue.JobMessage) {
+	if directProcessor == nil || directProcessorSem == nil {
+		return
+	}
+	select {
+	case directProcessorSem <- struct{}{}:
+		go func() {
+			defer func() { <-directProcessorSem }()
+			directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
+			defer cancel()
+			directProcessor.processJobDirect(directCtx, jobMsg)
+		}()
+	default:
+		log.Printf("Direct processing at capacity, job %s will be processed via queue", jobMsg.JobID)
 	}
 }
 
