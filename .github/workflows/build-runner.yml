@@ -14,6 +14,16 @@ on:
         description: 'Image tag (default: latest)'
         required: false
         default: 'latest'
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Image tag'
+        required: false
+        type: string
+        default: 'latest'
+    secrets:
+      AWS_IAM_ROLE_ARN:
+        required: true
 
 permissions:
   contents: read
@@ -22,22 +32,16 @@ permissions:
 env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: runs-fleet-runner
-  RUNNER_VERSION: '2.321.0'
 
 jobs:
-  build-runner:
-    name: Build Multi-arch Runner Image
+  # Determine version once, share across jobs
+  prepare:
+    name: Prepare Build
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      registry: ${{ steps.login-ecr.outputs.registry }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -53,99 +57,171 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
-          elif [ "${{ github.event.inputs.tag }}" != "" ]; then
-            VERSION="${{ github.event.inputs.tag }}"
+          elif [ -n "${{ inputs.tag }}" ] && [ "${{ inputs.tag }}" != "latest" ]; then
+            VERSION="${{ inputs.tag }}"
           else
             VERSION="latest"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
-      - name: Build and push to staging tag
-        id: build
+  # Build on native runners (no QEMU)
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+            platform: linux/arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push arch-specific image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/runner/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}-unverified
+          tags: ${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           build-args: |
-            RUNNER_VERSION=${{ env.RUNNER_VERSION }}
-            VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            VERSION=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+
+  # Create multi-arch manifest
+  manifest:
+    name: Create Multi-arch Manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create and push manifest
+        run: |
+          REGISTRY="${{ needs.prepare.outputs.registry }}"
+          REPO="${{ env.ECR_REPOSITORY }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          docker manifest create \
+            "${REGISTRY}/${REPO}:${VERSION}-unverified" \
+            "${REGISTRY}/${REPO}:${VERSION}-amd64" \
+            "${REGISTRY}/${REPO}:${VERSION}-arm64"
+
+          docker manifest annotate \
+            "${REGISTRY}/${REPO}:${VERSION}-unverified" \
+            "${REGISTRY}/${REPO}:${VERSION}-amd64" \
+            --os linux --arch amd64
+
+          docker manifest annotate \
+            "${REGISTRY}/${REPO}:${VERSION}-unverified" \
+            "${REGISTRY}/${REPO}:${VERSION}-arm64" \
+            --os linux --arch arm64
+
+          docker manifest push "${REGISTRY}/${REPO}:${VERSION}-unverified"
+
+  # Scan and promote
+  verify:
+    name: Scan and Promote
+    needs: [prepare, manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Scan image for vulnerabilities
         id: scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.version }}-unverified'
+          image-ref: '${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-unverified'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      - name: Delete staging image on scan failure
-        if: always() && steps.scan.outcome == 'failure'
+      - name: Delete images on scan failure
+        if: failure() && steps.scan.outcome == 'failure'
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          echo "Vulnerability scan failed. Deleting unverified image..."
+          VERSION="${{ needs.prepare.outputs.version }}"
+          echo "Vulnerability scan failed. Deleting images..."
           aws ecr batch-delete-image \
             --repository-name ${{ env.ECR_REPOSITORY }} \
-            --image-ids imageTag="${VERSION}-unverified"
+            --image-ids imageTag="${VERSION}-unverified" imageTag="${VERSION}-amd64" imageTag="${VERSION}-arm64" \
+            || true
 
       - name: Promote to final tags
         if: success()
         run: |
           set -e
           REPO="${{ env.ECR_REPOSITORY }}"
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
 
-          echo "Promoting ${VERSION}-unverified to ${VERSION} and latest..."
+          echo "Promoting ${VERSION}-unverified to ${VERSION}..."
 
-          # Get the manifest of the unverified image
           MANIFEST=$(aws ecr batch-get-image \
             --repository-name "$REPO" \
             --image-ids imageTag="${VERSION}-unverified" \
             --query 'images[0].imageManifest' \
             --output text)
 
-          # Validate manifest was retrieved
           if [[ -z "$MANIFEST" || "$MANIFEST" == "None" ]]; then
-            echo "ERROR: Failed to retrieve manifest for ${VERSION}-unverified"
+            echo "ERROR: Failed to retrieve manifest"
             exit 1
           fi
 
-          # Put the manifest with the final version tag
-          echo "Tagging as ${VERSION}..."
           aws ecr put-image \
             --repository-name "$REPO" \
             --image-tag "$VERSION" \
-            --image-manifest "$MANIFEST" \
-            || { echo "ERROR: Failed to tag as ${VERSION}"; exit 1; }
+            --image-manifest "$MANIFEST"
 
-          # Only tag as latest for actual version pushes (not workflow_dispatch)
           if [[ "${{ github.event_name }}" == "push" ]]; then
             echo "Tagging as latest..."
             aws ecr put-image \
               --repository-name "$REPO" \
               --image-tag "latest" \
-              --image-manifest "$MANIFEST" \
-              || { echo "ERROR: Failed to tag as latest"; exit 1; }
-          else
-            echo "Skipping 'latest' tag for workflow_dispatch"
+              --image-manifest "$MANIFEST"
           fi
 
-          # Clean up the unverified tag (non-fatal - images are already promoted)
+          # Cleanup staging tags
           aws ecr batch-delete-image \
             --repository-name "$REPO" \
-            --image-ids imageTag="${VERSION}-unverified" \
-            || echo "Warning: Failed to clean up ${VERSION}-unverified tag"
+            --image-ids imageTag="${VERSION}-unverified" imageTag="${VERSION}-amd64" imageTag="${VERSION}-arm64" \
+            || true
 
           echo "Image promoted successfully"
-
-      - name: Image digest
-        if: success()
-        run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
