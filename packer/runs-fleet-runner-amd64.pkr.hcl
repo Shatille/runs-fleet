@@ -18,9 +18,10 @@ variable "ami_version" {
 }
 
 source "amazon-ebs" "runs_fleet_runner_amd64" {
-  ami_name      = "runs-fleet-runner-amd64-{{timestamp}}"
-  instance_type = "c6i.xlarge"
-  region        = var.region
+  ami_name             = "runs-fleet-runner-amd64-{{timestamp}}"
+  instance_type        = "c7i.xlarge"
+  region               = var.region
+  iam_instance_profile = "runs-fleet-runner"
 
   source_ami_filter {
     filters = {
