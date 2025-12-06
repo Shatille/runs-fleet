@@ -1208,8 +1208,9 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	if capturedMessage.Private != expectedJob.Private {
 		t.Errorf("Private: expected %v, got %v", expectedJob.Private, capturedMessage.Private)
 	}
-	if capturedMessage.Spot != expectedJob.Spot {
-		t.Errorf("Spot: expected %v, got %v", expectedJob.Spot, capturedMessage.Spot)
+	// When ForceOnDemand is true, Spot should be false
+	if capturedMessage.Spot {
+		t.Errorf("Spot: expected false (ForceOnDemand=true), got %v", capturedMessage.Spot)
 	}
 	if capturedMessage.RunnerSpec != expectedJob.RunnerSpec {
 		t.Errorf("RunnerSpec: expected %s, got %s", expectedJob.RunnerSpec, capturedMessage.RunnerSpec)
