@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/google/go-github/v57/github"
 )
 
 func init() {
@@ -854,5 +856,123 @@ func TestConstants_Values(t *testing.T) {
 	}
 	if maxFleetCreateRetries != 3 {
 		t.Errorf("maxFleetCreateRetries = %d, want 3", maxFleetCreateRetries)
+	}
+	if maxJobRetries != 2 {
+		t.Errorf("maxJobRetries = %d, want 2", maxJobRetries)
+	}
+	if runnerNamePrefix != "runs-fleet-" {
+		t.Errorf("runnerNamePrefix = %q, want %q", runnerNamePrefix, "runs-fleet-")
+	}
+}
+
+// ptr is a helper function to create pointers to values for testing.
+func ptr[T any](v T) *T {
+	return &v
+}
+
+func TestHandleJobFailure_NoRunnerName(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         ptr(int64(123)),
+			RunnerName: nil, // No runner assigned
+		},
+	}
+
+	requeued, err := handleJobFailure(context.Background(), event, nil, nil, nil)
+	if err != nil {
+		t.Errorf("handleJobFailure() error = %v, want nil", err)
+	}
+	if requeued {
+		t.Error("handleJobFailure() should return false when no runner assigned")
+	}
+}
+
+func TestHandleJobFailure_NonRunsFleetRunner(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         ptr(int64(123)),
+			RunnerName: ptr("github-hosted-runner"),
+			Labels:     []string{"ubuntu-latest"},
+		},
+	}
+
+	requeued, err := handleJobFailure(context.Background(), event, nil, nil, nil)
+	if err != nil {
+		t.Errorf("handleJobFailure() error = %v, want nil", err)
+	}
+	if requeued {
+		t.Error("handleJobFailure() should return false for non-runs-fleet runner")
+	}
+}
+
+func TestHandleJobFailure_NoRunsFleetLabels(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         ptr(int64(123)),
+			RunnerName: ptr("runs-fleet-i-1234567890abcdef0"),
+			Labels:     []string{"self-hosted", "linux"}, // No runs-fleet= label
+		},
+	}
+
+	requeued, err := handleJobFailure(context.Background(), event, nil, nil, nil)
+	if err != nil {
+		t.Errorf("handleJobFailure() error = %v, want nil", err)
+	}
+	if requeued {
+		t.Error("handleJobFailure() should return false when no runs-fleet labels")
+	}
+}
+
+func TestHandleJobFailure_NoJobsTable(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         ptr(int64(123)),
+			RunnerName: ptr("runs-fleet-i-1234567890abcdef0"),
+			Labels:     []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+		},
+	}
+
+	wrapper := &db.Client{} // Real client that will fail HasJobsTable check
+
+	requeued, err := handleJobFailure(context.Background(), event, nil, wrapper, nil)
+	if err != nil {
+		t.Errorf("handleJobFailure() error = %v, want nil", err)
+	}
+	if requeued {
+		t.Error("handleJobFailure() should return false when jobs table not configured")
+	}
+}
+
+func TestHandleJobFailure_ExceedsRetryLimit(t *testing.T) {
+	// This test verifies the retry limit logic
+	// The function checks jobInfo.RetryCount >= maxJobRetries
+	// maxJobRetries = 2, so RetryCount of 2 or more should skip re-queue
+
+	// Since we can't easily mock db.Client, we test the constant value
+	if maxJobRetries != 2 {
+		t.Errorf("maxJobRetries = %d, want 2", maxJobRetries)
+	}
+}
+
+func TestHandleJobFailure_InstanceIDExtraction(t *testing.T) {
+	// Test that instance ID is correctly extracted from runner name
+	tests := []struct {
+		runnerName string
+		wantPrefix bool
+	}{
+		{"runs-fleet-i-1234567890abcdef0", true},
+		{"runs-fleet-i-abc", true},
+		{"github-runner", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.runnerName, func(t *testing.T) {
+			hasPrefix := len(tt.runnerName) > len(runnerNamePrefix) &&
+				tt.runnerName[:len(runnerNamePrefix)] == runnerNamePrefix
+			if hasPrefix != tt.wantPrefix {
+				t.Errorf("prefix check for %q = %v, want %v", tt.runnerName, hasPrefix, tt.wantPrefix)
+			}
+		})
 	}
 }

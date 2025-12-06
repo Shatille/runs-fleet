@@ -1033,3 +1033,91 @@ func TestUpdatePoolState_DynamoDBError(t *testing.T) {
 	}
 }
 
+func TestMarkJobRequeued_Success(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			// Verify the condition expression checks for "running" status
+			if input.ConditionExpression == nil || *input.ConditionExpression != "#status = :current_status" {
+				t.Errorf("ConditionExpression = %v, want #status = :current_status", input.ConditionExpression)
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	marked, err := client.MarkJobRequeued(context.Background(), "i-123")
+	if err != nil {
+		t.Errorf("MarkJobRequeued() unexpected error: %v", err)
+	}
+	if !marked {
+		t.Error("MarkJobRequeued() should return true on success")
+	}
+}
+
+func TestMarkJobRequeued_AlreadyHandled(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{Message: nil}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	marked, err := client.MarkJobRequeued(context.Background(), "i-123")
+	if err != nil {
+		t.Errorf("MarkJobRequeued() unexpected error: %v", err)
+	}
+	if marked {
+		t.Error("MarkJobRequeued() should return false when job not in running state")
+	}
+}
+
+func TestMarkJobRequeued_EmptyInstanceID(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "jobs-table",
+	}
+
+	_, err := client.MarkJobRequeued(context.Background(), "")
+	if err == nil {
+		t.Error("MarkJobRequeued() should return error for empty instance ID")
+	}
+}
+
+func TestMarkJobRequeued_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	_, err := client.MarkJobRequeued(context.Background(), "i-123")
+	if err == nil {
+		t.Error("MarkJobRequeued() should return error when jobs table not configured")
+	}
+}
+
+func TestMarkJobRequeued_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("dynamodb error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	_, err := client.MarkJobRequeued(context.Background(), "i-123")
+	if err == nil {
+		t.Error("MarkJobRequeued() should return error when DynamoDB fails")
+	}
+}
+

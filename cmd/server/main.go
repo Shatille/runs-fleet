@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -42,6 +43,9 @@ import (
 const (
 	maxDeleteRetries      = 3
 	maxFleetCreateRetries = 3
+	maxJobRetries         = 2 // Max re-queue attempts for failed jobs (total attempts = maxJobRetries + 1)
+
+	runnerNamePrefix = "runs-fleet-" // Prefix for runner names to extract instance ID
 )
 
 // Retry delays - variables to allow testing with shorter durations.
@@ -316,18 +320,32 @@ func main() {
 		}
 
 		processed := false
+		var response string
 		switch event := payload.(type) {
 		case *github.WorkflowJobEvent:
-			if event.GetAction() == "queued" {
+			switch event.GetAction() {
+			case "queued":
 				if err := handleWorkflowJob(r.Context(), event, jobQueue, metricsPublisher); err == nil {
 					processed = true
+					response = "Job queued"
+				}
+			case "completed":
+				if event.GetWorkflowJob().GetConclusion() == "failure" {
+					requeued, err := handleJobFailure(r.Context(), event, jobQueue, dbClient, metricsPublisher)
+					if err != nil {
+						log.Printf("Failed to handle job failure: %v", err)
+					}
+					processed = requeued
+					if requeued {
+						response = "Job requeued"
+					}
 				}
 			}
 		}
 
 		w.WriteHeader(http.StatusOK)
 		if processed {
-			_, _ = fmt.Fprintf(w, "Job queued\n")
+			_, _ = fmt.Fprintf(w, "%s\n", response)
 		} else {
 			_, _ = fmt.Fprintf(w, "Event acknowledged\n")
 		}
@@ -440,6 +458,107 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
 	}
 	return nil
+}
+
+// handleJobFailure processes workflow_job completed events with failure conclusion.
+// If the job failed due to runner death (not a normal job failure), it re-queues the job.
+// Returns (true, nil) if job was re-queued, (false, nil) if skipped, or (false, error) on error.
+func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (bool, error) {
+	job := event.GetWorkflowJob()
+	runnerName := job.GetRunnerName()
+
+	// Skip if no runner was assigned (job failed before runner picked it up)
+	if runnerName == "" {
+		log.Printf("Job %d failed with no runner assigned, skipping re-queue", job.GetID())
+		return false, nil
+	}
+
+	// Extract instance ID from runner name (format: runs-fleet-{instance-id})
+	if !strings.HasPrefix(runnerName, runnerNamePrefix) {
+		log.Printf("Job %d failed on non-runs-fleet runner %q, skipping", job.GetID(), runnerName)
+		return false, nil
+	}
+	instanceID := strings.TrimPrefix(runnerName, runnerNamePrefix)
+
+	// Check if this is a runs-fleet managed job by parsing labels
+	_, err := gh.ParseLabels(job.Labels)
+	if err != nil {
+		log.Printf("Job %d not a runs-fleet job, skipping: %v", job.GetID(), err)
+		return false, nil
+	}
+
+	// Skip if jobs table not configured
+	if !dbc.HasJobsTable() {
+		log.Printf("Jobs table not configured, cannot check job state for instance %s", instanceID)
+		return false, nil
+	}
+
+	// Look up job in DynamoDB
+	jobInfo, err := dbc.GetJobByInstance(ctx, instanceID)
+	if err != nil {
+		return false, fmt.Errorf("failed to get job for instance %s: %w", instanceID, err)
+	}
+
+	// If no job record found, it was already cleaned up or never tracked
+	if jobInfo == nil {
+		log.Printf("No job record for instance %s, skipping re-queue", instanceID)
+		return false, nil
+	}
+
+	// Check retry limit
+	if jobInfo.RetryCount >= maxJobRetries {
+		log.Printf("Job %s exceeded max retries (%d), not re-queuing", jobInfo.JobID, maxJobRetries)
+		return false, nil
+	}
+
+	// Validate required fields before re-queuing
+	if jobInfo.RunID == "" || jobInfo.Repo == "" {
+		log.Printf("Invalid job data for instance %s (RunID=%q, Repo=%q), skipping re-queue",
+			instanceID, jobInfo.RunID, jobInfo.Repo)
+		return false, nil
+	}
+
+	// Atomically mark job as requeued (only succeeds if status is "running")
+	// This prevents duplicate re-queuing from concurrent webhooks or EventBridge
+	marked, err := dbc.MarkJobRequeued(ctx, instanceID)
+	if err != nil {
+		return false, fmt.Errorf("failed to mark job requeued: %w", err)
+	}
+	if !marked {
+		// Job was already in terminating/requeued state - EventBridge or another handler got it first
+		log.Printf("Job %s for instance %s already handled (not in running state), skipping", jobInfo.JobID, instanceID)
+		return false, nil
+	}
+
+	// Re-queue with ForceOnDemand to avoid another spot interruption
+	// Note: Some fields (OriginalLabel, Region, etc.) are not stored in JobRecord.
+	// Re-queued jobs use basic config. Full field storage is a future enhancement.
+	requeueMsg := &queue.JobMessage{
+		JobID:         jobInfo.JobID,
+		RunID:         jobInfo.RunID,
+		Repo:          jobInfo.Repo,
+		InstanceType:  jobInfo.InstanceType,
+		Pool:          jobInfo.Pool,
+		Private:       jobInfo.Private,
+		Spot:          false, // ForceOnDemand uses on-demand instances
+		RunnerSpec:    jobInfo.RunnerSpec,
+		RetryCount:    jobInfo.RetryCount + 1,
+		ForceOnDemand: true,
+	}
+
+	if err := q.SendMessage(ctx, requeueMsg); err != nil {
+		return false, fmt.Errorf("failed to re-queue job %s: %w", jobInfo.JobID, err)
+	}
+
+	log.Printf("Re-queued failed job %s from instance %s (RetryCount=%d, ForceOnDemand=true)",
+		jobInfo.JobID, instanceID, requeueMsg.RetryCount)
+
+	// Publish metric for job retry
+	if err := m.PublishJobQueued(ctx); err != nil {
+		log.Printf("Failed to publish job queued metric: %v", err)
+	}
+
+	return true, nil
 }
 
 func runWorker(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {

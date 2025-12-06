@@ -479,3 +479,56 @@ func (c *Client) UpdateJobMetrics(ctx context.Context, instanceID string, starte
 
 	return nil
 }
+
+// MarkJobRequeued atomically marks a job as "requeued" if its current status is "running".
+// Returns true if the job was successfully marked (was in "running" state).
+// Returns false if the job was already in another state (terminating, requeued, etc.).
+// This prevents duplicate re-queuing from concurrent webhook handlers.
+func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, error) {
+	if instanceID == "" {
+		return false, fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return false, fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"instance_id": instanceID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	update := "SET #status = :new_status, requeued_at = :requeued_at"
+	condition := "#status = :current_status"
+	exprNames := map[string]string{
+		"#status": "status",
+	}
+	exprValues, err := attributevalue.MarshalMap(map[string]interface{}{
+		":new_status":     "requeued",
+		":current_status": "running",
+		":requeued_at":    time.Now().Format(time.RFC3339),
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal values: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(c.jobsTable),
+		Key:                       key,
+		UpdateExpression:          aws.String(update),
+		ConditionExpression:       aws.String(condition),
+		ExpressionAttributeNames:  exprNames,
+		ExpressionAttributeValues: exprValues,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to mark job requeued: %w", err)
+	}
+
+	return true, nil
+}
