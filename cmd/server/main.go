@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -62,6 +63,106 @@ func (l *stdLogger) Printf(format string, v ...interface{}) {
 
 func (l *stdLogger) Println(v ...interface{}) {
 	log.Println(v...)
+}
+
+// jobProcessor handles immediate job processing from webhooks.
+// It encapsulates all dependencies needed to process a job without going through SQS.
+type jobProcessor struct {
+	fleet       *fleet.Manager
+	pool        *pools.Manager
+	metrics     metrics.Publisher
+	runner      *runner.Manager
+	db          *db.Client
+	cfg         *config.Config
+	subnetIndex *uint64
+}
+
+// processJobDirect processes a job immediately without SQS.
+// Returns true if fleet was created, false if job was already claimed or processing failed.
+func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessage) bool {
+	log.Printf("Direct processing job for run %s", job.RunID)
+
+	if p.db != nil && p.db.HasJobsTable() {
+		if err := p.db.ClaimJob(ctx, job.JobID); err != nil {
+			if errors.Is(err, db.ErrJobAlreadyClaimed) {
+				log.Printf("Job %s already claimed (direct path)", job.JobID)
+				return false
+			}
+			log.Printf("Failed to claim job %s: %v (proceeding anyway)", job.JobID, err)
+		}
+	}
+
+	spec := &fleet.LaunchSpec{
+		RunID:         job.RunID,
+		InstanceType:  job.InstanceType,
+		InstanceTypes: job.InstanceTypes,
+		SubnetID:      selectSubnet(job, p.cfg, p.subnetIndex),
+		Spot:          job.Spot,
+		Pool:          job.Pool,
+		ForceOnDemand: job.ForceOnDemand,
+		RetryCount:    job.RetryCount,
+		Region:        job.Region,
+		Environment:   job.Environment,
+		OS:            job.OS,
+		Arch:          job.Arch,
+		StorageGiB:    job.StorageGiB,
+	}
+
+	instanceIDs, err := createFleetWithRetry(ctx, p.fleet, spec)
+	if err != nil {
+		log.Printf("Direct processing: failed to create fleet for job %s: %v", job.JobID, err)
+		if p.db != nil && p.db.HasJobsTable() {
+			_ = p.db.DeleteJobClaim(ctx, job.JobID)
+		}
+		return false
+	}
+
+	if p.db != nil && p.db.HasJobsTable() {
+		for _, instanceID := range instanceIDs {
+			jobRecord := &db.JobRecord{
+				JobID:        job.JobID,
+				RunID:        job.RunID,
+				Repo:         job.Repo,
+				InstanceID:   instanceID,
+				InstanceType: job.InstanceType,
+				Pool:         job.Pool,
+				Private:      job.Private,
+				Spot:         job.Spot,
+				RunnerSpec:   job.RunnerSpec,
+				RetryCount:   job.RetryCount,
+			}
+			if err := p.db.SaveJob(ctx, jobRecord); err != nil {
+				log.Printf("Direct processing: failed to save job record: %v", err)
+			}
+		}
+	}
+
+	if p.runner != nil {
+		for _, instanceID := range instanceIDs {
+			label := buildRunnerLabel(job)
+			prepareReq := runner.PrepareRunnerRequest{
+				InstanceID: instanceID,
+				JobID:      job.JobID,
+				RunID:      job.RunID,
+				Repo:       job.Repo,
+				Labels:     []string{label},
+			}
+			if err := p.runner.PrepareRunner(ctx, prepareReq); err != nil {
+				log.Printf("Direct processing: failed to prepare runner: %v", err)
+			}
+		}
+	}
+
+	for _, instanceID := range instanceIDs {
+		p.pool.MarkInstanceBusy(instanceID)
+	}
+
+	if err := p.metrics.PublishFleetSizeIncrement(ctx); err != nil {
+		log.Printf("Direct processing: failed to publish metric: %v", err)
+	}
+
+	log.Printf("Direct processing: launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
+	return true
 }
 
 func initCoordinator(_ context.Context, awsCfg aws.Config, cfg *config.Config, logger coordinator.Logger) coordinator.Coordinator {
@@ -289,6 +390,22 @@ func main() {
 
 	runnerManager := initRunnerManager(awsCfg, cfg)
 
+	var subnetIndex uint64
+	var directProcessor *jobProcessor
+	var directProcessorSem chan struct{}
+	if cfg.IsEC2Backend() {
+		directProcessor = &jobProcessor{
+			fleet:       fleetManager,
+			pool:        poolManager,
+			metrics:     metricsPublisher,
+			runner:      runnerManager,
+			db:          dbClient,
+			cfg:         cfg,
+			subnetIndex: &subnetIndex,
+		}
+		directProcessorSem = make(chan struct{}, 10) // Limit concurrent direct processing
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -325,9 +442,23 @@ func main() {
 		case *github.WorkflowJobEvent:
 			switch event.GetAction() {
 			case "queued":
-				if err := handleWorkflowJob(r.Context(), event, jobQueue, metricsPublisher); err == nil {
+				jobMsg, err := handleWorkflowJob(r.Context(), event, jobQueue, metricsPublisher)
+				if err == nil && jobMsg != nil {
 					processed = true
 					response = "Job queued"
+					if directProcessor != nil && directProcessorSem != nil {
+						select {
+						case directProcessorSem <- struct{}{}:
+							go func() {
+								defer func() { <-directProcessorSem }()
+								directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
+								defer cancel()
+								directProcessor.processJobDirect(directCtx, jobMsg)
+							}()
+						default:
+							log.Printf("Direct processing at capacity, job %s will be processed via queue", jobMsg.JobID)
+						}
+					}
 				}
 			case "completed":
 				if event.GetWorkflowJob().GetConclusion() == "failure" {
@@ -359,7 +490,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	var subnetIndex uint64
 	if cfg.IsK8sBackend() {
 		go runK8sWorker(ctx, jobQueue, k8sProvider, k8sPoolProvider, metricsPublisher, runnerManager, dbClient, cfg)
 		go k8sPoolProvider.ReconcileLoop(ctx)
@@ -409,13 +539,13 @@ func main() {
 	log.Println("Server stopped")
 }
 
-func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, m metrics.Publisher) error {
+func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, m metrics.Publisher) (*queue.JobMessage, error) {
 	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
 
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
 	if err != nil {
 		log.Printf("Skipping job (no runs-fleet labels): %v", err)
-		return nil
+		return nil, nil
 	}
 
 	msg := &queue.JobMessage{
@@ -441,7 +571,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 
 	if err := q.SendMessage(ctx, msg); err != nil {
 		log.Printf("Failed to enqueue job: %v", err)
-		return fmt.Errorf("failed to enqueue job: %w", err)
+		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
 	if err := m.PublishJobQueued(ctx); err != nil {
@@ -457,7 +587,7 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 		log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s)",
 			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
 	}
-	return nil
+	return msg, nil
 }
 
 // handleJobFailure processes workflow_job completed events with failure conclusion.
@@ -687,6 +817,7 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 	startTime := time.Now()
 	fleetCreated := false
 	poisonMessage := false
+	alreadyClaimed := false
 
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
@@ -703,6 +834,16 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 
 			if metricErr := m.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
 				log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+			}
+		}
+
+		if alreadyClaimed {
+			if err := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); err != nil {
+				log.Printf("Failed to delete already-claimed message: %v", err)
+			}
+
+			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				log.Printf("Failed to publish queue depth metric: %v", err)
 			}
 		}
 
@@ -737,6 +878,17 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 	log.Printf("Processing job for run %s (retry=%d, forceOnDemand=%v, os=%s, region=%s, env=%s)",
 		job.RunID, job.RetryCount, job.ForceOnDemand, job.OS, job.Region, job.Environment)
 
+	if dbc != nil && dbc.HasJobsTable() {
+		if err := dbc.ClaimJob(ctx, job.JobID); err != nil {
+			if errors.Is(err, db.ErrJobAlreadyClaimed) {
+				log.Printf("Job %s already claimed, skipping (duplicate from queue)", job.JobID)
+				alreadyClaimed = true
+				return
+			}
+			log.Printf("Failed to claim job %s: %v (proceeding anyway)", job.JobID, err)
+		}
+	}
+
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
@@ -758,6 +910,9 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 	instanceIDs, err := createFleetWithRetry(ctx, f, spec)
 	if err != nil {
 		log.Printf("Failed to create fleet: %v", err)
+		if dbc != nil && dbc.HasJobsTable() {
+			_ = dbc.DeleteJobClaim(ctx, job.JobID)
+		}
 		return
 	}
 
