@@ -644,9 +644,12 @@ func TestBoundedConcurrency(t *testing.T) {
 
 func TestMetricsCallsHaveTimeout(t *testing.T) {
 	var capturedCtx context.Context
+	var mu sync.Mutex
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(ctx context.Context) error {
+			mu.Lock()
 			capturedCtx = ctx
+			mu.Unlock()
 			return nil
 		},
 	}
@@ -684,11 +687,15 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 	cancel()
 	<-done
 
-	if capturedCtx == nil {
+	mu.Lock()
+	metricsCtx := capturedCtx
+	mu.Unlock()
+
+	if metricsCtx == nil {
 		t.Fatal("PublishSpotInterruption was never called")
 	}
 
-	_, ok := capturedCtx.Deadline()
+	_, ok := metricsCtx.Deadline()
 	if !ok {
 		t.Error("Expected metrics call to have deadline, got none")
 	}
