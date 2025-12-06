@@ -1,0 +1,86 @@
+name: Build Runner AMI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cmd/agent/**'
+      - 'pkg/agent/**'
+      - 'packer/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  build-runner:
+    name: Build Runner Image
+    uses: ./.github/workflows/build-runner.yml
+    secrets:
+      AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
+
+  build-ami:
+    name: Build AMI ${{ matrix.arch }}
+    needs: build-runner
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            packer_file: runs-fleet-runner-arm64.pkr.hcl
+          - arch: amd64
+            packer_file: runs-fleet-runner-amd64.pkr.hcl
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Packer Init
+        working-directory: packer
+        run: packer init ${{ matrix.packer_file }}
+
+      - name: Packer Build
+        working-directory: packer
+        run: packer build ${{ matrix.packer_file }}
+
+  cleanup-old-amis:
+    name: Cleanup Old AMIs
+    needs: build-ami
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deregister old AMIs (keep latest 2)
+        run: |
+          for arch in arm64 amd64; do
+            OLD_AMIS=$(aws ec2 describe-images \
+              --owners self \
+              --filters "Name=name,Values=runs-fleet-runner-${arch}-*" \
+              --query 'sort_by(Images, &CreationDate)[:-2].[ImageId]' \
+              --output text)
+
+            for ami in $OLD_AMIS; do
+              if [ "$ami" != "None" ] && [ -n "$ami" ]; then
+                echo "Deregistering $ami"
+                aws ec2 deregister-image --image-id "$ami" || true
+              fi
+            done
+          done
