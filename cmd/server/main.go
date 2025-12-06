@@ -1017,6 +1017,11 @@ func tryDirectProcessing(directProcessor *jobProcessor, directProcessorSem chan 
 	select {
 	case directProcessorSem <- struct{}{}:
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Panic in direct processing for job %s: %v", jobMsg.JobID, r)
+				}
+			}()
 			defer func() { <-directProcessorSem }()
 			directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 			defer cancel()
