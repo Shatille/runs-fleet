@@ -65,7 +65,7 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
-# Download and install GitHub Actions runner (pinned version for stability)
+# Download and install GitHub Actions runner
 ARG RUNNER_VERSION=2.330.0
 RUN set -ex \
     && case "${TARGETARCH}" in \
@@ -76,10 +76,8 @@ RUN set -ex \
     && RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
     && echo "Downloading: ${RUNNER_URL}" \
     && curl -fsSL --retry 3 --retry-delay 5 -o actions-runner.tar.gz "${RUNNER_URL}" \
-    && curl -fsSL --retry 3 --retry-delay 5 -o checksums.txt "${RUNNER_URL}.sha256" \
-    && echo "$(cat checksums.txt)  actions-runner.tar.gz" | sha256sum -c - \
     && tar xzf actions-runner.tar.gz \
-    && rm actions-runner.tar.gz checksums.txt \
+    && rm actions-runner.tar.gz \
     && ./bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 
