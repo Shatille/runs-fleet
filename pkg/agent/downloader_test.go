@@ -76,18 +76,14 @@ func TestDownloadRunner_CacheHit(t *testing.T) {
 		cacheHit: true,
 	}
 	d := NewDownloader(cache)
+	d.skipPrebakedCheck = true // Skip pre-baked check to test cache path
 
-	// Note: This test runs on the local machine where /home/runner is unlikely to exist
-	// with a valid runner. If pre-baked runner exists, cache won't be checked.
-	// The test validates that when pre-baked runner doesn't exist, cache is consulted.
 	ctx := context.Background()
 	_, _ = d.DownloadRunner(ctx)
 
-	// Pre-baked runner likely doesn't exist on test machine, so cache should be checked
 	if cache.checkCalls != 1 {
 		t.Errorf("expected 1 cache check call, got %d", cache.checkCalls)
 	}
-	// Verify download from cache was attempted on cache hit
 	if cache.downloadCalls != 1 {
 		t.Errorf("expected 1 download call on cache hit, got %d", cache.downloadCalls)
 	}

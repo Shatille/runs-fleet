@@ -30,13 +30,16 @@ type CacheClient interface {
 
 // Downloader handles downloading GitHub Actions runner binaries.
 type Downloader struct {
-	cache CacheClient
+	cache            CacheClient
+	prebakedPaths    []string // Paths to check for pre-baked runner (for testing)
+	skipPrebakedCheck bool    // Skip pre-baked runner check (for testing)
 }
 
 // NewDownloader creates a new Downloader instance.
 func NewDownloader(cache CacheClient) *Downloader {
 	return &Downloader{
-		cache: cache,
+		cache:         cache,
+		prebakedPaths: []string{runnerDir, prebakedRunnerDir},
 	}
 }
 
@@ -72,11 +75,12 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 	}
 
 	// Check for pre-baked runner (AMI: /opt/actions-runner, Docker: /home/runner)
-	if isValidRunnerDir(runnerDir) {
-		return runnerDir, nil
-	}
-	if isValidRunnerDir(prebakedRunnerDir) {
-		return prebakedRunnerDir, nil
+	if !d.skipPrebakedCheck {
+		for _, path := range d.prebakedPaths {
+			if isValidRunnerDir(path) {
+				return path, nil
+			}
+		}
 	}
 
 	// Map Go architecture names to GitHub runner asset names
