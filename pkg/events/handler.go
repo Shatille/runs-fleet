@@ -295,6 +295,8 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 
 	// Re-queue with ForceOnDemand to ensure job completes on retry
 	// Increment RetryCount to track how many times this job has been retried
+	// Note: Some fields (OriginalLabel, Region, etc.) are not stored in JobInfo.
+	// Re-queued jobs use basic config. Full field storage is a future enhancement.
 	requeueMsg := &queue.JobMessage{
 		JobID:         job.JobID,
 		RunID:         job.RunID,
@@ -302,7 +304,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		InstanceType:  job.InstanceType,
 		Pool:          job.Pool,
 		Private:       job.Private,
-		Spot:          job.Spot,
+		Spot:          false,              // ForceOnDemand uses on-demand instances
 		RunnerSpec:    job.RunnerSpec,
 		RetryCount:    job.RetryCount + 1, // Increment retry count
 		ForceOnDemand: true,               // Force on-demand for retries after spot interruption
