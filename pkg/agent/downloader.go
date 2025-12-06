@@ -71,7 +71,10 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("unsupported architecture: %s", arch)
 	}
 
-	// Check for pre-baked runner in Docker image first
+	// Check for pre-baked runner (AMI: /opt/actions-runner, Docker: /home/runner)
+	if isValidRunnerDir(runnerDir) {
+		return runnerDir, nil
+	}
 	if isValidRunnerDir(prebakedRunnerDir) {
 		return prebakedRunnerDir, nil
 	}
