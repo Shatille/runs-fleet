@@ -32,6 +32,7 @@ type PrometheusPublisher struct {
 	poolUtilization             *prometheus.GaugeVec
 	schedulingFailure           *prometheus.CounterVec
 	circuitBreakerTriggered     *prometheus.CounterVec
+	jobClaimFailures            prometheus.Counter
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -139,6 +140,11 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 			Name:      "circuit_breaker_triggered_total",
 			Help:      "Total number of circuit breaker triggers",
 		}, []string{"instance_type"}),
+		jobClaimFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: cfg.Namespace,
+			Name:      "job_claim_failures_total",
+			Help:      "Total number of job claim failures that proceeded anyway",
+		}),
 	}
 
 	registry.MustRegister(
@@ -159,6 +165,7 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 		p.poolUtilization,
 		p.schedulingFailure,
 		p.circuitBreakerTriggered,
+		p.jobClaimFailures,
 	)
 
 	return p
@@ -264,5 +271,10 @@ func (p *PrometheusPublisher) PublishSchedulingFailure(_ context.Context, taskTy
 
 func (p *PrometheusPublisher) PublishCircuitBreakerTriggered(_ context.Context, instanceType string) error { //nolint:revive
 	p.circuitBreakerTriggered.WithLabelValues(instanceType).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishJobClaimFailure(_ context.Context) error { //nolint:revive
+	p.jobClaimFailures.Inc()
 	return nil
 }

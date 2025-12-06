@@ -129,3 +129,7 @@ func (p *DatadogPublisher) PublishSchedulingFailure(_ context.Context, taskType 
 func (p *DatadogPublisher) PublishCircuitBreakerTriggered(_ context.Context, instanceType string) error { //nolint:revive
 	return p.client.Incr("circuit_breaker_triggered", []string{"instance_type:" + instanceType}, 1)
 }
+
+func (p *DatadogPublisher) PublishJobClaimFailure(_ context.Context) error { //nolint:revive
+	return p.client.Incr("job_claim_failures", nil, 1)
+}

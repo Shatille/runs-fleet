@@ -183,3 +183,9 @@ func (m *MultiPublisher) PublishCircuitBreakerTriggered(ctx context.Context, ins
 		return p.PublishCircuitBreakerTriggered(ctx, instanceType)
 	})
 }
+
+func (m *MultiPublisher) PublishJobClaimFailure(ctx context.Context) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishJobClaimFailure(ctx)
+	})
+}
