@@ -21,7 +21,7 @@ init:
 build-server:
 	@echo "Building server..."
 	@mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
+	CGO_ENABLED=0 GOOS=linux go build -ldflags '-extldflags "-static"' \
 		-o $(BINARY_SERVER) ./cmd/server
 
 # Build all binaries (alias for build-server)
