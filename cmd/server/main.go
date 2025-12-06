@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,15 +81,15 @@ type jobProcessor struct {
 // processJobDirect processes a job immediately without SQS.
 // Returns true if fleet was created, false if job was already claimed or processing failed.
 func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessage) bool {
-	log.Printf("Direct processing job for run %s", job.RunID)
+	log.Printf("Direct processing job for run %d", job.RunID)
 
 	if p.db != nil && p.db.HasJobsTable() {
 		if err := p.db.ClaimJob(ctx, job.JobID); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
-				log.Printf("Job %s already claimed (direct path)", job.JobID)
+				log.Printf("Job %d already claimed (direct path)", job.JobID)
 				return false
 			}
-			log.Printf("Job %s claim failed (direct path): %v, deferring to queue", job.JobID, err)
+			log.Printf("Job %d claim failed (direct path): %v, deferring to queue", job.JobID, err)
 			if p.metrics != nil {
 				if metricErr := p.metrics.PublishJobClaimFailure(ctx); metricErr != nil {
 					log.Printf("Failed to publish job claim failure metric: %v", metricErr)
@@ -116,10 +117,10 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 
 	instanceIDs, err := createFleetWithRetry(ctx, p.fleet, spec)
 	if err != nil {
-		log.Printf("Direct processing: failed to create fleet for job %s: %v", job.JobID, err)
+		log.Printf("Direct processing: failed to create fleet for job %d: %v", job.JobID, err)
 		if p.db != nil && p.db.HasJobsTable() {
 			if claimErr := p.db.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
-				log.Printf("Direct processing: failed to delete job claim for %s: %v", job.JobID, claimErr)
+				log.Printf("Direct processing: failed to delete job claim for %d: %v", job.JobID, claimErr)
 			}
 		}
 		return false
@@ -150,8 +151,8 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 			label := buildRunnerLabel(job)
 			prepareReq := runner.PrepareRunnerRequest{
 				InstanceID: instanceID,
-				JobID:      job.JobID,
-				RunID:      job.RunID,
+				JobID:      fmt.Sprintf("%d", job.JobID),
+				RunID:      fmt.Sprintf("%d", job.RunID),
 				Repo:       job.Repo,
 				Labels:     []string{label},
 			}
@@ -169,7 +170,7 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 		log.Printf("Direct processing: failed to publish metric: %v", err)
 	}
 
-	log.Printf("Direct processing: launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
+	log.Printf("Direct processing: launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
 	return true
 }
 
@@ -499,9 +500,15 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 		return nil, nil
 	}
 
+	runID, err := strconv.ParseInt(jobConfig.RunID, 10, 64)
+	if err != nil {
+		log.Printf("Invalid run_id in label %q: %v", jobConfig.RunID, err)
+		return nil, nil
+	}
+
 	msg := &queue.JobMessage{
-		JobID:         fmt.Sprintf("%d", event.GetWorkflowJob().GetID()),
-		RunID:         jobConfig.RunID,
+		JobID:         event.GetWorkflowJob().GetID(),
+		RunID:         runID,
 		Repo:          event.GetRepo().GetFullName(), // owner/repo for repo-level registration
 		InstanceType:  jobConfig.InstanceType,
 		Pool:          jobConfig.Pool,
@@ -588,13 +595,13 @@ func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 
 	// Check retry limit
 	if jobInfo.RetryCount >= maxJobRetries {
-		log.Printf("Job %s exceeded max retries (%d), not re-queuing", jobInfo.JobID, maxJobRetries)
+		log.Printf("Job %d exceeded max retries (%d), not re-queuing", jobInfo.JobID, maxJobRetries)
 		return false, nil
 	}
 
 	// Validate required fields before re-queuing
-	if jobInfo.RunID == "" || jobInfo.Repo == "" {
-		log.Printf("Invalid job data for instance %s (RunID=%q, Repo=%q), skipping re-queue",
+	if jobInfo.RunID == 0 || jobInfo.Repo == "" {
+		log.Printf("Invalid job data for instance %s (RunID=%d, Repo=%q), skipping re-queue",
 			instanceID, jobInfo.RunID, jobInfo.Repo)
 		return false, nil
 	}
@@ -607,7 +614,7 @@ func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 	}
 	if !marked {
 		// Job was already in terminating/requeued state - EventBridge or another handler got it first
-		log.Printf("Job %s for instance %s already handled (not in running state), skipping", jobInfo.JobID, instanceID)
+		log.Printf("Job %d for instance %s already handled (not in running state), skipping", jobInfo.JobID, instanceID)
 		return false, nil
 	}
 
@@ -628,10 +635,10 @@ func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 	}
 
 	if err := q.SendMessage(ctx, requeueMsg); err != nil {
-		return false, fmt.Errorf("failed to re-queue job %s: %w", jobInfo.JobID, err)
+		return false, fmt.Errorf("failed to re-queue job %d: %w", jobInfo.JobID, err)
 	}
 
-	log.Printf("Re-queued failed job %s from instance %s (RetryCount=%d, ForceOnDemand=true)",
+	log.Printf("Re-queued failed job %d from instance %s (RetryCount=%d, ForceOnDemand=true)",
 		jobInfo.JobID, instanceID, requeueMsg.RetryCount)
 
 	// Publish metric for job retry
@@ -804,8 +811,8 @@ func prepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 		label := buildRunnerLabel(job)
 		prepareReq := runner.PrepareRunnerRequest{
 			InstanceID: instanceID,
-			JobID:      job.JobID,
-			RunID:      job.RunID,
+			JobID:      fmt.Sprintf("%d", job.JobID),
+			RunID:      fmt.Sprintf("%d", job.RunID),
 			Repo:       job.Repo,
 			Labels:     []string{label},
 		}
@@ -877,17 +884,17 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 		return
 	}
 
-	log.Printf("Processing job for run %s (retry=%d, forceOnDemand=%v, os=%s, region=%s, env=%s)",
+	log.Printf("Processing job for run %d (retry=%d, forceOnDemand=%v, os=%s, region=%s, env=%s)",
 		job.RunID, job.RetryCount, job.ForceOnDemand, job.OS, job.Region, job.Environment)
 
 	if dbc != nil && dbc.HasJobsTable() {
 		if err := dbc.ClaimJob(ctx, job.JobID); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
-				log.Printf("Job %s already claimed, skipping (duplicate from queue)", job.JobID)
+				log.Printf("Job %d already claimed, skipping (duplicate from queue)", job.JobID)
 				alreadyClaimed = true
 				return
 			}
-			log.Printf("Job %s claim failed: %v, will retry via visibility timeout", job.JobID, err)
+			log.Printf("Job %d claim failed: %v, will retry via visibility timeout", job.JobID, err)
 			if metricErr := m.PublishJobClaimFailure(ctx); metricErr != nil {
 				log.Printf("Failed to publish job claim failure metric: %v", metricErr)
 			}
@@ -918,7 +925,7 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 		log.Printf("Failed to create fleet: %v", err)
 		if dbc != nil && dbc.HasJobsTable() {
 			if claimErr := dbc.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
-				log.Printf("Failed to delete job claim for %s: %v", job.JobID, claimErr)
+				log.Printf("Failed to delete job claim for %d: %v", job.JobID, claimErr)
 			}
 		}
 		return
@@ -934,7 +941,7 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 		pm.MarkInstanceBusy(instanceID)
 	}
 
-	log.Printf("Successfully launched %d instance(s) for run %s", len(instanceIDs), job.RunID)
+	log.Printf("Successfully launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
 }
 
 // makeReadinessHandler returns a handler that checks queue connectivity.
@@ -1019,7 +1026,7 @@ func tryDirectProcessing(directProcessor *jobProcessor, directProcessorSem chan 
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("Panic in direct processing for job %s: %v", jobMsg.JobID, r)
+					log.Printf("Panic in direct processing for job %d: %v", jobMsg.JobID, r)
 				}
 			}()
 			defer func() { <-directProcessorSem }()
@@ -1028,7 +1035,7 @@ func tryDirectProcessing(directProcessor *jobProcessor, directProcessorSem chan 
 			directProcessor.processJobDirect(directCtx, jobMsg)
 		}()
 	default:
-		log.Printf("Direct processing at capacity, job %s will be processed via queue", jobMsg.JobID)
+		log.Printf("Direct processing at capacity, job %d will be processed via queue", jobMsg.JobID)
 	}
 }
 
@@ -1039,7 +1046,7 @@ func buildRunnerLabel(job *queue.JobMessage) string {
 		return job.OriginalLabel
 	}
 	// Fallback for backwards compatibility with queued messages without OriginalLabel
-	label := fmt.Sprintf("runs-fleet=%s/runner=%s", job.RunID, job.RunnerSpec)
+	label := fmt.Sprintf("runs-fleet=%d/runner=%s", job.RunID, job.RunnerSpec)
 	if job.Pool != "" {
 		label += fmt.Sprintf("/pool=%s", job.Pool)
 	}
@@ -1189,13 +1196,13 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 		return
 	}
 
-	log.Printf("Processing K8s job for run %s (os=%s, arch=%s, pool=%s)",
+	log.Printf("Processing K8s job for run %d (os=%s, arch=%s, pool=%s)",
 		job.RunID, job.OS, job.Arch, job.Pool)
 
 	// Get registration token from GitHub before creating pod
 	var jitToken string
 	if rm == nil {
-		log.Printf("Runner manager not initialized for K8s job %s", job.RunID)
+		log.Printf("Runner manager not initialized for K8s job %d", job.RunID)
 		poisonMessage = true
 		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing"); metricErr != nil {
 			log.Printf("Failed to publish runner manager missing metric: %v", metricErr)
@@ -1204,7 +1211,7 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 	}
 	regResult, err := rm.GetRegistrationToken(ctx, job.Repo)
 	if err != nil {
-		log.Printf("Failed to get registration token for K8s job %s: %v", job.RunID, err)
+		log.Printf("Failed to get registration token for K8s job %d: %v", job.RunID, err)
 		poisonMessage = true
 		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-registration-token"); metricErr != nil {
 			log.Printf("Failed to publish registration token failure metric: %v", metricErr)
@@ -1279,5 +1286,5 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 		pp.MarkRunnerBusy(runnerID)
 	}
 
-	log.Printf("Successfully created %d K8s pod(s) for run %s", len(result.RunnerIDs), job.RunID)
+	log.Printf("Successfully created %d K8s pod(s) for run %d", len(result.RunnerIDs), job.RunID)
 }

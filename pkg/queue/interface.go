@@ -47,8 +47,8 @@ type Message struct {
 
 // JobMessage represents workflow job configuration for queue transport.
 type JobMessage struct {
-	JobID         string   `json:"job_id,omitempty"`
-	RunID         string   `json:"run_id"`
+	JobID         int64    `json:"job_id,omitempty"`
+	RunID         int64    `json:"run_id"`
 	Repo          string   `json:"repo,omitempty"`
 	InstanceType  string   `json:"instance_type"`
 	Pool          string   `json:"pool,omitempty"`

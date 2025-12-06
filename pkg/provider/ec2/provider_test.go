@@ -197,8 +197,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 		{
 			name: "success",
 			spec: &provider.RunnerSpec{
-				RunID:         "run-123",
-				JobID:         "job-456",
+				RunID:         123,
+				JobID:         456,
 				InstanceType:  "t4g.medium",
 				InstanceTypes: []string{"t4g.medium", "t4g.large"},
 				SubnetID:      "subnet-abc",
@@ -212,8 +212,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 			mockResult: []string{"i-123", "i-456"},
 			wantIDs:    []string{"i-123", "i-456"},
 			verifySpec: func(t *testing.T, spec *fleet.LaunchSpec) {
-				if spec.RunID != "run-123" {
-					t.Errorf("RunID = %v, want run-123", spec.RunID)
+				if spec.RunID != 123 {
+					t.Errorf("RunID = %v, want 123", spec.RunID)
 				}
 				if spec.InstanceType != "t4g.medium" {
 					t.Errorf("InstanceType = %v, want t4g.medium", spec.InstanceType)
@@ -229,7 +229,7 @@ func TestProvider_CreateRunner(t *testing.T) {
 		{
 			name: "fleet error",
 			spec: &provider.RunnerSpec{
-				RunID:        "run-789",
+				RunID:        789,
 				InstanceType: "t4g.medium",
 			},
 			mockErr: errors.New("fleet creation failed"),
@@ -238,7 +238,7 @@ func TestProvider_CreateRunner(t *testing.T) {
 		{
 			name: "force on-demand",
 			spec: &provider.RunnerSpec{
-				RunID:         "run-ondemand",
+				RunID:         999,
 				InstanceType:  "c7g.xlarge",
 				ForceOnDemand: true,
 				RetryCount:    2,

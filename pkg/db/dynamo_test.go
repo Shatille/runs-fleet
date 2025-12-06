@@ -234,8 +234,8 @@ func TestGetJobByInstance(t *testing.T) {
 				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 					item, err := attributevalue.MarshalMap(map[string]interface{}{
 						"instance_id":   "i-1234567890abcdef0",
-						"job_id":        "job-123",
-						"run_id":        "run-456",
+						"job_id":        int64(12345),
+						"run_id":        int64(67890),
 						"instance_type": "t4g.medium",
 						"pool":          "default",
 						"private":       false,
@@ -278,7 +278,7 @@ func TestGetJobByInstance(t *testing.T) {
 				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 					item, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"instance_id": "i-completed",
-						"job_id":      "job-done",
+						"job_id":      int64(99999),
 						"status":      "completed",
 					})
 					return &dynamodb.GetItemOutput{Item: item}, nil
@@ -306,11 +306,11 @@ func TestGetJobByInstance(t *testing.T) {
 				if job == nil {
 					t.Errorf("GetJobByInstance() = nil, want job")
 				} else {
-					if job.JobID != "job-123" {
-						t.Errorf("JobID = %v, want job-123", job.JobID)
+					if job.JobID != 12345 {
+						t.Errorf("JobID = %d, want 12345", job.JobID)
 					}
-					if job.RunID != "run-456" {
-						t.Errorf("RunID = %v, want run-456", job.RunID)
+					if job.RunID != 67890 {
+						t.Errorf("RunID = %d, want 67890", job.RunID)
 					}
 					if job.InstanceType != "t4g.medium" {
 						t.Errorf("InstanceType = %v, want t4g.medium", job.InstanceType)
@@ -333,8 +333,8 @@ func TestSaveJob(t *testing.T) {
 		{
 			name: "Success",
 			job: &JobRecord{
-				JobID:        "job-123",
-				RunID:        "run-456",
+				JobID: 12345,
+				RunID: 67890,
 				InstanceID:   "i-1234567890abcdef0",
 				InstanceType: "t4g.medium",
 				Pool:         "default",
@@ -361,9 +361,9 @@ func TestSaveJob(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "Empty Job ID",
+			name: "Zero Job ID",
 			job: &JobRecord{
-				JobID:      "",
+				JobID:      0,
 				InstanceID: "i-123",
 			},
 			mockDB:  &MockDynamoDBAPI{},
@@ -372,7 +372,7 @@ func TestSaveJob(t *testing.T) {
 		{
 			name: "Empty Instance ID",
 			job: &JobRecord{
-				JobID:      "job-123",
+				JobID: 12345,
 				InstanceID: "",
 			},
 			mockDB:  &MockDynamoDBAPI{},
@@ -554,7 +554,7 @@ func TestMarkInstanceTerminating(t *testing.T) {
 				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 					item, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"instance_id": "i-1234567890abcdef0",
-						"job_id":      "job-123",
+						"job_id":      int64(12345),
 						"status":      "running",
 					})
 					return &dynamodb.GetItemOutput{Item: item}, nil
@@ -799,7 +799,7 @@ func TestSaveJob_NoJobsTable(t *testing.T) {
 	}
 
 	err := client.SaveJob(context.Background(), &JobRecord{
-		JobID:      "job-123",
+		JobID: 12345,
 		InstanceID: "i-123",
 	})
 	if err == nil {
@@ -856,8 +856,8 @@ func TestClient_Structure(t *testing.T) {
 
 func TestJobRecord_Structure(t *testing.T) {
 	job := JobRecord{
-		JobID:        "job-123",
-		RunID:        "run-456",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:         "owner/repo",
 		InstanceID:   "i-abc123",
 		InstanceType: "t4g.medium",
@@ -868,11 +868,11 @@ func TestJobRecord_Structure(t *testing.T) {
 		RetryCount:   2,
 	}
 
-	if job.JobID != "job-123" {
-		t.Errorf("JobID = %s, want job-123", job.JobID)
+	if job.JobID != 12345 {
+		t.Errorf("JobID = %d, want 12345", job.JobID)
 	}
-	if job.RunID != "run-456" {
-		t.Errorf("RunID = %s, want run-456", job.RunID)
+	if job.RunID != 67890 {
+		t.Errorf("RunID = %d, want 67890", job.RunID)
 	}
 	if job.Repo != "owner/repo" {
 		t.Errorf("Repo = %s, want owner/repo", job.Repo)
@@ -966,7 +966,7 @@ func TestSaveJob_DynamoDBError(t *testing.T) {
 	}
 
 	err := client.SaveJob(context.Background(), &JobRecord{
-		JobID:      "job-123",
+		JobID: 12345,
 		InstanceID: "i-123",
 	})
 	if err == nil {
@@ -1144,7 +1144,7 @@ func TestClaimJob_Success(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.ClaimJob(context.Background(), "job-123")
+	err := client.ClaimJob(context.Background(), 12345)
 	if err != nil {
 		t.Errorf("ClaimJob() unexpected error: %v", err)
 	}
@@ -1162,7 +1162,7 @@ func TestClaimJob_AlreadyClaimed(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.ClaimJob(context.Background(), "job-123")
+	err := client.ClaimJob(context.Background(), 12345)
 	if !errors.Is(err, ErrJobAlreadyClaimed) {
 		t.Errorf("ClaimJob() expected ErrJobAlreadyClaimed, got: %v", err)
 	}
@@ -1174,7 +1174,7 @@ func TestClaimJob_EmptyJobID(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.ClaimJob(context.Background(), "")
+	err := client.ClaimJob(context.Background(), 0)
 	if err == nil {
 		t.Error("ClaimJob() should return error for empty job ID")
 	}
@@ -1186,7 +1186,7 @@ func TestClaimJob_NoJobsTable(t *testing.T) {
 		jobsTable:    "",
 	}
 
-	err := client.ClaimJob(context.Background(), "job-123")
+	err := client.ClaimJob(context.Background(), 12345)
 	if err == nil {
 		t.Error("ClaimJob() should return error when jobs table not configured")
 	}
@@ -1204,7 +1204,7 @@ func TestClaimJob_DynamoDBError(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.ClaimJob(context.Background(), "job-123")
+	err := client.ClaimJob(context.Background(), 12345)
 	if err == nil {
 		t.Error("ClaimJob() should return error when DynamoDB fails")
 	}
@@ -1225,7 +1225,7 @@ func TestDeleteJobClaim_Success(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.DeleteJobClaim(context.Background(), "job-123")
+	err := client.DeleteJobClaim(context.Background(), 12345)
 	if err != nil {
 		t.Errorf("DeleteJobClaim() unexpected error: %v", err)
 	}
@@ -1237,7 +1237,7 @@ func TestDeleteJobClaim_EmptyJobID(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.DeleteJobClaim(context.Background(), "")
+	err := client.DeleteJobClaim(context.Background(), 0)
 	if err == nil {
 		t.Error("DeleteJobClaim() should return error for empty job ID")
 	}
@@ -1249,7 +1249,7 @@ func TestDeleteJobClaim_NoJobsTable(t *testing.T) {
 		jobsTable:    "",
 	}
 
-	err := client.DeleteJobClaim(context.Background(), "job-123")
+	err := client.DeleteJobClaim(context.Background(), 12345)
 	if err == nil {
 		t.Error("DeleteJobClaim() should return error when jobs table not configured")
 	}
@@ -1267,7 +1267,7 @@ func TestDeleteJobClaim_DynamoDBError(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.DeleteJobClaim(context.Background(), "job-123")
+	err := client.DeleteJobClaim(context.Background(), 12345)
 	if err == nil {
 		t.Error("DeleteJobClaim() should return error when DynamoDB fails")
 	}

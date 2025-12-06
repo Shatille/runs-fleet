@@ -74,8 +74,8 @@ func TestStateStore_ConvertPoolConfig_Nil(t *testing.T) {
 func TestStateStore_SaveJob_Validation(t *testing.T) {
 	// We can't easily mock db.Client internals, but we can verify the type conversions
 	job := &provider.Job{
-		JobID:        "job-123",
-		RunID:        "run-456",
+		JobID:        123,
+		RunID:        456,
 		Repo:         "owner/repo",
 		InstanceID:   "i-789",
 		InstanceType: "t4g.medium",
@@ -87,8 +87,8 @@ func TestStateStore_SaveJob_Validation(t *testing.T) {
 	}
 
 	// Verify the job struct can be created
-	if job.JobID == "" {
-		t.Error("JobID should not be empty")
+	if job.JobID == 0 {
+		t.Error("JobID should not be zero")
 	}
 }
 
@@ -242,8 +242,8 @@ func TestConvertPoolConfig_MultipleSchedules(t *testing.T) {
 
 func TestProviderJob_Fields(t *testing.T) {
 	job := &provider.Job{
-		JobID:        "job-abc",
-		RunID:        "run-def",
+		JobID:        123,
+		RunID:        456,
 		Repo:         "org/repo",
 		InstanceID:   "i-123456",
 		InstanceType: "c5.xlarge",
@@ -255,11 +255,11 @@ func TestProviderJob_Fields(t *testing.T) {
 		Status:       "running",
 	}
 
-	if job.JobID != "job-abc" {
-		t.Errorf("JobID = %s, want job-abc", job.JobID)
+	if job.JobID != 123 {
+		t.Errorf("JobID = %d, want 123", job.JobID)
 	}
-	if job.RunID != "run-def" {
-		t.Errorf("RunID = %s, want run-def", job.RunID)
+	if job.RunID != 456 {
+		t.Errorf("RunID = %d, want 456", job.RunID)
 	}
 	if job.Repo != "org/repo" {
 		t.Errorf("Repo = %s, want org/repo", job.Repo)
@@ -477,8 +477,8 @@ func TestConvertPoolConfig_NilSchedules(t *testing.T) {
 func TestStateStore_SaveJob_BuildsCorrectRecord(t *testing.T) {
 	// Test that SaveJob correctly builds the db.JobRecord
 	job := &provider.Job{
-		JobID:        "job-save-test",
-		RunID:        "run-save-test",
+		JobID:        11111,
+		RunID:        22222,
 		Repo:         "testorg/testrepo",
 		InstanceID:   "i-savetest123",
 		InstanceType: "m6g.large",
@@ -490,11 +490,11 @@ func TestStateStore_SaveJob_BuildsCorrectRecord(t *testing.T) {
 	}
 
 	// Verify all fields are correctly set
-	if job.JobID != "job-save-test" {
-		t.Errorf("JobID = %s, want job-save-test", job.JobID)
+	if job.JobID != 11111 {
+		t.Errorf("JobID = %d, want 11111", job.JobID)
 	}
-	if job.RunID != "run-save-test" {
-		t.Errorf("RunID = %s, want run-save-test", job.RunID)
+	if job.RunID != 22222 {
+		t.Errorf("RunID = %d, want 22222", job.RunID)
 	}
 	if job.Repo != "testorg/testrepo" {
 		t.Errorf("Repo = %s, want testorg/testrepo", job.Repo)

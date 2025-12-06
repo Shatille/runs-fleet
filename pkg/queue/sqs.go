@@ -53,10 +53,10 @@ func NewSQSClientWithAPI(api SQSAPI, queueURL string) *SQSClient {
 
 // SendMessage sends job message to SQS FIFO queue with deduplication.
 func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
-	if job.JobID == "" {
+	if job.JobID == 0 {
 		return fmt.Errorf("job ID is required for SQS FIFO deduplication")
 	}
-	if job.RunID == "" {
+	if job.RunID == 0 {
 		return fmt.Errorf("run ID is required for SQS FIFO message grouping")
 	}
 
@@ -65,14 +65,14 @@ func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
 		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
-	dedupKey := fmt.Sprintf("%s-%d-%s", job.JobID, time.Now().UnixNano(), uuid.New().String()[:8])
+	dedupKey := fmt.Sprintf("%d-%d-%s", job.JobID, time.Now().UnixNano(), uuid.New().String()[:8])
 	hash := sha256.Sum256([]byte(dedupKey))
 	dedupID := hex.EncodeToString(hash[:])
 
 	input := &sqs.SendMessageInput{
 		QueueUrl:               aws.String(c.queueURL),
 		MessageBody:            aws.String(string(body)),
-		MessageGroupId:         aws.String(job.RunID),
+		MessageGroupId:         aws.String(fmt.Sprintf("%d", job.RunID)),
 		MessageDeduplicationId: aws.String(dedupID),
 	}
 

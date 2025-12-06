@@ -114,7 +114,7 @@ func (p *Provider) Name() string {
 // Creates ConfigMap, Secret, and PVC for agent config before Pod creation.
 // For private jobs, also creates a NetworkPolicy to restrict egress.
 func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
-	podName := sanitizePodName(spec.JobID)
+	podName := sanitizePodName(fmt.Sprintf("%d", spec.JobID))
 	namespace := p.config.KubeNamespace
 
 	// cleanup helper for failure cases
@@ -214,14 +214,14 @@ func (p *Provider) createRunnerConfigMap(ctx context.Context, podName string, sp
 			Namespace: p.config.KubeNamespace,
 			Labels: map[string]string{
 				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": spec.RunID,
+				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
 			},
 		},
 		Data: map[string]string{
 			"repo":         spec.Repo,
 			"labels":       labelsJSON,
 			"runner_group": spec.RunnerGroup,
-			"job_id":       spec.JobID,
+			"job_id":       fmt.Sprintf("%d", spec.JobID),
 		},
 	}
 
@@ -245,7 +245,7 @@ func (p *Provider) createRunnerSecret(ctx context.Context, podName string, spec 
 			Namespace: p.config.KubeNamespace,
 			Labels: map[string]string{
 				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": spec.RunID,
+				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -294,7 +294,7 @@ func (p *Provider) createRunnerPVC(ctx context.Context, podName string, spec *pr
 			Namespace: p.config.KubeNamespace,
 			Labels: map[string]string{
 				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": spec.RunID,
+				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
 				"runs-fleet.io/pool":   spec.Pool,
 			},
 		},
@@ -412,8 +412,8 @@ func (p *Provider) DescribeRunner(ctx context.Context, runnerID string) (*provid
 func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.Pod {
 	labels := map[string]string{
 		"app":                         "runs-fleet-runner",
-		"runs-fleet.io/run-id":        spec.RunID,
-		"runs-fleet.io/job-id":        spec.JobID,
+		"runs-fleet.io/run-id":        fmt.Sprintf("%d", spec.RunID),
+		"runs-fleet.io/job-id":        fmt.Sprintf("%d", spec.JobID),
 		"runs-fleet.io/pool":          spec.Pool,
 		"runs-fleet.io/arch":          spec.Arch,
 		"runs-fleet.io/os":            spec.OS,
@@ -455,8 +455,8 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 
 	// Build environment variables for runner container
 	envVars := []corev1.EnvVar{
-		{Name: "RUNS_FLEET_RUN_ID", Value: spec.RunID},
-		{Name: "RUNS_FLEET_JOB_ID", Value: spec.JobID},
+		{Name: "RUNS_FLEET_RUN_ID", Value: fmt.Sprintf("%d", spec.RunID)},
+		{Name: "RUNS_FLEET_JOB_ID", Value: fmt.Sprintf("%d", spec.JobID)},
 		{Name: "RUNS_FLEET_REPO", Value: spec.Repo},
 		{Name: "RUNS_FLEET_POOL", Value: spec.Pool},
 		{Name: "DOCKER_HOST", Value: "unix:///var/run/docker.sock"},
@@ -771,13 +771,13 @@ func (p *Provider) buildNetworkPolicy(podName string, spec *provider.RunnerSpec)
 			Namespace: p.config.KubeNamespace,
 			Labels: map[string]string{
 				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": spec.RunID,
+				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"runs-fleet.io/job-id":  spec.JobID,
+					"runs-fleet.io/job-id":  fmt.Sprintf("%d", spec.JobID),
 					"runs-fleet.io/private": "true",
 				},
 			},

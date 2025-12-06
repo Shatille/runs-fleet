@@ -34,12 +34,12 @@ func TestValkeyClient_SendMessage_Validation(t *testing.T) {
 	}{
 		{
 			name:    "empty job ID",
-			job:     &JobMessage{RunID: "run-123"},
+			job:     &JobMessage{RunID: 67890},
 			wantErr: "job ID is required",
 		},
 		{
 			name:    "empty run ID",
-			job:     &JobMessage{JobID: "job-123"},
+			job:     &JobMessage{JobID: 12345},
 			wantErr: "run ID is required",
 		},
 	}
@@ -107,8 +107,8 @@ func TestNewValkeyClientWithRedis(t *testing.T) {
 func TestValkeyClient_SendMessage_Success(t *testing.T) {
 	// Create a minimal test to verify message marshaling works
 	job := &JobMessage{
-		JobID:   "job-123",
-		RunID:   "run-456",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:    "owner/repo",
 		TraceID: "trace-abc",
 		SpanID:  "span-xyz",
@@ -124,8 +124,8 @@ func TestValkeyClient_SendMessage_Success(t *testing.T) {
 func TestValkeyClient_SendMessage_MarshalError(t *testing.T) {
 	// Test that valid messages can be marshaled without error
 	job := &JobMessage{
-		JobID:        "job-123",
-		RunID:        "run-456",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:         "owner/repo",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
@@ -145,10 +145,10 @@ func TestValkeyClient_SendMessage_MarshalError(t *testing.T) {
 	}
 
 	if decoded.JobID != job.JobID {
-		t.Errorf("JobID = %s, want %s", decoded.JobID, job.JobID)
+		t.Errorf("JobID = %d, want %d", decoded.JobID, job.JobID)
 	}
 	if decoded.RunID != job.RunID {
-		t.Errorf("RunID = %s, want %s", decoded.RunID, job.RunID)
+		t.Errorf("RunID = %d, want %d", decoded.RunID, job.RunID)
 	}
 }
 
@@ -292,8 +292,8 @@ func TestValkeyClient_ReceiveMessages_Parameters(t *testing.T) {
 func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 	// Comprehensive test for all JobMessage fields
 	job := &JobMessage{
-		JobID:         "job-abc-123",
-		RunID:         "run-def-456",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:          "myorg/myrepo",
 		InstanceType:  "m6g.large",
 		Pool:          "gpu-pool",
@@ -392,12 +392,12 @@ func TestValkeyClient_ErrorConditions(t *testing.T) {
 	}{
 		{
 			name:    "nil job ID",
-			job:     &JobMessage{RunID: "run-123"},
+			job:     &JobMessage{RunID: 67890},
 			wantErr: "job ID is required",
 		},
 		{
 			name:    "nil run ID",
-			job:     &JobMessage{JobID: "job-123"},
+			job:     &JobMessage{JobID: 12345},
 			wantErr: "run ID is required",
 		},
 	}
@@ -551,8 +551,8 @@ func TestValkeyClient_WaitTimeDuration(t *testing.T) {
 func TestValkeyClient_MessageValues(t *testing.T) {
 	// Test building message values for XAdd
 	job := &JobMessage{
-		JobID:   "job-test-123",
-		RunID:   "run-test-456",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:    "test-org/test-repo",
 		TraceID: "trace-test-abc",
 		SpanID:  "span-test-xyz",
@@ -573,10 +573,10 @@ func TestValkeyClient_MessageValues(t *testing.T) {
 
 	// Verify all values are present and correct
 	if values["run_id"] != job.RunID {
-		t.Errorf("run_id = %v, want %s", values["run_id"], job.RunID)
+		t.Errorf("run_id = %v, want %d", values["run_id"], job.RunID)
 	}
 	if values["job_id"] != job.JobID {
-		t.Errorf("job_id = %v, want %s", values["job_id"], job.JobID)
+		t.Errorf("job_id = %v, want %d", values["job_id"], job.JobID)
 	}
 	if values["trace_id"] != job.TraceID {
 		t.Errorf("trace_id = %v, want %s", values["trace_id"], job.TraceID)
@@ -591,7 +591,7 @@ func TestValkeyClient_MessageValues(t *testing.T) {
 		t.Fatalf("failed to unmarshal body: %v", err)
 	}
 	if decoded.JobID != job.JobID {
-		t.Errorf("decoded.JobID = %s, want %s", decoded.JobID, job.JobID)
+		t.Errorf("decoded.JobID = %d, want %d", decoded.JobID, job.JobID)
 	}
 }
 
@@ -828,8 +828,8 @@ func TestValkeyClient_Integration_SendMessage(t *testing.T) {
 
 	// Send a message - this doesn't require blocking receive
 	job := &JobMessage{
-		JobID:        "job-send-test",
-		RunID:        "run-send-test",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:         "test/repo",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
@@ -959,8 +959,8 @@ func TestValkeyClient_Integration_XAddValues(t *testing.T) {
 
 	// Send with full trace context
 	job := &JobMessage{
-		JobID:    "job-xadd-test",
-		RunID:    "run-xadd-test",
+		JobID: 12345,
+		RunID: 67890,
 		TraceID:  "trace-xadd-123",
 		SpanID:   "span-xadd-456",
 		ParentID: "parent-xadd-789",
@@ -1000,8 +1000,8 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 	}
 
 	originalJob := &JobMessage{
-		JobID:         "job-body-test",
-		RunID:         "run-body-test",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:          "owner/repo",
 		InstanceType:  "c6g.xlarge",
 		Pool:          "compute",
@@ -1045,10 +1045,10 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 
 	// Verify all fields
 	if parsedJob.JobID != originalJob.JobID {
-		t.Errorf("JobID = %s, want %s", parsedJob.JobID, originalJob.JobID)
+		t.Errorf("JobID = %d, want %d", parsedJob.JobID, originalJob.JobID)
 	}
 	if parsedJob.RunID != originalJob.RunID {
-		t.Errorf("RunID = %s, want %s", parsedJob.RunID, originalJob.RunID)
+		t.Errorf("RunID = %d, want %d", parsedJob.RunID, originalJob.RunID)
 	}
 	if parsedJob.InstanceType != originalJob.InstanceType {
 		t.Errorf("InstanceType = %s, want %s", parsedJob.InstanceType, originalJob.InstanceType)
