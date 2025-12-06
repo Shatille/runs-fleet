@@ -77,20 +77,39 @@ RUNS_FLEET_LOCKS_TABLE=runs-fleet-locks
 
 ## Job Labels
 
-GitHub workflows request runners via labels:
+GitHub workflows request runners via labels. Two formats supported:
 
+**Flexible format (recommended):**
+```yaml
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
+```
+
+**Legacy format:**
 ```yaml
 runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64/pool=default"
 ```
 
-Label format:
+### Flexible labels
+
+- `cpu=<n>` - Exact vCPU count
+- `cpu=<min>+<max>` - vCPU range for spot diversification
+- `ram=<n>` - Exact RAM in GB
+- `ram=<min>+<max>` - RAM range in GB
+- `family=<f1>+<f2>` - Instance families (e.g., `c7g+m7g`)
+- `arch=<arch>` - Architecture: `arm64` or `amd64`
+- `disk=<size>` - Disk in GiB (1-16384, gp3)
+
+### Common labels
+
 - `runs-fleet=<run-id>` - Workflow run identifier (required)
-- `runner=<spec>` - Instance spec: `<cpu>cpu-<os>-<arch>[/<modifier>]`
-- `pool=<name>` - Warm pool name (optional, routes to pool queue)
+- `pool=<name>` - Warm pool name (routes to pool queue)
 - `private=true` - Use private subnet with static egress
 - `spot=false` - Force on-demand (skip spot)
 
-Instance specs:
+### Legacy runner specs
+
 - `2cpu-linux-arm64` → t4g.medium (2 vCPU, 4GB, 30GB disk)
 - `4cpu-linux-arm64` → c7g.xlarge (4 vCPU, 8GB, 50GB disk)
 - `8cpu-linux-arm64` → c7g.2xlarge (8 vCPU, 16GB, 100GB disk)
@@ -101,7 +120,6 @@ Instance specs:
 - `8cpu-linux-amd64` → c6i.2xlarge (8 vCPU, 16GB, 100GB disk)
 - `16cpu-linux-amd64` → c6i.4xlarge (16 vCPU, 32GB, 200GB disk)
 - `32cpu-linux-amd64` → c6i.8xlarge (32 vCPU, 64GB, 400GB disk)
-- `disk=<size>` → Custom disk in GiB (1-16384, gp3 max)
 
 ## Key Flows
 
