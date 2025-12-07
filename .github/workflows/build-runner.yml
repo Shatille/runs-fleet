@@ -31,7 +31,7 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet-runner
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
 
 jobs:
   # Determine version once, share across jobs

@@ -34,7 +34,7 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
 
 jobs:
   version:

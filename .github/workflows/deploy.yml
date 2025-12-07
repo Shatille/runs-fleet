@@ -30,9 +30,9 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet
-  ECS_CLUSTER: shavakan
-  ECS_SERVICE: runs-fleet-server
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'shavakan' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'runs-fleet-server' }}
 
 jobs:
   build:
