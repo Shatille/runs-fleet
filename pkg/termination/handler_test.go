@@ -54,18 +54,18 @@ type mockDBAPI struct {
 	updateMetricsErr error
 	completeCalls    int
 	metricsCalls     int
-	lastInstanceID   string
+	lastJobID        int64
 	lastStatus       string
 }
 
-func (m *mockDBAPI) MarkJobComplete(_ context.Context, instanceID, status string, _, _ int) error {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status string, _, _ int) error {
 	m.completeCalls++
-	m.lastInstanceID = instanceID
+	m.lastJobID = jobID
 	m.lastStatus = status
 	return m.markCompleteErr
 }
 
-func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ string, _, _ time.Time) error {
+func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time) error {
 	m.metricsCalls++
 	return m.updateMetricsErr
 }
@@ -148,7 +148,7 @@ func TestHandler_processMessage_Success(t *testing.T) {
 
 	msg := Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          "success",
 		ExitCode:        0,
 		DurationSeconds: 120,
@@ -170,8 +170,8 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	if db.completeCalls != 1 {
 		t.Errorf("expected 1 complete call, got %d", db.completeCalls)
 	}
-	if db.lastInstanceID != "i-12345" {
-		t.Errorf("expected instance ID 'i-12345', got '%s'", db.lastInstanceID)
+	if db.lastJobID != 12345678901 {
+		t.Errorf("expected job ID 12345678901, got %d", db.lastJobID)
 	}
 	if db.lastStatus != testStatusSuccess {
 		t.Errorf("expected status '%s', got '%s'", testStatusSuccess, db.lastStatus)
@@ -202,7 +202,7 @@ func TestHandler_processMessage_Failure(t *testing.T) {
 
 	msg := Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          "failure",
 		ExitCode:        1,
 		DurationSeconds: 60,
@@ -237,7 +237,7 @@ func TestHandler_processMessage_Started(t *testing.T) {
 
 	msg := Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "started",
 	}
 	body, _ := json.Marshal(msg)
@@ -303,7 +303,7 @@ func TestHandler_validateMessage_MissingInstanceID(t *testing.T) {
 	handler := &Handler{}
 
 	msg := &Message{
-		JobID:  "job-123",
+		JobID:  "12345678901",
 		Status: "success",
 	}
 
@@ -332,7 +332,7 @@ func TestHandler_validateMessage_MissingStatus(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 	}
 
 	err := handler.validateMessage(msg)
@@ -346,7 +346,7 @@ func TestHandler_validateMessage_Valid(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "success",
 	}
 
@@ -368,7 +368,7 @@ func TestHandler_processTermination_MarkCompleteError(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "success",
 	}
 
@@ -388,7 +388,7 @@ func TestHandler_processTermination_DeleteSSMParameter(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "success",
 	}
 
@@ -444,7 +444,7 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 
 	msg := Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "success",
 	}
 	body, _ := json.Marshal(msg)
@@ -494,7 +494,7 @@ func TestMessage_Structure(t *testing.T) {
 	now := time.Now()
 	msg := Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          "success",
 		ExitCode:        0,
 		DurationSeconds: 120,
@@ -507,8 +507,8 @@ func TestMessage_Structure(t *testing.T) {
 	if msg.InstanceID != "i-12345" {
 		t.Errorf("expected InstanceID 'i-12345', got '%s'", msg.InstanceID)
 	}
-	if msg.JobID != "job-123" {
-		t.Errorf("expected JobID 'job-123', got '%s'", msg.JobID)
+	if msg.JobID != "12345678901" {
+		t.Errorf("expected JobID '12345678901', got '%s'", msg.JobID)
 	}
 	if msg.Status != "success" {
 		t.Errorf("expected Status 'success', got '%s'", msg.Status)
@@ -531,7 +531,7 @@ func TestMessage_JSONSerialization(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	msg := Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          "success",
 		ExitCode:        0,
 		DurationSeconds: 120,
@@ -625,7 +625,7 @@ func TestHandler_processTermination_NoDuration(t *testing.T) {
 
 	msg := &Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          "success",
 		DurationSeconds: 0, // No duration
 	}
@@ -651,7 +651,7 @@ func TestHandler_processTermination_NoTimestamps(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "success",
 		// No StartedAt or CompletedAt
 	}
@@ -670,7 +670,7 @@ func TestHandler_processTermination_NoTimestamps(t *testing.T) {
 func TestHandler_Run_WithMessages(t *testing.T) {
 	msg := Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          testStatusSuccess,
 		DurationSeconds: 60,
 	}
@@ -763,7 +763,7 @@ func TestHandler_processTermination_MetricsErrors(t *testing.T) {
 
 	msg := &Message{
 		InstanceID:      "i-12345",
-		JobID:           "job-123",
+		JobID:           "12345678901",
 		Status:          testStatusSuccess,
 		DurationSeconds: 60,
 	}
@@ -787,7 +787,7 @@ func TestHandler_processTermination_FailureMetricsError(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "failure",
 	}
 
@@ -811,7 +811,7 @@ func TestHandler_processTermination_UpdateMetricsError(t *testing.T) {
 	now := time.Now()
 	msg := &Message{
 		InstanceID:  "i-12345",
-		JobID:       "job-123",
+		JobID:       "12345678901",
 		Status:      testStatusSuccess,
 		StartedAt:   now.Add(-1 * time.Minute),
 		CompletedAt: now,
@@ -834,7 +834,7 @@ func TestHandler_processMessage_NoHandle(t *testing.T) {
 
 	msg := Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     testStatusSuccess,
 	}
 	body, _ := json.Marshal(msg)
@@ -865,7 +865,7 @@ func TestHandler_processTermination_Timeout(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     "timeout",
 	}
 
@@ -890,7 +890,7 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 
 	msg := &Message{
 		InstanceID:    "i-12345",
-		JobID:         "job-123",
+		JobID:         "12345678901",
 		Status:        "interrupted",
 		InterruptedBy: "spot",
 	}
@@ -918,7 +918,7 @@ func TestHandler_processTermination_SSMDeleteError(t *testing.T) {
 
 	msg := &Message{
 		InstanceID: "i-12345",
-		JobID:      "job-123",
+		JobID:      "12345678901",
 		Status:     testStatusSuccess,
 	}
 

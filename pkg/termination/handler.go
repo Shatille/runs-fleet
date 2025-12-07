@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,8 +25,8 @@ type QueueAPI interface {
 
 // DBAPI provides database operations for termination processing.
 type DBAPI interface {
-	MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error
-	UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error
+	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error
+	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 }
 
 // MetricsAPI provides CloudWatch metrics publishing for job completion.
@@ -178,14 +179,20 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
-	// Update DynamoDB job record (keyed by instance_id)
-	if err := h.dbClient.MarkJobComplete(ctx, msg.InstanceID, msg.Status, msg.ExitCode, msg.DurationSeconds); err != nil {
+	// Parse job ID from string to int64 (DynamoDB uses Number type)
+	jobID, err := strconv.ParseInt(msg.JobID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse job ID %q: %w", msg.JobID, err)
+	}
+
+	// Update DynamoDB job record (keyed by job_id)
+	if err := h.dbClient.MarkJobComplete(ctx, jobID, msg.Status, msg.ExitCode, msg.DurationSeconds); err != nil {
 		return fmt.Errorf("failed to mark job complete: %w", err)
 	}
 
 	// Update job metrics (timestamps)
 	if !msg.StartedAt.IsZero() && !msg.CompletedAt.IsZero() {
-		if err := h.dbClient.UpdateJobMetrics(ctx, msg.InstanceID, msg.StartedAt, msg.CompletedAt); err != nil {
+		if err := h.dbClient.UpdateJobMetrics(ctx, jobID, msg.StartedAt, msg.CompletedAt); err != nil {
 			log.Printf("Warning: failed to update job metrics: %v", err)
 		}
 	}

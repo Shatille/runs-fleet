@@ -56,9 +56,9 @@ type StateStore interface {
 	// Job operations
 	SaveJob(ctx context.Context, job *Job) error
 	GetJob(ctx context.Context, runnerID string) (*Job, error)
-	MarkJobComplete(ctx context.Context, runnerID, status string, exitCode, duration int) error
+	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error
 	MarkJobTerminating(ctx context.Context, runnerID string) error
-	UpdateJobMetrics(ctx context.Context, runnerID string, startedAt, completedAt time.Time) error
+	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 
 	// Pool operations
 	GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error)
