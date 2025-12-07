@@ -3,24 +3,24 @@ name: Build Runner Image
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
     paths:
-      - 'docker/runner/**'
-      - 'cmd/agent/**'
-      - 'pkg/agent/**'
+      - "docker/runner/**"
+      - "cmd/agent/**"
+      - "pkg/agent/**"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag (default: latest)'
+        description: "Image tag (default: latest)"
         required: false
-        default: 'latest'
+        default: "latest"
   workflow_call:
     inputs:
       tag:
-        description: 'Image tag'
+        description: "Image tag"
         required: false
         type: string
-        default: 'latest'
+        default: "latest"
     secrets:
       AWS_IAM_ROLE_ARN:
         required: true
@@ -172,13 +172,13 @@ jobs:
         id: scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: '${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-unverified'
-          format: 'table'
-          exit-code: '1'
+          image-ref: "${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-unverified"
+          format: "table"
+          exit-code: "1"
           ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-          trivyignores: 'docker/runner/.trivyignore'
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+          trivyignores: "docker/runner/.trivyignore"
 
       - name: Delete images on scan failure
         if: failure() && steps.scan.outcome == 'failure'

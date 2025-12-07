@@ -5,9 +5,9 @@ on:
     branches:
       - main
     paths:
-      - 'cmd/agent/**'
-      - 'pkg/agent/**'
-      - 'packer/**'
+      - "cmd/agent/**"
+      - "pkg/agent/**"
+      - "packer/**"
   workflow_dispatch:
 
 permissions:

@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    # branches: [main]  # temporarily disabled
+    branches: [main]
     paths:
       - "cmd/server/**"
       - "pkg/**"
