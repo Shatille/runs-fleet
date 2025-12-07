@@ -61,7 +61,16 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
   }
 
   run_tags = {
-    Name = "packer-runs-fleet-runner-amd64-builder"
+    Name       = "packer-runs-fleet-runner-amd64-builder"
+    created-by = "packer"
+  }
+
+  run_volume_tags = {
+    created-by = "packer"
+  }
+
+  snapshot_tags = {
+    created-by = "packer"
   }
 }
 
