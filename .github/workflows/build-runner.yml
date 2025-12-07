@@ -155,6 +155,9 @@ jobs:
     needs: [prepare, manifest]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -175,6 +178,7 @@ jobs:
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
+          trivyignores: 'docker/runner/.trivyignore'
 
       - name: Delete images on scan failure
         if: failure() && steps.scan.outcome == 'failure'
