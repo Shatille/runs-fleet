@@ -46,7 +46,7 @@ jobs:
 
   coverage:
     name: Update Coverage
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
