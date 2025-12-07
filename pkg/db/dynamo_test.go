@@ -1132,8 +1132,8 @@ func TestMarkJobRequeued_DynamoDBError(t *testing.T) {
 func TestClaimJob_Success(t *testing.T) {
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(instance_id)" {
-				t.Error("ClaimJob() should use conditional expression")
+			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(job_id)" {
+				t.Error("ClaimJob() should use conditional expression on job_id")
 			}
 			return &dynamodb.PutItemOutput{}, nil
 		},
