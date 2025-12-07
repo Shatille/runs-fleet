@@ -114,3 +114,25 @@ jobs:
               fi
             done
           done
+
+      - name: Cleanup orphaned snapshots
+        run: |
+          # Get snapshots associated with active AMIs
+          ACTIVE_SNAPS=$(aws ec2 describe-images \
+            --owners self \
+            --query 'Images[*].BlockDeviceMappings[0].Ebs.SnapshotId' \
+            --output text)
+
+          # Get all snapshots owned by us
+          ALL_SNAPS=$(aws ec2 describe-snapshots \
+            --owner-ids self \
+            --query 'Snapshots[*].SnapshotId' \
+            --output text)
+
+          # Delete orphaned snapshots
+          for snap in $ALL_SNAPS; do
+            if ! echo "$ACTIVE_SNAPS" | grep -q "$snap"; then
+              echo "Deleting orphaned snapshot: $snap"
+              aws ec2 delete-snapshot --snapshot-id "$snap" || true
+            fi
+          done
