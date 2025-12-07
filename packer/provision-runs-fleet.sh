@@ -46,8 +46,14 @@ RUNNER_IMAGE="${ECR_REGISTRY}/runs-fleet-runner:latest"
 # Authenticate to ECR
 aws ecr get-login-password --region ${REGION} | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
+# Translate runner arch to docker arch (x64 -> amd64)
+DOCKER_ARCH="${ARCH}"
+if [ "${ARCH}" = "x64" ]; then
+  DOCKER_ARCH="amd64"
+fi
+
 # Pull the runner image for current architecture
-sudo docker pull --platform linux/${ARCH} ${RUNNER_IMAGE}
+sudo docker pull --platform linux/${DOCKER_ARCH} ${RUNNER_IMAGE}
 
 # Extract agent binary from the image
 CONTAINER_ID=$(sudo docker create ${RUNNER_IMAGE})
