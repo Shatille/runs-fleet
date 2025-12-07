@@ -600,20 +600,20 @@ func TestMarkInstanceTerminating(t *testing.T) {
 
 func TestMarkJobComplete(t *testing.T) {
 	tests := []struct {
-		name       string
-		instanceID string
-		status     string
-		exitCode   int
-		duration   int
-		mockDB     *MockDynamoDBAPI
-		wantErr    bool
+		name     string
+		jobID    int64
+		status   string
+		exitCode int
+		duration int
+		mockDB   *MockDynamoDBAPI
+		wantErr  bool
 	}{
 		{
-			name:       "Success",
-			instanceID: "i-1234567890abcdef0",
-			status:     "completed",
-			exitCode:   0,
-			duration:   120,
+			name:     "Success",
+			jobID:    12345678901,
+			status:   "completed",
+			exitCode: 0,
+			duration: 120,
 			mockDB: &MockDynamoDBAPI{
 				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 					// Verify that the update expression sets the right fields
@@ -626,29 +626,29 @@ func TestMarkJobComplete(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:       "Empty instance ID",
-			instanceID: "",
-			status:     "completed",
-			exitCode:   0,
-			duration:   120,
-			mockDB:     &MockDynamoDBAPI{},
-			wantErr:    true,
+			name:     "Zero job ID",
+			jobID:    0,
+			status:   "completed",
+			exitCode: 0,
+			duration: 120,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
 		},
 		{
-			name:       "Empty status",
-			instanceID: "i-123",
-			status:     "",
-			exitCode:   0,
-			duration:   120,
-			mockDB:     &MockDynamoDBAPI{},
-			wantErr:    true,
+			name:     "Empty status",
+			jobID:    123,
+			status:   "",
+			exitCode: 0,
+			duration: 120,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
 		},
 		{
-			name:       "DynamoDB error",
-			instanceID: "i-error",
-			status:     "failed",
-			exitCode:   1,
-			duration:   60,
+			name:     "DynamoDB error",
+			jobID:    999,
+			status:   "failed",
+			exitCode: 1,
+			duration: 60,
 			mockDB: &MockDynamoDBAPI{
 				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 					return nil, errors.New("dynamodb update error")
@@ -665,7 +665,7 @@ func TestMarkJobComplete(t *testing.T) {
 				jobsTable:    "jobs-table",
 			}
 
-			err := client.MarkJobComplete(context.Background(), tt.instanceID, tt.status, tt.exitCode, tt.duration)
+			err := client.MarkJobComplete(context.Background(), tt.jobID, tt.status, tt.exitCode, tt.duration)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("MarkJobComplete() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -676,7 +676,7 @@ func TestMarkJobComplete(t *testing.T) {
 func TestUpdateJobMetrics(t *testing.T) {
 	tests := []struct {
 		name        string
-		instanceID  string
+		jobID       int64
 		startedAt   time.Time
 		completedAt time.Time
 		mockDB      *MockDynamoDBAPI
@@ -684,7 +684,7 @@ func TestUpdateJobMetrics(t *testing.T) {
 	}{
 		{
 			name:        "Success",
-			instanceID:  "i-1234567890abcdef0",
+			jobID:       12345678901,
 			startedAt:   time.Now().Add(-2 * time.Minute),
 			completedAt: time.Now(),
 			mockDB: &MockDynamoDBAPI{
@@ -695,8 +695,8 @@ func TestUpdateJobMetrics(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:        "Empty instance ID",
-			instanceID:  "",
+			name:        "Zero job ID",
+			jobID:       0,
 			startedAt:   time.Now().Add(-2 * time.Minute),
 			completedAt: time.Now(),
 			mockDB:      &MockDynamoDBAPI{},
@@ -704,7 +704,7 @@ func TestUpdateJobMetrics(t *testing.T) {
 		},
 		{
 			name:        "DynamoDB error",
-			instanceID:  "i-error",
+			jobID:       999,
 			startedAt:   time.Now().Add(-2 * time.Minute),
 			completedAt: time.Now(),
 			mockDB: &MockDynamoDBAPI{
@@ -723,7 +723,7 @@ func TestUpdateJobMetrics(t *testing.T) {
 				jobsTable:    "jobs-table",
 			}
 
-			err := client.UpdateJobMetrics(context.Background(), tt.instanceID, tt.startedAt, tt.completedAt)
+			err := client.UpdateJobMetrics(context.Background(), tt.jobID, tt.startedAt, tt.completedAt)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("UpdateJobMetrics() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1132,8 +1132,8 @@ func TestMarkJobRequeued_DynamoDBError(t *testing.T) {
 func TestClaimJob_Success(t *testing.T) {
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(instance_id)" {
-				t.Error("ClaimJob() should use conditional expression")
+			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(job_id)" {
+				t.Error("ClaimJob() should use conditional expression on job_id")
 			}
 			return &dynamodb.PutItemOutput{}, nil
 		},
