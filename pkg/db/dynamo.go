@@ -405,7 +405,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 
 // ClaimJob atomically claims a job for processing using conditional write.
 // Returns ErrJobAlreadyClaimed if the job is already being processed.
-// Uses a special instance_id format "claim:{job_id}" to track claims.
+// Uses job_id as primary key to track claims.
 func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 	if jobID == 0 {
 		return fmt.Errorf("job ID cannot be zero")
@@ -415,12 +415,10 @@ func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("jobs table not configured")
 	}
 
-	claimInstanceID := fmt.Sprintf("claim:%d", jobID)
 	record := jobRecord{
-		InstanceID: claimInstanceID,
-		JobID:      jobID,
-		Status:     "claiming",
-		CreatedAt:  time.Now().Format(time.RFC3339),
+		JobID:     jobID,
+		Status:    "claiming",
+		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 
 	item, err := attributevalue.MarshalMap(record)
@@ -431,7 +429,7 @@ func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName:           aws.String(c.jobsTable),
 		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(instance_id)"),
+		ConditionExpression: aws.String("attribute_not_exists(job_id)"),
 	})
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
@@ -454,9 +452,8 @@ func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("jobs table not configured")
 	}
 
-	claimInstanceID := fmt.Sprintf("claim:%d", jobID)
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": claimInstanceID,
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
