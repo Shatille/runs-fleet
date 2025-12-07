@@ -78,7 +78,7 @@ func (m *mockStateStore) GetJob(_ context.Context, _ string) (*Job, error) {
 	return &Job{}, nil
 }
 
-func (m *mockStateStore) MarkJobComplete(_ context.Context, _, _ string, _, _ int) error {
+func (m *mockStateStore) MarkJobComplete(_ context.Context, _ int64, _ string, _, _ int) error {
 	return nil
 }
 
@@ -86,7 +86,7 @@ func (m *mockStateStore) MarkJobTerminating(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *mockStateStore) UpdateJobMetrics(_ context.Context, _ string, _, _ time.Time) error {
+func (m *mockStateStore) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time) error {
 	return nil
 }
 
@@ -223,7 +223,7 @@ func TestStateStoreInterface(t *testing.T) {
 		t.Error("GetJob() returned nil")
 	}
 
-	if completeErr := ss.MarkJobComplete(ctx, "runner-1", "success", 0, 100); completeErr != nil {
+	if completeErr := ss.MarkJobComplete(ctx, 12345678901, "success", 0, 100); completeErr != nil {
 		t.Errorf("MarkJobComplete() error = %v", completeErr)
 	}
 
@@ -231,7 +231,7 @@ func TestStateStoreInterface(t *testing.T) {
 		t.Errorf("MarkJobTerminating() error = %v", termErr)
 	}
 
-	if metricsErr := ss.UpdateJobMetrics(ctx, "runner-1", now, now.Add(time.Hour)); metricsErr != nil {
+	if metricsErr := ss.UpdateJobMetrics(ctx, 12345678901, now, now.Add(time.Hour)); metricsErr != nil {
 		t.Errorf("UpdateJobMetrics() error = %v", metricsErr)
 	}
 

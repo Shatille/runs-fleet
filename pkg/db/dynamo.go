@@ -471,17 +471,17 @@ func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
 }
 
 // MarkJobComplete marks a job as complete in DynamoDB with exit status.
-// Uses instance_id as primary key (one job per instance).
-func (c *Client) MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error {
-	if instanceID == "" {
-		return fmt.Errorf("instance ID cannot be empty")
+// Uses job_id as primary key (Number type in DynamoDB).
+func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 	if status == "" {
 		return fmt.Errorf("status cannot be empty")
 	}
 
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -516,14 +516,14 @@ func (c *Client) MarkJobComplete(ctx context.Context, instanceID, status string,
 }
 
 // UpdateJobMetrics updates job timing metrics in DynamoDB.
-// Uses instance_id as primary key (one job per instance).
-func (c *Client) UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error {
-	if instanceID == "" {
-		return fmt.Errorf("instance ID cannot be empty")
+// Uses job_id as primary key (Number type in DynamoDB).
+func (c *Client) UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
