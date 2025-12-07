@@ -44,7 +44,9 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
     owners      = ["self"]
   }
 
-  ssh_username = "ec2-user"
+  communicator   = "ssh"
+  ssh_username   = "ec2-user"
+  ssh_interface  = "session_manager"
 
   launch_block_device_mappings {
     device_name           = "/dev/xvda"
