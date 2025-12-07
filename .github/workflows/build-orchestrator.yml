@@ -96,7 +96,9 @@ jobs:
   build-arm64:
     name: Build (arm64)
     needs: version
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+    # TODO: Restore to self-hosted after orchestrator fix deployed
+    # runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -107,6 +109,10 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - uses: docker/setup-buildx-action@v3
 
