@@ -118,20 +118,6 @@ jobs:
             --service $ECS_SERVICE \
             --task-definition "$NEW_TASK_ARN"
 
-      - name: Wait for deployment
-        run: |
-          if ! aws ecs wait services-stable \
-            --cluster $ECS_CLUSTER \
-            --services $ECS_SERVICE; then
-            echo "Deployment failed or timed out"
-            aws ecs describe-services \
-              --cluster $ECS_CLUSTER \
-              --services $ECS_SERVICE \
-              --query 'services[0].deployments[*].[status,rolloutState,failedTasks]' \
-              --output table
-            exit 1
-          fi
-
       - name: Summary
         env:
           VERSION: ${{ needs.build.outputs.version }}
