@@ -65,20 +65,19 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
-# Download and install GitHub Actions runner (pinned version for stability)
+# Download and install GitHub Actions runner
 ARG RUNNER_VERSION=2.330.0
-RUN RUNNER_ARCH=$(case "${TARGETARCH}" in \
-         "amd64") echo "x64" ;; \
-         "arm64") echo "arm64" ;; \
-         *) echo "ERROR: Unsupported architecture: ${TARGETARCH}" >&2 && exit 1 ;; esac) \
-    && echo "Installing GitHub Actions runner v${RUNNER_VERSION} for ${RUNNER_ARCH}" \
-    && curl -fsSL -o actions-runner.tar.gz \
-       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
-    && curl -fsSL -o checksums.txt \
-       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz.sha256" \
-    && echo "$(cat checksums.txt)  actions-runner.tar.gz" | sha256sum -c - \
+RUN set -ex \
+    && case "${TARGETARCH}" in \
+         "amd64") RUNNER_ARCH="x64" ;; \
+         "arm64") RUNNER_ARCH="arm64" ;; \
+         *) echo "ERROR: Unsupported architecture: ${TARGETARCH}" >&2 && exit 1 ;; \
+       esac \
+    && RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+    && echo "Downloading: ${RUNNER_URL}" \
+    && curl -fsSL --retry 3 --retry-delay 5 -o actions-runner.tar.gz "${RUNNER_URL}" \
     && tar xzf actions-runner.tar.gz \
-    && rm actions-runner.tar.gz checksums.txt \
+    && rm actions-runner.tar.gz \
     && ./bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 

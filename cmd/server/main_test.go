@@ -28,7 +28,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "uses original label when present",
 			job: &queue.JobMessage{
-				RunID:         "12345",
+				RunID:         12345,
 				RunnerSpec:    "2cpu-linux",
 				OriginalLabel: "runs-fleet=12345/cpu=2",
 				Spot:          true,
@@ -38,7 +38,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "uses original label with flexible spec",
 			job: &queue.JobMessage{
-				RunID:         "67890",
+				RunID:         67890,
 				RunnerSpec:    "4cpu-linux-arm64",
 				OriginalLabel: "runs-fleet=67890/cpu=4+8/arch=arm64",
 				Spot:          true,
@@ -48,7 +48,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "basic label fallback",
 			job: &queue.JobMessage{
-				RunID:      "12345",
+				RunID:      12345,
 				RunnerSpec: "2cpu-linux-arm64",
 				Spot:       true,
 			},
@@ -57,7 +57,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "with pool",
 			job: &queue.JobMessage{
-				RunID:      "12345",
+				RunID:      12345,
 				RunnerSpec: "2cpu-linux-arm64",
 				Pool:       "default",
 				Spot:       true,
@@ -67,7 +67,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "with private",
 			job: &queue.JobMessage{
-				RunID:      "12345",
+				RunID:      12345,
 				RunnerSpec: "4cpu-linux-amd64",
 				Private:    true,
 				Spot:       true,
@@ -77,7 +77,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "with spot=false",
 			job: &queue.JobMessage{
-				RunID:      "12345",
+				RunID:      12345,
 				RunnerSpec: "2cpu-linux-arm64",
 				Spot:       false,
 			},
@@ -86,7 +86,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "all modifiers",
 			job: &queue.JobMessage{
-				RunID:      "67890",
+				RunID:      67890,
 				RunnerSpec: "8cpu-linux-arm64",
 				Pool:       "mypool",
 				Private:    true,
@@ -97,7 +97,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "pool and private",
 			job: &queue.JobMessage{
-				RunID:      "11111",
+				RunID:      11111,
 				RunnerSpec: "2cpu-linux",
 				Pool:       "default",
 				Private:    true,
@@ -378,18 +378,18 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 		want string
 	}{
 		{
-			name: "empty run ID",
+			name: "zero run ID",
 			job: &queue.JobMessage{
-				RunID:      "",
+				RunID:      0,
 				RunnerSpec: "spec",
 				Spot:       true,
 			},
-			want: "runs-fleet=/runner=spec",
+			want: "runs-fleet=0/runner=spec",
 		},
 		{
 			name: "empty runner spec",
 			job: &queue.JobMessage{
-				RunID:      "123",
+				RunID:      123,
 				RunnerSpec: "",
 				Spot:       true,
 			},
@@ -398,7 +398,7 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 		{
 			name: "special characters in pool",
 			job: &queue.JobMessage{
-				RunID:      "123",
+				RunID:      123,
 				RunnerSpec: "spec",
 				Pool:       "pool-name_v2.1",
 				Spot:       true,
@@ -484,7 +484,7 @@ func TestMockQueue_Interface(_ *testing.T) {
 
 func TestMockQueue_SendMessage(t *testing.T) {
 	q := &mockQueue{}
-	err := q.SendMessage(context.Background(), &queue.JobMessage{JobID: "test", RunID: "run"})
+	err := q.SendMessage(context.Background(), &queue.JobMessage{JobID: 12345, RunID: 67890})
 	if err != nil {
 		t.Errorf("SendMessage() error = %v, want nil", err)
 	}
@@ -517,7 +517,7 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			job := &queue.JobMessage{
-				RunID:      "12345",
+				RunID:      12345,
 				RunnerSpec: "spec",
 				Private:    tt.private,
 				Spot:       tt.spot,
@@ -677,7 +677,7 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 
 func TestBuildRunnerLabel_EmptyOriginalLabel(t *testing.T) {
 	job := &queue.JobMessage{
-		RunID:         "12345",
+		RunID:         12345,
 		RunnerSpec:    "2cpu-linux",
 		OriginalLabel: "", // Empty - should use fallback
 		Pool:          "",
@@ -694,7 +694,7 @@ func TestBuildRunnerLabel_EmptyOriginalLabel(t *testing.T) {
 
 func TestBuildRunnerLabel_WhitespaceOriginalLabel(t *testing.T) {
 	job := &queue.JobMessage{
-		RunID:         "12345",
+		RunID:         12345,
 		RunnerSpec:    "2cpu-linux",
 		OriginalLabel: "   ", // Whitespace only - treated as non-empty
 		Spot:          true,
@@ -734,15 +734,15 @@ func TestSelectSubnet_BothNilSubnets(t *testing.T) {
 
 func TestJobMessage_AllFields(t *testing.T) {
 	job := queue.JobMessage{
-		JobID:         "job-123",
-		RunID:         "run-456",
+		JobID:         123,
+		RunID:         456,
 		Repo:          "owner/repo",
 		InstanceType:  "t4g.medium",
 		Pool:          "default",
 		Private:       true,
 		Spot:          false,
 		RunnerSpec:    "2cpu-linux-arm64",
-		OriginalLabel: "runs-fleet=run-456/cpu=2",
+		OriginalLabel: "runs-fleet=456/cpu=2",
 		RetryCount:    3,
 		ForceOnDemand: true,
 		Region:        "us-east-1",
@@ -756,11 +756,11 @@ func TestJobMessage_AllFields(t *testing.T) {
 	}
 
 	// Verify all fields are set correctly
-	if job.JobID != "job-123" {
-		t.Errorf("JobID = %q, want %q", job.JobID, "job-123")
+	if job.JobID != 123 {
+		t.Errorf("JobID = %d, want 123", job.JobID)
 	}
-	if job.RunID != "run-456" {
-		t.Errorf("RunID = %q, want %q", job.RunID, "run-456")
+	if job.RunID != 456 {
+		t.Errorf("RunID = %d, want 456", job.RunID)
 	}
 	if job.Repo != "owner/repo" {
 		t.Errorf("Repo = %q, want %q", job.Repo, "owner/repo")
@@ -788,11 +788,11 @@ func TestJobMessage_AllFields(t *testing.T) {
 func TestJobMessage_ZeroValues(t *testing.T) {
 	job := queue.JobMessage{}
 
-	if job.JobID != "" {
-		t.Errorf("JobID should be empty, got %q", job.JobID)
+	if job.JobID != 0 {
+		t.Errorf("JobID should be 0, got %d", job.JobID)
 	}
-	if job.RunID != "" {
-		t.Errorf("RunID should be empty, got %q", job.RunID)
+	if job.RunID != 0 {
+		t.Errorf("RunID should be 0, got %d", job.RunID)
 	}
 	if job.RetryCount != 0 {
 		t.Errorf("RetryCount should be 0, got %d", job.RetryCount)

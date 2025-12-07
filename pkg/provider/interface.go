@@ -81,8 +81,8 @@ type Coordinator interface {
 
 // RunnerSpec defines parameters for creating a runner.
 type RunnerSpec struct {
-	RunID         string
-	JobID         string
+	RunID         int64
+	JobID         int64
 	Repo          string
 	Labels        []string
 	InstanceType  string   // Primary instance type (EC2-specific)
@@ -147,8 +147,8 @@ type StoreConfigRequest struct {
 
 // Job represents a workflow job record.
 type Job struct {
-	JobID        string
-	RunID        string
+	JobID        int64
+	RunID        int64
 	Repo         string
 	InstanceID   string
 	InstanceType string

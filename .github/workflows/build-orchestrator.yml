@@ -4,29 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Version bump type'
+        description: "Version bump type"
         type: choice
         options: [patch, minor]
         default: patch
       custom_version:
-        description: 'Custom version (e.g., v1.2.0). Overrides bump type.'
+        description: "Custom version (e.g., v1.2.0). Overrides bump type."
         type: string
   workflow_call:
     inputs:
       bump:
-        description: 'Version bump type'
+        description: "Version bump type"
         type: string
-        default: 'patch'
+        default: "patch"
       custom_version:
-        description: 'Custom version'
+        description: "Custom version"
         type: string
     secrets:
       AWS_IAM_ROLE_ARN:
         required: true
     outputs:
       version:
-        description: 'Built image version'
-        value: ${{ jobs.build.outputs.version }}
+        description: "Built image version"
+        value: ${{ jobs.manifest.outputs.version }}
 
 permissions:
   contents: read
@@ -34,25 +34,19 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
 
 jobs:
-  build:
-    name: Build Orchestrator
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
+  version:
+    name: Calculate Version
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.new_version }}
-      registry: ${{ steps.ecr.outputs.registry }}
     steps:
-      - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
 
       - name: Calculate version
         id: version
@@ -99,12 +93,27 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "Version: $NEW_VERSION"
 
+  build-arm64:
+    name: Build (arm64)
+    needs: version
+    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build and push (arm64)
+      - name: Build and push
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ steps.version.outputs.new_version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           docker buildx build \
             --platform linux/arm64 \
@@ -113,10 +122,27 @@ jobs:
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64 \
             --push .
 
-      - name: Build and push (amd64)
+  build-amd64:
+    name: Build (amd64)
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ steps.version.outputs.new_version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           docker buildx build \
             --platform linux/amd64 \
@@ -125,10 +151,25 @@ jobs:
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
             --push .
 
+  manifest:
+    name: Create Manifest
+    needs: [version, build-arm64, build-amd64]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
       - name: Create and push manifest
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ steps.version.outputs.new_version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           docker manifest create $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
             $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
@@ -143,7 +184,7 @@ jobs:
 
       - name: Summary
         env:
-          VERSION: ${{ steps.version.outputs.new_version }}
+          VERSION: ${{ needs.version.outputs.version }}
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           echo "### Built $VERSION" >> $GITHUB_STEP_SUMMARY

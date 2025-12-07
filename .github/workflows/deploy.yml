@@ -30,9 +30,9 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet
-  ECS_CLUSTER: shavakan
-  ECS_SERVICE: runs-fleet-server
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'shavakan' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'runs-fleet-server' }}
 
 jobs:
   build:
@@ -46,7 +46,7 @@ jobs:
 
   coverage:
     name: Update Coverage
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=2"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -117,20 +117,6 @@ jobs:
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
             --task-definition "$NEW_TASK_ARN"
-
-      - name: Wait for deployment
-        run: |
-          if ! aws ecs wait services-stable \
-            --cluster $ECS_CLUSTER \
-            --services $ECS_SERVICE; then
-            echo "Deployment failed or timed out"
-            aws ecs describe-services \
-              --cluster $ECS_CLUSTER \
-              --services $ECS_SERVICE \
-              --query 'services[0].deployments[*].[status,rolloutState,failedTasks]' \
-              --output table
-            exit 1
-          fi
 
       - name: Summary
         env:

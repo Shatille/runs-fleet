@@ -55,8 +55,8 @@ func (c *Client) HasJobsTable() bool {
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
 	InstanceID   string `dynamodbav:"instance_id"`
-	JobID        string `dynamodbav:"job_id"`
-	RunID        string `dynamodbav:"run_id"`
+	JobID        int64  `dynamodbav:"job_id"`
+	RunID        int64  `dynamodbav:"run_id"`
 	Repo         string `dynamodbav:"repo"`
 	InstanceType string `dynamodbav:"instance_type"`
 	Pool         string `dynamodbav:"pool"`
@@ -343,8 +343,8 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 
 // JobRecord contains job information for storage.
 type JobRecord struct {
-	JobID        string
-	RunID        string
+	JobID        int64
+	RunID        int64
 	Repo         string
 	InstanceID   string
 	InstanceType string
@@ -361,8 +361,8 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	if job == nil {
 		return fmt.Errorf("job record cannot be nil")
 	}
-	if job.JobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+	if job.JobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 	if job.InstanceID == "" {
 		return fmt.Errorf("instance ID cannot be empty")
@@ -373,10 +373,10 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	}
 
 	record := jobRecord{
+		InstanceID:   job.InstanceID,
 		JobID:        job.JobID,
 		RunID:        job.RunID,
 		Repo:         job.Repo,
-		InstanceID:   job.InstanceID,
 		InstanceType: job.InstanceType,
 		Pool:         job.Pool,
 		Private:      job.Private,
@@ -406,16 +406,16 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 // ClaimJob atomically claims a job for processing using conditional write.
 // Returns ErrJobAlreadyClaimed if the job is already being processed.
 // Uses a special instance_id format "claim:{job_id}" to track claims.
-func (c *Client) ClaimJob(ctx context.Context, jobID string) error {
-	if jobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 
 	if c.jobsTable == "" {
 		return fmt.Errorf("jobs table not configured")
 	}
 
-	claimInstanceID := "claim:" + jobID
+	claimInstanceID := fmt.Sprintf("claim:%d", jobID)
 	record := jobRecord{
 		InstanceID: claimInstanceID,
 		JobID:      jobID,
@@ -445,16 +445,16 @@ func (c *Client) ClaimJob(ctx context.Context, jobID string) error {
 }
 
 // DeleteJobClaim removes a job claim record. Used for cleanup on processing failure.
-func (c *Client) DeleteJobClaim(ctx context.Context, jobID string) error {
-	if jobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 
 	if c.jobsTable == "" {
 		return fmt.Errorf("jobs table not configured")
 	}
 
-	claimInstanceID := "claim:" + jobID
+	claimInstanceID := fmt.Sprintf("claim:%d", jobID)
 	key, err := attributevalue.MarshalMap(map[string]string{
 		"instance_id": claimInstanceID,
 	})

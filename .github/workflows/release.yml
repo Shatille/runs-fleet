@@ -11,8 +11,7 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet
-  S3_CONFIG_BUCKET: shavakan-runs-fleet-config
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
 
 jobs:
   release:
@@ -70,16 +69,6 @@ jobs:
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
             --tag $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             .
-
-      - name: Upload agent binaries to S3
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          aws s3 cp dist/runs-fleet-agent-linux-amd64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$VERSION/agent-linux-amd64
-
-          aws s3 cp dist/runs-fleet-agent-linux-arm64 \
-            s3://${{ env.S3_CONFIG_BUCKET }}/agents/$VERSION/agent-linux-arm64
 
       - name: Generate changelog
         id: changelog

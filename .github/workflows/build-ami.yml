@@ -5,9 +5,9 @@ on:
     branches:
       - main
     paths:
-      - 'cmd/agent/**'
-      - 'pkg/agent/**'
-      - 'packer/**'
+      - "cmd/agent/**"
+      - "pkg/agent/**"
+      - "packer/**"
   workflow_dispatch:
 
 permissions:
@@ -55,7 +55,11 @@ jobs:
 
       - name: Packer Build
         working-directory: packer
-        run: packer build ${{ matrix.packer_file }}
+        run: |
+          packer build \
+            -var "security_group_id=${{ secrets.PACKER_SECURITY_GROUP_ID }}" \
+            -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
+            ${{ matrix.packer_file }}
 
   cleanup-old-amis:
     name: Cleanup Old AMIs

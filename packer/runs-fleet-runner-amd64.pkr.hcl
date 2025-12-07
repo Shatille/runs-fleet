@@ -17,10 +17,23 @@ variable "ami_version" {
   default = "1.0.0"
 }
 
+variable "security_group_id" {
+  type        = string
+  description = "Security group ID for packer builder instance"
+}
+
+variable "subnet_id" {
+  type        = string
+  description = "Subnet ID for packer builder instance"
+}
+
 source "amazon-ebs" "runs_fleet_runner_amd64" {
-  ami_name      = "runs-fleet-runner-amd64-{{timestamp}}"
-  instance_type = "c6i.xlarge"
-  region        = var.region
+  ami_name             = "runs-fleet-runner-amd64-{{timestamp}}"
+  instance_type        = "c7i.xlarge"
+  region               = var.region
+  iam_instance_profile = "runs-fleet-runner"
+  security_group_id    = var.security_group_id
+  subnet_id            = var.subnet_id
 
   source_ami_filter {
     filters = {
@@ -31,7 +44,9 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
     owners      = ["self"]
   }
 
-  ssh_username = "ec2-user"
+  communicator   = "ssh"
+  ssh_username   = "ec2-user"
+  ssh_interface  = "session_manager"
 
   launch_block_device_mappings {
     device_name           = "/dev/xvda"
@@ -60,7 +75,16 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
   }
 
   run_tags = {
-    Name = "packer-runs-fleet-runner-amd64-builder"
+    Name       = "packer-runs-fleet-runner-amd64-builder"
+    created-by = "packer"
+  }
+
+  run_volume_tags = {
+    created-by = "packer"
+  }
+
+  snapshot_tags = {
+    created-by = "packer"
   }
 }
 

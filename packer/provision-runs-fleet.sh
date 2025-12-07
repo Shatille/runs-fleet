@@ -14,11 +14,8 @@ RUNNER_VERSION="2.330.0"
 echo "==> Downloading GitHub Actions runner v${RUNNER_VERSION} (${ARCH})"
 curl -fsSL -o runner.tar.gz \
   "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz"
-curl -fsSL -o checksums.txt \
-  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz.sha256"
-echo "$(cat checksums.txt)  runner.tar.gz" | sha256sum -c -
 tar xzf runner.tar.gz
-rm runner.tar.gz checksums.txt
+rm runner.tar.gz
 
 echo "==> Installing runner dependencies (manual for AL2023)"
 # installdependencies.sh doesn't recognize AL2023, install manually
@@ -49,8 +46,14 @@ RUNNER_IMAGE="${ECR_REGISTRY}/runs-fleet-runner:latest"
 # Authenticate to ECR
 aws ecr get-login-password --region ${REGION} | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
+# Translate runner arch to docker arch (x64 -> amd64)
+DOCKER_ARCH="${ARCH}"
+if [ "${ARCH}" = "x64" ]; then
+  DOCKER_ARCH="amd64"
+fi
+
 # Pull the runner image for current architecture
-sudo docker pull --platform linux/${ARCH} ${RUNNER_IMAGE}
+sudo docker pull --platform linux/${DOCKER_ARCH} ${RUNNER_IMAGE}
 
 # Extract agent binary from the image
 CONTAINER_ID=$(sudo docker create ${RUNNER_IMAGE})

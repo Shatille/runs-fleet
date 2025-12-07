@@ -176,7 +176,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		if deficit > 0 {
 			for i := 0; i < deficit; i++ {
 				spec := &fleet.LaunchSpec{
-					RunID:        fmt.Sprintf("pool-%s-%d", poolName, time.Now().UnixNano()),
+					RunID:        time.Now().UnixNano(),
 					InstanceType: poolConfig.InstanceType,
 					Pool:         poolName,
 					Spot:         true,

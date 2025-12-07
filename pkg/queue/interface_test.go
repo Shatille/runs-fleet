@@ -174,8 +174,8 @@ func TestMessage_Structure(t *testing.T) {
 
 func TestJobMessage_Fields(t *testing.T) {
 	job := JobMessage{
-		JobID:         "job-123",
-		RunID:         "run-456",
+		JobID:         123,
+		RunID:         456,
 		Repo:          "owner/repo",
 		InstanceType:  "t4g.medium",
 		Pool:          "default",
@@ -195,11 +195,11 @@ func TestJobMessage_Fields(t *testing.T) {
 		ParentID:      "parent-def",
 	}
 
-	if job.JobID != "job-123" {
-		t.Errorf("JobMessage.JobID = %q, want %q", job.JobID, "job-123")
+	if job.JobID != 123 {
+		t.Errorf("JobMessage.JobID = %d, want %d", job.JobID, 123)
 	}
-	if job.RunID != "run-456" {
-		t.Errorf("JobMessage.RunID = %q, want %q", job.RunID, "run-456")
+	if job.RunID != 456 {
+		t.Errorf("JobMessage.RunID = %d, want %d", job.RunID, 456)
 	}
 	if job.Repo != "owner/repo" {
 		t.Errorf("JobMessage.Repo = %q, want %q", job.Repo, "owner/repo")
