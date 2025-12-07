@@ -34,8 +34,10 @@ jobs:
         include:
           - arch: arm64
             packer_file: runs-fleet-runner-arm64.pkr.hcl
+            launch_template: runs-fleet-runner-arm64
           - arch: amd64
             packer_file: runs-fleet-runner-amd64.pkr.hcl
+            launch_template: runs-fleet-runner-amd64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,12 +56,36 @@ jobs:
         run: packer init ${{ matrix.packer_file }}
 
       - name: Packer Build
+        id: packer
         working-directory: packer
         run: |
           packer build \
             -var "security_group_id=${{ secrets.PACKER_SECURITY_GROUP_ID }}" \
             -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
-            ${{ matrix.packer_file }}
+            -machine-readable \
+            ${{ matrix.packer_file }} | tee packer-output.txt
+
+          AMI_ID=$(grep 'artifact,0,id' packer-output.txt | cut -d: -f2)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "Built AMI: $AMI_ID"
+
+      - name: Update Launch Template
+        env:
+          AMI_ID: ${{ steps.packer.outputs.ami_id }}
+          LAUNCH_TEMPLATE: ${{ matrix.launch_template }}
+        run: |
+          NEW_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-name "$LAUNCH_TEMPLATE" \
+            --source-version '$Latest' \
+            --launch-template-data "{\"ImageId\":\"$AMI_ID\"}" \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text)
+
+          aws ec2 modify-launch-template \
+            --launch-template-name "$LAUNCH_TEMPLATE" \
+            --default-version "$NEW_VERSION"
+
+          echo "Updated $LAUNCH_TEMPLATE to version $NEW_VERSION with AMI $AMI_ID"
 
   cleanup-old-amis:
     name: Cleanup Old AMIs
