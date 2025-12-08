@@ -56,9 +56,9 @@ type StateStore interface {
 	// Job operations
 	SaveJob(ctx context.Context, job *Job) error
 	GetJob(ctx context.Context, runnerID string) (*Job, error)
-	MarkJobComplete(ctx context.Context, runnerID, status string, exitCode, duration int) error
+	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error
 	MarkJobTerminating(ctx context.Context, runnerID string) error
-	UpdateJobMetrics(ctx context.Context, runnerID string, startedAt, completedAt time.Time) error
+	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 
 	// Pool operations
 	GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error)
@@ -81,8 +81,8 @@ type Coordinator interface {
 
 // RunnerSpec defines parameters for creating a runner.
 type RunnerSpec struct {
-	RunID         string
-	JobID         string
+	RunID         int64
+	JobID         int64
 	Repo          string
 	Labels        []string
 	InstanceType  string   // Primary instance type (EC2-specific)
@@ -147,8 +147,8 @@ type StoreConfigRequest struct {
 
 // Job represents a workflow job record.
 type Job struct {
-	JobID        string
-	RunID        string
+	JobID        int64
+	RunID        int64
 	Repo         string
 	InstanceID   string
 	InstanceType string

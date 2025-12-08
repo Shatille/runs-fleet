@@ -3,6 +3,22 @@ name: Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - "cmd/server/**"
+      - "pkg/**"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        type: choice
+        options: [patch, minor]
+        default: patch
+      custom_version:
+        description: "Custom version (e.g., v1.2.0). Overrides bump type."
+        type: string
 
 concurrency:
   group: deploy
@@ -14,26 +30,46 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: runs-fleet
-  ECS_CLUSTER: shavakan
-  ECS_SERVICE: runs-fleet-server
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'shavakan' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'runs-fleet-server' }}
 
 jobs:
-  test:
-    name: Test
-    # runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
+  build:
+    name: Build Orchestrator
+    uses: ./.github/workflows/build-orchestrator.yml
+    with:
+      bump: ${{ inputs.bump || 'patch' }}
+      custom_version: ${{ inputs.custom_version }}
+    secrets:
+      AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
+
+  coverage:
+    name: Update Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
           cache: true
-      - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Restore Go build cache from CI
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.go', 'go.sum') }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: make coverage
+
       - id: coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+
       - uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -45,106 +81,9 @@ jobs:
           minColorRange: 50
           maxColorRange: 90
 
-  version:
-    name: Calculate Version
-    needs: test
-    # runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.new_version }}
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Calculate version
-        id: version
-        run: |
-          LATEST=$(aws ecr describe-images --repository-name $ECR_REPOSITORY \
-            --query 'imageDetails[*].imageTags[]' --output text 2>/dev/null | \
-            tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
-
-          if [ -z "$LATEST" ]; then
-            NEW_VERSION="v0.0.1"
-          else
-            VERSION=${LATEST#v}
-            MAJOR=$(echo $VERSION | cut -d. -f1)
-            MINOR=$(echo $VERSION | cut -d. -f2)
-            PATCH=$(echo $VERSION | cut -d. -f3)
-            NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
-          fi
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-  build:
-    name: Build (${{ matrix.arch }})
-    needs: version
-    runs-on: ${{ matrix.arch == 'arm64' && format('runs-fleet={0}/runner=4cpu-linux-arm64', github.run_id) || 'ubuntu-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        env:
-          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          docker buildx build \
-            --platform linux/${{ matrix.arch }} \
-            --provenance=false \
-            --build-arg VERSION=$VERSION \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-${{ matrix.arch }} \
-            --push .
-
-  manifest:
-    name: Create Manifest
-    needs: [version, build]
-    # runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ needs.version.outputs.version }}
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-
-      - name: Create and push manifest
-        env:
-          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          docker manifest create --amend $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64
-
-          docker manifest create --amend $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64
-
-          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION
-          docker manifest push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
   deploy:
     name: Deploy to ECS
-    needs: manifest
-    # runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
@@ -155,13 +94,13 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
 
-      - name: Update ECS service
+      - name: Deploy to ECS
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ needs.manifest.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition runs-fleet-server \
+            --task-definition $ECS_SERVICE \
             --query 'taskDefinition' --output json)
 
           NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
@@ -181,7 +120,7 @@ jobs:
 
       - name: Summary
         env:
-          VERSION: ${{ needs.manifest.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           echo "### Deployed $VERSION" >> $GITHUB_STEP_SUMMARY

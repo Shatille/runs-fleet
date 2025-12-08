@@ -18,6 +18,7 @@ import (
 const (
 	githubReleasesAPI = "https://api.github.com/repos/actions/runner/releases/latest"
 	runnerDir         = "/opt/actions-runner"
+	prebakedRunnerDir = "/home/runner"
 )
 
 // CacheClient provides S3 caching for runner binaries.
@@ -29,13 +30,16 @@ type CacheClient interface {
 
 // Downloader handles downloading GitHub Actions runner binaries.
 type Downloader struct {
-	cache CacheClient
+	cache            CacheClient
+	prebakedPaths    []string // Paths to check for pre-baked runner (for testing)
+	skipPrebakedCheck bool    // Skip pre-baked runner check (for testing)
 }
 
 // NewDownloader creates a new Downloader instance.
 func NewDownloader(cache CacheClient) *Downloader {
 	return &Downloader{
-		cache: cache,
+		cache:         cache,
+		prebakedPaths: []string{runnerDir, prebakedRunnerDir},
 	}
 }
 
@@ -51,12 +55,32 @@ type Asset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
+// isValidRunnerDir checks if a directory contains a valid GitHub Actions runner.
+func isValidRunnerDir(dir string) bool {
+	runnerBin := filepath.Join(dir, "bin", "Runner.Listener")
+	info, err := os.Stat(runnerBin)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir() && info.Mode()&0100 != 0
+}
+
 // DownloadRunner downloads and extracts the GitHub Actions runner binary.
 // Returns the path to the extracted runner directory.
+// Checks for pre-baked runner in Docker image first to avoid unnecessary downloads.
 func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 	arch := runtime.GOARCH
 	if arch != "arm64" && arch != "amd64" {
 		return "", fmt.Errorf("unsupported architecture: %s", arch)
+	}
+
+	// Check for pre-baked runner (AMI: /opt/actions-runner, Docker: /home/runner)
+	if !d.skipPrebakedCheck {
+		for _, path := range d.prebakedPaths {
+			if isValidRunnerDir(path) {
+				return path, nil
+			}
+		}
 	}
 
 	// Map Go architecture names to GitHub runner asset names
@@ -66,7 +90,7 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 		githubArch = "x64"
 	}
 
-	// Check cache first if available
+	// Check cache if available
 	if d.cache != nil {
 		cached, _, err := d.cache.CheckCache(ctx, "latest", arch)
 		if err == nil && cached {

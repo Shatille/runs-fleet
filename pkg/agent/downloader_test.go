@@ -76,17 +76,14 @@ func TestDownloadRunner_CacheHit(t *testing.T) {
 		cacheHit: true,
 	}
 	d := NewDownloader(cache)
+	d.skipPrebakedCheck = true // Skip pre-baked check to test cache path
 
-	// This would succeed only if cache download works
-	// Since DownloadFromCache returns nil error, it should try to return cached path
-	// But the actual runner directory may not exist
 	ctx := context.Background()
 	_, _ = d.DownloadRunner(ctx)
 
 	if cache.checkCalls != 1 {
 		t.Errorf("expected 1 cache check call, got %d", cache.checkCalls)
 	}
-	// Verify download from cache was attempted on cache hit
 	if cache.downloadCalls != 1 {
 		t.Errorf("expected 1 download call on cache hit, got %d", cache.downloadCalls)
 	}
@@ -256,5 +253,92 @@ func TestConstants_Downloader(t *testing.T) {
 	}
 	if runnerDir != "/opt/actions-runner" {
 		t.Errorf("unexpected runnerDir: %s", runnerDir)
+	}
+	if prebakedRunnerDir != "/home/runner" {
+		t.Errorf("unexpected prebakedRunnerDir: %s", prebakedRunnerDir)
+	}
+}
+
+func TestIsValidRunnerDir_Valid(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "runner-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+
+	runnerBin := filepath.Join(binDir, "Runner.Listener")
+	if err := os.WriteFile(runnerBin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("failed to create runner binary: %v", err)
+	}
+
+	if !isValidRunnerDir(tmpDir) {
+		t.Error("expected valid runner dir")
+	}
+}
+
+func TestIsValidRunnerDir_MissingBinary(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "runner-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	if isValidRunnerDir(tmpDir) {
+		t.Error("expected invalid runner dir when binary is missing")
+	}
+}
+
+func TestIsValidRunnerDir_NotExecutable(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "runner-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+
+	runnerBin := filepath.Join(binDir, "Runner.Listener")
+	if err := os.WriteFile(runnerBin, []byte("not executable"), 0644); err != nil {
+		t.Fatalf("failed to create runner binary: %v", err)
+	}
+
+	if isValidRunnerDir(tmpDir) {
+		t.Error("expected invalid runner dir when binary is not executable")
+	}
+}
+
+func TestIsValidRunnerDir_IsDirectory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "runner-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+
+	runnerBin := filepath.Join(binDir, "Runner.Listener")
+	if err := os.MkdirAll(runnerBin, 0755); err != nil {
+		t.Fatalf("failed to create runner as directory: %v", err)
+	}
+
+	if isValidRunnerDir(tmpDir) {
+		t.Error("expected invalid runner dir when Runner.Listener is a directory")
+	}
+}
+
+func TestIsValidRunnerDir_NonexistentDir(t *testing.T) {
+	if isValidRunnerDir("/nonexistent/path/to/runner") {
+		t.Error("expected invalid runner dir for nonexistent path")
 	}
 }

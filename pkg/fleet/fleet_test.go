@@ -36,7 +36,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "Spot Request",
 			spec: &LaunchSpec{
-				RunID:        "run-1",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -50,7 +50,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "With Pool",
 			spec: &LaunchSpec{
-				RunID:        "run-1",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -66,7 +66,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "Explicit On-Demand",
 			spec: &LaunchSpec{
-				RunID:        "run-2",
+				RunID: 12345,
 				InstanceType: "c7g.xlarge",
 				SubnetID:     "subnet-1",
 				Spot:         false,
@@ -80,7 +80,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "Spot Disabled Globally",
 			spec: &LaunchSpec{
-				RunID:        "run-3",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -169,7 +169,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "API error",
 			spec: &LaunchSpec{
-				RunID:        "run-1",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -187,7 +187,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "Fleet creation errors",
 			spec: &LaunchSpec{
-				RunID:        "run-2",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -211,7 +211,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "Fleet creation errors with nil message",
 			spec: &LaunchSpec{
-				RunID:        "run-3",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -235,7 +235,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "No instances created",
 			spec: &LaunchSpec{
-				RunID:        "run-4",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -363,7 +363,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "Custom storage 100 GiB",
 			spec: &LaunchSpec{
-				RunID:        "run-1",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -377,7 +377,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "Large storage 500 GiB",
 			spec: &LaunchSpec{
-				RunID:        "run-2",
+				RunID: 12345,
 				InstanceType: "c7g.xlarge",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -391,7 +391,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "No storage specified (use launch template default)",
 			spec: &LaunchSpec{
-				RunID:        "run-3",
+				RunID: 12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -405,7 +405,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "Storage with on-demand",
 			spec: &LaunchSpec{
-				RunID:        "run-4",
+				RunID: 12345,
 				InstanceType: "c7g.xlarge",
 				SubnetID:     "subnet-1",
 				Spot:         false,
@@ -526,10 +526,10 @@ func TestBuildTags(t *testing.T) {
 			name:   "Basic tags",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				RunID: "run-123",
+				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
 		},
@@ -537,11 +537,11 @@ func TestBuildTags(t *testing.T) {
 			name:   "With pool",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				RunID: "run-123",
+				RunID: 12345,
 				Pool:  "default",
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:pool":    "default",
 			},
@@ -556,10 +556,10 @@ func TestBuildTags(t *testing.T) {
 				},
 			},
 			spec: &LaunchSpec{
-				RunID: "run-123",
+				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"team":               "platform",
 				"project":            "ci-runners",
@@ -570,12 +570,12 @@ func TestBuildTags(t *testing.T) {
 			name: "With OS and arch",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				RunID: "run-123",
+				RunID: 12345,
 				OS:    "linux",
 				Arch:  "arm64",
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:os":      "linux",
 				"runs-fleet:arch":    "arm64",
@@ -585,11 +585,11 @@ func TestBuildTags(t *testing.T) {
 			name: "With environment",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				RunID:       "run-123",
+				RunID: 12345,
 				Environment: "production",
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":      "run-123",
+				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed":     "true",
 				"runs-fleet:environment": "production",
 				"Environment":            "production",
@@ -599,14 +599,77 @@ func TestBuildTags(t *testing.T) {
 			name:   "Empty pool should not create tag",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				RunID: "run-123",
+				RunID: 12345,
 				Pool:  "",
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":  "run-123",
+				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
 			wantAbsent: []string{"runs-fleet:pool"},
+		},
+		{
+			name:   "With region tag",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: 12345,
+				Region: "us-west-2",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+				"runs-fleet:region":  "us-west-2",
+			},
+		},
+		{
+			name:   "Empty region should not create tag",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: 12345,
+				Region: "",
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+			},
+			wantAbsent: []string{"runs-fleet:region"},
+		},
+		{
+			name: "With config-based tags",
+			config: &config.Config{
+				RunnerImage:         "ghcr.io/org/runner:latest",
+				TerminationQueueURL: "https://sqs.us-west-2.amazonaws.com/123/term-queue",
+				CacheURL:            "https://cache.example.com",
+				ConfigBucketName:    "my-config-bucket",
+			},
+			spec: &LaunchSpec{
+				RunID: 12345,
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed":             "true",
+				"runs-fleet:runner-image":        "ghcr.io/org/runner:latest",
+				"runs-fleet:termination-queue-url": "https://sqs.us-west-2.amazonaws.com/123/term-queue",
+				"runs-fleet:cache-url":           "https://cache.example.com",
+				"runs-fleet:config-bucket":       "my-config-bucket",
+			},
+		},
+		{
+			name:   "Empty config values should not create tags",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: 12345,
+			},
+			wantTags: map[string]string{
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+			},
+			wantAbsent: []string{
+				"runs-fleet:runner-image",
+				"runs-fleet:termination-queue-url",
+				"runs-fleet:cache-url",
+				"runs-fleet:config-bucket",
+			},
 		},
 	}
 
@@ -635,6 +698,49 @@ func TestBuildTags(t *testing.T) {
 				if _, exists := tagMap[absentKey]; exists {
 					t.Errorf("tag %q should not exist", absentKey)
 				}
+			}
+		})
+	}
+}
+
+func TestGetPrimaryInstanceType(t *testing.T) {
+	tests := []struct {
+		name string
+		spec *LaunchSpec
+		want string
+	}{
+		{
+			name: "Uses first from InstanceTypes array",
+			spec: &LaunchSpec{
+				InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
+				InstanceType:  "fallback.type",
+			},
+			want: "c7g.xlarge",
+		},
+		{
+			name: "Falls back to InstanceType when array empty",
+			spec: &LaunchSpec{
+				InstanceTypes: []string{},
+				InstanceType:  "t4g.medium",
+			},
+			want: "t4g.medium",
+		},
+		{
+			name: "Falls back to InstanceType when array nil",
+			spec: &LaunchSpec{
+				InstanceTypes: nil,
+				InstanceType:  "c7g.large",
+			},
+			want: "c7g.large",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{}
+			got := m.getPrimaryInstanceType(tt.spec)
+			if got != tt.want {
+				t.Errorf("getPrimaryInstanceType() = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -1,0 +1,9 @@
+# Vulnerabilities in GitHub Actions runner's bundled Node.js
+# These are upstream issues in actions/runner that we cannot patch
+# https://github.com/actions/runner/issues
+
+# cross-spawn ReDoS - in runner's bundled npm
+CVE-2024-21538
+
+# glob command injection - in runner's bundled npm
+CVE-2025-64756

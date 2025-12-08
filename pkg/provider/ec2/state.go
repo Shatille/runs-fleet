@@ -75,8 +75,8 @@ func (s *StateStore) GetJob(ctx context.Context, runnerID string) (*provider.Job
 }
 
 // MarkJobComplete marks a job as complete.
-func (s *StateStore) MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error {
-	return s.client.MarkJobComplete(ctx, instanceID, status, exitCode, duration)
+func (s *StateStore) MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error {
+	return s.client.MarkJobComplete(ctx, jobID, status, exitCode, duration)
 }
 
 // MarkJobTerminating marks a job as terminating.
@@ -134,8 +134,8 @@ func (s *StateStore) UpdatePoolState(ctx context.Context, poolName string, runni
 }
 
 // UpdateJobMetrics updates job timing metrics.
-func (s *StateStore) UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error {
-	return s.client.UpdateJobMetrics(ctx, instanceID, startedAt, completedAt)
+func (s *StateStore) UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error {
+	return s.client.UpdateJobMetrics(ctx, jobID, startedAt, completedAt)
 }
 
 // convertPoolConfig converts db.PoolConfig to provider.PoolConfig.

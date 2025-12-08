@@ -28,7 +28,7 @@ func TestPublishMetrics(t *testing.T) {
 		value      float64
 		unit       types.StandardUnit
 		useStats   bool
-		publish    func(p *Publisher) error
+		publish    func(p *CloudWatchPublisher) error
 	}{
 		{
 			name:       "QueueDepth",
@@ -36,7 +36,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      10.0,
 			unit:       types.StandardUnitCount,
 			useStats:   true,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishQueueDepth(context.Background(), 10.0)
 			},
 		},
@@ -46,7 +46,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishFleetSizeIncrement(context.Background())
 			},
 		},
@@ -56,7 +56,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishFleetSizeDecrement(context.Background())
 			},
 		},
@@ -66,7 +66,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      120.0,
 			unit:       types.StandardUnitSeconds,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishJobDuration(context.Background(), 120)
 			},
 		},
@@ -76,7 +76,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishSpotInterruption(context.Background())
 			},
 		},
@@ -86,7 +86,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishMessageDeletionFailure(context.Background())
 			},
 		},
@@ -96,7 +96,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishJobSuccess(context.Background())
 			},
 		},
@@ -106,7 +106,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishJobFailure(context.Background())
 			},
 		},
@@ -116,7 +116,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishJobQueued(context.Background())
 			},
 		},
@@ -126,7 +126,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishCacheHit(context.Background())
 			},
 		},
@@ -136,7 +136,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      1.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishCacheMiss(context.Background())
 			},
 		},
@@ -146,7 +146,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      5.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishOrphanedInstancesTerminated(context.Background(), 5)
 			},
 		},
@@ -156,7 +156,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      3.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishSSMParametersDeleted(context.Background(), 3)
 			},
 		},
@@ -166,7 +166,7 @@ func TestPublishMetrics(t *testing.T) {
 			value:      10.0,
 			unit:       types.StandardUnitCount,
 			useStats:   false,
-			publish: func(p *Publisher) error {
+			publish: func(p *CloudWatchPublisher) error {
 				return p.PublishJobRecordsArchived(context.Background(), 10)
 			},
 		},
@@ -219,7 +219,7 @@ func TestPublishMetrics(t *testing.T) {
 				},
 			}
 
-			publisher := &Publisher{
+			publisher := &CloudWatchPublisher{
 				client:    mockClient,
 				namespace: testNamespace,
 			}
@@ -293,7 +293,7 @@ func TestPublishPoolUtilization(t *testing.T) {
 				},
 			}
 
-			publisher := &Publisher{
+			publisher := &CloudWatchPublisher{
 				client:    mockClient,
 				namespace: namespace,
 			}
@@ -328,6 +328,8 @@ func TestPublishSchedulingFailure(t *testing.T) {
 		},
 	}
 
+	const testNamespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := &MockCloudWatchAPI{
@@ -335,8 +337,8 @@ func TestPublishSchedulingFailure(t *testing.T) {
 					if tt.mockErr != nil {
 						return nil, tt.mockErr
 					}
-					if *params.Namespace != "RunsFleet" {
-						t.Errorf("Namespace = %s, want RunsFleet", *params.Namespace)
+					if *params.Namespace != testNamespace {
+						t.Errorf("Namespace = %s, want %s", *params.Namespace, testNamespace)
 					}
 					datum := params.MetricData[0]
 					if *datum.MetricName != "SchedulingFailure" {
@@ -358,9 +360,9 @@ func TestPublishSchedulingFailure(t *testing.T) {
 				},
 			}
 
-			publisher := &Publisher{
+			publisher := &CloudWatchPublisher{
 				client:    mockClient,
-				namespace: "RunsFleet",
+				namespace: testNamespace,
 			}
 
 			err := publisher.PublishSchedulingFailure(context.Background(), tt.taskType)
@@ -393,6 +395,8 @@ func TestPublishCircuitBreakerTriggered(t *testing.T) {
 		},
 	}
 
+	const testNamespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := &MockCloudWatchAPI{
@@ -400,8 +404,8 @@ func TestPublishCircuitBreakerTriggered(t *testing.T) {
 					if tt.mockErr != nil {
 						return nil, tt.mockErr
 					}
-					if *params.Namespace != "RunsFleet" {
-						t.Errorf("Namespace = %s, want RunsFleet", *params.Namespace)
+					if *params.Namespace != testNamespace {
+						t.Errorf("Namespace = %s, want %s", *params.Namespace, testNamespace)
 					}
 					datum := params.MetricData[0]
 					if *datum.MetricName != "CircuitBreakerTriggered" {
@@ -423,9 +427,9 @@ func TestPublishCircuitBreakerTriggered(t *testing.T) {
 				},
 			}
 
-			publisher := &Publisher{
+			publisher := &CloudWatchPublisher{
 				client:    mockClient,
-				namespace: "RunsFleet",
+				namespace: testNamespace,
 			}
 
 			err := publisher.PublishCircuitBreakerTriggered(context.Background(), tt.instanceType)
@@ -443,7 +447,7 @@ func TestPublishMetricsError(t *testing.T) {
 		},
 	}
 
-	publisher := &Publisher{
+	publisher := &CloudWatchPublisher{
 		client:    mockClient,
 		namespace: "RunsFleet",
 	}
@@ -455,4 +459,35 @@ func TestPublishMetricsError(t *testing.T) {
 	if err := publisher.PublishJobSuccess(context.Background()); err == nil {
 		t.Error("PublishJobSuccess() should return error when CloudWatch fails")
 	}
+}
+
+func TestCloudWatchPublisher_Close(t *testing.T) {
+	publisher := &CloudWatchPublisher{
+		client:    &MockCloudWatchAPI{},
+		namespace: "RunsFleet",
+	}
+
+	err := publisher.Close()
+	if err != nil {
+		t.Errorf("Close() error = %v, want nil", err)
+	}
+}
+
+func TestCloudWatchPublisher_FieldsWithMock(t *testing.T) {
+	mockClient := &MockCloudWatchAPI{}
+	publisher := &CloudWatchPublisher{
+		client:    mockClient,
+		namespace: "CustomNamespace",
+	}
+
+	if publisher.namespace != "CustomNamespace" {
+		t.Errorf("namespace = %s, want CustomNamespace", publisher.namespace)
+	}
+	if publisher.client == nil {
+		t.Error("client should not be nil")
+	}
+}
+
+func TestCloudWatchPublisher_ImplementsInterface(_ *testing.T) {
+	var _ Publisher = (*CloudWatchPublisher)(nil)
 }

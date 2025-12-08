@@ -644,9 +644,12 @@ func TestBoundedConcurrency(t *testing.T) {
 
 func TestMetricsCallsHaveTimeout(t *testing.T) {
 	var capturedCtx context.Context
+	var mu sync.Mutex
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(ctx context.Context) error {
+			mu.Lock()
 			capturedCtx = ctx
+			mu.Unlock()
 			return nil
 		},
 	}
@@ -684,11 +687,15 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 	cancel()
 	<-done
 
-	if capturedCtx == nil {
+	mu.Lock()
+	metricsCtx := capturedCtx
+	mu.Unlock()
+
+	if metricsCtx == nil {
 		t.Fatal("PublishSpotInterruption was never called")
 	}
 
-	_, ok := capturedCtx.Deadline()
+	_, ok := metricsCtx.Deadline()
 	if !ok {
 		t.Error("Expected metrics call to have deadline, got none")
 	}
@@ -969,8 +976,8 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			name:       "Successful job re-queue",
 			instanceID: "i-test123",
 			job: &JobInfo{
-				JobID:        "job-123",
-				RunID:        "run-456",
+				JobID: 12345,
+				RunID: 67890,
 				InstanceType: "t4g.medium",
 				Pool:         "default",
 				Private:      false,
@@ -992,11 +999,11 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			expectError:       false,
 		},
 		{
-			name:       "Invalid job data - empty JobID",
+			name:       "Invalid job data - zero JobID",
 			instanceID: "i-emptyjobid",
 			job: &JobInfo{
-				JobID: "",
-				RunID: "run-valid",
+				JobID: 0,
+				RunID: 67890,
 				Spot:  true,
 			},
 			expectMarkCalled:  true,
@@ -1005,11 +1012,11 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			expectError:       false,
 		},
 		{
-			name:       "Invalid job data - empty RunID",
+			name:       "Invalid job data - zero RunID",
 			instanceID: "i-emptyrunid",
 			job: &JobInfo{
-				JobID: "job-valid",
-				RunID: "",
+				JobID: 12345,
+				RunID: 0,
 				Spot:  true,
 			},
 			expectMarkCalled:  true,
@@ -1038,8 +1045,8 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			name:       "Queue send failure",
 			instanceID: "i-queuefail",
 			job: &JobInfo{
-				JobID: "job-fail",
-				RunID: "run-fail",
+				JobID: 12345,
+				RunID: 67890,
 				Spot:  true,
 			},
 			queueSendErr:      fmt.Errorf("sqs throttled"),
@@ -1078,10 +1085,10 @@ func TestSpotInterruptionHandling(t *testing.T) {
 					queueCalled = true
 					if tt.job != nil {
 						if job.JobID != tt.job.JobID {
-							t.Errorf("Expected JobID %s, got %s", tt.job.JobID, job.JobID)
+							t.Errorf("Expected JobID %d, got %d", tt.job.JobID, job.JobID)
 						}
 						if job.RunID != tt.job.RunID {
-							t.Errorf("Expected RunID %s, got %s", tt.job.RunID, job.RunID)
+							t.Errorf("Expected RunID %d, got %d", tt.job.RunID, job.RunID)
 						}
 					}
 					return tt.queueSendErr
@@ -1134,8 +1141,8 @@ func TestSpotInterruptionHandling(t *testing.T) {
 
 func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	expectedJob := &JobInfo{
-		JobID:        "job-abc",
-		RunID:        "run-xyz",
+		JobID: 12345,
+		RunID: 67890,
 		InstanceType: "c7g.xlarge",
 		Pool:         "heavy-builds",
 		Private:      true,
@@ -1194,10 +1201,10 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	}
 
 	if capturedMessage.JobID != expectedJob.JobID {
-		t.Errorf("JobID: expected %s, got %s", expectedJob.JobID, capturedMessage.JobID)
+		t.Errorf("JobID: expected %d, got %d", expectedJob.JobID, capturedMessage.JobID)
 	}
 	if capturedMessage.RunID != expectedJob.RunID {
-		t.Errorf("RunID: expected %s, got %s", expectedJob.RunID, capturedMessage.RunID)
+		t.Errorf("RunID: expected %d, got %d", expectedJob.RunID, capturedMessage.RunID)
 	}
 	if capturedMessage.InstanceType != expectedJob.InstanceType {
 		t.Errorf("InstanceType: expected %s, got %s", expectedJob.InstanceType, capturedMessage.InstanceType)
@@ -1208,8 +1215,9 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	if capturedMessage.Private != expectedJob.Private {
 		t.Errorf("Private: expected %v, got %v", expectedJob.Private, capturedMessage.Private)
 	}
-	if capturedMessage.Spot != expectedJob.Spot {
-		t.Errorf("Spot: expected %v, got %v", expectedJob.Spot, capturedMessage.Spot)
+	// When ForceOnDemand is true, Spot should be false
+	if capturedMessage.Spot {
+		t.Errorf("Spot: expected false (ForceOnDemand=true), got %v", capturedMessage.Spot)
 	}
 	if capturedMessage.RunnerSpec != expectedJob.RunnerSpec {
 		t.Errorf("RunnerSpec: expected %s, got %s", expectedJob.RunnerSpec, capturedMessage.RunnerSpec)
@@ -1366,8 +1374,8 @@ func TestSpotInterruptionDetail_Structure(t *testing.T) {
 
 func TestJobInfo_Structure(t *testing.T) {
 	info := JobInfo{
-		JobID:        "job-123",
-		RunID:        "run-456",
+		JobID: 12345,
+		RunID: 67890,
 		Repo:         "owner/repo",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
@@ -1377,11 +1385,11 @@ func TestJobInfo_Structure(t *testing.T) {
 		RetryCount:   2,
 	}
 
-	if info.JobID != "job-123" {
-		t.Errorf("JobID = %s, want job-123", info.JobID)
+	if info.JobID != 12345 {
+		t.Errorf("JobID = %d, want 12345", info.JobID)
 	}
-	if info.RunID != "run-456" {
-		t.Errorf("RunID = %s, want run-456", info.RunID)
+	if info.RunID != 67890 {
+		t.Errorf("RunID = %d, want 67890", info.RunID)
 	}
 	if info.Repo != "owner/repo" {
 		t.Errorf("Repo = %s, want owner/repo", info.Repo)

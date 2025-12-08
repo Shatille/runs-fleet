@@ -32,8 +32,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 		{
 			name: "successful creation with resources",
 			spec: &provider.RunnerSpec{
-				RunID:      "run-123",
-				JobID:      "job-456",
+				RunID:      123,
+				JobID:      456,
 				Repo:       "org/repo",
 				Arch:       "arm64",
 				OS:         "linux",
@@ -48,8 +48,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 		{
 			name: "amd64 architecture",
 			spec: &provider.RunnerSpec{
-				RunID:      "run-789",
-				JobID:      "job-012",
+				RunID:      789,
+				JobID:      12,
 				Arch:       "amd64",
 				OS:         "linux",
 				CPUCores:   4,
@@ -62,8 +62,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 		{
 			name: "default resources when not specified",
 			spec: &provider.RunnerSpec{
-				RunID:    "run-defaults",
-				JobID:    "job-defaults",
+				RunID:    1001,
+				JobID:    1002,
 				Arch:     "arm64",
 				JITToken: "test-jit-token",
 			},
@@ -100,8 +100,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 					return
 				}
 
-				if pod.Labels["runs-fleet.io/run-id"] != tt.spec.RunID {
-					t.Errorf("Pod run-id label = %v, want %v", pod.Labels["runs-fleet.io/run-id"], tt.spec.RunID)
+				if pod.Labels["runs-fleet.io/run-id"] != fmt.Sprintf("%d", tt.spec.RunID) {
+					t.Errorf("Pod run-id label = %v, want %d", pod.Labels["runs-fleet.io/run-id"], tt.spec.RunID)
 				}
 
 				if pod.Spec.ServiceAccountName != "runner-sa" {
@@ -361,7 +361,7 @@ func TestProvider_CreateRunner_Error(t *testing.T) {
 
 	p := NewProviderWithClient(clientset, cfg)
 	_, err := p.CreateRunner(context.Background(), &provider.RunnerSpec{
-		RunID:    "run-error",
+		RunID:    99999,
 		JITToken: "test-jit-token",
 	})
 
@@ -529,11 +529,11 @@ func TestCreateRunner_MultipleJobsSameWorkflow(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	// Same RunID (workflow run), different JobIDs (individual jobs)
-	sharedRunID := "run-12345"
+	var sharedRunID int64 = 12345
 
 	spec1 := &provider.RunnerSpec{
 		RunID:    sharedRunID,
-		JobID:    "job-111",
+		JobID:    111,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		JITToken: "test-jit-token-1",
@@ -541,7 +541,7 @@ func TestCreateRunner_MultipleJobsSameWorkflow(t *testing.T) {
 
 	spec2 := &provider.RunnerSpec{
 		RunID:    sharedRunID,
-		JobID:    "job-222",
+		JobID:    222,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		JITToken: "test-jit-token-2",
@@ -574,9 +574,10 @@ func TestCreateRunner_MultipleJobsSameWorkflow(t *testing.T) {
 	}
 
 	// Verify both pods share the same run-id label
+	expectedRunID := fmt.Sprintf("%d", sharedRunID)
 	for _, pod := range pods.Items {
-		if pod.Labels["runs-fleet.io/run-id"] != sharedRunID {
-			t.Errorf("Pod %s has run-id label %s, want %s", pod.Name, pod.Labels["runs-fleet.io/run-id"], sharedRunID)
+		if pod.Labels["runs-fleet.io/run-id"] != expectedRunID {
+			t.Errorf("Pod %s has run-id label %s, want %s", pod.Name, pod.Labels["runs-fleet.io/run-id"], expectedRunID)
 		}
 	}
 }
@@ -597,7 +598,7 @@ func TestBuildTolerations(t *testing.T) {
 		{
 			name: "spot runner has tolerations",
 			spec: &provider.RunnerSpec{
-				RunID: "run-123",
+				RunID: 123,
 				Spot:  true,
 			},
 			wantCount:    7, // GKE preemptible, GKE spot, GKE provisioning, EKS, AKS, runs-fleet, Karpenter
@@ -606,7 +607,7 @@ func TestBuildTolerations(t *testing.T) {
 		{
 			name: "non-spot runner has no tolerations",
 			spec: &provider.RunnerSpec{
-				RunID: "run-456",
+				RunID: 456,
 				Spot:  false,
 			},
 			wantCount: 0,
@@ -645,15 +646,15 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	p := &Provider{config: cfg}
 
 	spec := &provider.RunnerSpec{
-		RunID:   "run-123",
-		JobID:   "job-456",
+		RunID:   123,
+		JobID:   456,
 		Private: true,
 	}
 
-	netpol := p.buildNetworkPolicy("runner-job-456", spec)
+	netpol := p.buildNetworkPolicy("runner-456", spec)
 
-	if netpol.Name != "runner-job-456-netpol" {
-		t.Errorf("NetworkPolicy name = %s, want runner-job-456-netpol", netpol.Name)
+	if netpol.Name != "runner-456-netpol" {
+		t.Errorf("NetworkPolicy name = %s, want runner-456-netpol", netpol.Name)
 	}
 
 	if netpol.Namespace != "runs-fleet" {
@@ -665,7 +666,7 @@ func TestBuildNetworkPolicy(t *testing.T) {
 	}
 
 	// Verify selector targets specific job pod (not all workflow pods)
-	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/job-id"] != "job-456" {
+	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/job-id"] != "456" {
 		t.Errorf("NetworkPolicy should select by job-id, got %v", netpol.Spec.PodSelector.MatchLabels)
 	}
 	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/private"] != labelValueTrue {
@@ -709,8 +710,8 @@ func TestCreateRunner_WithSpotAndPrivate(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-spot-private",
-		JobID:    "job-123",
+		RunID:    88888,
+		JobID:    77777,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -750,8 +751,8 @@ func TestCreateRunner_WithSpotAndPrivate(t *testing.T) {
 	}
 
 	// Verify job-id label on pod
-	if pod.Labels["runs-fleet.io/job-id"] != "job-123" {
-		t.Errorf("Pod should have runs-fleet.io/job-id=job-123 label, got %s", pod.Labels["runs-fleet.io/job-id"])
+	if pod.Labels["runs-fleet.io/job-id"] != "77777" {
+		t.Errorf("Pod should have runs-fleet.io/job-id=77777 label, got %s", pod.Labels["runs-fleet.io/job-id"])
 	}
 
 	// Verify NetworkPolicy was created
@@ -760,7 +761,7 @@ func TestCreateRunner_WithSpotAndPrivate(t *testing.T) {
 		t.Fatalf("Failed to get NetworkPolicy: %v", err)
 	}
 
-	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/job-id"] != "job-123" {
+	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/job-id"] != "77777" {
 		t.Errorf("NetworkPolicy should target specific job-id, got %v", netpol.Spec.PodSelector.MatchLabels)
 	}
 	if netpol.Spec.PodSelector.MatchLabels["runs-fleet.io/private"] != labelValueTrue {
@@ -778,8 +779,8 @@ func TestTerminateRunner_CleansUpNetworkPolicy(t *testing.T) {
 
 	// Create a private runner (creates pod + NetworkPolicy)
 	spec := &provider.RunnerSpec{
-		RunID:    "run-cleanup-test",
-		JobID:    "job-123",
+		RunID:    55555,
+		JobID:    66666,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -835,8 +836,8 @@ func TestCreateRunner_NetworkPolicyFailure_CleansPod(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-netpol-fail",
-		JobID:    "job-123",
+		RunID:    33333,
+		JobID:    44444,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -873,8 +874,8 @@ func TestCreateRunner_NonPrivate_SkipsNetworkPolicy(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-non-private",
-		JobID:    "job-123",
+		RunID:    11111,
+		JobID:    22222,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -914,8 +915,8 @@ func TestCreateRunner_CreatesPVC(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:      "run-pvc-test",
-		JobID:      "job-123",
+		RunID:      33333,
+		JobID:      44444,
 		Repo:       "org/repo",
 		Arch:       "arm64",
 		OS:         "linux",
@@ -941,8 +942,8 @@ func TestCreateRunner_CreatesPVC(t *testing.T) {
 	}
 
 	// Verify PVC labels
-	if pvc.Labels["runs-fleet.io/run-id"] != "run-pvc-test" {
-		t.Errorf("PVC run-id label = %s, want run-pvc-test", pvc.Labels["runs-fleet.io/run-id"])
+	if pvc.Labels["runs-fleet.io/run-id"] != "33333" {
+		t.Errorf("PVC run-id label = %s, want 33333", pvc.Labels["runs-fleet.io/run-id"])
 	}
 
 	// Verify pod has workspace volume mount
@@ -973,8 +974,8 @@ func TestTerminateRunner_DeletesPVC(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:      "run-pvc-cleanup",
-		JobID:      "job-123",
+		RunID:      55555,
+		JobID:      66666,
 		Repo:       "org/repo",
 		Arch:       "arm64",
 		StorageGiB: 30,
@@ -1017,8 +1018,8 @@ func TestCreateRunner_PVCDefaultStorage(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-default-storage",
-		JobID:    "job-123",
+		RunID:    77777,
+		JobID:    88888,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		JITToken: "test-jit-token",
@@ -1053,8 +1054,8 @@ func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:      "run-storage-class",
-		JobID:      "job-123",
+		RunID:      99999,
+		JobID:      10101,
 		Repo:       "org/repo",
 		Arch:       "arm64",
 		StorageGiB: 50,
@@ -1090,8 +1091,8 @@ func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-configmap-test",
-		JobID:    "job-123",
+		RunID:    20001,
+		JobID:    20002,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -1119,8 +1120,8 @@ func TestCreateRunner_IdempotentOnAlreadyExists(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-idempotent",
-		JobID:    "job-123",
+		RunID:    30001,
+		JobID:    30002,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -1155,8 +1156,8 @@ func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
 	p := NewProviderWithClient(clientset, cfg)
 
 	spec := &provider.RunnerSpec{
-		RunID:    "run-pod-exists",
-		JobID:    "job-pod-exists",
+		RunID:    40001,
+		JobID:    40002,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		OS:       "linux",
@@ -1167,7 +1168,7 @@ func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
 	// Pre-create pod to simulate another instance already creating it (name derived from JobID)
 	_, err := clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "runner-job-pod-exists",
+			Name:      "runner-40002",
 			Namespace: "runs-fleet",
 		},
 	}, metav1.CreateOptions{})
@@ -1181,12 +1182,12 @@ func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
 		t.Fatalf("CreateRunner() error = %v, want success (idempotent)", err)
 	}
 
-	if result.RunnerIDs[0] != "runner-job-pod-exists" {
-		t.Errorf("Runner ID = %s, want runner-job-pod-exists", result.RunnerIDs[0])
+	if result.RunnerIDs[0] != "runner-40002" {
+		t.Errorf("Runner ID = %s, want runner-40002", result.RunnerIDs[0])
 	}
 
 	// Verify NetworkPolicy is still created even when Pod already existed
-	netpolName := "runner-job-pod-exists-netpol"
+	netpolName := "runner-40002-netpol"
 	_, err = clientset.NetworkingV1().NetworkPolicies("runs-fleet").Get(context.Background(), netpolName, metav1.GetOptions{})
 	if err != nil {
 		t.Errorf("NetworkPolicy not created for private job when Pod already existed: %v", err)
@@ -1203,8 +1204,8 @@ func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
 	}
 	p := NewProviderWithClient(fake.NewSimpleClientset(), cfg)
 	spec := &provider.RunnerSpec{
-		RunID:    "test-gid",
-		JobID:    "job-123",
+		RunID:    50001,
+		JobID:    50002,
 		Repo:     "org/repo",
 		Arch:     "arm64",
 		JITToken: "test-token",

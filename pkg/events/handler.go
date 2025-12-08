@@ -37,8 +37,8 @@ type DBAPI interface {
 
 // JobInfo represents job details stored in DynamoDB.
 type JobInfo struct {
-	JobID        string
-	RunID        string
+	JobID        int64
+	RunID        int64
 	Repo         string
 	InstanceType string
 	Pool         string
@@ -281,8 +281,8 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return nil
 	}
 
-	if job.JobID == "" || job.RunID == "" {
-		log.Printf("Invalid job data for instance %s (JobID=%s, RunID=%s), skipping re-queue", detail.InstanceID, job.JobID, job.RunID)
+	if job.JobID == 0 || job.RunID == 0 {
+		log.Printf("Invalid job data for instance %s (JobID=%d, RunID=%d), skipping re-queue", detail.InstanceID, job.JobID, job.RunID)
 		return nil
 	}
 
@@ -295,6 +295,8 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 
 	// Re-queue with ForceOnDemand to ensure job completes on retry
 	// Increment RetryCount to track how many times this job has been retried
+	// Note: Some fields (OriginalLabel, Region, etc.) are not stored in JobInfo.
+	// Re-queued jobs use basic config. Full field storage is a future enhancement.
 	requeueMsg := &queue.JobMessage{
 		JobID:         job.JobID,
 		RunID:         job.RunID,
@@ -302,16 +304,16 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		InstanceType:  job.InstanceType,
 		Pool:          job.Pool,
 		Private:       job.Private,
-		Spot:          job.Spot,
+		Spot:          false,              // ForceOnDemand uses on-demand instances
 		RunnerSpec:    job.RunnerSpec,
 		RetryCount:    job.RetryCount + 1, // Increment retry count
 		ForceOnDemand: true,               // Force on-demand for retries after spot interruption
 	}
 	if err := h.queueClient.SendMessage(ctx, requeueMsg); err != nil {
-		return fmt.Errorf("failed to re-queue job %s: %w", job.JobID, err)
+		return fmt.Errorf("failed to re-queue job %d: %w", job.JobID, err)
 	}
 
-	log.Printf("Successfully re-queued job %s from interrupted instance %s (RetryCount=%d, ForceOnDemand=true)", job.JobID, detail.InstanceID, requeueMsg.RetryCount)
+	log.Printf("Successfully re-queued job %d from interrupted instance %s (RetryCount=%d, ForceOnDemand=true)", job.JobID, detail.InstanceID, requeueMsg.RetryCount)
 	return nil
 }
 

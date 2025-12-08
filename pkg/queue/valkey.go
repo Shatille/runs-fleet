@@ -80,10 +80,10 @@ func (c *ValkeyClient) ensureConsumerGroup(ctx context.Context) error {
 
 // SendMessage publishes job message to Valkey stream.
 func (c *ValkeyClient) SendMessage(ctx context.Context, job *JobMessage) error {
-	if job.JobID == "" {
+	if job.JobID == 0 {
 		return fmt.Errorf("job ID is required")
 	}
-	if job.RunID == "" {
+	if job.RunID == 0 {
 		return fmt.Errorf("run ID is required")
 	}
 

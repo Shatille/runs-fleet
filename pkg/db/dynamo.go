@@ -14,6 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
+// ErrJobAlreadyClaimed is returned when attempting to claim a job that is already being processed.
+var ErrJobAlreadyClaimed = errors.New("job already claimed")
+
 // DynamoDBAPI defines DynamoDB operations for pool configuration storage.
 //
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -23,6 +26,7 @@ type DynamoDBAPI interface {
 	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
 	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 }
 
 // Client provides DynamoDB operations for pool configuration and state.
@@ -51,8 +55,8 @@ func (c *Client) HasJobsTable() bool {
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
 	InstanceID   string `dynamodbav:"instance_id"`
-	JobID        string `dynamodbav:"job_id"`
-	RunID        string `dynamodbav:"run_id"`
+	JobID        int64  `dynamodbav:"job_id"`
+	RunID        int64  `dynamodbav:"run_id"`
 	Repo         string `dynamodbav:"repo"`
 	InstanceType string `dynamodbav:"instance_type"`
 	Pool         string `dynamodbav:"pool"`
@@ -339,8 +343,8 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 
 // JobRecord contains job information for storage.
 type JobRecord struct {
-	JobID        string
-	RunID        string
+	JobID        int64
+	RunID        int64
 	Repo         string
 	InstanceID   string
 	InstanceType string
@@ -357,8 +361,8 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	if job == nil {
 		return fmt.Errorf("job record cannot be nil")
 	}
-	if job.JobID == "" {
-		return fmt.Errorf("job ID cannot be empty")
+	if job.JobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 	if job.InstanceID == "" {
 		return fmt.Errorf("instance ID cannot be empty")
@@ -369,10 +373,10 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	}
 
 	record := jobRecord{
+		InstanceID:   job.InstanceID,
 		JobID:        job.JobID,
 		RunID:        job.RunID,
 		Repo:         job.Repo,
-		InstanceID:   job.InstanceID,
 		InstanceType: job.InstanceType,
 		Pool:         job.Pool,
 		Private:      job.Private,
@@ -399,18 +403,85 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	return nil
 }
 
+// ClaimJob atomically claims a job for processing using conditional write.
+// Returns ErrJobAlreadyClaimed if the job is already being processed.
+// Uses job_id as primary key to track claims.
+func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	record := jobRecord{
+		JobID:     jobID,
+		Status:    "claiming",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	item, err := attributevalue.MarshalMap(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal claim record: %w", err)
+	}
+
+	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(c.jobsTable),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(job_id)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrJobAlreadyClaimed
+		}
+		return fmt.Errorf("failed to claim job: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteJobClaim removes a job claim record. Used for cleanup on processing failure.
+func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete job claim: %w", err)
+	}
+
+	return nil
+}
+
 // MarkJobComplete marks a job as complete in DynamoDB with exit status.
-// Uses instance_id as primary key (one job per instance).
-func (c *Client) MarkJobComplete(ctx context.Context, instanceID, status string, exitCode, duration int) error {
-	if instanceID == "" {
-		return fmt.Errorf("instance ID cannot be empty")
+// Uses job_id as primary key (Number type in DynamoDB).
+func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 	if status == "" {
 		return fmt.Errorf("status cannot be empty")
 	}
 
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -445,14 +516,14 @@ func (c *Client) MarkJobComplete(ctx context.Context, instanceID, status string,
 }
 
 // UpdateJobMetrics updates job timing metrics in DynamoDB.
-// Uses instance_id as primary key (one job per instance).
-func (c *Client) UpdateJobMetrics(ctx context.Context, instanceID string, startedAt, completedAt time.Time) error {
-	if instanceID == "" {
-		return fmt.Errorf("instance ID cannot be empty")
+// Uses job_id as primary key (Number type in DynamoDB).
+func (c *Client) UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
 	}
 
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -478,4 +549,57 @@ func (c *Client) UpdateJobMetrics(ctx context.Context, instanceID string, starte
 	}
 
 	return nil
+}
+
+// MarkJobRequeued atomically marks a job as "requeued" if its current status is "running".
+// Returns true if the job was successfully marked (was in "running" state).
+// Returns false if the job was already in another state (terminating, requeued, etc.).
+// This prevents duplicate re-queuing from concurrent webhook handlers.
+func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, error) {
+	if instanceID == "" {
+		return false, fmt.Errorf("instance ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return false, fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]string{
+		"instance_id": instanceID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	update := "SET #status = :new_status, requeued_at = :requeued_at"
+	condition := "#status = :current_status"
+	exprNames := map[string]string{
+		"#status": "status",
+	}
+	exprValues, err := attributevalue.MarshalMap(map[string]interface{}{
+		":new_status":     "requeued",
+		":current_status": "running",
+		":requeued_at":    time.Now().Format(time.RFC3339),
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal values: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(c.jobsTable),
+		Key:                       key,
+		UpdateExpression:          aws.String(update),
+		ConditionExpression:       aws.String(condition),
+		ExpressionAttributeNames:  exprNames,
+		ExpressionAttributeValues: exprValues,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to mark job requeued: %w", err)
+	}
+
+	return true, nil
 }

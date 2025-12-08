@@ -40,8 +40,8 @@ func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMes
 
 func TestJobMessage_Marshal(t *testing.T) {
 	job := &JobMessage{
-		JobID:        "456",
-		RunID:        "123",
+		JobID:        12345,
+		RunID:        67890,
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Private:      true,
@@ -54,22 +54,22 @@ func TestJobMessage_Marshal(t *testing.T) {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	expected := `{"job_id":"456","run_id":"123","instance_type":"t4g.medium","pool":"default","private":true,"spot":false,"runner_spec":"2cpu-linux-arm64"}`
+	expected := `{"job_id":12345,"run_id":67890,"instance_type":"t4g.medium","pool":"default","private":true,"spot":false,"runner_spec":"2cpu-linux-arm64"}`
 	if string(data) != expected {
 		t.Errorf("Marshal result = %s, want %s", string(data), expected)
 	}
 }
 
 func TestJobMessage_Unmarshal(t *testing.T) {
-	jsonStr := `{"run_id":"456","instance_type":"c7g.xlarge","private":false,"spot":true,"runner_spec":"4cpu-linux-arm64"}`
+	jsonStr := `{"run_id":67890,"instance_type":"c7g.xlarge","private":false,"spot":true,"runner_spec":"4cpu-linux-arm64"}`
 
 	var job JobMessage
 	if err := json.Unmarshal([]byte(jsonStr), &job); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if job.RunID != "456" {
-		t.Errorf("RunID = %s, want 456", job.RunID)
+	if job.RunID != 67890 {
+		t.Errorf("RunID = %d, want 67890", job.RunID)
 	}
 	if job.InstanceType != "c7g.xlarge" {
 		t.Errorf("InstanceType = %s, want c7g.xlarge", job.InstanceType)
@@ -95,24 +95,24 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "success",
 			job: &JobMessage{
-				JobID:        "job-123",
-				RunID:        "test-run-123",
+				JobID:        12345,
+				RunID:        67890,
 				InstanceType: "t4g.medium",
 				Spot:         true,
 				RunnerSpec:   "2cpu-linux-arm64",
 			},
 			mock: &mockSQSClient{
 				SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
-					if params.MessageGroupId == nil || *params.MessageGroupId != "test-run-123" {
+					if params.MessageGroupId == nil || *params.MessageGroupId != "67890" {
 						t.Error("MessageGroupId not set correctly")
 					}
 					if params.MessageDeduplicationId == nil || *params.MessageDeduplicationId == "" {
 						t.Error("MessageDeduplicationId not set")
 					}
-					if *params.MessageDeduplicationId == "test-run-123" {
+					if *params.MessageDeduplicationId == "67890" {
 						t.Error("MessageDeduplicationId should not equal RunID")
 					}
-					if *params.MessageDeduplicationId == "job-123" {
+					if *params.MessageDeduplicationId == "12345" {
 						t.Error("MessageDeduplicationId should not equal JobID")
 					}
 					return &sqs.SendMessageOutput{
@@ -125,7 +125,7 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "empty job ID",
 			job: &JobMessage{
-				RunID:        "test-run-123",
+				RunID: 67890,
 				InstanceType: "t4g.medium",
 			},
 			mock:    &mockSQSClient{},
@@ -134,7 +134,7 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "empty run ID",
 			job: &JobMessage{
-				JobID:        "job-123",
+				JobID: 12345,
 				InstanceType: "t4g.medium",
 			},
 			mock:    &mockSQSClient{},
@@ -143,8 +143,8 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "sqs error",
 			job: &JobMessage{
-				JobID:        "job-456",
-				RunID:        "test-run-456",
+				JobID: 12345,
+				RunID: 67890,
 				InstanceType: "t4g.medium",
 			},
 			mock: &mockSQSClient{
@@ -175,8 +175,8 @@ func TestSQSClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
 	var firstDedupID, secondDedupID string
 
 	job := &JobMessage{
-		JobID:        "job-retry-test",
-		RunID:        "run-123",
+		JobID: 12345,
+		RunID: 67890,
 		InstanceType: "t4g.medium",
 		Spot:         true,
 		RunnerSpec:   "2cpu-linux-arm64",
@@ -347,8 +347,8 @@ func TestSQSClient_SendMessage_WithTraceContext(t *testing.T) {
 	}
 
 	job := &JobMessage{
-		JobID:        "job-trace",
-		RunID:        "run-trace",
+		JobID: 12345,
+		RunID: 67890,
 		InstanceType: "t4g.medium",
 		TraceID:      "trace-abc123",
 		SpanID:       "span-def456",
@@ -395,8 +395,8 @@ func TestSQSClient_SendMessage_WithPartialTraceContext(t *testing.T) {
 
 	// Only TraceID, no SpanID or ParentID
 	job := &JobMessage{
-		JobID:        "job-partial",
-		RunID:        "run-partial",
+		JobID: 12345,
+		RunID: 67890,
 		InstanceType: "t4g.medium",
 		TraceID:      "trace-only",
 	}
@@ -438,8 +438,8 @@ func TestSQSClient_SendMessage_NoTraceContext(t *testing.T) {
 	}
 
 	job := &JobMessage{
-		JobID:        "job-no-trace",
-		RunID:        "run-no-trace",
+		JobID: 12345,
+		RunID: 67890,
 		InstanceType: "t4g.medium",
 		// No trace context
 	}

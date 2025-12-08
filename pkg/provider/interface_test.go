@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -16,7 +17,7 @@ type mockProvider struct {
 
 func (m *mockProvider) CreateRunner(_ context.Context, spec *RunnerSpec) (*RunnerResult, error) {
 	return &RunnerResult{
-		RunnerIDs: []string{"runner-" + spec.RunID},
+		RunnerIDs: []string{fmt.Sprintf("runner-%d", spec.RunID)},
 	}, nil
 }
 
@@ -77,7 +78,7 @@ func (m *mockStateStore) GetJob(_ context.Context, _ string) (*Job, error) {
 	return &Job{}, nil
 }
 
-func (m *mockStateStore) MarkJobComplete(_ context.Context, _, _ string, _, _ int) error {
+func (m *mockStateStore) MarkJobComplete(_ context.Context, _ int64, _ string, _, _ int) error {
 	return nil
 }
 
@@ -85,7 +86,7 @@ func (m *mockStateStore) MarkJobTerminating(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *mockStateStore) UpdateJobMetrics(_ context.Context, _ string, _, _ time.Time) error {
+func (m *mockStateStore) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time) error {
 	return nil
 }
 
@@ -128,15 +129,15 @@ func TestProviderInterface(t *testing.T) {
 
 	ctx := context.Background()
 	spec := &RunnerSpec{
-		RunID: "test-run",
+		RunID: 12345,
 	}
 
 	result, err := p.CreateRunner(ctx, spec)
 	if err != nil {
 		t.Errorf("CreateRunner() error = %v", err)
 	}
-	if len(result.RunnerIDs) != 1 || result.RunnerIDs[0] != "runner-test-run" {
-		t.Errorf("CreateRunner() = %v, want [runner-test-run]", result.RunnerIDs)
+	if len(result.RunnerIDs) != 1 || result.RunnerIDs[0] != "runner-12345" {
+		t.Errorf("CreateRunner() = %v, want [runner-12345]", result.RunnerIDs)
 	}
 
 	if termErr := p.TerminateRunner(ctx, "runner-1"); termErr != nil {
@@ -222,7 +223,7 @@ func TestStateStoreInterface(t *testing.T) {
 		t.Error("GetJob() returned nil")
 	}
 
-	if completeErr := ss.MarkJobComplete(ctx, "runner-1", "success", 0, 100); completeErr != nil {
+	if completeErr := ss.MarkJobComplete(ctx, 12345678901, "success", 0, 100); completeErr != nil {
 		t.Errorf("MarkJobComplete() error = %v", completeErr)
 	}
 
@@ -230,7 +231,7 @@ func TestStateStoreInterface(t *testing.T) {
 		t.Errorf("MarkJobTerminating() error = %v", termErr)
 	}
 
-	if metricsErr := ss.UpdateJobMetrics(ctx, "runner-1", now, now.Add(time.Hour)); metricsErr != nil {
+	if metricsErr := ss.UpdateJobMetrics(ctx, 12345678901, now, now.Add(time.Hour)); metricsErr != nil {
 		t.Errorf("UpdateJobMetrics() error = %v", metricsErr)
 	}
 
@@ -279,8 +280,8 @@ func TestCoordinatorInterface(t *testing.T) {
 
 func TestRunnerSpec_AllFields(t *testing.T) {
 	spec := RunnerSpec{
-		RunID:         "run-123",
-		JobID:         "job-456",
+		RunID:         123,
+		JobID:         456,
 		Repo:          "owner/repo",
 		Labels:        []string{"self-hosted", "linux"},
 		InstanceType:  "t4g.medium",
@@ -303,11 +304,11 @@ func TestRunnerSpec_AllFields(t *testing.T) {
 		RunnerGroup:   "default-group",
 	}
 
-	if spec.RunID != "run-123" {
-		t.Errorf("RunnerSpec.RunID = %q, want %q", spec.RunID, "run-123")
+	if spec.RunID != 123 {
+		t.Errorf("RunnerSpec.RunID = %d, want %d", spec.RunID, 123)
 	}
-	if spec.JobID != "job-456" {
-		t.Errorf("RunnerSpec.JobID = %q, want %q", spec.JobID, "job-456")
+	if spec.JobID != 456 {
+		t.Errorf("RunnerSpec.JobID = %d, want %d", spec.JobID, 456)
 	}
 	if len(spec.Labels) != 2 {
 		t.Errorf("RunnerSpec.Labels length = %d, want 2", len(spec.Labels))
@@ -408,8 +409,8 @@ func TestStoreConfigRequest_Fields(t *testing.T) {
 func TestJob_Fields(t *testing.T) {
 	now := time.Now()
 	job := Job{
-		JobID:        "job-123",
-		RunID:        "run-456",
+		JobID:        123,
+		RunID:        456,
 		Repo:         "owner/repo",
 		InstanceID:   "i-12345",
 		InstanceType: "t4g.medium",
@@ -423,8 +424,8 @@ func TestJob_Fields(t *testing.T) {
 		CompletedAt:  now.Add(time.Hour),
 	}
 
-	if job.JobID != "job-123" {
-		t.Errorf("Job.JobID = %q, want job-123", job.JobID)
+	if job.JobID != 123 {
+		t.Errorf("Job.JobID = %d, want 123", job.JobID)
 	}
 	if job.InstanceID != "i-12345" {
 		t.Errorf("Job.InstanceID = %q, want i-12345", job.InstanceID)

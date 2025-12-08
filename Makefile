@@ -1,12 +1,14 @@
-.PHONY: init build test lint clean docker-build docker-push docker-build-runner docker-push-runner
+.PHONY: init build test coverage lint clean docker-build docker-push docker-build-runner docker-push-runner
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
+CONTAINER_CLI?=$(shell command -v podman 2>/dev/null || echo docker)
 DOCKER_IMAGE?=runs-fleet
 DOCKER_TAG?=latest
 AWS_REGION?=ap-northeast-1
 AWS_ACCOUNT_ID?=$(shell aws sts get-caller-identity --query Account --output text)
 ECR_REGISTRY?=$(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
+CPUS?=$(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 # Initialize project
 init:
@@ -20,7 +22,7 @@ init:
 build-server:
 	@echo "Building server..."
 	@mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' \
+	CGO_ENABLED=0 GOOS=linux go build -ldflags '-extldflags "-static"' \
 		-o $(BINARY_SERVER) ./cmd/server
 
 # Build all binaries (alias for build-server)
@@ -28,13 +30,19 @@ build: build-server
 
 # Run tests
 test:
-	@echo "Running tests..."
-	go test -race -coverprofile=coverage.out ./...
+	@echo "Running tests with $(CPUS) CPUs..."
+	go test -race -parallel=$(CPUS) ./...
+
+# Run tests with coverage
+coverage:
+	@echo "Running tests with coverage ($(CPUS) CPUs)..."
+	go test -race -parallel=$(CPUS) -coverprofile=coverage.out -covermode=atomic ./...
 
 # Run linter
+LINT_TIMEOUT?=5m
 lint:
-	@echo "Running linter..."
-	CGO_ENABLED=0 golangci-lint run
+	@echo "Running linter with $(CPUS) CPUs..."
+	CGO_ENABLED=0 golangci-lint run --concurrency=$(CPUS) --timeout=$(LINT_TIMEOUT)
 
 # Clean build artifacts
 clean:
@@ -45,45 +53,65 @@ clean:
 # Build Docker image
 docker-build:
 	@echo "Building Docker image..."
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	$(CONTAINER_CLI) build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 
 # Push to ECR
 docker-push: docker-build
 	@echo "Logging into ECR..."
 	aws ecr get-login-password --region $(AWS_REGION) | \
-		docker login --username AWS --password-stdin $(ECR_REGISTRY)
+		$(CONTAINER_CLI) login --username AWS --password-stdin $(ECR_REGISTRY)
 	@echo "Tagging image..."
-	docker tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
+	$(CONTAINER_CLI) tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
 	@echo "Pushing to ECR..."
-	docker push $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
+	$(CONTAINER_CLI) push $(ECR_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
 
 # Build runner Docker image
 RUNNER_IMAGE?=runs-fleet-runner
 RUNNER_TAG?=latest
-RUNNER_VERSION?=2.321.0
+RUNNER_VERSION?=2.330.0
 
 # Build runner image for local architecture only (for testing)
 docker-build-runner:
 	@echo "Building runner Docker image (local arch)..."
-	docker build \
+	$(CONTAINER_CLI) build \
 		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
 		--build-arg VERSION=$(RUNNER_TAG) \
 		-f docker/runner/Dockerfile \
 		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
 		.
 
-# Push runner image to ECR (multi-arch build + push in one step)
+# Push runner image to ECR (multi-arch build with fast-fail)
+# Builds architectures in parallel, fails immediately if either fails
 docker-push-runner:
 	@echo "Logging into ECR..."
 	aws ecr get-login-password --region $(AWS_REGION) | \
-		docker login --username AWS --password-stdin $(ECR_REGISTRY)
-	@echo "Building and pushing runner Docker image (multi-arch)..."
-	docker buildx build \
-		--platform linux/amd64,linux/arm64 \
+		$(CONTAINER_CLI) login --username AWS --password-stdin $(ECR_REGISTRY)
+	@echo "Building runner Docker image (multi-arch with fast-fail)..."
+	@$(MAKE) -j2 --output-sync=target \
+		_build-runner-amd64 \
+		_build-runner-arm64
+	@echo "Creating and pushing multi-arch manifest..."
+	$(CONTAINER_CLI) buildx imagetools create -t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG) \
+		$(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-amd64 \
+		$(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-arm64
+
+_build-runner-amd64:
+	$(CONTAINER_CLI) buildx build \
+		--platform linux/amd64 \
 		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
 		--build-arg VERSION=$(RUNNER_TAG) \
 		-f docker/runner/Dockerfile \
-		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG) \
+		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-amd64 \
+		--push \
+		.
+
+_build-runner-arm64:
+	$(CONTAINER_CLI) buildx build \
+		--platform linux/arm64 \
+		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg VERSION=$(RUNNER_TAG) \
+		-f docker/runner/Dockerfile \
+		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-arm64 \
 		--push \
 		.
 
@@ -113,7 +141,8 @@ help:
 	@echo "  init                    - Initialize project (download deps, setup)"
 	@echo "  build-server            - Build server binary"
 	@echo "  build                   - Build all binaries"
-	@echo "  test                    - Run tests with coverage"
+	@echo "  test                    - Run tests"
+	@echo "  coverage                - Run tests with coverage"
 	@echo "  lint                    - Run golangci-lint"
 	@echo "  clean                   - Remove build artifacts"
 	@echo "  docker-build            - Build orchestrator Docker image"

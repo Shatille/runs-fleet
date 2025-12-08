@@ -47,7 +47,7 @@ func (m *Manager) SetCircuitBreaker(cb CircuitBreaker) {
 
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
-	RunID         string
+	RunID         int64
 	InstanceType  string   // Primary instance type (used if InstanceTypes is empty)
 	InstanceTypes []string // Multiple instance types for spot diversification (Phase 10)
 	SubnetID      string
@@ -115,7 +115,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	if !useSpot {
 		req.TargetCapacitySpecification.DefaultTargetCapacityType = types.DefaultTargetCapacityTypeOnDemand
 		if spec.ForceOnDemand && spec.RetryCount > 0 {
-			log.Printf("Using on-demand for retry #%d of run %s", spec.RetryCount, spec.RunID)
+			log.Printf("Using on-demand for retry #%d of run %d", spec.RetryCount, spec.RunID)
 		}
 		// For on-demand, use only the primary instance type with appropriate template
 		primaryType := m.getPrimaryInstanceType(spec)
@@ -320,7 +320,7 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 	tags := []types.Tag{
 		{
 			Key:   aws.String("runs-fleet:run-id"),
-			Value: aws.String(spec.RunID),
+			Value: aws.String(fmt.Sprintf("%d", spec.RunID)),
 		},
 		{
 			Key:   aws.String("runs-fleet:managed"),

@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "rami": {
-      "type": "http",
-      "url": "https://rami.shavakan.com/mcp"
-    }
-  }
-}
