@@ -246,7 +246,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher me
 
 	housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
 
-	var costReporter *cost.Reporter
+	var costReporter housekeeping.CostReporter
 	if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
 		costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
 	}
