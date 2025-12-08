@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"time"
 
@@ -408,12 +409,20 @@ func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
 func (t *Tasks) ExecuteCostReport(ctx context.Context) error {
 	log.Println("Executing cost report generation...")
 
-	if t.costReporter == nil {
+	if isNilInterface(t.costReporter) {
 		log.Println("Cost reporter not configured, skipping")
 		return nil
 	}
 
 	return t.costReporter.GenerateDailyReport(ctx)
+}
+
+func isNilInterface(i interface{}) bool {
+	if i == nil {
+		return true
+	}
+	v := reflect.ValueOf(i)
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }
 
 // ExecuteDLQRedrive moves messages from the DLQ back to the main queue.

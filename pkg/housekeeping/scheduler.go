@@ -107,8 +107,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer costTicker.Stop()
 	defer dlqTicker.Stop()
 
-	// Run orphaned instances cleanup immediately on startup
+	// Run critical tasks immediately on startup
 	s.scheduleTask(ctx, TaskOrphanedInstances)
+	s.scheduleTask(ctx, TaskDLQRedrive)
 
 	for {
 		select {

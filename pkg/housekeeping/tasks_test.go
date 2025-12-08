@@ -545,6 +545,24 @@ func TestExecuteCostReport_NoCostReporter(t *testing.T) {
 	}
 }
 
+func TestExecuteCostReport_TypedNilPointer(t *testing.T) {
+	// Regression test: passing a typed nil pointer (*mockCostReporter)(nil)
+	// creates a non-nil interface with nil concrete value, which bypasses
+	// the nil check and causes a panic when methods are called.
+	var reporter *mockCostReporter // typed nil pointer
+
+	tasks := &Tasks{
+		costReporter: reporter, // interface wraps typed nil - NOT equal to nil
+		config:       &config.Config{},
+	}
+
+	// This should not panic - the nil check must handle typed nil pointers
+	err := tasks.ExecuteCostReport(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestExecuteCostReport_Success(t *testing.T) {
 	costReporter := &mockCostReporter{}
 
