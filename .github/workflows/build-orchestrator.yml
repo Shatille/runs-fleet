@@ -93,10 +93,20 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "Version: $NEW_VERSION"
 
-  build-arm64:
-    name: Build (arm64)
+  build:
+    name: Build ${{ matrix.arch }}
     needs: version
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+    runs-on: "${{ matrix.runner }}"
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64
+            platform: linux/arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -111,49 +121,26 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
+        uses: docker/build-push-action@v6
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          docker buildx build \
-            --platform linux/arm64 \
-            --provenance=false \
-            --build-arg VERSION=$VERSION \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64 \
-            --push .
-
-  build-amd64:
-    name: Build (amd64)
-    needs: version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        env:
-          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --provenance=false \
-            --build-arg VERSION=$VERSION \
-            --tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
-            --push .
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.version.outputs.version }}-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+          cache-from: type=registry,ref=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
+          provenance: false
+          no-cache-filters: stage-1
 
   manifest:
     name: Create Manifest
-    needs: [version, build-arm64, build-amd64]
+    needs: [version, build]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ needs.version.outputs.version }}

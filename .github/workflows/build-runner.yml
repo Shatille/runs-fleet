@@ -106,8 +106,8 @@ jobs:
           tags: ${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.arch }},ignore-error=true
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }},ignore-error=true
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
           provenance: false
           no-cache-filters: stage-1
 
