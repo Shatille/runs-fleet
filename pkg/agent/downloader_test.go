@@ -11,55 +11,17 @@ import (
 	"testing"
 )
 
-// mockCacheClient implements CacheClient for testing.
-type mockCacheClient struct {
-	cacheHit     bool
-	checkErr     error
-	downloadErr  error
-	uploadErr    error
-	checkCalls   int
-	downloadCalls int
-	uploadCalls  int
-}
-
-func (m *mockCacheClient) CheckCache(_ context.Context, _, _ string) (bool, string, error) {
-	m.checkCalls++
-	if m.checkErr != nil {
-		return false, "", m.checkErr
-	}
-	return m.cacheHit, "cached-path", nil
-}
-
-func (m *mockCacheClient) DownloadFromCache(_ context.Context, _, _, _ string) error {
-	m.downloadCalls++
-	return m.downloadErr
-}
-
-func (m *mockCacheClient) UploadToCache(_ context.Context, _, _, _ string) error {
-	m.uploadCalls++
-	return m.uploadErr
-}
-
 func TestNewDownloader(t *testing.T) {
-	cache := &mockCacheClient{}
-	d := NewDownloader(cache)
+	d := NewDownloader()
 
-	if d.cache != cache {
-		t.Error("expected cache to be set")
-	}
-}
-
-func TestNewDownloader_NilCache(t *testing.T) {
-	d := NewDownloader(nil)
-
-	if d.cache != nil {
-		t.Error("expected cache to be nil")
+	if len(d.prebakedPaths) != 2 {
+		t.Errorf("expected 2 prebaked paths, got %d", len(d.prebakedPaths))
 	}
 }
 
 func TestDownloadRunner_UnsupportedArch(_ *testing.T) {
 	// This test validates the architecture check logic
-	d := NewDownloader(nil)
+	d := NewDownloader()
 
 	// The actual test depends on runtime.GOARCH
 	// On unsupported architectures, it should return an error
@@ -69,24 +31,6 @@ func TestDownloadRunner_UnsupportedArch(_ *testing.T) {
 	// We can't easily test unsupported arch without build tags
 	// So we just verify it doesn't panic
 	_ = err
-}
-
-func TestDownloadRunner_CacheHit(t *testing.T) {
-	cache := &mockCacheClient{
-		cacheHit: true,
-	}
-	d := NewDownloader(cache)
-	d.skipPrebakedCheck = true // Skip pre-baked check to test cache path
-
-	ctx := context.Background()
-	_, _ = d.DownloadRunner(ctx)
-
-	if cache.checkCalls != 1 {
-		t.Errorf("expected 1 cache check call, got %d", cache.checkCalls)
-	}
-	if cache.downloadCalls != 1 {
-		t.Errorf("expected 1 download call on cache hit, got %d", cache.downloadCalls)
-	}
 }
 
 func TestVerifyChecksum_Success(t *testing.T) {

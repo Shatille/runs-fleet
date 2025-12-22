@@ -32,7 +32,6 @@ type agentConfig struct {
 	telemetry    agent.TelemetryClient
 	terminator   agent.InstanceTerminator
 	runnerConfig *agent.RunnerConfig
-	cacheClient  agent.CacheClient
 	cwLogger     *agent.CloudWatchLogger
 	awsCfg       aws.Config
 	cleanup      func() // Cleanup function for deferred resources
@@ -86,7 +85,7 @@ func main() {
 	}
 
 	// Common initialization
-	downloader := agent.NewDownloader(ac.cacheClient)
+	downloader := agent.NewDownloader()
 	safetyMonitor := agent.NewSafetyMonitor(time.Duration(maxRuntimeMinutes)*time.Minute, logger)
 	executor := agent.NewExecutor(logger, safetyMonitor)
 	cleanup := agent.NewCleanup(logger)
@@ -192,12 +191,6 @@ func initEC2Mode(ctx context.Context, instanceID, runID string, logger *stdLogge
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 	ac.awsCfg = awsCfg
-
-	// Config bucket for runner download cache
-	configBucket := os.Getenv("RUNS_FLEET_CONFIG_BUCKET")
-	if configBucket != "" {
-		ac.cacheClient = agent.NewCache(awsCfg, configBucket)
-	}
 
 	// SQS telemetry
 	terminationQueueURL := os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL")

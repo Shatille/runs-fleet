@@ -705,38 +705,15 @@ func TestParseTags(t *testing.T) {
 	}
 	tests = append(tests, boundaryTests...)
 
-	// Test 35 custom tag limit (AWS 50 - 15 reserved for system tags)
+	// Test 36 custom tag limit (AWS 50 - 14 reserved for system tags)
 	t.Run("tag count limit", func(t *testing.T) {
-		// 35 tags should pass
-		tags35 := make(map[string]string, 35)
-		for i := 0; i < 35; i++ {
-			tags35[strings.Repeat("a", i+1)] = "v"
-		}
-		json35 := "{"
-		first := true
-		for k, v := range tags35 {
-			if !first {
-				json35 += ","
-			}
-			json35 += `"` + k + `":"` + v + `"`
-			first = false
-		}
-		json35 += "}"
-		got, err := parseTags(json35)
-		if err != nil {
-			t.Errorf("35 tags should be allowed, got error: %v", err)
-		}
-		if len(got) != 35 {
-			t.Errorf("expected 35 tags, got %d", len(got))
-		}
-
-		// 36 tags should fail
+		// 36 tags should pass
 		tags36 := make(map[string]string, 36)
 		for i := 0; i < 36; i++ {
-			tags36[strings.Repeat("b", i+1)] = "v"
+			tags36[strings.Repeat("a", i+1)] = "v"
 		}
 		json36 := "{"
-		first = true
+		first := true
 		for k, v := range tags36 {
 			if !first {
 				json36 += ","
@@ -745,9 +722,32 @@ func TestParseTags(t *testing.T) {
 			first = false
 		}
 		json36 += "}"
-		_, err = parseTags(json36)
+		got, err := parseTags(json36)
+		if err != nil {
+			t.Errorf("36 tags should be allowed, got error: %v", err)
+		}
+		if len(got) != 36 {
+			t.Errorf("expected 36 tags, got %d", len(got))
+		}
+
+		// 37 tags should fail
+		tags37 := make(map[string]string, 37)
+		for i := 0; i < 37; i++ {
+			tags37[strings.Repeat("b", i+1)] = "v"
+		}
+		json37 := "{"
+		first = true
+		for k, v := range tags37 {
+			if !first {
+				json37 += ","
+			}
+			json37 += `"` + k + `":"` + v + `"`
+			first = false
+		}
+		json37 += "}"
+		_, err = parseTags(json37)
 		if err == nil {
-			t.Error("36 tags should be rejected (exceeds 35 custom tag limit)")
+			t.Error("37 tags should be rejected (exceeds 36 custom tag limit)")
 		}
 	})
 	for _, tt := range tests {

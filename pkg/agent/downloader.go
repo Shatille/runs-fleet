@@ -21,24 +21,15 @@ const (
 	prebakedRunnerDir = "/home/runner"
 )
 
-// CacheClient provides S3 caching for runner binaries.
-type CacheClient interface {
-	CheckCache(ctx context.Context, version, arch string) (bool, string, error)
-	DownloadFromCache(ctx context.Context, version, arch, destPath string) error
-	UploadToCache(ctx context.Context, version, arch, sourcePath string) error
-}
-
 // Downloader handles downloading GitHub Actions runner binaries.
 type Downloader struct {
-	cache            CacheClient
-	prebakedPaths    []string // Paths to check for pre-baked runner (for testing)
-	skipPrebakedCheck bool    // Skip pre-baked runner check (for testing)
+	prebakedPaths     []string // Paths to check for pre-baked runner (for testing)
+	skipPrebakedCheck bool     // Skip pre-baked runner check (for testing)
 }
 
 // NewDownloader creates a new Downloader instance.
-func NewDownloader(cache CacheClient) *Downloader {
+func NewDownloader() *Downloader {
 	return &Downloader{
-		cache:         cache,
 		prebakedPaths: []string{runnerDir, prebakedRunnerDir},
 	}
 }
@@ -67,7 +58,7 @@ func isValidRunnerDir(dir string) bool {
 
 // DownloadRunner downloads and extracts the GitHub Actions runner binary.
 // Returns the path to the extracted runner directory.
-// Checks for pre-baked runner in Docker image first to avoid unnecessary downloads.
+// Checks for pre-baked runner in AMI/Docker image first to avoid unnecessary downloads.
 func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 	arch := runtime.GOARCH
 	if arch != "arm64" && arch != "amd64" {
@@ -88,16 +79,6 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 	githubArch := arch
 	if arch == "amd64" {
 		githubArch = "x64"
-	}
-
-	// Check cache if available
-	if d.cache != nil {
-		cached, _, err := d.cache.CheckCache(ctx, "latest", arch)
-		if err == nil && cached {
-			if err := d.cache.DownloadFromCache(ctx, "latest", arch, runnerDir); err == nil {
-				return runnerDir, nil
-			}
-		}
 	}
 
 	release, err := fetchLatestRelease(ctx)
@@ -133,12 +114,6 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 
 	if err := os.Remove(tarballPath); err != nil {
 		return "", fmt.Errorf("failed to remove tarball: %w", err)
-	}
-
-	// Upload to cache if available
-	if d.cache != nil {
-		_ = d.cache.UploadToCache(ctx, release.TagName, arch, runnerDir)
-		// Ignore cache upload errors - it's optional
 	}
 
 	return runnerDir, nil

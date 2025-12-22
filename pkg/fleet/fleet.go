@@ -391,13 +391,6 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 			Value: aws.String(m.config.CacheURL),
 		})
 	}
-	if m.config.ConfigBucketName != "" {
-		tags = append(tags, types.Tag{
-			Key:   aws.String("runs-fleet:config-bucket"),
-			Value: aws.String(m.config.ConfigBucketName),
-		})
-	}
-
 	// Add custom tags from configuration
 	for key, value := range m.config.Tags {
 		tags = append(tags, types.Tag{

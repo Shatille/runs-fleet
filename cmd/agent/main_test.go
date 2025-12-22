@@ -136,9 +136,6 @@ func TestAgentConfig_Structure(t *testing.T) {
 	if ac.runnerConfig != nil {
 		t.Error("agentConfig.runnerConfig should be nil by default")
 	}
-	if ac.cacheClient != nil {
-		t.Error("agentConfig.cacheClient should be nil by default")
-	}
 	if ac.cwLogger != nil {
 		t.Error("agentConfig.cwLogger should be nil by default")
 	}
@@ -734,18 +731,6 @@ func TestAgentConfig_TerminatorField(t *testing.T) {
 	err := ac.terminator.TerminateInstance(context.Background(), "test", agent.JobStatus{})
 	if err != nil {
 		t.Errorf("TerminateInstance error = %v", err)
-	}
-}
-
-func TestAgentConfig_CacheClientField(_ *testing.T) {
-	// Test that agentConfig can hold a nil cacheClient without issues
-	ac := &agentConfig{
-		cacheClient: nil,
-	}
-
-	// Should not panic
-	if ac.cacheClient != nil {
-		ac.cacheClient = nil
 	}
 }
 
