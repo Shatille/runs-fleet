@@ -1053,6 +1053,64 @@ func TestShouldFallbackToOnDemand(t *testing.T) {
 	}
 }
 
+func TestSendMessageWithRetry_Success(t *testing.T) {
+	callCount := 0
+	q := &mockQueue{
+		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			callCount++
+			return nil
+		},
+	}
+
+	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
+	if err != nil {
+		t.Errorf("sendMessageWithRetry() error = %v, want nil", err)
+	}
+	if callCount != 1 {
+		t.Errorf("sendMessageWithRetry() called %d times, want 1", callCount)
+	}
+}
+
+func TestSendMessageWithRetry_EventualSuccess(t *testing.T) {
+	callCount := 0
+	q := &mockQueue{
+		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			callCount++
+			if callCount < 2 {
+				return errors.New("temporary error")
+			}
+			return nil
+		},
+	}
+
+	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
+	if err != nil {
+		t.Errorf("sendMessageWithRetry() error = %v, want nil", err)
+	}
+	if callCount != 2 {
+		t.Errorf("sendMessageWithRetry() called %d times, want 2", callCount)
+	}
+}
+
+func TestSendMessageWithRetry_AllFail(t *testing.T) {
+	callCount := 0
+	testErr := errors.New("persistent error")
+	q := &mockQueue{
+		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			callCount++
+			return testErr
+		},
+	}
+
+	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
+	if err == nil {
+		t.Error("sendMessageWithRetry() error = nil, want error")
+	}
+	if callCount != maxDeleteRetries {
+		t.Errorf("sendMessageWithRetry() called %d times, want %d", callCount, maxDeleteRetries)
+	}
+}
+
 func TestOnDemandFallbackMessage(t *testing.T) {
 	originalJob := &queue.JobMessage{
 		JobID:         12345,

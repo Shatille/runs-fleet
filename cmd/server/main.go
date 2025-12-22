@@ -719,6 +719,15 @@ func deleteMessageWithRetry(ctx context.Context, q queue.Queue, receiptHandle st
 	return err
 }
 
+func sendMessageWithRetry(ctx context.Context, q queue.Queue, job *queue.JobMessage) error {
+	err := q.SendMessage(ctx, job)
+	for attempts := 1; attempts < maxDeleteRetries && err != nil; attempts++ {
+		time.Sleep(retryDelay)
+		err = q.SendMessage(ctx, job)
+	}
+	return err
+}
+
 func selectSubnet(job *queue.JobMessage, cfg *config.Config, subnetIndex *uint64) string {
 	if job.Private && len(cfg.PrivateSubnetIDs) > 0 {
 		idx := atomic.AddUint64(subnetIndex, 1) - 1
@@ -959,8 +968,8 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 				Arch:          job.Arch,
 				StorageGiB:    job.StorageGiB,
 			}
-			if sendErr := q.SendMessage(ctx, fallbackJob); sendErr != nil {
-				log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed: %v", job.JobID, sendErr)
+			if sendErr := sendMessageWithRetry(ctx, q, fallbackJob); sendErr != nil {
+				log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)
 			} else {
 				log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
 				if metricErr := m.PublishJobQueued(ctx); metricErr != nil {
