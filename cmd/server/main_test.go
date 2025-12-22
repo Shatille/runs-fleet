@@ -262,10 +262,16 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 
 // mockQueue implements queue.Queue for testing
 type mockQueue struct {
-	deleteFunc func(ctx context.Context, handle string) error
+	deleteFunc  func(ctx context.Context, handle string) error
+	sendFunc    func(ctx context.Context, job *queue.JobMessage) error
+	sentMessages []*queue.JobMessage
 }
 
-func (m *mockQueue) SendMessage(_ context.Context, _ *queue.JobMessage) error {
+func (m *mockQueue) SendMessage(ctx context.Context, job *queue.JobMessage) error {
+	m.sentMessages = append(m.sentMessages, job)
+	if m.sendFunc != nil {
+		return m.sendFunc(ctx, job)
+	}
 	return nil
 }
 
@@ -974,5 +980,203 @@ func TestHandleJobFailure_InstanceIDExtraction(t *testing.T) {
 				t.Errorf("prefix check for %q = %v, want %v", tt.runnerName, hasPrefix, tt.wantPrefix)
 			}
 		})
+	}
+}
+
+func TestShouldFallbackToOnDemand(t *testing.T) {
+	tests := []struct {
+		name           string
+		spot           bool
+		forceOnDemand  bool
+		retryCount     int
+		wantFallback   bool
+	}{
+		{
+			name:          "spot request with no retries should fallback",
+			spot:          true,
+			forceOnDemand: false,
+			retryCount:    0,
+			wantFallback:  true,
+		},
+		{
+			name:          "spot request with retry=1 should fallback",
+			spot:          true,
+			forceOnDemand: false,
+			retryCount:    1,
+			wantFallback:  true,
+		},
+		{
+			name:          "spot request at max retries should not fallback",
+			spot:          true,
+			forceOnDemand: false,
+			retryCount:    maxJobRetries,
+			wantFallback:  false,
+		},
+		{
+			name:          "spot request over max retries should not fallback",
+			spot:          true,
+			forceOnDemand: false,
+			retryCount:    maxJobRetries + 1,
+			wantFallback:  false,
+		},
+		{
+			name:          "already forceOnDemand should not fallback",
+			spot:          true,
+			forceOnDemand: true,
+			retryCount:    0,
+			wantFallback:  false,
+		},
+		{
+			name:          "non-spot request should not fallback",
+			spot:          false,
+			forceOnDemand: false,
+			retryCount:    0,
+			wantFallback:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := &queue.JobMessage{
+				JobID:         12345,
+				RunID:         67890,
+				Spot:          tt.spot,
+				ForceOnDemand: tt.forceOnDemand,
+				RetryCount:    tt.retryCount,
+			}
+
+			shouldFallback := job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries
+			if shouldFallback != tt.wantFallback {
+				t.Errorf("shouldFallback = %v, want %v", shouldFallback, tt.wantFallback)
+			}
+		})
+	}
+}
+
+func TestSendMessageWithRetry_Success(t *testing.T) {
+	callCount := 0
+	q := &mockQueue{
+		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			callCount++
+			return nil
+		},
+	}
+
+	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
+	if err != nil {
+		t.Errorf("sendMessageWithRetry() error = %v, want nil", err)
+	}
+	if callCount != 1 {
+		t.Errorf("sendMessageWithRetry() called %d times, want 1", callCount)
+	}
+}
+
+func TestSendMessageWithRetry_EventualSuccess(t *testing.T) {
+	callCount := 0
+	q := &mockQueue{
+		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			callCount++
+			if callCount < 2 {
+				return errors.New("temporary error")
+			}
+			return nil
+		},
+	}
+
+	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
+	if err != nil {
+		t.Errorf("sendMessageWithRetry() error = %v, want nil", err)
+	}
+	if callCount != 2 {
+		t.Errorf("sendMessageWithRetry() called %d times, want 2", callCount)
+	}
+}
+
+func TestSendMessageWithRetry_AllFail(t *testing.T) {
+	callCount := 0
+	testErr := errors.New("persistent error")
+	q := &mockQueue{
+		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			callCount++
+			return testErr
+		},
+	}
+
+	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
+	if err == nil {
+		t.Error("sendMessageWithRetry() error = nil, want error")
+	}
+	if callCount != maxDeleteRetries {
+		t.Errorf("sendMessageWithRetry() called %d times, want %d", callCount, maxDeleteRetries)
+	}
+}
+
+func TestOnDemandFallbackMessage(t *testing.T) {
+	originalJob := &queue.JobMessage{
+		JobID:         12345,
+		RunID:         67890,
+		Repo:          "org/repo",
+		InstanceType:  "t4g.medium",
+		InstanceTypes: []string{"t4g.medium", "t4g.large"},
+		Pool:          "default",
+		Private:       true,
+		Spot:          true,
+		RunnerSpec:    "2cpu-linux-arm64",
+		OriginalLabel: "runs-fleet=67890/cpu=2",
+		RetryCount:    0,
+		ForceOnDemand: false,
+		Region:        "us-east-1",
+		Environment:   "production",
+		OS:            "linux",
+		Arch:          "arm64",
+		StorageGiB:    50,
+	}
+
+	fallbackJob := &queue.JobMessage{
+		JobID:         originalJob.JobID,
+		RunID:         originalJob.RunID,
+		Repo:          originalJob.Repo,
+		InstanceType:  originalJob.InstanceType,
+		InstanceTypes: originalJob.InstanceTypes,
+		Pool:          originalJob.Pool,
+		Private:       originalJob.Private,
+		Spot:          false,
+		RunnerSpec:    originalJob.RunnerSpec,
+		OriginalLabel: originalJob.OriginalLabel,
+		RetryCount:    originalJob.RetryCount + 1,
+		ForceOnDemand: true,
+		Region:        originalJob.Region,
+		Environment:   originalJob.Environment,
+		OS:            originalJob.OS,
+		Arch:          originalJob.Arch,
+		StorageGiB:    originalJob.StorageGiB,
+	}
+
+	if fallbackJob.Spot {
+		t.Error("fallback job should have Spot=false")
+	}
+	if !fallbackJob.ForceOnDemand {
+		t.Error("fallback job should have ForceOnDemand=true")
+	}
+	if fallbackJob.RetryCount != 1 {
+		t.Errorf("fallback job RetryCount = %d, want 1", fallbackJob.RetryCount)
+	}
+	if fallbackJob.JobID != originalJob.JobID {
+		t.Error("fallback job should preserve JobID")
+	}
+	if fallbackJob.RunID != originalJob.RunID {
+		t.Error("fallback job should preserve RunID")
+	}
+	if fallbackJob.InstanceType != originalJob.InstanceType {
+		t.Error("fallback job should preserve InstanceType")
+	}
+	if len(fallbackJob.InstanceTypes) != len(originalJob.InstanceTypes) {
+		t.Error("fallback job should preserve InstanceTypes")
+	}
+	if fallbackJob.Region != originalJob.Region {
+		t.Error("fallback job should preserve Region")
+	}
+	if fallbackJob.StorageGiB != originalJob.StorageGiB {
+		t.Error("fallback job should preserve StorageGiB")
 	}
 }
