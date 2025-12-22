@@ -928,6 +928,46 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 				log.Printf("Failed to delete job claim for %d: %v", job.JobID, claimErr)
 			}
 		}
+
+		// Fallback to on-demand if spot failed and under retry limit
+		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {
+			// Delete original message first to prevent duplicate processing
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			if delErr := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); delErr != nil {
+				cleanupCancel()
+				log.Printf("Failed to delete original message, skipping fallback to prevent duplicates: %v", delErr)
+				return
+			}
+			cleanupCancel()
+
+			fallbackJob := &queue.JobMessage{
+				JobID:         job.JobID,
+				RunID:         job.RunID,
+				Repo:          job.Repo,
+				InstanceType:  job.InstanceType,
+				InstanceTypes: job.InstanceTypes,
+				Pool:          job.Pool,
+				Private:       job.Private,
+				Spot:          false,
+				RunnerSpec:    job.RunnerSpec,
+				OriginalLabel: job.OriginalLabel,
+				RetryCount:    job.RetryCount + 1,
+				ForceOnDemand: true,
+				Region:        job.Region,
+				Environment:   job.Environment,
+				OS:            job.OS,
+				Arch:          job.Arch,
+				StorageGiB:    job.StorageGiB,
+			}
+			if sendErr := q.SendMessage(ctx, fallbackJob); sendErr != nil {
+				log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed: %v", job.JobID, sendErr)
+			} else {
+				log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
+				if metricErr := m.PublishJobQueued(ctx); metricErr != nil {
+					log.Printf("Failed to publish job queued metric: %v", metricErr)
+				}
+			}
+		}
 		return
 	}
 
