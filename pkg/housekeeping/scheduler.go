@@ -43,7 +43,7 @@ type SchedulerConfig struct {
 	CostReportInterval time.Duration
 
 	// DLQRedriveInterval is how often to redrive messages from DLQ.
-	// Default: 15 minutes
+	// Default: 1 minute
 	DLQRedriveInterval time.Duration
 }
 
@@ -55,7 +55,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		OldJobsInterval:           1 * time.Hour,
 		PoolAuditInterval:         10 * time.Minute,
 		CostReportInterval:        24 * time.Hour,
-		DLQRedriveInterval:        15 * time.Minute,
+		DLQRedriveInterval:        1 * time.Minute,
 	}
 }
 
