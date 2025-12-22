@@ -192,7 +192,6 @@ log "Reading configuration from instance tags..."
 TERMINATION_QUEUE_URL=$(get_instance_tag_with_retry "runs-fleet:termination-queue-url" 3) || true
 RUN_ID=$(get_instance_tag_with_retry "runs-fleet:run-id" 10) || fail "Run ID not found in instance tags after retries"
 RUNNER_IMAGE=$(get_instance_tag_with_retry "runs-fleet:runner-image" 10) || fail "Runner image not found in instance tags after retries"
-CONFIG_BUCKET=$(get_instance_tag_with_retry "runs-fleet:config-bucket" 3) || true
 CACHE_URL=$(get_instance_tag_with_retry "runs-fleet:cache-url" 3) || true
 
 if [[ -z "$RUN_ID" ]]; then
@@ -278,7 +277,6 @@ ENV_ARGS=(
 )
 
 [[ -n "${TERMINATION_QUEUE_URL:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_TERMINATION_QUEUE_URL=$TERMINATION_QUEUE_URL")
-[[ -n "${CONFIG_BUCKET:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_CONFIG_BUCKET=$CONFIG_BUCKET")
 [[ -n "${CACHE_URL:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_CACHE_URL=$CACHE_URL")
 
 # Run container

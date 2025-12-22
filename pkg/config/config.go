@@ -46,9 +46,8 @@ type Config struct {
 	JobsTableName        string
 	PoolsTableName       string
 	CircuitBreakerTable  string
-	CacheBucketName      string
-	ConfigBucketName     string
-	CostReportSNSTopic   string
+	CacheBucketName    string
+	CostReportSNSTopic string
 	CostReportBucket     string
 
 	// EC2-specific configuration
@@ -149,9 +148,8 @@ func Load() (*Config, error) {
 		JobsTableName:        getEnv("RUNS_FLEET_JOBS_TABLE", ""),
 		PoolsTableName:       getEnv("RUNS_FLEET_POOLS_TABLE", ""),
 		CircuitBreakerTable:  getEnv("RUNS_FLEET_CIRCUIT_BREAKER_TABLE", "runs-fleet-circuit-state"),
-		CacheBucketName:      getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
-		ConfigBucketName:     getEnv("RUNS_FLEET_CONFIG_BUCKET", ""),
-		CostReportSNSTopic:   getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
+		CacheBucketName:    getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
+		CostReportSNSTopic: getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
 		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
 
 		// EC2-specific
@@ -623,9 +621,8 @@ func validateTags(tags map[string]string) error {
 		// - runs-fleet:runner-image (conditional)
 		// - runs-fleet:termination-queue-url (conditional)
 		// - runs-fleet:cache-url (conditional)
-		// - runs-fleet:config-bucket (conditional)
-		// Reserve 15 for system tags to be safe, allowing 35 custom tags
-		maxTags     = 35
+		// Reserve 14 for system tags to be safe, allowing 36 custom tags
+		maxTags     = 36
 		maxKeyLen   = 128
 		maxValueLen = 256
 	)
