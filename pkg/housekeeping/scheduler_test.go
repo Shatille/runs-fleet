@@ -75,8 +75,8 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 	if cfg.CostReportInterval != 24*time.Hour {
 		t.Errorf("expected CostReportInterval 24h, got %v", cfg.CostReportInterval)
 	}
-	if cfg.DLQRedriveInterval != 15*time.Minute {
-		t.Errorf("expected DLQRedriveInterval 15m, got %v", cfg.DLQRedriveInterval)
+	if cfg.DLQRedriveInterval != 1*time.Minute {
+		t.Errorf("expected DLQRedriveInterval 1m, got %v", cfg.DLQRedriveInterval)
 	}
 }
 
