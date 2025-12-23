@@ -210,17 +210,31 @@ jobs:
             exit 1
           fi
 
-          aws ecr put-image \
+          if ! OUTPUT=$(aws ecr put-image \
             --repository-name "$REPO" \
             --image-tag "$VERSION" \
-            --image-manifest "$MANIFEST"
+            --image-manifest "$MANIFEST" 2>&1); then
+            if echo "$OUTPUT" | grep -q "ImageAlreadyExistsException"; then
+              echo "Image already tagged as ${VERSION}, skipping"
+            else
+              echo "$OUTPUT" >&2
+              exit 1
+            fi
+          fi
 
           if [[ "${{ github.event_name }}" == "push" ]]; then
             echo "Tagging as latest..."
-            aws ecr put-image \
+            if ! OUTPUT=$(aws ecr put-image \
               --repository-name "$REPO" \
               --image-tag "latest" \
-              --image-manifest "$MANIFEST"
+              --image-manifest "$MANIFEST" 2>&1); then
+              if echo "$OUTPUT" | grep -q "ImageAlreadyExistsException"; then
+                echo "Image already tagged as latest, skipping"
+              else
+                echo "$OUTPUT" >&2
+                exit 1
+              fi
+            fi
           fi
 
           # Cleanup staging tags
