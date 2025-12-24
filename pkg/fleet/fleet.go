@@ -5,8 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -18,6 +19,7 @@ import (
 // EC2API defines EC2 operations for fleet management.
 type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 }
 
 // CircuitBreaker defines circuit breaker operations.
@@ -25,11 +27,21 @@ type CircuitBreaker interface {
 	CheckCircuit(ctx context.Context, instanceType string) (circuit.State, error)
 }
 
+// spotPriceCache caches spot prices with TTL.
+type spotPriceCache struct {
+	mu      sync.RWMutex
+	prices  map[string]float64
+	expires time.Time
+}
+
+const spotPriceCacheTTL = 5 * time.Minute
+
 // Manager orchestrates EC2 fleet creation for runner instances.
 type Manager struct {
 	ec2Client      EC2API
 	config         *config.Config
 	circuitBreaker CircuitBreaker
+	spotCache      spotPriceCache
 }
 
 // NewManager creates fleet manager with EC2 client and configuration.
@@ -68,8 +80,8 @@ type LaunchSpec struct {
 // When arch is empty and instance types span multiple architectures, multiple
 // launch template configs are created to let EC2 Fleet choose the best option.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
-	// Build launch template configs - may be multiple when arch is empty
-	launchTemplateConfigs, err := m.buildLaunchTemplateConfigs(spec)
+	// Build launch template configs - selects cheapest arch when arch is empty
+	launchTemplateConfigs, err := m.buildLaunchTemplateConfigs(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build launch template configs: %w", err)
 	}
@@ -225,10 +237,9 @@ func (m *Manager) getLaunchTemplateForArch(os, arch string) string {
 
 // buildLaunchTemplateConfigs creates launch template configurations for the fleet.
 // When arch is specified, creates a single config. When arch is empty and instance types
-// span multiple architectures, creates separate configs per architecture to let EC2 Fleet
-// choose based on price-capacity optimization.
+// span multiple architectures, queries spot prices and selects the cheapest architecture.
 // Returns an error if instance types conflict with specified architecture or no valid types found.
-func (m *Manager) buildLaunchTemplateConfigs(spec *LaunchSpec) ([]types.FleetLaunchTemplateConfigRequest, error) {
+func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSpec) ([]types.FleetLaunchTemplateConfigRequest, error) {
 	instanceTypes := spec.InstanceTypes
 	if len(instanceTypes) == 0 {
 		instanceTypes = []string{spec.InstanceType}
@@ -250,7 +261,7 @@ func (m *Manager) buildLaunchTemplateConfigs(spec *LaunchSpec) ([]types.FleetLau
 		}, nil
 	}
 
-	// Arch is empty - group by architecture and create config per arch
+	// Arch is empty - group by architecture
 	groupedTypes := GroupInstanceTypesByArch(instanceTypes)
 
 	// If no valid instance types found, return error
@@ -258,20 +269,15 @@ func (m *Manager) buildLaunchTemplateConfigs(spec *LaunchSpec) ([]types.FleetLau
 		return nil, fmt.Errorf("no valid instance types found in catalog: %v", instanceTypes)
 	}
 
-	// Sort architectures for deterministic order
-	archs := make([]string, 0, len(groupedTypes))
-	for arch := range groupedTypes {
-		archs = append(archs, arch)
-	}
-	sort.Strings(archs)
-
-	// Create a config for each architecture
-	configs := make([]types.FleetLaunchTemplateConfigRequest, 0, len(archs))
-	for _, arch := range archs {
-		configs = append(configs, m.buildSingleArchConfig(spec.OS, arch, groupedTypes[arch], spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig))
+	// Select the cheapest architecture based on spot prices
+	selectedArch := m.selectCheapestArch(ctx, groupedTypes)
+	if selectedArch == "" {
+		return nil, fmt.Errorf("failed to select architecture for instance types: %v", instanceTypes)
 	}
 
-	return configs, nil
+	return []types.FleetLaunchTemplateConfigRequest{
+		m.buildSingleArchConfig(spec.OS, selectedArch, groupedTypes[selectedArch], spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
+	}, nil
 }
 
 // buildSingleArchConfig creates a single launch template config for one architecture.
@@ -426,4 +432,145 @@ func (m *Manager) getPrimaryInstanceType(spec *LaunchSpec) string {
 		return spec.InstanceTypes[0]
 	}
 	return spec.InstanceType
+}
+
+// selectCheapestArch queries spot prices and returns the architecture with lower average price.
+// Returns empty string if prices can't be determined (caller should fall back to default behavior).
+func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[string][]string) string {
+	if len(groupedTypes) <= 1 {
+		// Only one architecture, return it
+		for arch := range groupedTypes {
+			return arch
+		}
+		return ""
+	}
+
+	archPrices := make(map[string]float64)
+	for arch, instanceTypes := range groupedTypes {
+		avgPrice := m.getAverageSpotPrice(ctx, instanceTypes)
+		if avgPrice > 0 {
+			archPrices[arch] = avgPrice
+		}
+	}
+
+	if len(archPrices) == 0 {
+		// Couldn't get prices, default to arm64 (generally cheaper)
+		if _, ok := groupedTypes["arm64"]; ok {
+			log.Printf("Spot prices unavailable, defaulting to arm64")
+			return "arm64"
+		}
+		for arch := range groupedTypes {
+			return arch
+		}
+		return ""
+	}
+
+	// Find cheapest architecture
+	var cheapestArch string
+	var cheapestPrice float64
+	for arch, price := range archPrices {
+		if cheapestArch == "" || price < cheapestPrice {
+			cheapestArch = arch
+			cheapestPrice = price
+		}
+	}
+
+	log.Printf("Selected %s (avg spot price: $%.4f/hr) over alternatives: %v", cheapestArch, cheapestPrice, archPrices)
+	return cheapestArch
+}
+
+// getAverageSpotPrice returns the average current spot price for instance types.
+// Uses a cache with TTL to avoid rate limiting.
+func (m *Manager) getAverageSpotPrice(ctx context.Context, instanceTypes []string) float64 {
+	if len(instanceTypes) == 0 {
+		return 0
+	}
+
+	// Check cache first
+	m.spotCache.mu.RLock()
+	if time.Now().Before(m.spotCache.expires) && len(m.spotCache.prices) > 0 {
+		var total float64
+		var count int
+		for _, instType := range instanceTypes {
+			if price, ok := m.spotCache.prices[instType]; ok {
+				total += price
+				count++
+			}
+		}
+		m.spotCache.mu.RUnlock()
+		if count > 0 {
+			return total / float64(count)
+		}
+	} else {
+		m.spotCache.mu.RUnlock()
+	}
+
+	// Cache miss or expired - fetch from API
+	return m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+}
+
+// fetchAndCacheSpotPrices fetches spot prices from AWS and updates the cache.
+func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []string) float64 {
+	// Limit to first 10 instance types to avoid API throttling
+	queryTypes := instanceTypes
+	if len(queryTypes) > 10 {
+		queryTypes = queryTypes[:10]
+	}
+
+	ec2Types := make([]types.InstanceType, len(queryTypes))
+	for i, t := range queryTypes {
+		ec2Types[i] = types.InstanceType(t)
+	}
+
+	output, err := m.ec2Client.DescribeSpotPriceHistory(ctx, &ec2.DescribeSpotPriceHistoryInput{
+		InstanceTypes:       ec2Types,
+		ProductDescriptions: []string{"Linux/UNIX"},
+		MaxResults:          aws.Int32(100),
+	})
+	if err != nil {
+		log.Printf("Warning: failed to get spot prices: %v", err)
+		return 0
+	}
+
+	if len(output.SpotPriceHistory) == 0 {
+		return 0
+	}
+
+	// Calculate average price (most recent price per instance type)
+	latestPrices := make(map[string]float64)
+	for _, sp := range output.SpotPriceHistory {
+		instType := string(sp.InstanceType)
+		if _, seen := latestPrices[instType]; !seen {
+			var price float64
+			if sp.SpotPrice != nil {
+				if _, err := fmt.Sscanf(*sp.SpotPrice, "%f", &price); err != nil {
+					continue
+				}
+			}
+			if price > 0 {
+				latestPrices[instType] = price
+			}
+		}
+	}
+
+	if len(latestPrices) == 0 {
+		return 0
+	}
+
+	// Update cache
+	m.spotCache.mu.Lock()
+	if m.spotCache.prices == nil {
+		m.spotCache.prices = make(map[string]float64)
+	}
+	for instType, price := range latestPrices {
+		m.spotCache.prices[instType] = price
+	}
+	m.spotCache.expires = time.Now().Add(spotPriceCacheTTL)
+	m.spotCache.mu.Unlock()
+
+	var total float64
+	for _, price := range latestPrices {
+		total += price
+	}
+	return total / float64(len(latestPrices))
 }

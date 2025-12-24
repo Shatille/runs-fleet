@@ -13,7 +13,8 @@ import (
 )
 
 type mockEC2Client struct {
-	CreateFleetFunc func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	CreateFleetFunc             func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	DescribeSpotPriceHistoryFunc func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 }
 
 func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
@@ -21,6 +22,19 @@ func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleet
 		return m.CreateFleetFunc(ctx, params, optFns...)
 	}
 	return &ec2.CreateFleetOutput{}, nil
+}
+
+func (m *mockEC2Client) DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+	if m.DescribeSpotPriceHistoryFunc != nil {
+		return m.DescribeSpotPriceHistoryFunc(ctx, params, optFns...)
+	}
+	// Default: return arm64 as cheaper
+	return &ec2.DescribeSpotPriceHistoryOutput{
+		SpotPriceHistory: []types.SpotPrice{
+			{InstanceType: types.InstanceTypeT4gMedium, SpotPrice: aws.String("0.0101")},
+			{InstanceType: types.InstanceTypeC7gXlarge, SpotPrice: aws.String("0.0435")},
+		},
+	}, nil
 }
 
 func TestCreateFleet(t *testing.T) {
@@ -744,6 +758,21 @@ func TestGetPrimaryInstanceType(t *testing.T) {
 }
 
 func TestBuildLaunchTemplateConfigs(t *testing.T) {
+	// Mock EC2 client that returns arm64 as cheaper
+	mockClient := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			prices := []types.SpotPrice{}
+			for _, instType := range params.InstanceTypes {
+				price := "0.10" // Default AMD64 price
+				if strings.HasPrefix(string(instType), "t4g") || strings.HasPrefix(string(instType), "c7g") || strings.HasPrefix(string(instType), "m7g") {
+					price = "0.05" // ARM64 is cheaper
+				}
+				prices = append(prices, types.SpotPrice{InstanceType: instType, SpotPrice: aws.String(price)})
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+
 	tests := []struct {
 		name              string
 		config            *config.Config
@@ -790,7 +819,7 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			wantTemplateNames: []string{"runs-fleet-runner-amd64"},
 		},
 		{
-			name:   "Empty arch with mixed architectures creates two configs sorted",
+			name:   "Empty arch with mixed architectures selects cheapest (arm64)",
 			config: &config.Config{},
 			spec: &LaunchSpec{
 				OS:            "linux",
@@ -798,9 +827,8 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 				InstanceTypes: []string{"c7g.xlarge", "t3.medium", "t4g.medium", "c6i.large"},
 				SubnetID:      "subnet-1",
 			},
-			wantConfigCount: 2,
-			// Sorted alphabetically: amd64, arm64
-			wantTemplateNames: []string{"runs-fleet-runner-amd64", "runs-fleet-runner-arm64"},
+			wantConfigCount:   1,
+			wantTemplateNames: []string{"runs-fleet-runner-arm64"}, // arm64 is cheaper in mock
 		},
 		{
 			name:   "Empty arch with unknown types returns error",
@@ -830,8 +858,8 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &Manager{config: tt.config}
-			configs, err := m.buildLaunchTemplateConfigs(tt.spec)
+			m := &Manager{config: tt.config, ec2Client: mockClient}
+			configs, err := m.buildLaunchTemplateConfigs(context.Background(), tt.spec)
 
 			if tt.wantErr {
 				if err == nil {
