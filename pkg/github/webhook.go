@@ -217,7 +217,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 
 	// If using flexible specs, resolve instance types
 	if hasFlexibleSpec {
-		if err := resolveFlexibleSpec(cfg); err != nil {
+		if err := ResolveFlexibleSpec(cfg); err != nil {
 			return nil, err
 		}
 	} else if cfg.RunnerSpec == "" {
@@ -357,8 +357,8 @@ func parseRangeFloat(s string) (minVal, maxVal float64, err error) {
 	return minVal, maxVal, nil
 }
 
-// resolveFlexibleSpec resolves instance types from flexible CPU/RAM/family specifications.
-func resolveFlexibleSpec(cfg *JobConfig) error {
+// ResolveFlexibleSpec resolves instance types from flexible CPU/RAM/family specifications.
+func ResolveFlexibleSpec(cfg *JobConfig) error {
 	// Set defaults for CPU if not specified
 	if cfg.CPUMin == 0 {
 		cfg.CPUMin = 2 // Default minimum 2 vCPUs

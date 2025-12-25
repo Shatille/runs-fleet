@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/events"
@@ -90,6 +91,18 @@ type PoolConfig struct {
 	Environment string `dynamodbav:"environment,omitempty"` // dev, staging, prod
 	// Multi-region support
 	Region string `dynamodbav:"region,omitempty"` // AWS region for this pool
+
+	// Ephemeral pool support
+	Ephemeral   bool      `dynamodbav:"ephemeral,omitempty"`
+	LastJobTime time.Time `dynamodbav:"last_job_time,omitempty"`
+
+	// Flexible instance spec (inherited from first job for ephemeral pools)
+	Arch     string   `dynamodbav:"arch,omitempty"`     // arm64, amd64
+	CPUMin   int      `dynamodbav:"cpu_min,omitempty"`  // Minimum vCPUs
+	CPUMax   int      `dynamodbav:"cpu_max,omitempty"`  // Maximum vCPUs
+	RAMMin   float64  `dynamodbav:"ram_min,omitempty"`  // Minimum RAM in GB
+	RAMMax   float64  `dynamodbav:"ram_max,omitempty"`  // Maximum RAM in GB
+	Families []string `dynamodbav:"families,omitempty"` // Instance families (e.g., c7g, m7g)
 }
 
 // GetPoolConfig retrieves pool configuration from DynamoDB.
@@ -199,6 +212,15 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 	return nil
 }
 
+// attrOrNull returns the attribute value from the map, or NULL if not present.
+// This prevents nil attribute values when fields have zero values with omitempty.
+func attrOrNull(m map[string]types.AttributeValue, key string) types.AttributeValue {
+	if v, ok := m[key]; ok {
+		return v
+	}
+	return &types.AttributeValueMemberNULL{Value: true}
+}
+
 // SavePoolConfig saves or updates a pool configuration in DynamoDB.
 func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 	if config == nil {
@@ -220,18 +242,28 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 		},
 		UpdateExpression: aws.String(
 			"SET instance_type = :it, desired_running = :dr, desired_stopped = :ds, " +
-				"idle_timeout_minutes = :itm, schedules = :sc, environment = :env, #region = :reg"),
+				"idle_timeout_minutes = :itm, schedules = :sc, environment = :env, #region = :reg, " +
+				"ephemeral = :eph, last_job_time = :ljt, arch = :arch, cpu_min = :cpumin, " +
+				"cpu_max = :cpumax, ram_min = :rammin, ram_max = :rammax, families = :fam"),
 		ExpressionAttributeNames: map[string]string{
 			"#region": "region", // region is a reserved word
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":it":  item["instance_type"],
-			":dr":  item["desired_running"],
-			":ds":  item["desired_stopped"],
-			":itm": item["idle_timeout_minutes"],
-			":sc":  item["schedules"],
-			":env": item["environment"],
-			":reg": item["region"],
+			":it":     attrOrNull(item, "instance_type"),
+			":dr":     attrOrNull(item, "desired_running"),
+			":ds":     attrOrNull(item, "desired_stopped"),
+			":itm":    attrOrNull(item, "idle_timeout_minutes"),
+			":sc":     attrOrNull(item, "schedules"),
+			":env":    attrOrNull(item, "environment"),
+			":reg":    attrOrNull(item, "region"),
+			":eph":    attrOrNull(item, "ephemeral"),
+			":ljt":    attrOrNull(item, "last_job_time"),
+			":arch":   attrOrNull(item, "arch"),
+			":cpumin": attrOrNull(item, "cpu_min"),
+			":cpumax": attrOrNull(item, "cpu_max"),
+			":rammin": attrOrNull(item, "ram_min"),
+			":rammax": attrOrNull(item, "ram_max"),
+			":fam":    attrOrNull(item, "families"),
 		},
 	})
 	if err != nil {
@@ -239,6 +271,248 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 	}
 
 	return nil
+}
+
+// ErrPoolAlreadyExists is returned when trying to create an ephemeral pool that already exists.
+var ErrPoolAlreadyExists = errors.New("pool already exists")
+
+// CreateEphemeralPool creates a new ephemeral pool only if it doesn't already exist.
+// Returns ErrPoolAlreadyExists if the pool is already present.
+// This prevents race conditions when multiple concurrent jobs try to create the same pool.
+func (c *Client) CreateEphemeralPool(ctx context.Context, config *PoolConfig) error {
+	if config == nil {
+		return fmt.Errorf("pool config cannot be nil")
+	}
+	if config.PoolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+	if !config.Ephemeral {
+		return fmt.Errorf("CreateEphemeralPool can only be used for ephemeral pools")
+	}
+
+	item, err := attributevalue.MarshalMap(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal pool config: %w", err)
+	}
+
+	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(c.poolsTable),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(pool_name)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrPoolAlreadyExists
+		}
+		return fmt.Errorf("failed to create ephemeral pool: %w", err)
+	}
+
+	return nil
+}
+
+// TouchPoolActivity updates the last job time for an ephemeral pool.
+// This is called when a new job is assigned to the pool to prevent premature cleanup.
+func (c *Client) TouchPoolActivity(ctx context.Context, poolName string) error {
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	now := time.Now()
+	nowStr, err := attributevalue.Marshal(now)
+	if err != nil {
+		return fmt.Errorf("failed to marshal time: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: poolName},
+		},
+		UpdateExpression:          aws.String("SET last_job_time = :ljt"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":ljt": nowStr},
+		ConditionExpression:       aws.String("attribute_exists(pool_name)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return fmt.Errorf("pool %s does not exist", poolName)
+		}
+		return fmt.Errorf("failed to update pool activity: %w", err)
+	}
+
+	return nil
+}
+
+// DeletePoolConfig removes an ephemeral pool configuration from DynamoDB.
+// Only ephemeral pools can be deleted to prevent accidental deletion of persistent pools.
+func (c *Client) DeletePoolConfig(ctx context.Context, poolName string) error {
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	_, err := c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: poolName},
+		},
+		// Safety: only allow deletion of ephemeral pools
+		ConditionExpression: aws.String("ephemeral = :true"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":true": &types.AttributeValueMemberBOOL{Value: true},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return fmt.Errorf("pool %s is not ephemeral or does not exist", poolName)
+		}
+		return fmt.Errorf("failed to delete pool config: %w", err)
+	}
+
+	return nil
+}
+
+// JobHistoryEntry represents a job with timing information for auto-scaling calculations.
+type JobHistoryEntry struct {
+	JobID       int64
+	Pool        string
+	CreatedAt   time.Time
+	CompletedAt time.Time // Zero value if still running
+}
+
+// QueryPoolJobHistory retrieves recent jobs for a pool within the specified time window.
+// Note: This uses Scan with filter which is inefficient for large tables.
+// For production, add a GSI on (pool, created_at) for efficient queries.
+func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since time.Time) ([]JobHistoryEntry, error) {
+	if poolName == "" {
+		return nil, fmt.Errorf("pool name cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	sinceStr := since.Format(time.RFC3339)
+
+	// Use Scan with filter - this is inefficient but works without GSI
+	// TODO: Add GSI on (pool, created_at) for production efficiency
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("pool = :pool AND created_at >= :since"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pool":  &types.AttributeValueMemberS{Value: poolName},
+			":since": &types.AttributeValueMemberS{Value: sinceStr},
+		},
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan jobs: %w", err)
+	}
+
+	var entries []JobHistoryEntry
+	for _, item := range output.Items {
+		var record struct {
+			JobID       int64  `dynamodbav:"job_id"`
+			Pool        string `dynamodbav:"pool"`
+			CreatedAt   string `dynamodbav:"created_at"`
+			CompletedAt string `dynamodbav:"completed_at"`
+		}
+		if err := attributevalue.UnmarshalMap(item, &record); err != nil {
+			continue // Skip malformed records
+		}
+
+		entry := JobHistoryEntry{
+			JobID: record.JobID,
+			Pool:  record.Pool,
+		}
+
+		if record.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, record.CreatedAt); err == nil {
+				entry.CreatedAt = t
+			}
+		}
+		if record.CompletedAt != "" {
+			if t, err := time.Parse(time.RFC3339, record.CompletedAt); err == nil {
+				entry.CompletedAt = t
+			}
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
+// GetPoolPeakConcurrency calculates the maximum number of concurrent jobs
+// for a pool within the specified time window (in hours).
+// Returns 0 if no jobs found or on error.
+func (c *Client) GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
+	if windowHours <= 0 {
+		windowHours = 1
+	}
+
+	since := time.Now().Add(-time.Duration(windowHours) * time.Hour)
+	jobs, err := c.QueryPoolJobHistory(ctx, poolName, since)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(jobs) == 0 {
+		return 0, nil
+	}
+
+	// Calculate peak concurrency using event-based algorithm
+	// Create events for job starts and ends, then sweep through
+	type event struct {
+		time  time.Time
+		delta int // +1 for start, -1 for end
+	}
+
+	var events []event
+	now := time.Now()
+
+	for _, job := range jobs {
+		if job.CreatedAt.IsZero() {
+			continue
+		}
+		events = append(events, event{time: job.CreatedAt, delta: 1})
+
+		endTime := job.CompletedAt
+		if endTime.IsZero() {
+			endTime = now // Job still running
+		}
+		events = append(events, event{time: endTime, delta: -1})
+	}
+
+	// Sort events by time
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].time.Equal(events[j].time) {
+			// Process starts before ends at the same time
+			return events[i].delta > events[j].delta
+		}
+		return events[i].time.Before(events[j].time)
+	})
+
+	// Sweep through events to find peak
+	var current, peak int
+	for _, e := range events {
+		current += e.delta
+		if current > peak {
+			peak = current
+		}
+	}
+
+	return peak, nil
 }
 
 // MarkInstanceTerminating marks jobs on an instance as terminating in DynamoDB.

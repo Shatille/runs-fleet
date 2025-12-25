@@ -40,18 +40,20 @@ func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) er
 
 // mockTaskExecutor implements TaskExecutor for testing.
 type mockTaskExecutor struct {
-	orphanedErr  error
-	ssmErr       error
-	jobsErr      error
-	poolErr      error
-	costErr      error
-	dlqErr       error
-	orphanedCall int
-	ssmCall      int
-	jobsCall     int
-	poolCall     int
-	costCall     int
-	dlqCall      int
+	orphanedErr      error
+	ssmErr           error
+	jobsErr          error
+	poolErr          error
+	costErr          error
+	dlqErr           error
+	ephemeralPoolErr error
+	orphanedCall     int
+	ssmCall          int
+	jobsCall         int
+	poolCall         int
+	costCall         int
+	dlqCall          int
+	ephemeralPoolCall int
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -82,6 +84,11 @@ func (m *mockTaskExecutor) ExecuteCostReport(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteDLQRedrive(_ context.Context) error {
 	m.dlqCall++
 	return m.dlqErr
+}
+
+func (m *mockTaskExecutor) ExecuteEphemeralPoolCleanup(_ context.Context) error {
+	m.ephemeralPoolCall++
+	return m.ephemeralPoolErr
 }
 
 func TestNewHandler(t *testing.T) {

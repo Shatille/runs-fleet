@@ -34,6 +34,8 @@ const (
 	TaskCostReport TaskType = "cost_report"
 	// TaskDLQRedrive moves messages from DLQ back to main queue.
 	TaskDLQRedrive TaskType = "dlq_redrive"
+	// TaskEphemeralPoolCleanup removes stale ephemeral pools.
+	TaskEphemeralPoolCleanup TaskType = "ephemeral_pool_cleanup"
 )
 
 // Message represents a housekeeping task message.
@@ -51,6 +53,7 @@ type TaskExecutor interface {
 	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
 	ExecuteDLQRedrive(ctx context.Context) error
+	ExecuteEphemeralPoolCleanup(ctx context.Context) error
 }
 
 // Handler processes housekeeping tasks from SQS queue.
@@ -129,6 +132,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		err = h.taskExecutor.ExecuteCostReport(taskCtx)
 	case TaskDLQRedrive:
 		err = h.taskExecutor.ExecuteDLQRedrive(taskCtx)
+	case TaskEphemeralPoolCleanup:
+		err = h.taskExecutor.ExecuteEphemeralPoolCleanup(taskCtx)
 	default:
 		log.Printf("Unknown task type: %s", hkMsg.TaskType)
 	}

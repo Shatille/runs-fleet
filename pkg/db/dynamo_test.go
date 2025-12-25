@@ -1272,3 +1272,409 @@ func TestDeleteJobClaim_DynamoDBError(t *testing.T) {
 		t.Error("DeleteJobClaim() should return error when DynamoDB fails")
 	}
 }
+
+func TestTouchPoolActivity(t *testing.T) {
+	tests := []struct {
+		name     string
+		poolName string
+		mockDB   *MockDynamoDBAPI
+		noTable  bool
+		wantErr  bool
+	}{
+		{
+			name:     "Success",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					// Verify the update expression sets last_job_time
+					if params.UpdateExpression == nil || *params.UpdateExpression != "SET last_job_time = :ljt" {
+						return nil, errors.New("unexpected update expression")
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:     "Empty Pool Name",
+			poolName: "",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "No Table Configured",
+			poolName: "test-pool",
+			mockDB:   &MockDynamoDBAPI{},
+			noTable:  true,
+			wantErr:  true,
+		},
+		{
+			name:     "Pool Not Found",
+			poolName: "unknown-pool",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name:     "DynamoDB Error",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, errors.New("dynamodb error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poolsTable := "pools-table"
+			if tt.noTable {
+				poolsTable = ""
+			}
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   poolsTable,
+			}
+
+			err := client.TouchPoolActivity(context.Background(), tt.poolName)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("TouchPoolActivity() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDeletePoolConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		poolName string
+		mockDB   *MockDynamoDBAPI
+		noTable  bool
+		wantErr  bool
+	}{
+		{
+			name:     "Success",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				DeleteItemFunc: func(_ context.Context, params *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+					// Verify the key is correct
+					if params.Key["pool_name"] == nil {
+						return nil, errors.New("missing pool_name key")
+					}
+					return &dynamodb.DeleteItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:     "Empty Pool Name",
+			poolName: "",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "No Table Configured",
+			poolName: "test-pool",
+			mockDB:   &MockDynamoDBAPI{},
+			noTable:  true,
+			wantErr:  true,
+		},
+		{
+			name:     "DynamoDB Error",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+					return nil, errors.New("dynamodb error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poolsTable := "pools-table"
+			if tt.noTable {
+				poolsTable = ""
+			}
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   poolsTable,
+			}
+
+			err := client.DeletePoolConfig(context.Background(), tt.poolName)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("DeletePoolConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// createTwoJobMockScan creates a mock ScanFunc returning two job items for testing.
+// job1Created/job1Completed are offsets from now for the first job.
+// job2Created is offset for the second job (no completed_at - still running).
+func createTwoJobMockScan(now time.Time, poolName string, job1Created, job1Completed, job2Created time.Duration) func(context.Context, *dynamodb.ScanInput, ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	return func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+		item1, _ := attributevalue.MarshalMap(map[string]interface{}{
+			"job_id":       int64(1),
+			"pool":         poolName,
+			"created_at":   now.Add(job1Created).Format(time.RFC3339),
+			"completed_at": now.Add(job1Completed).Format(time.RFC3339),
+		})
+		item2, _ := attributevalue.MarshalMap(map[string]interface{}{
+			"job_id":     int64(2),
+			"pool":       poolName,
+			"created_at": now.Add(job2Created).Format(time.RFC3339),
+			// No completed_at - still running
+		})
+		return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+	}
+}
+
+func TestQueryPoolJobHistory(t *testing.T) {
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	tests := []struct {
+		name     string
+		poolName string
+		mockDB   *MockDynamoDBAPI
+		noTable  bool
+		wantLen  int
+		wantErr  bool
+	}{
+		{
+			name:     "Success with jobs",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: createTwoJobMockScan(now, "test-pool", -30*time.Minute, -20*time.Minute, -10*time.Minute),
+			},
+			wantLen: 2,
+			wantErr: false,
+		},
+		{
+			name:     "Empty Pool Name",
+			poolName: "",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "No Table Configured",
+			poolName: "test-pool",
+			mockDB:   &MockDynamoDBAPI{},
+			noTable:  true,
+			wantErr:  true,
+		},
+		{
+			name:     "Empty Results",
+			poolName: "empty-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantLen: 0,
+			wantErr: false,
+		},
+		{
+			name:     "DynamoDB Error",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return nil, errors.New("dynamodb error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jobsTable := "jobs-table"
+			if tt.noTable {
+				jobsTable = ""
+			}
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    jobsTable,
+			}
+
+			entries, err := client.QueryPoolJobHistory(context.Background(), tt.poolName, since)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("QueryPoolJobHistory() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && len(entries) != tt.wantLen {
+				t.Errorf("QueryPoolJobHistory() returned %d entries, want %d", len(entries), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestGetPoolPeakConcurrency(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		poolName string
+		mockDB   *MockDynamoDBAPI
+		wantPeak int
+		wantErr  bool
+	}{
+		{
+			name:     "Peak of 3 concurrent jobs",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					// Job 1: 0-10min (running when job 2 and 3 start)
+					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(1),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-30 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-20 * time.Minute).Format(time.RFC3339),
+					})
+					// Job 2: overlaps with job 1 and 3
+					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(2),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-25 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
+					})
+					// Job 3: overlaps with job 1 and 2
+					item3, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(3),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-22 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-12 * time.Minute).Format(time.RFC3339),
+					})
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2, item3}}, nil
+				},
+			},
+			wantPeak: 3,
+			wantErr:  false,
+		},
+		{
+			name:     "Non-overlapping jobs",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(1),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-30 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-25 * time.Minute).Format(time.RFC3339),
+					})
+					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(2),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-20 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
+					})
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+				},
+			},
+			wantPeak: 1,
+			wantErr:  false,
+		},
+		{
+			name:     "No jobs",
+			poolName: "empty-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantPeak: 0,
+			wantErr:  false,
+		},
+		{
+			name:     "Running job counted",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				// One completed, one still running, overlapped with job 1
+				ScanFunc: createTwoJobMockScan(now, "test-pool", -10*time.Minute, -5*time.Minute, -8*time.Minute),
+			},
+			wantPeak: 2,
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			peak, err := client.GetPoolPeakConcurrency(context.Background(), tt.poolName, 1)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetPoolPeakConcurrency() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && peak != tt.wantPeak {
+				t.Errorf("GetPoolPeakConcurrency() = %d, want %d", peak, tt.wantPeak)
+			}
+		})
+	}
+}
+
+func TestPoolConfig_EphemeralFields(t *testing.T) {
+	// Test that ephemeral pool fields are correctly marshaled/unmarshaled
+	now := time.Now().Truncate(time.Millisecond)
+	config := &PoolConfig{
+		PoolName:       "ephemeral-test",
+		InstanceType:   "c7g.xlarge",
+		DesiredRunning: 2,
+		DesiredStopped: 0,
+		Ephemeral:      true,
+		LastJobTime:    now,
+		Arch:           "arm64",
+		CPUMin:         4,
+		CPUMax:         8,
+		RAMMin:         8.0,
+		RAMMax:         16.0,
+		Families:       []string{"c7g", "m7g"},
+	}
+
+	// Marshal and unmarshal
+	item, err := attributevalue.MarshalMap(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	var result PoolConfig
+	if err := attributevalue.UnmarshalMap(item, &result); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+
+	// Verify fields
+	if !result.Ephemeral {
+		t.Error("Ephemeral should be true")
+	}
+	if !result.LastJobTime.Equal(now) {
+		t.Errorf("LastJobTime = %v, want %v", result.LastJobTime, now)
+	}
+	if result.Arch != "arm64" {
+		t.Errorf("Arch = %s, want arm64", result.Arch)
+	}
+	if result.CPUMin != 4 {
+		t.Errorf("CPUMin = %d, want 4", result.CPUMin)
+	}
+	if result.CPUMax != 8 {
+		t.Errorf("CPUMax = %d, want 8", result.CPUMax)
+	}
+	if result.RAMMin != 8.0 {
+		t.Errorf("RAMMin = %f, want 8.0", result.RAMMin)
+	}
+	if result.RAMMax != 16.0 {
+		t.Errorf("RAMMax = %f, want 16.0", result.RAMMax)
+	}
+	if len(result.Families) != 2 || result.Families[0] != "c7g" || result.Families[1] != "m7g" {
+		t.Errorf("Families = %v, want [c7g, m7g]", result.Families)
+	}
+}

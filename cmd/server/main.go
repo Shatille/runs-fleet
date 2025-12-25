@@ -239,7 +239,7 @@ func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Conf
 	return cb
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher metrics.Publisher) (*housekeeping.Handler, *housekeeping.Scheduler) {
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher metrics.Publisher, dbClient *db.Client) (*housekeeping.Handler, *housekeeping.Scheduler) {
 	if cfg.HousekeepingQueueURL == "" {
 		return nil, nil
 	}
@@ -253,6 +253,12 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher me
 
 	housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
 	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
+
+	// Set pool DB for ephemeral pool cleanup
+	if dbClient != nil {
+		tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
+	}
+
 	handler := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
 
 	schedulerCfg := housekeeping.DefaultSchedulerConfig()
@@ -394,7 +400,7 @@ func main() {
 			ssmClient := ssm.NewFromConfig(awsCfg)
 			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
 		}
-		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher)
+		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher, dbClient)
 	}
 
 	runnerManager := initRunnerManager(awsCfg, cfg)
@@ -491,7 +497,7 @@ func main() {
 	log.Println("Server stopped")
 }
 
-func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, m metrics.Publisher) (*queue.JobMessage, error) {
+func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
 	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
 
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
@@ -504,6 +510,14 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 	if err != nil {
 		log.Printf("Invalid run_id in label %q: %v", jobConfig.RunID, err)
 		return nil, nil
+	}
+
+	// Handle ephemeral pool creation/update
+	if jobConfig.Pool != "" && dbc != nil {
+		if err := ensureEphemeralPool(ctx, dbc, jobConfig); err != nil {
+			log.Printf("Failed to ensure ephemeral pool %s: %v", jobConfig.Pool, err)
+			// Continue anyway - job will cold-start if pool doesn't exist
+		}
 	}
 
 	msg := &queue.JobMessage{
@@ -546,6 +560,67 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
 	}
 	return msg, nil
+}
+
+// ensureEphemeralPool creates or updates an ephemeral pool for the given job config.
+// If an explicit (non-ephemeral) pool config exists, it does nothing.
+// If an ephemeral pool exists, it updates the last job time.
+// If no pool exists, it creates a new ephemeral pool with the job's instance spec.
+// Uses conditional writes to prevent race conditions when multiple jobs try to create the same pool.
+func ensureEphemeralPool(ctx context.Context, dbc *db.Client, jobConfig *gh.JobConfig) error {
+	poolConfig, err := dbc.GetPoolConfig(ctx, jobConfig.Pool)
+	if err != nil {
+		return fmt.Errorf("failed to get pool config: %w", err)
+	}
+
+	if poolConfig != nil {
+		if !poolConfig.Ephemeral {
+			// Explicit config exists - don't touch
+			return nil
+		}
+		// Ephemeral pool exists - update activity timestamp
+		if err := dbc.TouchPoolActivity(ctx, jobConfig.Pool); err != nil {
+			return fmt.Errorf("failed to update pool activity: %w", err)
+		}
+		log.Printf("Updated ephemeral pool %s activity", jobConfig.Pool)
+		return nil
+	}
+
+	// Pool doesn't exist - create ephemeral pool with conditional write
+	config := &db.PoolConfig{
+		PoolName:           jobConfig.Pool,
+		Ephemeral:          true,
+		DesiredRunning:     1, // Start with 1, auto-scaling will adjust
+		DesiredStopped:     0,
+		IdleTimeoutMinutes: 30,
+		LastJobTime:        time.Now(),
+		// Inherit instance spec from job
+		InstanceType: jobConfig.InstanceType,
+		Arch:         jobConfig.Arch,
+		CPUMin:       jobConfig.CPUMin,
+		CPUMax:       jobConfig.CPUMax,
+		RAMMin:       jobConfig.RAMMin,
+		RAMMax:       jobConfig.RAMMax,
+		Families:     jobConfig.Families,
+	}
+
+	if err := dbc.CreateEphemeralPool(ctx, config); err != nil {
+		if errors.Is(err, db.ErrPoolAlreadyExists) {
+			// Race condition: another job created the pool between GetPoolConfig and CreateEphemeralPool
+			// Update activity timestamp instead
+			if touchErr := dbc.TouchPoolActivity(ctx, jobConfig.Pool); touchErr != nil {
+				log.Printf("Pool %s created by concurrent job, failed to update activity: %v", jobConfig.Pool, touchErr)
+			} else {
+				log.Printf("Pool %s created by concurrent job, updated activity", jobConfig.Pool)
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to create ephemeral pool: %w", err)
+	}
+
+	log.Printf("Created ephemeral pool %s (arch=%s, cpu=%d-%d, ram=%.1f-%.1f)",
+		jobConfig.Pool, jobConfig.Arch, jobConfig.CPUMin, jobConfig.CPUMax, jobConfig.RAMMin, jobConfig.RAMMax)
+	return nil
 }
 
 // handleJobFailure processes workflow_job completed events with failure conclusion.
@@ -1044,7 +1119,7 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 
 	switch event.GetAction() {
 	case "queued":
-		jobMsg, err := handleWorkflowJob(ctx, event, jobQueue, metricsPublisher)
+		jobMsg, err := handleWorkflowJob(ctx, event, jobQueue, dbClient, metricsPublisher)
 		if err != nil || jobMsg == nil {
 			return false, ""
 		}
@@ -1127,6 +1202,34 @@ func (h *housekeepingMetricsAdapter) PublishJobRecordsArchived(ctx context.Conte
 
 func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	return h.publisher.PublishPoolUtilization(ctx, poolName, utilization)
+}
+
+// poolDBAdapter adapts db.Client to housekeeping.PoolDBAPI.
+type poolDBAdapter struct {
+	client *db.Client
+}
+
+func (p *poolDBAdapter) ListPools(ctx context.Context) ([]string, error) {
+	return p.client.ListPools(ctx)
+}
+
+func (p *poolDBAdapter) GetPoolConfig(ctx context.Context, poolName string) (*housekeeping.PoolConfig, error) {
+	cfg, err := p.client.GetPoolConfig(ctx, poolName)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, nil
+	}
+	return &housekeeping.PoolConfig{
+		PoolName:    cfg.PoolName,
+		Ephemeral:   cfg.Ephemeral,
+		LastJobTime: cfg.LastJobTime,
+	}, nil
+}
+
+func (p *poolDBAdapter) DeletePoolConfig(ctx context.Context, poolName string) error {
+	return p.client.DeletePoolConfig(ctx, poolName)
 }
 
 // K8s backend functions

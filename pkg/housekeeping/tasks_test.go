@@ -845,6 +845,240 @@ func TestExecuteDLQRedrive_GetMainQueueAttributesError(t *testing.T) {
 	}
 }
 
+// mockPoolDBAPI implements PoolDBAPI for testing.
+type mockPoolDBAPI struct {
+	pools         []string
+	poolConfigs   map[string]*PoolConfig
+	listErr       error
+	getErr        error
+	deleteErr     error
+	deletedPools  []string
+}
+
+func (m *mockPoolDBAPI) ListPools(_ context.Context) ([]string, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.pools, nil
+}
+
+func (m *mockPoolDBAPI) GetPoolConfig(_ context.Context, poolName string) (*PoolConfig, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	if m.poolConfigs == nil {
+		return nil, nil
+	}
+	return m.poolConfigs[poolName], nil
+}
+
+func (m *mockPoolDBAPI) DeletePoolConfig(_ context.Context, poolName string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedPools = append(m.deletedPools, poolName)
+	return nil
+}
+
+func TestExecuteEphemeralPoolCleanup_NoPoolDB(t *testing.T) {
+	tasks := &Tasks{
+		config: &config.Config{},
+	}
+
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_NoPools(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		pools: []string{},
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(poolDB.deletedPools) != 0 {
+		t.Errorf("expected 0 deleted pools, got %d", len(poolDB.deletedPools))
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_NonEphemeralPoolsSkipped(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		pools: []string{"persistent-pool"},
+		poolConfigs: map[string]*PoolConfig{
+			"persistent-pool": {
+				PoolName:    "persistent-pool",
+				Ephemeral:   false,
+				LastJobTime: time.Now().Add(-10 * time.Hour), // Old but not ephemeral
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(poolDB.deletedPools) != 0 {
+		t.Errorf("expected 0 deleted pools (non-ephemeral skipped), got %d", len(poolDB.deletedPools))
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_ActiveEphemeralPoolsSkipped(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		pools: []string{"active-ephemeral"},
+		poolConfigs: map[string]*PoolConfig{
+			"active-ephemeral": {
+				PoolName:    "active-ephemeral",
+				Ephemeral:   true,
+				LastJobTime: time.Now().Add(-1 * time.Hour), // Active (within TTL)
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(poolDB.deletedPools) != 0 {
+		t.Errorf("expected 0 deleted pools (active ephemeral skipped), got %d", len(poolDB.deletedPools))
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_InactiveEphemeralPoolsDeleted(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		pools: []string{"stale-ephemeral-1", "stale-ephemeral-2", "active-ephemeral"},
+		poolConfigs: map[string]*PoolConfig{
+			"stale-ephemeral-1": {
+				PoolName:    "stale-ephemeral-1",
+				Ephemeral:   true,
+				LastJobTime: time.Now().Add(-5 * time.Hour), // Stale (beyond TTL)
+			},
+			"stale-ephemeral-2": {
+				PoolName:    "stale-ephemeral-2",
+				Ephemeral:   true,
+				LastJobTime: time.Now().Add(-10 * time.Hour), // Stale (beyond TTL)
+			},
+			"active-ephemeral": {
+				PoolName:    "active-ephemeral",
+				Ephemeral:   true,
+				LastJobTime: time.Now().Add(-1 * time.Hour), // Active (within TTL)
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(poolDB.deletedPools) != 2 {
+		t.Errorf("expected 2 deleted pools, got %d: %v", len(poolDB.deletedPools), poolDB.deletedPools)
+	}
+
+	// Verify correct pools were deleted
+	deletedMap := make(map[string]bool)
+	for _, p := range poolDB.deletedPools {
+		deletedMap[p] = true
+	}
+	if !deletedMap["stale-ephemeral-1"] || !deletedMap["stale-ephemeral-2"] {
+		t.Errorf("expected stale-ephemeral-1 and stale-ephemeral-2 to be deleted, got %v", poolDB.deletedPools)
+	}
+	if deletedMap["active-ephemeral"] {
+		t.Error("active-ephemeral should not have been deleted")
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_ListPoolsError(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		listErr: errors.New("list pools error"),
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err == nil {
+		t.Fatal("expected error from list pools")
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_GetPoolConfigError(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		pools:  []string{"pool1"},
+		getErr: errors.New("get pool config error"),
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	// Should not return error, just log and continue
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteEphemeralPoolCleanup_DeletePoolConfigError(t *testing.T) {
+	poolDB := &mockPoolDBAPI{
+		pools: []string{"stale-pool"},
+		poolConfigs: map[string]*PoolConfig{
+			"stale-pool": {
+				PoolName:    "stale-pool",
+				Ephemeral:   true,
+				LastJobTime: time.Now().Add(-10 * time.Hour),
+			},
+		},
+		deleteErr: errors.New("delete pool config error"),
+	}
+
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{},
+	}
+
+	// Should not return error, just log and continue
+	err := tasks.ExecuteEphemeralPoolCleanup(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEphemeralPoolTTL(t *testing.T) {
+	if EphemeralPoolTTL != 4*time.Hour {
+		t.Errorf("expected EphemeralPoolTTL to be 4h, got %v", EphemeralPoolTTL)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }

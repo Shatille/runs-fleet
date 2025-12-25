@@ -3,6 +3,7 @@ package pools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,9 +23,10 @@ const (
 
 // MockDBClient implements DBClient interface
 type MockDBClient struct {
-	GetPoolConfigFunc   func(ctx context.Context, poolName string) (*db.PoolConfig, error)
-	UpdatePoolStateFunc func(ctx context.Context, poolName string, running, stopped int) error
-	ListPoolsFunc       func(ctx context.Context) ([]string, error)
+	GetPoolConfigFunc         func(ctx context.Context, poolName string) (*db.PoolConfig, error)
+	UpdatePoolStateFunc       func(ctx context.Context, poolName string, running, stopped int) error
+	ListPoolsFunc             func(ctx context.Context) ([]string, error)
+	GetPoolPeakConcurrencyFunc func(ctx context.Context, poolName string, windowHours int) (int, error)
 }
 
 func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -46,6 +48,13 @@ func (m *MockDBClient) ListPools(ctx context.Context) ([]string, error) {
 		return m.ListPoolsFunc(ctx)
 	}
 	return []string{}, nil
+}
+
+func (m *MockDBClient) GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
+	if m.GetPoolPeakConcurrencyFunc != nil {
+		return m.GetPoolPeakConcurrencyFunc(ctx, poolName, windowHours)
+	}
+	return 0, nil
 }
 
 // MockFleetAPI implements FleetAPI interface
@@ -1380,5 +1389,108 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 	}
 	if !stopped.IdleSince.IsZero() {
 		t.Error("stopped instance should not have idle time")
+	}
+}
+
+func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
+	fleetCreateCount := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"ephemeral-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       "ephemeral-pool",
+				DesiredRunning: 1, // Default, should be overridden by peak
+				DesiredStopped: 0,
+				InstanceType:   "c7g.xlarge",
+				Ephemeral:      true,
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+			return 3, nil // Peak of 3 concurrent jobs
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCount++
+			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// Return 0 instances - all should be created
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager.SetCoordinator(&MockCoordinator{isLeader: true})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should create 3 instances based on peak concurrency, not 1 from default
+	if fleetCreateCount != 3 {
+		t.Errorf("expected 3 fleet creates based on peak concurrency, got %d", fleetCreateCount)
+	}
+}
+
+func TestReconcileEphemeralPoolPeakError(t *testing.T) {
+	fleetCreateCount := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"ephemeral-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       "ephemeral-pool",
+				DesiredRunning: 2, // Default, should be used when peak fails
+				DesiredStopped: 0,
+				InstanceType:   "c7g.xlarge",
+				Ephemeral:      true,
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+			return 0, errors.New("database error")
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCount++
+			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager.SetCoordinator(&MockCoordinator{isLeader: true})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should fallback to default DesiredRunning of 2 when peak fails
+	if fleetCreateCount != 2 {
+		t.Errorf("expected 2 fleet creates (fallback to default), got %d", fleetCreateCount)
 	}
 }
