@@ -57,12 +57,27 @@ type SQSAPI interface {
 	StartMessageMoveTask(ctx context.Context, params *sqs.StartMessageMoveTaskInput, optFns ...func(*sqs.Options)) (*sqs.StartMessageMoveTaskOutput, error)
 }
 
+// PoolConfig represents pool configuration for housekeeping.
+type PoolConfig struct {
+	PoolName    string
+	Ephemeral   bool
+	LastJobTime time.Time
+}
+
+// PoolDBAPI defines pool database operations for housekeeping.
+type PoolDBAPI interface {
+	ListPools(ctx context.Context) ([]string, error)
+	GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error)
+	DeletePoolConfig(ctx context.Context, poolName string) error
+}
+
 // Tasks implements housekeeping task execution.
 type Tasks struct {
 	ec2Client    EC2API
 	ssmClient    SSMAPI
 	dynamoClient DynamoDBAPI
 	sqsClient    SQSAPI
+	poolDB       PoolDBAPI
 	metrics      MetricsAPI
 	costReporter CostReporter
 	config       *config.Config
@@ -490,5 +505,124 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 	}
 
 	log.Printf("DLQ redrive started: task handle %s", aws.ToString(output.TaskHandle))
+	return nil
+}
+
+// SetPoolDB sets the pool database client for ephemeral pool cleanup.
+func (t *Tasks) SetPoolDB(poolDB PoolDBAPI) {
+	t.poolDB = poolDB
+}
+
+// EphemeralPoolTTL is the duration after which inactive ephemeral pools are deleted.
+const EphemeralPoolTTL = 4 * time.Hour
+
+// ExecuteEphemeralPoolCleanup removes ephemeral pools that have been inactive for longer than TTL.
+// It first terminates any running/stopped instances belonging to the pool before deleting the config.
+func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
+	if t.poolDB == nil {
+		log.Println("Skipping ephemeral pool cleanup: pool database not configured")
+		return nil
+	}
+
+	log.Println("Executing ephemeral pool cleanup...")
+
+	pools, err := t.poolDB.ListPools(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list pools: %w", err)
+	}
+
+	var cleaned int
+	for _, poolName := range pools {
+		config, err := t.poolDB.GetPoolConfig(ctx, poolName)
+		if err != nil {
+			log.Printf("Failed to get pool config for %s: %v", poolName, err)
+			continue
+		}
+		if config == nil {
+			continue
+		}
+
+		// Only clean up ephemeral pools
+		if !config.Ephemeral {
+			continue
+		}
+
+		// Check if pool is inactive beyond TTL
+		if time.Since(config.LastJobTime) <= EphemeralPoolTTL {
+			continue
+		}
+
+		// Terminate pool instances before deleting config
+		if err := t.terminatePoolInstances(ctx, poolName); err != nil {
+			log.Printf("Failed to terminate instances for pool %s: %v", poolName, err)
+			// Continue to try deleting config anyway - orphaned instances will be cleaned up separately
+		}
+
+		// Delete the ephemeral pool
+		if err := t.poolDB.DeletePoolConfig(ctx, poolName); err != nil {
+			log.Printf("Failed to delete ephemeral pool %s: %v", poolName, err)
+			continue
+		}
+
+		log.Printf("Deleted ephemeral pool %s (inactive for %v)", poolName, time.Since(config.LastJobTime).Round(time.Minute))
+		cleaned++
+	}
+
+	log.Printf("Ephemeral pool cleanup completed: %d pools deleted", cleaned)
+	return nil
+}
+
+// terminatePoolInstances terminates all EC2 instances belonging to a pool.
+func (t *Tasks) terminatePoolInstances(ctx context.Context, poolName string) error {
+	if t.ec2Client == nil {
+		log.Printf("EC2 client not configured, skipping instance termination for pool %s", poolName)
+		return nil
+	}
+
+	// Query for pool instances
+	input := &ec2.DescribeInstancesInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("tag:runs-fleet:pool"),
+				Values: []string{poolName},
+			},
+			{
+				Name:   aws.String("tag:runs-fleet:managed"),
+				Values: []string{"true"},
+			},
+			{
+				Name:   aws.String("instance-state-name"),
+				Values: []string{"pending", "running", "stopping", "stopped"},
+			},
+		},
+	}
+
+	output, err := t.ec2Client.DescribeInstances(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to describe pool instances: %w", err)
+	}
+
+	var instanceIDs []string
+	for _, reservation := range output.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.InstanceId != nil {
+				instanceIDs = append(instanceIDs, *instance.InstanceId)
+			}
+		}
+	}
+
+	if len(instanceIDs) == 0 {
+		log.Printf("No instances to terminate for pool %s", poolName)
+		return nil
+	}
+
+	log.Printf("Terminating %d instances for pool %s: %v", len(instanceIDs), poolName, instanceIDs)
+	_, err = t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+		InstanceIds: instanceIDs,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to terminate instances: %w", err)
+	}
+
 	return nil
 }

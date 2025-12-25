@@ -11,6 +11,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	"github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -21,6 +22,7 @@ type DBClient interface {
 	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 	ListPools(ctx context.Context) ([]string, error)
+	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
 }
 
 // FleetAPI defines EC2 fleet operations for instance provisioning.
@@ -138,6 +140,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 
 	desiredRunning, desiredStopped := m.getScheduledDesiredCounts(poolConfig)
 
+	// For ephemeral pools, override with auto-scaled value based on peak concurrency
+	if ephemeralDesired, ok := m.getEphemeralAutoScaledCount(ctx, poolName, poolConfig); ok {
+		desiredRunning = ephemeralDesired
+	}
+
 	instances, err := m.getPoolInstances(ctx, poolName)
 	if err != nil {
 		return fmt.Errorf("failed to get pool instances: %w", err)
@@ -174,15 +181,23 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 
 		if deficit > 0 {
-			for i := 0; i < deficit; i++ {
-				spec := &fleet.LaunchSpec{
-					RunID:        time.Now().UnixNano(),
-					InstanceType: poolConfig.InstanceType,
-					Pool:         poolName,
-					Spot:         true,
-				}
-				if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
-					log.Printf("Failed to create fleet instance for pool %s: %v", poolName, err)
+			// Resolve instance types for this pool
+			instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
+			if len(instanceTypes) == 0 {
+				log.Printf("No instance types resolved for pool %s, skipping fleet creation", poolName)
+			} else {
+				for i := 0; i < deficit; i++ {
+					spec := &fleet.LaunchSpec{
+						RunID:         time.Now().UnixNano(),
+						InstanceType:  instanceTypes[0],
+						InstanceTypes: instanceTypes,
+						Pool:          poolName,
+						Spot:          true,
+						Arch:          arch,
+					}
+					if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
+						log.Printf("Failed to create fleet instance for pool %s: %v", poolName, err)
+					}
 				}
 			}
 		}
@@ -242,6 +257,28 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	}
 
 	return nil
+}
+
+// getEphemeralAutoScaledCount returns the auto-scaled desired running count for ephemeral pools.
+// Returns (desiredRunning, true) if scaling was applied, or (0, false) for non-ephemeral pools.
+func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName string, poolConfig *db.PoolConfig) (int, bool) {
+	if !poolConfig.Ephemeral {
+		return 0, false
+	}
+
+	peak, err := m.dbClient.GetPoolPeakConcurrency(ctx, poolName, 1) // 1 hour window
+	if err != nil {
+		log.Printf("Failed to get peak concurrency for ephemeral pool %s: %v", poolName, err)
+		return poolConfig.DesiredRunning, true // Fall back to config default
+	}
+
+	if peak > 0 {
+		desired := max(1, peak)
+		log.Printf("Ephemeral pool %s: auto-scaled DesiredRunning to %d (peak=%d)", poolName, desired, peak)
+		return desired, true
+	}
+
+	return poolConfig.DesiredRunning, true
 }
 
 // getScheduledDesiredCounts returns the desired running and stopped counts based on schedule.
@@ -434,4 +471,37 @@ func (m *Manager) MarkInstanceIdle(instanceID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.instanceIdle[instanceID] = time.Now()
+}
+
+// resolvePoolInstanceTypes resolves instance types for a pool configuration.
+// For ephemeral pools with flexible specs, uses GitHub's resolution logic.
+// For legacy pools with a single InstanceType, returns that type.
+func resolvePoolInstanceTypes(poolConfig *db.PoolConfig) ([]string, string) {
+	// If pool has flexible specs, resolve them
+	if poolConfig.CPUMin > 0 || poolConfig.CPUMax > 0 {
+		jobConfig := &github.JobConfig{
+			Arch:     poolConfig.Arch,
+			CPUMin:   poolConfig.CPUMin,
+			CPUMax:   poolConfig.CPUMax,
+			RAMMin:   poolConfig.RAMMin,
+			RAMMax:   poolConfig.RAMMax,
+			Families: poolConfig.Families,
+		}
+		if err := github.ResolveFlexibleSpec(jobConfig); err != nil {
+			log.Printf("Failed to resolve flexible spec for pool: %v", err)
+			// Fall back to pool's InstanceType if resolution fails
+			if poolConfig.InstanceType != "" {
+				return []string{poolConfig.InstanceType}, poolConfig.Arch
+			}
+			return nil, ""
+		}
+		return jobConfig.InstanceTypes, jobConfig.Arch
+	}
+
+	// Legacy pool with single instance type
+	if poolConfig.InstanceType != "" {
+		return []string{poolConfig.InstanceType}, poolConfig.Arch
+	}
+
+	return nil, ""
 }

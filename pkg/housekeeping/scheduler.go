@@ -45,17 +45,22 @@ type SchedulerConfig struct {
 	// DLQRedriveInterval is how often to redrive messages from DLQ.
 	// Default: 1 minute
 	DLQRedriveInterval time.Duration
+
+	// EphemeralPoolCleanupInterval is how often to cleanup stale ephemeral pools.
+	// Default: 1 hour
+	EphemeralPoolCleanupInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default scheduler configuration.
 func DefaultSchedulerConfig() SchedulerConfig {
 	return SchedulerConfig{
-		OrphanedInstancesInterval: 5 * time.Minute,
-		StaleSSMInterval:          15 * time.Minute,
-		OldJobsInterval:           1 * time.Hour,
-		PoolAuditInterval:         10 * time.Minute,
-		CostReportInterval:        24 * time.Hour,
-		DLQRedriveInterval:        1 * time.Minute,
+		OrphanedInstancesInterval:    5 * time.Minute,
+		StaleSSMInterval:             15 * time.Minute,
+		OldJobsInterval:              1 * time.Hour,
+		PoolAuditInterval:            10 * time.Minute,
+		CostReportInterval:           24 * time.Hour,
+		DLQRedriveInterval:           1 * time.Minute,
+		EphemeralPoolCleanupInterval: 1 * time.Hour,
 	}
 }
 
@@ -99,6 +104,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	poolTicker := time.NewTicker(s.config.PoolAuditInterval)
 	costTicker := time.NewTicker(s.config.CostReportInterval)
 	dlqTicker := time.NewTicker(s.config.DLQRedriveInterval)
+	ephemeralPoolTicker := time.NewTicker(s.config.EphemeralPoolCleanupInterval)
 
 	defer orphanedTicker.Stop()
 	defer ssmTicker.Stop()
@@ -106,6 +112,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer poolTicker.Stop()
 	defer costTicker.Stop()
 	defer dlqTicker.Stop()
+	defer ephemeralPoolTicker.Stop()
 
 	// Run critical tasks immediately on startup
 	s.scheduleTask(ctx, TaskOrphanedInstances)
@@ -134,6 +141,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-dlqTicker.C:
 			s.scheduleTask(ctx, TaskDLQRedrive)
+
+		case <-ephemeralPoolTicker.C:
+			s.scheduleTask(ctx, TaskEphemeralPoolCleanup)
 		}
 	}
 }

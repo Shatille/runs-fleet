@@ -258,12 +258,13 @@ func TestScheduler_scheduleTask_ContextCancelledDuringRetry(t *testing.T) {
 func TestScheduler_Run_Cancellation(t *testing.T) {
 	sqsClient := &mockSchedulerSQSAPI{}
 	cfg := SchedulerConfig{
-		OrphanedInstancesInterval: 100 * time.Millisecond,
-		StaleSSMInterval:          100 * time.Millisecond,
-		OldJobsInterval:           100 * time.Millisecond,
-		PoolAuditInterval:         100 * time.Millisecond,
-		CostReportInterval:        100 * time.Millisecond,
-		DLQRedriveInterval:        100 * time.Millisecond,
+		OrphanedInstancesInterval:    100 * time.Millisecond,
+		StaleSSMInterval:             100 * time.Millisecond,
+		OldJobsInterval:              100 * time.Millisecond,
+		PoolAuditInterval:            100 * time.Millisecond,
+		CostReportInterval:           100 * time.Millisecond,
+		DLQRedriveInterval:           100 * time.Millisecond,
+		EphemeralPoolCleanupInterval: 100 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -291,12 +292,13 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 	sqsClient := &mockSchedulerSQSAPI{}
 	cfg := SchedulerConfig{
-		OrphanedInstancesInterval: 1 * time.Hour, // Long interval
-		StaleSSMInterval:          1 * time.Hour,
-		OldJobsInterval:           1 * time.Hour,
-		PoolAuditInterval:         1 * time.Hour,
-		CostReportInterval:        1 * time.Hour,
-		DLQRedriveInterval:        1 * time.Hour,
+		OrphanedInstancesInterval:    1 * time.Hour, // Long interval
+		StaleSSMInterval:             1 * time.Hour,
+		OldJobsInterval:              1 * time.Hour,
+		PoolAuditInterval:            1 * time.Hour,
+		CostReportInterval:           1 * time.Hour,
+		DLQRedriveInterval:           1 * time.Hour,
+		EphemeralPoolCleanupInterval: 1 * time.Hour,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -332,12 +334,13 @@ func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 
 func TestSchedulerConfig_Structure(t *testing.T) {
 	cfg := SchedulerConfig{
-		OrphanedInstancesInterval: 5 * time.Minute,
-		StaleSSMInterval:          15 * time.Minute,
-		OldJobsInterval:           1 * time.Hour,
-		PoolAuditInterval:         10 * time.Minute,
-		CostReportInterval:        24 * time.Hour,
-		DLQRedriveInterval:        15 * time.Minute,
+		OrphanedInstancesInterval:    5 * time.Minute,
+		StaleSSMInterval:             15 * time.Minute,
+		OldJobsInterval:              1 * time.Hour,
+		PoolAuditInterval:            10 * time.Minute,
+		CostReportInterval:           24 * time.Hour,
+		DLQRedriveInterval:           15 * time.Minute,
+		EphemeralPoolCleanupInterval: 1 * time.Hour,
 	}
 
 	if cfg.OrphanedInstancesInterval != 5*time.Minute {
@@ -354,6 +357,9 @@ func TestSchedulerConfig_Structure(t *testing.T) {
 	}
 	if cfg.CostReportInterval != 24*time.Hour {
 		t.Errorf("expected CostReportInterval 24h, got %v", cfg.CostReportInterval)
+	}
+	if cfg.EphemeralPoolCleanupInterval != 1*time.Hour {
+		t.Errorf("expected EphemeralPoolCleanupInterval 1h, got %v", cfg.EphemeralPoolCleanupInterval)
 	}
 }
 
@@ -372,12 +378,13 @@ func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
 	sqsClient := &mockSchedulerSQSAPI{}
 	// Use very short intervals for testing
 	cfg := SchedulerConfig{
-		OrphanedInstancesInterval: 50 * time.Millisecond,
-		StaleSSMInterval:          50 * time.Millisecond,
-		OldJobsInterval:           50 * time.Millisecond,
-		PoolAuditInterval:         50 * time.Millisecond,
-		CostReportInterval:        50 * time.Millisecond,
-		DLQRedriveInterval:        50 * time.Millisecond,
+		OrphanedInstancesInterval:    50 * time.Millisecond,
+		StaleSSMInterval:             50 * time.Millisecond,
+		OldJobsInterval:              50 * time.Millisecond,
+		PoolAuditInterval:            50 * time.Millisecond,
+		CostReportInterval:           50 * time.Millisecond,
+		DLQRedriveInterval:           50 * time.Millisecond,
+		EphemeralPoolCleanupInterval: 50 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -441,12 +448,13 @@ func TestScheduler_scheduleTask_MetricsError(t *testing.T) {
 func TestScheduler_Structure(t *testing.T) {
 	sqsClient := &mockSchedulerSQSAPI{}
 	cfg := SchedulerConfig{
-		OrphanedInstancesInterval: 1 * time.Minute,
-		StaleSSMInterval:          2 * time.Minute,
-		OldJobsInterval:           3 * time.Minute,
-		PoolAuditInterval:         4 * time.Minute,
-		CostReportInterval:        5 * time.Minute,
-		DLQRedriveInterval:        6 * time.Minute,
+		OrphanedInstancesInterval:    1 * time.Minute,
+		StaleSSMInterval:             2 * time.Minute,
+		OldJobsInterval:              3 * time.Minute,
+		PoolAuditInterval:            4 * time.Minute,
+		CostReportInterval:           5 * time.Minute,
+		DLQRedriveInterval:           6 * time.Minute,
+		EphemeralPoolCleanupInterval: 7 * time.Minute,
 	}
 	queueURL := "https://sqs.example.com/test-queue"
 
@@ -472,6 +480,9 @@ func TestScheduler_Structure(t *testing.T) {
 	}
 	if scheduler.config.DLQRedriveInterval != 6*time.Minute {
 		t.Errorf("DLQRedriveInterval = %v, want 6m", scheduler.config.DLQRedriveInterval)
+	}
+	if scheduler.config.EphemeralPoolCleanupInterval != 7*time.Minute {
+		t.Errorf("EphemeralPoolCleanupInterval = %v, want 7m", scheduler.config.EphemeralPoolCleanupInterval)
 	}
 }
 
@@ -532,6 +543,9 @@ func TestSchedulerConfig_ZeroValues(t *testing.T) {
 	}
 	if cfg.DLQRedriveInterval != 0 {
 		t.Error("DLQRedriveInterval should be zero by default")
+	}
+	if cfg.EphemeralPoolCleanupInterval != 0 {
+		t.Error("EphemeralPoolCleanupInterval should be zero by default")
 	}
 }
 
