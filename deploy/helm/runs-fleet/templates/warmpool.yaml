@@ -1,3 +1,6 @@
+{{- if and .Values.warmPool.enabled (ne .Values.mode "k8s") }}
+{{- fail "warmPool.enabled can only be true when mode is 'k8s'" }}
+{{- end }}
 {{- if and .Values.warmPool.enabled (eq .Values.mode "k8s") }}
 apiVersion: apps/v1
 kind: Deployment
