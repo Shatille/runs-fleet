@@ -103,7 +103,7 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
 		InstanceTypes: job.InstanceTypes,
-		SubnetID:      selectSubnet(job, p.cfg, p.subnetIndex),
+		SubnetID:      selectSubnet(p.cfg, p.subnetIndex),
 		Spot:          job.Spot,
 		Pool:          job.Pool,
 		ForceOnDemand: job.ForceOnDemand,
@@ -135,7 +135,6 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 				InstanceID:   instanceID,
 				InstanceType: job.InstanceType,
 				Pool:         job.Pool,
-				Private:      job.Private,
 				Spot:         job.Spot,
 				RunnerSpec:   job.RunnerSpec,
 				RetryCount:   job.RetryCount,
@@ -526,7 +525,6 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 		Repo:          event.GetRepo().GetFullName(), // owner/repo for repo-level registration
 		InstanceType:  jobConfig.InstanceType,
 		Pool:          jobConfig.Pool,
-		Private:       jobConfig.Private,
 		Spot:          jobConfig.Spot,
 		RunnerSpec:    jobConfig.RunnerSpec,
 		OriginalLabel: jobConfig.OriginalLabel,
@@ -702,7 +700,6 @@ func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		Repo:          jobInfo.Repo,
 		InstanceType:  jobInfo.InstanceType,
 		Pool:          jobInfo.Pool,
-		Private:       jobInfo.Private,
 		Spot:          false, // ForceOnDemand uses on-demand instances
 		RunnerSpec:    jobInfo.RunnerSpec,
 		RetryCount:    jobInfo.RetryCount + 1,
@@ -803,11 +800,7 @@ func sendMessageWithRetry(ctx context.Context, q queue.Queue, job *queue.JobMess
 	return err
 }
 
-func selectSubnet(job *queue.JobMessage, cfg *config.Config, subnetIndex *uint64) string {
-	if job.Private && len(cfg.PrivateSubnetIDs) > 0 {
-		idx := atomic.AddUint64(subnetIndex, 1) - 1
-		return cfg.PrivateSubnetIDs[idx%uint64(len(cfg.PrivateSubnetIDs))]
-	}
+func selectSubnet(cfg *config.Config, subnetIndex *uint64) string {
 	if len(cfg.PublicSubnetIDs) > 0 {
 		idx := atomic.AddUint64(subnetIndex, 1) - 1
 		return cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
@@ -867,7 +860,6 @@ func saveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 			InstanceID:   instanceID,
 			InstanceType: job.InstanceType,
 			Pool:         job.Pool,
-			Private:      job.Private,
 			Spot:         job.Spot,
 			RunnerSpec:   job.RunnerSpec,
 			RetryCount:   job.RetryCount,
@@ -990,7 +982,7 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
 		InstanceTypes: job.InstanceTypes, // Flexible instance selection (Phase 10)
-		SubnetID:      selectSubnet(&job, cfg, subnetIndex),
+		SubnetID:      selectSubnet(cfg, subnetIndex),
 		Spot:          job.Spot,
 		Pool:          job.Pool,
 		ForceOnDemand: job.ForceOnDemand,
@@ -1031,7 +1023,6 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 				InstanceType:  job.InstanceType,
 				InstanceTypes: job.InstanceTypes,
 				Pool:          job.Pool,
-				Private:       job.Private,
 				Spot:          false,
 				RunnerSpec:    job.RunnerSpec,
 				OriginalLabel: job.OriginalLabel,
@@ -1169,13 +1160,11 @@ func buildRunnerLabel(job *queue.JobMessage) string {
 	if job.OriginalLabel != "" {
 		return job.OriginalLabel
 	}
-	// Fallback for backwards compatibility with queued messages without OriginalLabel
-	label := fmt.Sprintf("runs-fleet=%d/runner=%s", job.RunID, job.RunnerSpec)
+	// Fallback for messages queued before OriginalLabel was added.
+	// Generates a label from job metadata - this path is only for migration.
+	label := fmt.Sprintf("runs-fleet=%d", job.RunID)
 	if job.Pool != "" {
 		label += fmt.Sprintf("/pool=%s", job.Pool)
-	}
-	if job.Private {
-		label += "/private=true"
 	}
 	if !job.Spot {
 		label += "/spot=false"
@@ -1382,7 +1371,6 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 		Arch:         job.Arch,
 		InstanceType: job.InstanceType,
 		Spot:         job.Spot,
-		Private:      job.Private,
 		Environment:  job.Environment,
 		RetryCount:   job.RetryCount,
 		StorageGiB:   job.StorageGiB,
@@ -1410,7 +1398,6 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 				InstanceID:   runnerID,
 				InstanceType: job.InstanceType,
 				Pool:         job.Pool,
-				Private:      job.Private,
 				Spot:         job.Spot,
 				RunnerSpec:   job.RunnerSpec,
 				RetryCount:   job.RetryCount,

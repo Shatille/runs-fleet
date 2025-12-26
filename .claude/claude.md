@@ -77,21 +77,15 @@ RUNS_FLEET_LOCKS_TABLE=runs-fleet-locks
 
 ## Job Labels
 
-GitHub workflows request runners via labels. Two formats supported:
+GitHub workflows request runners via labels:
 
-**Flexible format (recommended):**
 ```yaml
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 ```
 
-**Legacy format:**
-```yaml
-runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64/pool=default"
-```
-
-### Flexible labels
+### Resource labels
 
 - `cpu=<n>` - Exact vCPU count
 - `cpu=<min>+<max>` - vCPU range for spot diversification
@@ -101,25 +95,11 @@ runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64/pool=default"
 - `arch=<arch>` - Architecture: `arm64` or `amd64`
 - `disk=<size>` - Disk in GiB (1-16384, gp3)
 
-### Common labels
+### Routing labels
 
 - `runs-fleet=<run-id>` - Workflow run identifier (required)
 - `pool=<name>` - Warm pool name (routes to pool queue)
-- `private=true` - Use private subnet with static egress
 - `spot=false` - Force on-demand (skip spot)
-
-### Legacy runner specs
-
-- `2cpu-linux-arm64` → t4g.medium (2 vCPU, 4GB, 30GB disk)
-- `4cpu-linux-arm64` → c7g.xlarge (4 vCPU, 8GB, 50GB disk)
-- `8cpu-linux-arm64` → c7g.2xlarge (8 vCPU, 16GB, 100GB disk)
-- `16cpu-linux-arm64` → c7g.4xlarge (16 vCPU, 32GB, 200GB disk)
-- `32cpu-linux-arm64` → c7g.8xlarge (32 vCPU, 64GB, 400GB disk)
-- `2cpu-linux-amd64` → t3.medium (2 vCPU, 4GB, 30GB disk)
-- `4cpu-linux-amd64` → c6i.xlarge (4 vCPU, 8GB, 50GB disk)
-- `8cpu-linux-amd64` → c6i.2xlarge (8 vCPU, 16GB, 100GB disk)
-- `16cpu-linux-amd64` → c6i.4xlarge (16 vCPU, 32GB, 200GB disk)
-- `32cpu-linux-amd64` → c6i.8xlarge (32 vCPU, 64GB, 400GB disk)
 
 ## Key Flows
 

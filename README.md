@@ -82,11 +82,11 @@ pkg/
 Replace GitHub-hosted runners with runs-fleet:
 
 ```yaml
-# Fixed spec
-runs-on: "runs-fleet=${{ github.run_id }}/runner=4cpu-linux-arm64"
-
-# Flexible spec (spot diversification)
+# Basic spec (defaults to 2 vCPUs if cpu omitted)
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+
+# Spot diversification with ranges
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/family=c7g+m7g/arch=arm64"
 
 # Warm pool (~10s start)
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/pool=default"
@@ -94,13 +94,13 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/pool=default"
 
 | Label | Description |
 |-------|-------------|
-| `runner=<spec>` | Fixed spec: `2cpu-linux-arm64`, `4cpu-linux-amd64`, etc. |
-| `cpu=<n>` | Flexible: minimum vCPUs |
+| `cpu=<n>` | vCPU count (default: 2) |
+| `cpu=<min>+<max>` | vCPU range for spot diversification |
 | `arch=<arch>` | `arm64` or `amd64` (omit for both) |
 | `pool=<name>` | Warm pool name (auto-creates ephemeral pool if missing) |
 | `spot=false` | Force on-demand |
 
-See [docs/USAGE.md](docs/USAGE.md) for full spec table, flexible labels, and examples.
+See [docs/USAGE.md](docs/USAGE.md) for full spec table and examples.
 
 ## Configuration
 

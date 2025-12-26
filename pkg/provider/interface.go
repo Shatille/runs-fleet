@@ -88,7 +88,6 @@ type RunnerSpec struct {
 	InstanceType  string   // Primary instance type (EC2-specific)
 	InstanceTypes []string // Multiple types for spot diversification (EC2-specific)
 	Spot          bool
-	Private       bool
 	Pool          string
 	OS            string // linux, windows
 	Arch          string // arm64, amd64
@@ -153,7 +152,6 @@ type Job struct {
 	InstanceID   string
 	InstanceType string
 	Pool         string
-	Private      bool
 	Spot         bool
 	RunnerSpec   string
 	RetryCount   int

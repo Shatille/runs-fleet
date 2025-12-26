@@ -80,7 +80,6 @@ func TestStateStore_SaveJob_Validation(t *testing.T) {
 		InstanceID:   "i-789",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
-		Private:      true,
 		Spot:         false,
 		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   1,
@@ -248,7 +247,6 @@ func TestProviderJob_Fields(t *testing.T) {
 		InstanceID:   "i-123456",
 		InstanceType: "c5.xlarge",
 		Pool:         "gpu-pool",
-		Private:      true,
 		Spot:         true,
 		RunnerSpec:   "4cpu-linux-amd64-gpu",
 		RetryCount:   3,
@@ -272,9 +270,6 @@ func TestProviderJob_Fields(t *testing.T) {
 	}
 	if job.Pool != "gpu-pool" {
 		t.Errorf("Pool = %s, want gpu-pool", job.Pool)
-	}
-	if !job.Private {
-		t.Error("Private = false, want true")
 	}
 	if !job.Spot {
 		t.Error("Spot = false, want true")
@@ -483,7 +478,6 @@ func TestStateStore_SaveJob_BuildsCorrectRecord(t *testing.T) {
 		InstanceID:   "i-savetest123",
 		InstanceType: "m6g.large",
 		Pool:         "build-pool",
-		Private:      true,
 		Spot:         true,
 		RunnerSpec:   "8cpu-linux-arm64",
 		RetryCount:   3,
@@ -507,9 +501,6 @@ func TestStateStore_SaveJob_BuildsCorrectRecord(t *testing.T) {
 	}
 	if job.Pool != "build-pool" {
 		t.Errorf("Pool = %s, want build-pool", job.Pool)
-	}
-	if !job.Private {
-		t.Error("Private should be true")
 	}
 	if !job.Spot {
 		t.Error("Spot should be true")

@@ -52,7 +52,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 				RunnerSpec: "2cpu-linux-arm64",
 				Spot:       true,
 			},
-			want: "runs-fleet=12345/runner=2cpu-linux-arm64",
+			want: "runs-fleet=12345",
 		},
 		{
 			name: "with pool",
@@ -62,17 +62,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 				Pool:       "default",
 				Spot:       true,
 			},
-			want: "runs-fleet=12345/runner=2cpu-linux-arm64/pool=default",
-		},
-		{
-			name: "with private",
-			job: &queue.JobMessage{
-				RunID:      12345,
-				RunnerSpec: "4cpu-linux-amd64",
-				Private:    true,
-				Spot:       true,
-			},
-			want: "runs-fleet=12345/runner=4cpu-linux-amd64/private=true",
+			want: "runs-fleet=12345/pool=default",
 		},
 		{
 			name: "with spot=false",
@@ -81,29 +71,17 @@ func TestBuildRunnerLabel(t *testing.T) {
 				RunnerSpec: "2cpu-linux-arm64",
 				Spot:       false,
 			},
-			want: "runs-fleet=12345/runner=2cpu-linux-arm64/spot=false",
+			want: "runs-fleet=12345/spot=false",
 		},
 		{
-			name: "all modifiers",
+			name: "pool and spot=false",
 			job: &queue.JobMessage{
 				RunID:      67890,
 				RunnerSpec: "8cpu-linux-arm64",
 				Pool:       "mypool",
-				Private:    true,
 				Spot:       false,
 			},
-			want: "runs-fleet=67890/runner=8cpu-linux-arm64/pool=mypool/private=true/spot=false",
-		},
-		{
-			name: "pool and private",
-			job: &queue.JobMessage{
-				RunID:      11111,
-				RunnerSpec: "2cpu-linux",
-				Pool:       "default",
-				Private:    true,
-				Spot:       true,
-			},
-			want: "runs-fleet=11111/runner=2cpu-linux/pool=default/private=true",
+			want: "runs-fleet=67890/pool=mypool/spot=false",
 		},
 	}
 
@@ -120,66 +98,24 @@ func TestBuildRunnerLabel(t *testing.T) {
 func TestSelectSubnet(t *testing.T) {
 	tests := []struct {
 		name     string
-		job      *queue.JobMessage
 		cfg      *config.Config
-		wantFunc func(string, []string, []string) bool
+		wantFunc func(string) bool
 	}{
 		{
-			name: "private job uses private subnet",
-			job:  &queue.JobMessage{Private: true},
+			name: "uses public subnet",
 			cfg: &config.Config{
-				PrivateSubnetIDs: []string{"subnet-priv-1", "subnet-priv-2"},
-				PublicSubnetIDs:  []string{"subnet-pub-1"},
+				PublicSubnetIDs: []string{"subnet-pub-1", "subnet-pub-2"},
 			},
-			wantFunc: func(result string, privateSubnets, _ []string) bool {
-				for _, s := range privateSubnets {
-					if s == result {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			name: "public job uses public subnet",
-			job:  &queue.JobMessage{Private: false},
-			cfg: &config.Config{
-				PrivateSubnetIDs: []string{"subnet-priv-1"},
-				PublicSubnetIDs:  []string{"subnet-pub-1", "subnet-pub-2"},
-			},
-			wantFunc: func(result string, _, publicSubnets []string) bool {
-				for _, s := range publicSubnets {
-					if s == result {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			name: "empty private subnets falls back to public",
-			job:  &queue.JobMessage{Private: true},
-			cfg: &config.Config{
-				PrivateSubnetIDs: []string{},
-				PublicSubnetIDs:  []string{"subnet-pub-1"},
-			},
-			wantFunc: func(result string, _, publicSubnets []string) bool {
-				for _, s := range publicSubnets {
-					if s == result {
-						return true
-					}
-				}
-				return false
+			wantFunc: func(result string) bool {
+				return result == "subnet-pub-1" || result == "subnet-pub-2"
 			},
 		},
 		{
 			name: "no subnets returns empty",
-			job:  &queue.JobMessage{Private: false},
 			cfg: &config.Config{
-				PrivateSubnetIDs: []string{},
-				PublicSubnetIDs:  []string{},
+				PublicSubnetIDs: []string{},
 			},
-			wantFunc: func(result string, _, _ []string) bool {
+			wantFunc: func(result string) bool {
 				return result == ""
 			},
 		},
@@ -188,8 +124,8 @@ func TestSelectSubnet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var subnetIndex uint64
-			got := selectSubnet(tt.job, tt.cfg, &subnetIndex)
-			if !tt.wantFunc(got, tt.cfg.PrivateSubnetIDs, tt.cfg.PublicSubnetIDs) {
+			got := selectSubnet(tt.cfg, &subnetIndex)
+			if !tt.wantFunc(got) {
 				t.Errorf("selectSubnet() = %q, unexpected result", got)
 			}
 		})
@@ -200,13 +136,12 @@ func TestSelectSubnet_RoundRobin(t *testing.T) {
 	cfg := &config.Config{
 		PublicSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
 	}
-	job := &queue.JobMessage{Private: false}
 
 	var subnetIndex uint64
 	results := make([]string, 6)
 
 	for i := 0; i < 6; i++ {
-		results[i] = selectSubnet(job, cfg, &subnetIndex)
+		results[i] = selectSubnet(cfg, &subnetIndex)
 	}
 
 	// Should cycle through subnets
@@ -222,14 +157,13 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 	cfg := &config.Config{
 		PublicSubnetIDs: []string{"subnet-1", "subnet-2", "subnet-3", "subnet-4"},
 	}
-	job := &queue.JobMessage{Private: false}
 
 	var subnetIndex uint64
 	done := make(chan string, 100)
 
 	for i := 0; i < 100; i++ {
 		go func() {
-			result := selectSubnet(job, cfg, &subnetIndex)
+			result := selectSubnet(cfg, &subnetIndex)
 			done <- result
 		}()
 	}
@@ -386,30 +320,19 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 		{
 			name: "zero run ID",
 			job: &queue.JobMessage{
-				RunID:      0,
-				RunnerSpec: "spec",
-				Spot:       true,
+				RunID: 0,
+				Spot:  true,
 			},
-			want: "runs-fleet=0/runner=spec",
-		},
-		{
-			name: "empty runner spec",
-			job: &queue.JobMessage{
-				RunID:      123,
-				RunnerSpec: "",
-				Spot:       true,
-			},
-			want: "runs-fleet=123/runner=",
+			want: "runs-fleet=0",
 		},
 		{
 			name: "special characters in pool",
 			job: &queue.JobMessage{
-				RunID:      123,
-				RunnerSpec: "spec",
-				Pool:       "pool-name_v2.1",
-				Spot:       true,
+				RunID: 123,
+				Pool:  "pool-name_v2.1",
+				Spot:  true,
 			},
-			want: "runs-fleet=123/runner=spec/pool=pool-name_v2.1",
+			want: "runs-fleet=123/pool=pool-name_v2.1",
 		},
 	}
 
@@ -427,14 +350,13 @@ func TestSelectSubnet_AtomicIndex(t *testing.T) {
 	cfg := &config.Config{
 		PublicSubnetIDs: []string{"subnet-1"},
 	}
-	job := &queue.JobMessage{Private: false}
 
 	var subnetIndex uint64
 
 	// Pre-set the index to a high value
 	atomic.StoreUint64(&subnetIndex, 1000)
 
-	result := selectSubnet(job, cfg, &subnetIndex)
+	result := selectSubnet(cfg, &subnetIndex)
 	if result != "subnet-1" {
 		t.Errorf("selectSubnet() = %q, want %q", result, "subnet-1")
 	}
@@ -508,16 +430,13 @@ func TestMockQueue_ReceiveMessages(t *testing.T) {
 }
 
 func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
-	// Test all possible boolean combinations
+	// Test spot=true and spot=false combinations
 	tests := []struct {
-		name    string
-		private bool
-		spot    bool
+		name string
+		spot bool
 	}{
-		{"private=false, spot=true", false, true},
-		{"private=false, spot=false", false, false},
-		{"private=true, spot=true", true, true},
-		{"private=true, spot=false", true, false},
+		{"spot=true", true},
+		{"spot=false", false},
 	}
 
 	for _, tt := range tests {
@@ -525,7 +444,6 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 			job := &queue.JobMessage{
 				RunID:      12345,
 				RunnerSpec: "spec",
-				Private:    tt.private,
 				Spot:       tt.spot,
 			}
 			label := buildRunnerLabel(job)
@@ -540,31 +458,17 @@ func TestSelectSubnet_SingleSubnet(t *testing.T) {
 	cfg := &config.Config{
 		PublicSubnetIDs: []string{"only-subnet"},
 	}
-	job := &queue.JobMessage{Private: false}
 	var subnetIndex uint64
 
 	// Multiple calls should always return the same subnet
 	for i := 0; i < 5; i++ {
-		result := selectSubnet(job, cfg, &subnetIndex)
+		result := selectSubnet(cfg, &subnetIndex)
 		if result != "only-subnet" {
 			t.Errorf("iteration %d: selectSubnet() = %q, want %q", i, result, "only-subnet")
 		}
 	}
 }
 
-func TestSelectSubnet_PrivateFallbackToPublic(t *testing.T) {
-	cfg := &config.Config{
-		PrivateSubnetIDs: nil, // nil, not empty
-		PublicSubnetIDs:  []string{"public-1"},
-	}
-	job := &queue.JobMessage{Private: true}
-	var subnetIndex uint64
-
-	result := selectSubnet(job, cfg, &subnetIndex)
-	if result != "public-1" {
-		t.Errorf("selectSubnet() = %q, want %q", result, "public-1")
-	}
-}
 
 func TestDeleteMessageWithRetry_ImmediateSuccess(t *testing.T) {
 	callCount := 0
@@ -661,12 +565,11 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 	cfg := &config.Config{
 		PublicSubnetIDs: []string{"a", "b", "c"},
 	}
-	job := &queue.JobMessage{Private: false}
 
 	// Start with a very large index to test wraparound
 	var subnetIndex uint64 = 1000000000
 
-	result := selectSubnet(job, cfg, &subnetIndex)
+	result := selectSubnet(cfg, &subnetIndex)
 
 	// Should return a valid subnet
 	found := false
@@ -684,15 +587,13 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 func TestBuildRunnerLabel_EmptyOriginalLabel(t *testing.T) {
 	job := &queue.JobMessage{
 		RunID:         12345,
-		RunnerSpec:    "2cpu-linux",
 		OriginalLabel: "", // Empty - should use fallback
 		Pool:          "",
-		Private:       false,
 		Spot:          true,
 	}
 
 	label := buildRunnerLabel(job)
-	expected := "runs-fleet=12345/runner=2cpu-linux"
+	expected := "runs-fleet=12345"
 	if label != expected {
 		t.Errorf("buildRunnerLabel() = %q, want %q", label, expected)
 	}
@@ -724,15 +625,13 @@ func TestDeleteMessageWithRetry_NilQueue(t *testing.T) {
 	_ = deleteMessageWithRetry(context.Background(), nil, "handle")
 }
 
-func TestSelectSubnet_BothNilSubnets(t *testing.T) {
+func TestSelectSubnet_NilSubnets(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: nil,
-		PublicSubnetIDs:  nil,
+		PublicSubnetIDs: nil,
 	}
-	job := &queue.JobMessage{Private: false}
 	var subnetIndex uint64
 
-	result := selectSubnet(job, cfg, &subnetIndex)
+	result := selectSubnet(cfg, &subnetIndex)
 	if result != "" {
 		t.Errorf("selectSubnet() = %q, want empty string", result)
 	}
@@ -745,7 +644,6 @@ func TestJobMessage_AllFields(t *testing.T) {
 		Repo:          "owner/repo",
 		InstanceType:  "t4g.medium",
 		Pool:          "default",
-		Private:       true,
 		Spot:          false,
 		RunnerSpec:    "2cpu-linux-arm64",
 		OriginalLabel: "runs-fleet=456/cpu=2",
@@ -774,9 +672,6 @@ func TestJobMessage_AllFields(t *testing.T) {
 	if job.InstanceType != "t4g.medium" {
 		t.Errorf("InstanceType = %q, want %q", job.InstanceType, "t4g.medium")
 	}
-	if !job.Private {
-		t.Error("Private should be true")
-	}
 	if job.Spot {
 		t.Error("Spot should be false")
 	}
@@ -803,9 +698,6 @@ func TestJobMessage_ZeroValues(t *testing.T) {
 	if job.RetryCount != 0 {
 		t.Errorf("RetryCount should be 0, got %d", job.RetryCount)
 	}
-	if job.Private {
-		t.Error("Private should be false by default")
-	}
 	if job.Spot {
 		t.Error("Spot should be false by default")
 	}
@@ -814,46 +706,6 @@ func TestJobMessage_ZeroValues(t *testing.T) {
 	}
 }
 
-func TestSelectSubnet_MixedSubnets(t *testing.T) {
-	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"priv-1", "priv-2"},
-		PublicSubnetIDs:  []string{"pub-1", "pub-2", "pub-3"},
-	}
-
-	var subnetIndex uint64
-
-	// Test private job
-	privateJob := &queue.JobMessage{Private: true}
-	for i := 0; i < 4; i++ {
-		result := selectSubnet(privateJob, cfg, &subnetIndex)
-		found := false
-		for _, s := range cfg.PrivateSubnetIDs {
-			if s == result {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("iteration %d: private job got %q, not in private subnets", i, result)
-		}
-	}
-
-	// Test public job
-	publicJob := &queue.JobMessage{Private: false}
-	for i := 0; i < 4; i++ {
-		result := selectSubnet(publicJob, cfg, &subnetIndex)
-		found := false
-		for _, s := range cfg.PublicSubnetIDs {
-			if s == result {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("iteration %d: public job got %q, not in public subnets", i, result)
-		}
-	}
-}
 
 func TestConstants_Values(t *testing.T) {
 	// Verify constant values are as expected
@@ -1119,7 +971,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		InstanceType:  "t4g.medium",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
 		Pool:          "default",
-		Private:       true,
 		Spot:          true,
 		RunnerSpec:    "2cpu-linux-arm64",
 		OriginalLabel: "runs-fleet=67890/cpu=2",
@@ -1139,7 +990,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		InstanceType:  originalJob.InstanceType,
 		InstanceTypes: originalJob.InstanceTypes,
 		Pool:          originalJob.Pool,
-		Private:       originalJob.Private,
 		Spot:          false,
 		RunnerSpec:    originalJob.RunnerSpec,
 		OriginalLabel: originalJob.OriginalLabel,

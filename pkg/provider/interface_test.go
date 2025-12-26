@@ -287,7 +287,6 @@ func TestRunnerSpec_AllFields(t *testing.T) {
 		InstanceType:  "t4g.medium",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
 		Spot:          true,
-		Private:       false,
 		Pool:          "default",
 		OS:            "linux",
 		Arch:          "arm64",
@@ -415,7 +414,6 @@ func TestJob_Fields(t *testing.T) {
 		InstanceID:   "i-12345",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
-		Private:      true,
 		Spot:         true,
 		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   0,
@@ -429,9 +427,6 @@ func TestJob_Fields(t *testing.T) {
 	}
 	if job.InstanceID != "i-12345" {
 		t.Errorf("Job.InstanceID = %q, want i-12345", job.InstanceID)
-	}
-	if !job.Private {
-		t.Error("Job.Private = false, want true")
 	}
 	if !job.Spot {
 		t.Error("Job.Spot = false, want true")

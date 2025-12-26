@@ -13,11 +13,9 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/provider"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -168,22 +166,10 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 		return nil, fmt.Errorf("failed to create pod %s: %w", podName, err)
 	}
 
-	// Create NetworkPolicy for private jobs to restrict internal cluster access
-	if spec.Private {
-		netpol := p.buildNetworkPolicy(podName, spec)
-		_, npErr := p.clientset.NetworkingV1().NetworkPolicies(namespace).Create(ctx, netpol, metav1.CreateOptions{})
-		if npErr != nil && !errors.IsAlreadyExists(npErr) {
-			log.Printf("Failed to create NetworkPolicy for private pod %s: %v, cleaning up", podName, npErr)
-			cleanup(true)
-			return nil, fmt.Errorf("failed to create NetworkPolicy for private job: %w", npErr)
-		}
-	}
-
 	return &provider.RunnerResult{
 		RunnerIDs: []string{podName},
 		ProviderData: map[string]string{
 			"namespace": namespace,
-			"private":   fmt.Sprintf("%t", spec.Private),
 		},
 	}, nil
 }
@@ -342,13 +328,6 @@ func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Pod: %v", podErr))
 	}
 
-	// Delete associated NetworkPolicy (may not exist for non-private jobs)
-	netpolName := networkPolicyName(runnerID)
-	if err := p.clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, netpolName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
-		log.Printf("Failed to delete NetworkPolicy %s: %v", netpolName, err)
-		cleanupErrors = append(cleanupErrors, fmt.Sprintf("NetworkPolicy: %v", err))
-	}
-
 	// Delete PVC after pod (CSI driver will detach and delete EBS volume)
 	if pvcErr := p.deleteRunnerPVC(ctx, runnerID); pvcErr != nil && !errors.IsNotFound(pvcErr) {
 		log.Printf("Failed to delete PVC for %s: %v", runnerID, pvcErr)
@@ -420,12 +399,9 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 		"runs-fleet.io/instance-type": spec.InstanceType,
 	}
 
-	// Add spot/private labels for NetworkPolicy and scheduling
+	// Add spot label for scheduling
 	if spec.Spot {
 		labels["runs-fleet.io/spot"] = "true"
-	}
-	if spec.Private {
-		labels["runs-fleet.io/private"] = "true"
 	}
 
 	// Karpenter annotations to prevent disruption during job execution
@@ -734,95 +710,6 @@ func (p *Provider) buildTolerations(spec *provider.RunnerSpec) []corev1.Tolerati
 	}
 
 	return tolerations
-}
-
-// networkPolicyName returns the NetworkPolicy name for a runner.
-func networkPolicyName(runnerID string) string {
-	return runnerID + "-netpol"
-}
-
-// blockedCIDRs contains IP ranges that private jobs should not access.
-// Includes RFC1918 private ranges and cloud metadata service ranges.
-var blockedCIDRs = []string{
-	"10.0.0.0/8",       // RFC1918 Class A private
-	"172.16.0.0/12",    // RFC1918 Class B private
-	"192.168.0.0/16",   // RFC1918 Class C private
-	"169.254.0.0/16",   // Link-local (includes cloud metadata services)
-	"100.64.0.0/10",    // Carrier-grade NAT (some cloud providers)
-}
-
-// buildNetworkPolicy creates a NetworkPolicy for private runners.
-// Restricts egress to deny internal cluster IPs and cloud metadata services.
-//
-// Security trade-off: DNS egress (port 53) is unrestricted to any destination.
-// This is intentional because: (1) kube-dns IP varies by cluster, making IP-based
-// restrictions fragile, (2) namespace selectors vary across K8s distributions,
-// (3) port 53 is protocol-constrained and cannot access non-DNS services like
-// the metadata service (which uses HTTP on port 80). DNS tunneling risk is
-// accepted as low for this threat model.
-func (p *Provider) buildNetworkPolicy(podName string, spec *provider.RunnerSpec) *networkingv1.NetworkPolicy {
-	netpolName := networkPolicyName(podName)
-	dnsPort := intstr.FromInt32(53)
-	httpsPort := intstr.FromInt32(443)
-
-	return &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      netpolName,
-			Namespace: p.config.KubeNamespace,
-			Labels: map[string]string{
-				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
-			},
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"runs-fleet.io/job-id":  fmt.Sprintf("%d", spec.JobID),
-					"runs-fleet.io/private": "true",
-				},
-			},
-			PolicyTypes: []networkingv1.PolicyType{
-				networkingv1.PolicyTypeEgress,
-			},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
-				// Allow DNS to any destination (see function doc for security rationale)
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Port: &dnsPort, Protocol: ptr.To(corev1.ProtocolUDP)},
-						{Port: &dnsPort, Protocol: ptr.To(corev1.ProtocolTCP)},
-					},
-				},
-				// Allow HTTPS to external IPs (deny internal and metadata ranges)
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Port: &httpsPort, Protocol: ptr.To(corev1.ProtocolTCP)},
-					},
-					To: []networkingv1.NetworkPolicyPeer{
-						{
-							IPBlock: &networkingv1.IPBlock{
-								CIDR:   "0.0.0.0/0",
-								Except: blockedCIDRs,
-							},
-						},
-					},
-				},
-				// Allow HTTP to external IPs (for package downloads)
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Port: ptr.To(intstr.FromInt32(80)), Protocol: ptr.To(corev1.ProtocolTCP)},
-					},
-					To: []networkingv1.NetworkPolicyPeer{
-						{
-							IPBlock: &networkingv1.IPBlock{
-								CIDR:   "0.0.0.0/0",
-								Except: blockedCIDRs,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
 }
 
 // Default resource values when spec doesn't provide them.

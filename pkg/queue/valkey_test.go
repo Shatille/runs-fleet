@@ -124,12 +124,11 @@ func TestValkeyClient_SendMessage_Success(t *testing.T) {
 func TestValkeyClient_SendMessage_MarshalError(t *testing.T) {
 	// Test that valid messages can be marshaled without error
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		Repo:         "owner/repo",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
-		Private:      true,
 		Spot:         false,
 		RunnerSpec:   "2cpu-linux-arm64",
 	}
@@ -292,12 +291,11 @@ func TestValkeyClient_ReceiveMessages_Parameters(t *testing.T) {
 func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 	// Comprehensive test for all JobMessage fields
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:         12345,
+		RunID:         67890,
 		Repo:          "myorg/myrepo",
 		InstanceType:  "m6g.large",
 		Pool:          "gpu-pool",
-		Private:       true,
 		Spot:          false,
 		RunnerSpec:    "4cpu-linux-arm64-gpu",
 		OriginalLabel: "self-hosted",
@@ -338,9 +336,6 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 	}
 	if decoded.Pool != job.Pool {
 		t.Errorf("Pool mismatch")
-	}
-	if decoded.Private != job.Private {
-		t.Errorf("Private mismatch")
 	}
 	if decoded.Spot != job.Spot {
 		t.Errorf("Spot mismatch")
@@ -1000,12 +995,11 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 	}
 
 	originalJob := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:         12345,
+		RunID:         67890,
 		Repo:          "owner/repo",
 		InstanceType:  "c6g.xlarge",
 		Pool:          "compute",
-		Private:       true,
 		Spot:          false,
 		RunnerSpec:    "4cpu-linux-arm64",
 		OriginalLabel: "self-hosted",
@@ -1052,9 +1046,6 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 	}
 	if parsedJob.InstanceType != originalJob.InstanceType {
 		t.Errorf("InstanceType = %s, want %s", parsedJob.InstanceType, originalJob.InstanceType)
-	}
-	if parsedJob.Private != originalJob.Private {
-		t.Errorf("Private = %v, want %v", parsedJob.Private, originalJob.Private)
 	}
 	if parsedJob.RetryCount != originalJob.RetryCount {
 		t.Errorf("RetryCount = %d, want %d", parsedJob.RetryCount, originalJob.RetryCount)

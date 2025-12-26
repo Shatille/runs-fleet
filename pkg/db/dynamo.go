@@ -61,7 +61,6 @@ type jobRecord struct {
 	Repo         string `dynamodbav:"repo"`
 	InstanceType string `dynamodbav:"instance_type"`
 	Pool         string `dynamodbav:"pool"`
-	Private      bool   `dynamodbav:"private"`
 	Spot         bool   `dynamodbav:"spot"`
 	RunnerSpec   string `dynamodbav:"runner_spec"`
 	RetryCount   int    `dynamodbav:"retry_count"`
@@ -608,7 +607,6 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		Repo:         record.Repo,
 		InstanceType: record.InstanceType,
 		Pool:         record.Pool,
-		Private:      record.Private,
 		Spot:         record.Spot,
 		RunnerSpec:   record.RunnerSpec,
 		RetryCount:   record.RetryCount,
@@ -623,7 +621,6 @@ type JobRecord struct {
 	InstanceID   string
 	InstanceType string
 	Pool         string
-	Private      bool
 	Spot         bool
 	RunnerSpec   string
 	RetryCount   int
@@ -653,7 +650,6 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		Repo:         job.Repo,
 		InstanceType: job.InstanceType,
 		Pool:         job.Pool,
-		Private:      job.Private,
 		Spot:         job.Spot,
 		RunnerSpec:   job.RunnerSpec,
 		RetryCount:   job.RetryCount,

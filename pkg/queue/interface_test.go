@@ -179,7 +179,6 @@ func TestJobMessage_Fields(t *testing.T) {
 		Repo:          "owner/repo",
 		InstanceType:  "t4g.medium",
 		Pool:          "default",
-		Private:       true,
 		Spot:          false,
 		RunnerSpec:    "2cpu-linux-arm64",
 		OriginalLabel: "runs-on: self-hosted",
@@ -209,9 +208,6 @@ func TestJobMessage_Fields(t *testing.T) {
 	}
 	if job.Pool != "default" {
 		t.Errorf("JobMessage.Pool = %q, want %q", job.Pool, "default")
-	}
-	if !job.Private {
-		t.Error("JobMessage.Private = false, want true")
 	}
 	if job.Spot {
 		t.Error("JobMessage.Spot = true, want false")
