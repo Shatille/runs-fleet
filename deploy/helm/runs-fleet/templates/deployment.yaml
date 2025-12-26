@@ -29,6 +29,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "runs-fleet.orchestrator.labels" . | nindent 4 }}
+  {{- with .Values.orchestrator.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   replicas: {{ .Values.orchestrator.replicas }}
   selector:
@@ -39,6 +43,10 @@ spec:
       labels:
         {{- include "runs-fleet.orchestrator.selectorLabels" . | nindent 8 }}
         sidecar.istio.io/inject: {{ .Values.istio.sidecarInjection | quote }}
+      {{- with .Values.orchestrator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "runs-fleet.orchestrator.serviceAccountName" . }}
       securityContext:
