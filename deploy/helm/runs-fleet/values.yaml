@@ -56,6 +56,12 @@ orchestrator:
 
   replicas: 2
 
+  # Deployment annotations (ArgoCD, Flux, etc.)
+  annotations: {}
+
+  # Pod annotations (Prometheus, Vault, Datadog, etc.)
+  podAnnotations: {}
+
   serviceAccount:
     annotations: {}
     # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/runs-fleet
