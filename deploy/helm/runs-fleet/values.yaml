@@ -63,6 +63,10 @@ orchestrator:
   podAnnotations: {}
 
   serviceAccount:
+    # Set to false to use an existing ServiceAccount
+    create: true
+    # Override the generated name, or specify existing SA name when create=false
+    name: ""
     annotations: {}
     # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/runs-fleet
 

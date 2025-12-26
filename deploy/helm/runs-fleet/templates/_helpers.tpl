@@ -92,7 +92,11 @@ app.kubernetes.io/component: valkey
 Orchestrator service account name
 */}}
 {{- define "runs-fleet.orchestrator.serviceAccountName" -}}
-{{ include "runs-fleet.fullname" . }}-orchestrator
+{{- if .Values.orchestrator.serviceAccount.name }}
+{{- .Values.orchestrator.serviceAccount.name }}
+{{- else }}
+{{- printf "%s-orchestrator" (include "runs-fleet.fullname" .) }}
+{{- end }}
 {{- end }}
 
 {{/*
