@@ -29,7 +29,7 @@ Add HashiCorp Vault as an alternative to AWS SSM Parameter Store for passing run
 {
   "jit_token": "AXXXXXXX...",
   "repository": "owner/repo",
-  "labels": ["runs-fleet=123", "runner=2cpu-linux-arm64"],
+  "labels": ["runs-fleet=123/cpu=2/arch=arm64"],
   "runner_group": "default"
 }
 ```

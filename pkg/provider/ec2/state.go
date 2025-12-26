@@ -40,9 +40,7 @@ func (s *StateStore) SaveJob(ctx context.Context, job *provider.Job) error {
 		InstanceID:   job.InstanceID,
 		InstanceType: job.InstanceType,
 		Pool:         job.Pool,
-		Private:      job.Private,
 		Spot:         job.Spot,
-		RunnerSpec:   job.RunnerSpec,
 		RetryCount:   job.RetryCount,
 	}
 	return s.client.SaveJob(ctx, record)
@@ -66,9 +64,7 @@ func (s *StateStore) GetJob(ctx context.Context, runnerID string) (*provider.Job
 		InstanceID:   runnerID,
 		InstanceType: info.InstanceType,
 		Pool:         info.Pool,
-		Private:      info.Private,
 		Spot:         info.Spot,
-		RunnerSpec:   info.RunnerSpec,
 		RetryCount:   info.RetryCount,
 		Status:       "running", // db.GetJobByInstance only returns running jobs
 	}, nil

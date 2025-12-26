@@ -44,9 +44,7 @@ func TestJobMessage_Marshal(t *testing.T) {
 		RunID:        67890,
 		InstanceType: "t4g.medium",
 		Pool:         "default",
-		Private:      true,
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 	}
 
 	data, err := json.Marshal(job)
@@ -54,14 +52,14 @@ func TestJobMessage_Marshal(t *testing.T) {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	expected := `{"job_id":12345,"run_id":67890,"instance_type":"t4g.medium","pool":"default","private":true,"spot":false,"runner_spec":"2cpu-linux-arm64"}`
+	expected := `{"job_id":12345,"run_id":67890,"instance_type":"t4g.medium","pool":"default","spot":false}`
 	if string(data) != expected {
 		t.Errorf("Marshal result = %s, want %s", string(data), expected)
 	}
 }
 
 func TestJobMessage_Unmarshal(t *testing.T) {
-	jsonStr := `{"run_id":67890,"instance_type":"c7g.xlarge","private":false,"spot":true,"runner_spec":"4cpu-linux-arm64"}`
+	jsonStr := `{"run_id":67890,"instance_type":"c7g.xlarge","spot":true}`
 
 	var job JobMessage
 	if err := json.Unmarshal([]byte(jsonStr), &job); err != nil {
@@ -76,9 +74,6 @@ func TestJobMessage_Unmarshal(t *testing.T) {
 	}
 	if job.Pool != "" {
 		t.Errorf("Pool = %s, want empty", job.Pool)
-	}
-	if job.Private != false {
-		t.Errorf("Private = %v, want false", job.Private)
 	}
 	if job.Spot != true {
 		t.Errorf("Spot = %v, want true", job.Spot)
@@ -99,7 +94,6 @@ func TestSQSClient_SendMessage(t *testing.T) {
 				RunID:        67890,
 				InstanceType: "t4g.medium",
 				Spot:         true,
-				RunnerSpec:   "2cpu-linux-arm64",
 			},
 			mock: &mockSQSClient{
 				SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
@@ -175,11 +169,10 @@ func TestSQSClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
 	var firstDedupID, secondDedupID string
 
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		InstanceType: "t4g.medium",
 		Spot:         true,
-		RunnerSpec:   "2cpu-linux-arm64",
 	}
 
 	mock := &mockSQSClient{

@@ -82,16 +82,14 @@ type JobConfig struct {
 	RunID        string
 	InstanceType string
 	Pool         string
-	Private      bool
 	Spot         bool
-	RunnerSpec   string
 	Region       string // Multi-region support (Phase 3)
 	Environment  string // Per-stack environment support (Phase 6)
 	OS           string // Operating system (linux, windows)
 	Arch         string // Architecture (amd64, arm64)
 	Backend      string // Compute backend: "ec2" or "k8s" (empty = use default)
 
-	// Flexible instance selection (Phase 10)
+	// Flexible instance selection
 	InstanceTypes []string // Multiple instance types for spot diversification
 	CPUMin        int      // Minimum vCPUs (from cpu= label)
 	CPUMax        int      // Maximum vCPUs (from cpu= label, e.g., cpu=4+16)
@@ -104,79 +102,16 @@ type JobConfig struct {
 	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
 }
 
-// DefaultRunnerSpecs maps runner spec names to EC2 instance types.
-var DefaultRunnerSpecs = map[string]string{
-	// Linux ARM64
-	"2cpu-linux-arm64":  "t4g.medium",
-	"4cpu-linux-arm64":  "c7g.xlarge",
-	"8cpu-linux-arm64":  "c7g.2xlarge",
-	"16cpu-linux-arm64": "c7g.4xlarge",
-	"32cpu-linux-arm64": "c7g.8xlarge",
-	// Linux amd64
-	"2cpu-linux-amd64":  "t3.medium",
-	"4cpu-linux-amd64":  "c6i.xlarge",
-	"8cpu-linux-amd64":  "c6i.2xlarge",
-	"16cpu-linux-amd64": "c6i.4xlarge",
-	"32cpu-linux-amd64": "c6i.8xlarge",
-	// Windows amd64 (Phase 4)
-	"2cpu-windows-amd64":  "t3.medium",
-	"4cpu-windows-amd64":  "m6i.xlarge",
-	"8cpu-windows-amd64":  "m6i.2xlarge",
-	"16cpu-windows-amd64": "m6i.4xlarge",
-	"32cpu-windows-amd64": "m6i.8xlarge",
-}
-
-// SpotDiversificationTypes maps runner specs to alternative instance types for spot capacity.
-// When spot is enabled, EC2 Fleet selects from this pool for better availability.
-// All instance types must meet the minimum CPU requirement of the runner spec.
-// Note: 4cpu and 8cpu specs use only sustained-performance instances (no burstable)
-// to avoid CPU throttling after burst credits exhaust.
-var SpotDiversificationTypes = map[string][]string{
-	// Linux ARM64 - 2 vCPU options (burstable OK for short jobs)
-	"2cpu-linux-arm64": {"t4g.medium", "t4g.large"},
-	// Linux ARM64 - 4 vCPU sustained-performance options
-	"4cpu-linux-arm64": {"c7g.xlarge", "m7g.xlarge", "c6g.xlarge"},
-	// Linux ARM64 - 8 vCPU sustained-performance options
-	"8cpu-linux-arm64": {"c7g.2xlarge", "m7g.2xlarge", "c6g.2xlarge"},
-	// Linux ARM64 - 16 vCPU sustained-performance options
-	"16cpu-linux-arm64": {"c7g.4xlarge", "m7g.4xlarge", "c6g.4xlarge"},
-	// Linux ARM64 - 32 vCPU sustained-performance options
-	"32cpu-linux-arm64": {"c7g.8xlarge", "m7g.8xlarge", "c6g.8xlarge"},
-	// Linux amd64 - 2 vCPU options (burstable OK for short jobs)
-	"2cpu-linux-amd64": {"t3.medium", "t3.large"},
-	// Linux amd64 - 4 vCPU sustained-performance options
-	"4cpu-linux-amd64": {"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
-	// Linux amd64 - 8 vCPU sustained-performance options
-	"8cpu-linux-amd64": {"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
-	// Linux amd64 - 16 vCPU sustained-performance options
-	"16cpu-linux-amd64": {"c6i.4xlarge", "m6i.4xlarge", "c7i.4xlarge"},
-	// Linux amd64 - 32 vCPU sustained-performance options
-	"32cpu-linux-amd64": {"c6i.8xlarge", "m6i.8xlarge", "c7i.8xlarge"},
-	// Windows amd64 - 2 vCPU options (burstable OK for short jobs)
-	"2cpu-windows-amd64": {"t3.medium", "t3.large"},
-	// Windows amd64 - 4 vCPU sustained-performance options
-	"4cpu-windows-amd64": {"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
-	// Windows amd64 - 8 vCPU sustained-performance options
-	"8cpu-windows-amd64": {"m6i.2xlarge", "m7i.2xlarge", "c6i.2xlarge"},
-	// Windows amd64 - 16 vCPU sustained-performance options
-	"16cpu-windows-amd64": {"m6i.4xlarge", "m7i.4xlarge", "c6i.4xlarge"},
-	// Windows amd64 - 32 vCPU sustained-performance options
-	"32cpu-windows-amd64": {"m6i.8xlarge", "m7i.8xlarge", "c6i.8xlarge"},
-}
 
 // ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
-// Supports both legacy runner= specs and flexible cpu=/ram=/family=/arch= labels.
 //
-// Legacy format:
+// Format:
 //
-//	runs-fleet=<run-id>/runner=4cpu-linux-arm64/pool=default/spot=true
+//	runs-fleet=<run-id>/cpu=4/arch=arm64/pool=default/spot=true
+//	runs-fleet=<run-id>/cpu=4+16/ram=8+32/family=c7g+m7g/arch=arm64
 //
-// Flexible format:
-//
-//	runs-fleet=<run-id>/cpu=4+16/ram=8+32/family=c7g+m7g/arch=arm64/spot=true
-//
-// The flexible format allows specifying CPU and RAM ranges (min+max) for better
-// spot instance availability. Multiple instance families can be specified with +.
+// CPU and RAM ranges (min+max) enable spot diversification for better availability.
+// Multiple instance families can be specified with + separator.
 func ParseLabels(labels []string) (*JobConfig, error) {
 	cfg := &JobConfig{
 		Spot:        true,
@@ -210,18 +145,12 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		return nil, errors.New("empty run-id in label")
 	}
 
-	hasFlexibleSpec, err := parseLabelParts(cfg, parts[1:])
-	if err != nil {
+	if err := parseLabelParts(cfg, parts[1:]); err != nil {
 		return nil, err
 	}
 
-	// If using flexible specs, resolve instance types
-	if hasFlexibleSpec {
-		if err := ResolveFlexibleSpec(cfg); err != nil {
-			return nil, err
-		}
-	} else if cfg.RunnerSpec == "" {
-		return nil, errors.New("missing runner or cpu/ram specification in runs-fleet label")
+	if err := ResolveFlexibleSpec(cfg); err != nil {
+		return nil, err
 	}
 
 	// Validate Windows only supports amd64 architecture
@@ -233,10 +162,7 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 }
 
 // parseLabelParts parses key=value pairs from the runs-fleet label and populates the JobConfig.
-// Returns true if flexible specs (cpu/ram/family) are used.
-func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
-	hasFlexibleSpec := false
-
+func parseLabelParts(cfg *JobConfig, parts []string) error {
 	for _, part := range parts {
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
@@ -245,32 +171,23 @@ func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 		key, value := kv[0], kv[1]
 
 		switch key {
-		case "runner":
-			cfg.RunnerSpec = value
-			cfg.InstanceType = resolveInstanceType(value)
-			cfg.InstanceTypes = resolveSpotDiversificationTypes(value)
-			cfg.OS, cfg.Arch = parseRunnerOSArch(value)
-
 		case "cpu":
-			hasFlexibleSpec = true
 			cpuMin, cpuMax, err := parseRange(value)
 			if err != nil {
-				return false, fmt.Errorf("invalid cpu label: %w", err)
+				return fmt.Errorf("invalid cpu label: %w", err)
 			}
 			cfg.CPUMin = cpuMin
 			cfg.CPUMax = cpuMax
 
 		case "ram":
-			hasFlexibleSpec = true
 			ramMin, ramMax, err := parseRangeFloat(value)
 			if err != nil {
-				return false, fmt.Errorf("invalid ram label: %w", err)
+				return fmt.Errorf("invalid ram label: %w", err)
 			}
 			cfg.RAMMin = ramMin
 			cfg.RAMMax = ramMax
 
 		case "family":
-			hasFlexibleSpec = true
 			cfg.Families = strings.Split(value, "+")
 
 		case "arch":
@@ -280,9 +197,6 @@ func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 
 		case "pool":
 			cfg.Pool = value
-
-		case "private":
-			cfg.Private = value == "true"
 
 		case "spot":
 			cfg.Spot = value != "false"
@@ -299,22 +213,22 @@ func parseLabelParts(cfg *JobConfig, parts []string) (bool, error) {
 			if value == "ec2" || value == "k8s" {
 				cfg.Backend = value
 			} else {
-				return false, fmt.Errorf("invalid backend label: must be 'ec2' or 'k8s', got %q", value)
+				return fmt.Errorf("invalid backend label: must be 'ec2' or 'k8s', got %q", value)
 			}
 
 		case "disk":
 			diskGiB, err := strconv.Atoi(value)
 			if err != nil {
-				return false, fmt.Errorf("invalid disk label: %w", err)
+				return fmt.Errorf("invalid disk label: %w", err)
 			}
 			if diskGiB < 1 || diskGiB > 16384 {
-				return false, fmt.Errorf("disk size must be between 1 and 16384 GiB, got %d", diskGiB)
+				return fmt.Errorf("disk size must be between 1 and 16384 GiB, got %d", diskGiB)
 			}
 			cfg.StorageGiB = diskGiB
 		}
 	}
 
-	return hasFlexibleSpec, nil
+	return nil
 }
 
 // parseRange parses an integer range like "4" or "4+16" into min and max values.
@@ -393,78 +307,6 @@ func ResolveFlexibleSpec(cfg *JobConfig) error {
 	// Primary instance type is the smallest match
 	cfg.InstanceType = instanceTypes[0]
 
-	// Generate a synthetic runner spec for logging/display
-	if cfg.Arch != "" {
-		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s-%s", cfg.CPUMin, cfg.OS, cfg.Arch)
-		if cfg.CPUMax > 0 {
-			cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS, cfg.Arch)
-		}
-	} else {
-		// Empty arch = arch doesn't matter
-		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s", cfg.CPUMin, cfg.OS)
-		if cfg.CPUMax > 0 {
-			cfg.RunnerSpec = fmt.Sprintf("%d-%dcpu-%s", cfg.CPUMin, cfg.CPUMax, cfg.OS)
-		}
-	}
-
 	return nil
 }
 
-// resolveInstanceType maps a runner spec to an EC2 instance type.
-func resolveInstanceType(runnerSpec string) string {
-	if instanceType, ok := DefaultRunnerSpecs[runnerSpec]; ok {
-		return instanceType
-	}
-
-	// Fallback parsing for unknown specs
-	switch {
-	case strings.HasPrefix(runnerSpec, "2cpu-linux-arm64"):
-		return "t4g.medium"
-	case strings.HasPrefix(runnerSpec, "4cpu-linux-arm64"):
-		return "c7g.xlarge"
-	case strings.HasPrefix(runnerSpec, "4cpu-linux-amd64"):
-		return "c6i.xlarge"
-	case strings.HasPrefix(runnerSpec, "8cpu-linux-arm64"):
-		return "c7g.2xlarge"
-	case strings.HasPrefix(runnerSpec, "8cpu-linux-amd64"):
-		return "c6i.2xlarge"
-	case strings.Contains(runnerSpec, "windows"):
-		return "m6i.xlarge" // Default Windows instance
-	default:
-		return "t4g.medium" // Default fallback
-	}
-}
-
-// resolveSpotDiversificationTypes returns multiple instance types for spot capacity.
-// When spot is enabled, EC2 Fleet selects from this pool for better availability.
-func resolveSpotDiversificationTypes(runnerSpec string) []string {
-	if types, ok := SpotDiversificationTypes[runnerSpec]; ok {
-		return types
-	}
-	// Fallback to single instance type if no diversification defined
-	return []string{resolveInstanceType(runnerSpec)}
-}
-
-// parseRunnerOSArch extracts OS and architecture from runner spec.
-// Returns empty arch if not explicitly specified, which triggers ARM64 family
-// defaults in DefaultFlexibleFamilies for backward compatibility with legacy template.
-func parseRunnerOSArch(runnerSpec string) (os, arch string) {
-	os = "linux"
-	arch = "" // Empty = arch doesn't matter
-
-	if strings.Contains(runnerSpec, "windows") {
-		os = "windows"
-	}
-	if strings.Contains(runnerSpec, ArchAMD64) {
-		arch = ArchAMD64
-	} else if strings.Contains(runnerSpec, ArchARM64) {
-		arch = ArchARM64
-	}
-
-	return os, arch
-}
-
-// IsWindowsRunner returns true if the runner spec is for Windows.
-func IsWindowsRunner(runnerSpec string) bool {
-	return strings.Contains(runnerSpec, "windows")
-}

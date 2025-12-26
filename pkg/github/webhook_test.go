@@ -225,46 +225,38 @@ func TestParseLabels(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "Standard label",
+			name: "Standard label with CPU and arch",
 			labels: []string{
 				"self-hosted",
-				"runs-fleet=12345/runner=2cpu-linux-arm64/pool=default",
+				"runs-fleet=12345/cpu=2/arch=arm64/pool=default",
 			},
 			want: &JobConfig{
-				RunID:        "12345",
-				InstanceType: "t4g.medium",
-				Pool:         "default",
-				Private:      false,
-				Spot:         true,
-				RunnerSpec:   "2cpu-linux-arm64",
+				RunID: "12345",
+				Pool:  "default",
+				Spot:  true,
 			},
 			wantErr: false,
 		},
 		{
-			name: "Private and On-Demand",
+			name: "On-Demand instance",
 			labels: []string{
-				"runs-fleet=67890/runner=4cpu-linux-amd64/private=true/spot=false",
+				"runs-fleet=67890/cpu=4/arch=amd64/spot=false",
 			},
 			want: &JobConfig{
-				RunID:        "67890",
-				InstanceType: "c6i.xlarge",
-				Pool:         "",
-				Private:      true,
-				Spot:         false,
-				RunnerSpec:   "4cpu-linux-amd64",
+				RunID: "67890",
+				Pool:  "",
+				Spot:  false,
 			},
 			wantErr: false,
 		},
 		{
 			name: "Large ARM instance",
 			labels: []string{
-				"runs-fleet=abc/runner=8cpu-linux-arm64",
+				"runs-fleet=abc/cpu=8/arch=arm64",
 			},
 			want: &JobConfig{
-				RunID:        "abc",
-				InstanceType: "c7g.2xlarge",
-				Spot:         true,
-				RunnerSpec:   "8cpu-linux-arm64",
+				RunID: "abc",
+				Spot:  true,
 			},
 			wantErr: false,
 		},
@@ -293,14 +285,8 @@ func TestParseLabels(t *testing.T) {
 				if got.RunID != tt.want.RunID {
 					t.Errorf("ParseLabels() RunID = %v, want %v", got.RunID, tt.want.RunID)
 				}
-				if got.InstanceType != tt.want.InstanceType {
-					t.Errorf("ParseLabels() InstanceType = %v, want %v", got.InstanceType, tt.want.InstanceType)
-				}
 				if got.Pool != tt.want.Pool {
 					t.Errorf("ParseLabels() Pool = %v, want %v", got.Pool, tt.want.Pool)
-				}
-				if got.Private != tt.want.Private {
-					t.Errorf("ParseLabels() Private = %v, want %v", got.Private, tt.want.Private)
 				}
 				if got.Spot != tt.want.Spot {
 					t.Errorf("ParseLabels() Spot = %v, want %v", got.Spot, tt.want.Spot)
@@ -451,10 +437,6 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 			if got.InstanceType == "" {
 				t.Error("ParseLabels() InstanceType is empty")
 			}
-			// Verify runner spec is generated
-			if got.RunnerSpec == "" {
-				t.Error("ParseLabels() RunnerSpec is empty")
-			}
 		})
 	}
 }
@@ -556,23 +538,19 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 		},
 		{
 			name:   "Invalid backend value",
-			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/backend=invalid"},
-		},
-		{
-			name:   "Windows with ARM64 architecture",
-			labels: []string{"runs-fleet=12345/runner=2cpu-windows-arm64"},
+			labels: []string{"runs-fleet=12345/cpu=2/arch=arm64/backend=invalid"},
 		},
 		{
 			name:   "Invalid disk value (non-numeric)",
-			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=abc"},
+			labels: []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=abc"},
 		},
 		{
 			name:   "Invalid disk value (zero)",
-			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=0"},
+			labels: []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=0"},
 		},
 		{
 			name:   "Invalid disk value (too large)",
-			labels: []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=65000"},
+			labels: []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=65000"},
 		},
 	}
 
@@ -595,17 +573,17 @@ func TestParseLabels_Backend(t *testing.T) {
 	}{
 		{
 			name:        "EC2 backend",
-			labels:      []string{"runs-fleet=12345/runner=2cpu-linux-arm64/backend=ec2"},
+			labels:      []string{"runs-fleet=12345/cpu=2/arch=arm64/backend=ec2"},
 			wantBackend: "ec2",
 		},
 		{
 			name:        "K8s backend",
-			labels:      []string{"runs-fleet=12345/runner=2cpu-linux-arm64/backend=k8s"},
+			labels:      []string{"runs-fleet=12345/cpu=2/arch=arm64/backend=k8s"},
 			wantBackend: "k8s",
 		},
 		{
 			name:        "No backend (default)",
-			labels:      []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+			labels:      []string{"runs-fleet=12345/cpu=2/arch=arm64"},
 			wantBackend: "",
 		},
 	}
@@ -633,32 +611,32 @@ func TestParseLabels_Storage(t *testing.T) {
 	}{
 		{
 			name:           "Custom disk size",
-			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=100"},
+			labels:         []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=100"},
 			wantStorageGiB: 100,
 		},
 		{
 			name:           "Large disk size",
-			labels:         []string{"runs-fleet=12345/runner=4cpu-linux-arm64/disk=500"},
+			labels:         []string{"runs-fleet=12345/cpu=4/arch=arm64/disk=500"},
 			wantStorageGiB: 500,
 		},
 		{
 			name:           "Maximum valid size (16 TiB gp3 limit)",
-			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=16384"},
+			labels:         []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=16384"},
 			wantStorageGiB: 16384,
 		},
 		{
 			name:           "Minimum valid size",
-			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64/disk=1"},
+			labels:         []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=1"},
 			wantStorageGiB: 1,
 		},
 		{
 			name:           "No disk specified (default)",
-			labels:         []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+			labels:         []string{"runs-fleet=12345/cpu=2/arch=arm64"},
 			wantStorageGiB: 0,
 		},
 		{
 			name:           "Disk with other options",
-			labels:         []string{"runs-fleet=12345/runner=4cpu-linux-amd64/disk=200/spot=false/pool=ci"},
+			labels:         []string{"runs-fleet=12345/cpu=4/arch=amd64/disk=200/spot=false/pool=ci"},
 			wantStorageGiB: 200,
 		},
 		{
@@ -692,101 +670,12 @@ func TestParseLabels_Storage(t *testing.T) {
 	}
 }
 
-func TestParseLabels_SpotDiversification(t *testing.T) {
-	tests := []struct {
-		name              string
-		labels            []string
-		wantInstanceType  string
-		wantInstanceTypes []string
-	}{
-		{
-			name:              "ARM64 2cpu has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
-			wantInstanceType:  "t4g.medium",
-			wantInstanceTypes: []string{"t4g.medium", "t4g.large"},
-		},
-		{
-			name:              "amd64 4cpu has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=4cpu-linux-amd64"},
-			wantInstanceType:  "c6i.xlarge",
-			wantInstanceTypes: []string{"c6i.xlarge", "m6i.xlarge", "c7i.xlarge"},
-		},
-		{
-			name:              "amd64 8cpu has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=8cpu-linux-amd64"},
-			wantInstanceType:  "c6i.2xlarge",
-			wantInstanceTypes: []string{"c6i.2xlarge", "m6i.2xlarge", "c7i.2xlarge"},
-		},
-		{
-			name:              "Windows has diversification types",
-			labels:            []string{"runs-fleet=12345/runner=4cpu-windows-amd64"},
-			wantInstanceType:  "m6i.xlarge",
-			wantInstanceTypes: []string{"m6i.xlarge", "m7i.xlarge", "c6i.xlarge"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseLabels(tt.labels)
-			if err != nil {
-				t.Errorf("ParseLabels() error = %v", err)
-				return
-			}
-			if got.InstanceType != tt.wantInstanceType {
-				t.Errorf("ParseLabels() InstanceType = %v, want %v", got.InstanceType, tt.wantInstanceType)
-			}
-			if len(got.InstanceTypes) != len(tt.wantInstanceTypes) {
-				t.Errorf("ParseLabels() InstanceTypes has %d types, want %d", len(got.InstanceTypes), len(tt.wantInstanceTypes))
-				return
-			}
-			for i, wantType := range tt.wantInstanceTypes {
-				if got.InstanceTypes[i] != wantType {
-					t.Errorf("ParseLabels() InstanceTypes[%d] = %v, want %v", i, got.InstanceTypes[i], wantType)
-				}
-			}
-		})
-	}
-}
-
-func TestResolveSpotDiversificationTypes(t *testing.T) {
-	tests := []struct {
-		runnerSpec string
-		wantLen    int
-		wantFirst  string
-	}{
-		{"2cpu-linux-arm64", 2, "t4g.medium"},
-		{"4cpu-linux-arm64", 3, "c7g.xlarge"},
-		{"8cpu-linux-arm64", 3, "c7g.2xlarge"},
-		{"2cpu-linux-amd64", 2, "t3.medium"},
-		{"4cpu-linux-amd64", 3, "c6i.xlarge"},
-		{"8cpu-linux-amd64", 3, "c6i.2xlarge"},
-		{"unknown-spec", 1, "t4g.medium"}, // Fallback to single type
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.runnerSpec, func(t *testing.T) {
-			got := resolveSpotDiversificationTypes(tt.runnerSpec)
-			if len(got) != tt.wantLen {
-				t.Errorf("resolveSpotDiversificationTypes(%q) returned %d types, want %d", tt.runnerSpec, len(got), tt.wantLen)
-			}
-			if len(got) > 0 && got[0] != tt.wantFirst {
-				t.Errorf("resolveSpotDiversificationTypes(%q)[0] = %q, want %q", tt.runnerSpec, got[0], tt.wantFirst)
-			}
-		})
-	}
-}
-
 func TestParseLabels_OriginalLabel(t *testing.T) {
 	tests := []struct {
 		name              string
 		labels            []string
 		wantOriginalLabel string
 	}{
-		{
-			name:              "Standard runner spec",
-			labels:            []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
-			wantOriginalLabel: "runs-fleet=12345/runner=2cpu-linux-arm64",
-		},
 		{
 			name:              "Flexible CPU spec",
 			labels:            []string{"runs-fleet=67890/cpu=2"},
@@ -813,100 +702,6 @@ func TestParseLabels_OriginalLabel(t *testing.T) {
 			}
 			if got.OriginalLabel != tt.wantOriginalLabel {
 				t.Errorf("ParseLabels() OriginalLabel = %q, want %q", got.OriginalLabel, tt.wantOriginalLabel)
-			}
-		})
-	}
-}
-
-func TestIsWindowsRunner(t *testing.T) {
-	tests := []struct {
-		runnerSpec string
-		want       bool
-	}{
-		{"2cpu-windows-amd64", true},
-		{"4cpu-windows-amd64", true},
-		{"8cpu-windows-amd64", true},
-		{"2cpu-linux-arm64", false},
-		{"4cpu-linux-amd64", false},
-		{"8cpu-linux-arm64", false},
-		{"windows", true},
-		{"linux", false},
-		{"", false},
-		{"custom-windows-runner", true},
-		{"windowsless", true}, // contains "windows"
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.runnerSpec, func(t *testing.T) {
-			if got := IsWindowsRunner(tt.runnerSpec); got != tt.want {
-				t.Errorf("IsWindowsRunner(%q) = %v, want %v", tt.runnerSpec, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseRunnerOSArch(t *testing.T) {
-	tests := []struct {
-		runnerSpec string
-		wantOS     string
-		wantArch   string
-	}{
-		{"2cpu-linux-arm64", "linux", "arm64"},
-		{"4cpu-linux-amd64", "linux", "amd64"},
-		{"2cpu-windows-amd64", "windows", "amd64"},
-		{"8cpu-linux-arm64", "linux", "arm64"},
-		{"custom-spec", "linux", ""},
-		{"", "linux", ""},
-		{"linux-only", "linux", ""},
-		{"windows-only", "windows", ""},
-		{"arm64-only", "linux", "arm64"},
-		{"amd64-only", "linux", "amd64"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.runnerSpec, func(t *testing.T) {
-			gotOS, gotArch := parseRunnerOSArch(tt.runnerSpec)
-			if gotOS != tt.wantOS {
-				t.Errorf("parseRunnerOSArch(%q) OS = %q, want %q", tt.runnerSpec, gotOS, tt.wantOS)
-			}
-			if gotArch != tt.wantArch {
-				t.Errorf("parseRunnerOSArch(%q) Arch = %q, want %q", tt.runnerSpec, gotArch, tt.wantArch)
-			}
-		})
-	}
-}
-
-func TestResolveInstanceType(t *testing.T) {
-	tests := []struct {
-		runnerSpec   string
-		wantInstance string
-	}{
-		{"2cpu-linux-arm64", "t4g.medium"},
-		{"4cpu-linux-arm64", "c7g.xlarge"},
-		{"8cpu-linux-arm64", "c7g.2xlarge"},
-		{"16cpu-linux-arm64", "c7g.4xlarge"},
-		{"32cpu-linux-arm64", "c7g.8xlarge"},
-		{"2cpu-linux-amd64", "t3.medium"},
-		{"4cpu-linux-amd64", "c6i.xlarge"},
-		{"8cpu-linux-amd64", "c6i.2xlarge"},
-		{"16cpu-linux-amd64", "c6i.4xlarge"},
-		{"32cpu-linux-amd64", "c6i.8xlarge"},
-		{"2cpu-windows-amd64", "t3.medium"},
-		{"4cpu-windows-amd64", "m6i.xlarge"},
-		{"unknown-spec", "t4g.medium"},      // fallback
-		{"2cpu-linux-arm64-extra", "t4g.medium"},
-		{"4cpu-linux-arm64-custom", "c7g.xlarge"},
-		{"4cpu-linux-amd64-variant", "c6i.xlarge"},
-		{"8cpu-linux-arm64-big", "c7g.2xlarge"},
-		{"8cpu-linux-amd64-big", "c6i.2xlarge"},
-		{"some-windows-runner", "m6i.xlarge"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.runnerSpec, func(t *testing.T) {
-			got := resolveInstanceType(tt.runnerSpec)
-			if got != tt.wantInstance {
-				t.Errorf("resolveInstanceType(%q) = %q, want %q", tt.runnerSpec, got, tt.wantInstance)
 			}
 		})
 	}

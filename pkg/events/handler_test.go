@@ -976,13 +976,11 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			name:       "Successful job re-queue",
 			instanceID: "i-test123",
 			job: &JobInfo{
-				JobID: 12345,
-				RunID: 67890,
+				JobID:        12345,
+				RunID:        67890,
 				InstanceType: "t4g.medium",
 				Pool:         "default",
-				Private:      false,
 				Spot:         true,
-				RunnerSpec:   "2cpu-linux-arm64",
 			},
 			expectMarkCalled:  true,
 			expectGetCalled:   true,
@@ -1141,13 +1139,11 @@ func TestSpotInterruptionHandling(t *testing.T) {
 
 func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	expectedJob := &JobInfo{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		InstanceType: "c7g.xlarge",
 		Pool:         "heavy-builds",
-		Private:      true,
 		Spot:         true,
-		RunnerSpec:   "4cpu-linux-arm64",
 	}
 
 	var capturedMessage *queue.JobMessage
@@ -1212,15 +1208,9 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	if capturedMessage.Pool != expectedJob.Pool {
 		t.Errorf("Pool: expected %s, got %s", expectedJob.Pool, capturedMessage.Pool)
 	}
-	if capturedMessage.Private != expectedJob.Private {
-		t.Errorf("Private: expected %v, got %v", expectedJob.Private, capturedMessage.Private)
-	}
 	// When ForceOnDemand is true, Spot should be false
 	if capturedMessage.Spot {
 		t.Errorf("Spot: expected false (ForceOnDemand=true), got %v", capturedMessage.Spot)
-	}
-	if capturedMessage.RunnerSpec != expectedJob.RunnerSpec {
-		t.Errorf("RunnerSpec: expected %s, got %s", expectedJob.RunnerSpec, capturedMessage.RunnerSpec)
 	}
 }
 
@@ -1374,14 +1364,12 @@ func TestSpotInterruptionDetail_Structure(t *testing.T) {
 
 func TestJobInfo_Structure(t *testing.T) {
 	info := JobInfo{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		Repo:         "owner/repo",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
-		Private:      true,
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   2,
 	}
 
@@ -1400,14 +1388,8 @@ func TestJobInfo_Structure(t *testing.T) {
 	if info.Pool != "default" {
 		t.Errorf("Pool = %s, want default", info.Pool)
 	}
-	if !info.Private {
-		t.Error("Private should be true")
-	}
 	if info.Spot {
 		t.Error("Spot should be false")
-	}
-	if info.RunnerSpec != "2cpu-linux-arm64" {
-		t.Errorf("RunnerSpec = %s, want 2cpu-linux-arm64", info.RunnerSpec)
 	}
 	if info.RetryCount != 2 {
 		t.Errorf("RetryCount = %d, want 2", info.RetryCount)

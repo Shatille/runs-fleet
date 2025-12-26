@@ -97,7 +97,7 @@ name: Test runs-fleet
 on: push
 jobs:
   test:
-    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
+    runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
     steps:
       - run: echo "Hello from runs-fleet"
 ```

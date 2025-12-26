@@ -333,14 +333,12 @@ func TestSaveJob(t *testing.T) {
 		{
 			name: "Success",
 			job: &JobRecord{
-				JobID: 12345,
-				RunID: 67890,
+				JobID:        12345,
+				RunID:        67890,
 				InstanceID:   "i-1234567890abcdef0",
 				InstanceType: "t4g.medium",
 				Pool:         "default",
-				Private:      false,
 				Spot:         true,
-				RunnerSpec:   "2cpu-linux-arm64",
 				RetryCount:   0,
 			},
 			mockDB: &MockDynamoDBAPI{
@@ -856,15 +854,13 @@ func TestClient_Structure(t *testing.T) {
 
 func TestJobRecord_Structure(t *testing.T) {
 	job := JobRecord{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		Repo:         "owner/repo",
 		InstanceID:   "i-abc123",
 		InstanceType: "t4g.medium",
 		Pool:         "default",
-		Private:      true,
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   2,
 	}
 
@@ -886,14 +882,8 @@ func TestJobRecord_Structure(t *testing.T) {
 	if job.Pool != "default" {
 		t.Errorf("Pool = %s, want default", job.Pool)
 	}
-	if !job.Private {
-		t.Error("Private should be true")
-	}
 	if job.Spot {
 		t.Error("Spot should be false")
-	}
-	if job.RunnerSpec != "2cpu-linux-arm64" {
-		t.Errorf("RunnerSpec = %s, want 2cpu-linux-arm64", job.RunnerSpec)
 	}
 	if job.RetryCount != 2 {
 		t.Errorf("RetryCount = %d, want 2", job.RetryCount)

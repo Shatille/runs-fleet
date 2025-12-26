@@ -109,7 +109,6 @@ RUNS_FLEET_CACHE_BUCKET=runs-fleet-cache
 # EC2 Configuration
 RUNS_FLEET_VPC_ID=vpc-xxx
 RUNS_FLEET_PUBLIC_SUBNET_IDS=subnet-xxx,subnet-yyy
-RUNS_FLEET_PRIVATE_SUBNET_IDS=subnet-aaa,subnet-bbb
 RUNS_FLEET_SECURITY_GROUP_ID=sg-xxx
 RUNS_FLEET_INSTANCE_PROFILE_ARN=arn:aws:iam::<account>:instance-profile/runs-fleet-runner
 
@@ -148,7 +147,7 @@ name: Test runs-fleet
 on: push
 jobs:
   test:
-    runs-on: "runs-fleet=${{ github.run_id }}/runner=2cpu-linux-arm64"
+    runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
     steps:
       - run: echo "Hello from runs-fleet"
 ```
