@@ -1,3 +1,6 @@
+{{- if and .Values.karpenter.enabled (ne .Values.mode "k8s") }}
+{{- fail "karpenter.enabled can only be true when mode is 'k8s'" }}
+{{- end }}
 {{- if and .Values.karpenter.enabled (eq .Values.mode "k8s") }}
 {{- if .Values.karpenter.ec2NodeClass.create }}
 {{- if not .Values.karpenter.ec2NodeClass.instanceProfile }}
