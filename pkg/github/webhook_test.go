@@ -231,10 +231,9 @@ func TestParseLabels(t *testing.T) {
 				"runs-fleet=12345/cpu=2/arch=arm64/pool=default",
 			},
 			want: &JobConfig{
-				RunID:      "12345",
-				Pool:       "default",
-				Spot:       true,
-				RunnerSpec: "2cpu-linux-arm64",
+				RunID: "12345",
+				Pool:  "default",
+				Spot:  true,
 			},
 			wantErr: false,
 		},
@@ -244,10 +243,9 @@ func TestParseLabels(t *testing.T) {
 				"runs-fleet=67890/cpu=4/arch=amd64/spot=false",
 			},
 			want: &JobConfig{
-				RunID:      "67890",
-				Pool:       "",
-				Spot:       false,
-				RunnerSpec: "4cpu-linux-amd64",
+				RunID: "67890",
+				Pool:  "",
+				Spot:  false,
 			},
 			wantErr: false,
 		},
@@ -257,9 +255,8 @@ func TestParseLabels(t *testing.T) {
 				"runs-fleet=abc/cpu=8/arch=arm64",
 			},
 			want: &JobConfig{
-				RunID:      "abc",
-				Spot:       true,
-				RunnerSpec: "8cpu-linux-arm64",
+				RunID: "abc",
+				Spot:  true,
 			},
 			wantErr: false,
 		},
@@ -293,9 +290,6 @@ func TestParseLabels(t *testing.T) {
 				}
 				if got.Spot != tt.want.Spot {
 					t.Errorf("ParseLabels() Spot = %v, want %v", got.Spot, tt.want.Spot)
-				}
-				if got.RunnerSpec != tt.want.RunnerSpec {
-					t.Errorf("ParseLabels() RunnerSpec = %v, want %v", got.RunnerSpec, tt.want.RunnerSpec)
 				}
 			}
 		})
@@ -442,10 +436,6 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 			// Verify primary instance type is set
 			if got.InstanceType == "" {
 				t.Error("ParseLabels() InstanceType is empty")
-			}
-			// Verify runner spec is generated
-			if got.RunnerSpec == "" {
-				t.Error("ParseLabels() RunnerSpec is empty")
 			}
 		})
 	}

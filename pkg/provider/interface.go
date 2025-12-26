@@ -153,7 +153,6 @@ type Job struct {
 	InstanceType string
 	Pool         string
 	Spot         bool
-	RunnerSpec   string
 	RetryCount   int
 	Status       string
 	CreatedAt    time.Time

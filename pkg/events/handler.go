@@ -43,7 +43,6 @@ type JobInfo struct {
 	InstanceType string
 	Pool         string
 	Spot         bool
-	RunnerSpec   string
 	RetryCount   int // Number of times this job has been retried
 }
 
@@ -303,7 +302,6 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		InstanceType:  job.InstanceType,
 		Pool:          job.Pool,
 		Spot:          false,              // ForceOnDemand uses on-demand instances
-		RunnerSpec:    job.RunnerSpec,
 		RetryCount:    job.RetryCount + 1, // Increment retry count
 		ForceOnDemand: true,               // Force on-demand for retries after spot interruption
 	}

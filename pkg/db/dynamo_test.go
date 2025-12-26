@@ -339,7 +339,6 @@ func TestSaveJob(t *testing.T) {
 				InstanceType: "t4g.medium",
 				Pool:         "default",
 				Spot:         true,
-				RunnerSpec:   "2cpu-linux-arm64",
 				RetryCount:   0,
 			},
 			mockDB: &MockDynamoDBAPI{
@@ -862,7 +861,6 @@ func TestJobRecord_Structure(t *testing.T) {
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   2,
 	}
 
@@ -886,9 +884,6 @@ func TestJobRecord_Structure(t *testing.T) {
 	}
 	if job.Spot {
 		t.Error("Spot should be false")
-	}
-	if job.RunnerSpec != "2cpu-linux-arm64" {
-		t.Errorf("RunnerSpec = %s, want 2cpu-linux-arm64", job.RunnerSpec)
 	}
 	if job.RetryCount != 2 {
 		t.Errorf("RetryCount = %d, want 2", job.RetryCount)

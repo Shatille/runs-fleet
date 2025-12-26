@@ -83,7 +83,6 @@ type JobConfig struct {
 	InstanceType string
 	Pool         string
 	Spot         bool
-	RunnerSpec   string // Generated description (e.g., "4cpu-linux-arm64") for logging/storage
 	Region       string // Multi-region support (Phase 3)
 	Environment  string // Per-stack environment support (Phase 6)
 	OS           string // Operating system (linux, windows)
@@ -307,13 +306,6 @@ func ResolveFlexibleSpec(cfg *JobConfig) error {
 	cfg.InstanceTypes = instanceTypes
 	// Primary instance type is the smallest match
 	cfg.InstanceType = instanceTypes[0]
-
-	// Generate human-readable runner spec for logging/storage
-	if cfg.Arch != "" {
-		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s-%s", cfg.CPUMin, cfg.OS, cfg.Arch)
-	} else {
-		cfg.RunnerSpec = fmt.Sprintf("%dcpu-%s", cfg.CPUMin, cfg.OS)
-	}
 
 	return nil
 }

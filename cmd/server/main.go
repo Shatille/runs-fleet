@@ -136,7 +136,6 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 				InstanceType: job.InstanceType,
 				Pool:         job.Pool,
 				Spot:         job.Spot,
-				RunnerSpec:   job.RunnerSpec,
 				RetryCount:   job.RetryCount,
 			}
 			if err := p.db.SaveJob(ctx, jobRecord); err != nil {
@@ -526,7 +525,6 @@ func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q qu
 		InstanceType:  jobConfig.InstanceType,
 		Pool:          jobConfig.Pool,
 		Spot:          jobConfig.Spot,
-		RunnerSpec:    jobConfig.RunnerSpec,
 		OriginalLabel: jobConfig.OriginalLabel,
 		// Sprint 4 features
 		Region:      jobConfig.Region,      // Phase 3: Multi-region support
@@ -701,7 +699,6 @@ func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		InstanceType:  jobInfo.InstanceType,
 		Pool:          jobInfo.Pool,
 		Spot:          false, // ForceOnDemand uses on-demand instances
-		RunnerSpec:    jobInfo.RunnerSpec,
 		RetryCount:    jobInfo.RetryCount + 1,
 		ForceOnDemand: true,
 	}
@@ -861,7 +858,6 @@ func saveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 			InstanceType: job.InstanceType,
 			Pool:         job.Pool,
 			Spot:         job.Spot,
-			RunnerSpec:   job.RunnerSpec,
 			RetryCount:   job.RetryCount,
 		}
 		var saveErr error
@@ -1024,7 +1020,6 @@ func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *po
 				InstanceTypes: job.InstanceTypes,
 				Pool:          job.Pool,
 				Spot:          false,
-				RunnerSpec:    job.RunnerSpec,
 				OriginalLabel: job.OriginalLabel,
 				RetryCount:    job.RetryCount + 1,
 				ForceOnDemand: true,
@@ -1399,7 +1394,6 @@ func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *
 				InstanceType: job.InstanceType,
 				Pool:         job.Pool,
 				Spot:         job.Spot,
-				RunnerSpec:   job.RunnerSpec,
 				RetryCount:   job.RetryCount,
 			}
 			var saveErr error

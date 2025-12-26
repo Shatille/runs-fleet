@@ -981,7 +981,6 @@ func TestSpotInterruptionHandling(t *testing.T) {
 				InstanceType: "t4g.medium",
 				Pool:         "default",
 				Spot:         true,
-				RunnerSpec:   "2cpu-linux-arm64",
 			},
 			expectMarkCalled:  true,
 			expectGetCalled:   true,
@@ -1145,7 +1144,6 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 		InstanceType: "c7g.xlarge",
 		Pool:         "heavy-builds",
 		Spot:         true,
-		RunnerSpec:   "4cpu-linux-arm64",
 	}
 
 	var capturedMessage *queue.JobMessage
@@ -1213,9 +1211,6 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	// When ForceOnDemand is true, Spot should be false
 	if capturedMessage.Spot {
 		t.Errorf("Spot: expected false (ForceOnDemand=true), got %v", capturedMessage.Spot)
-	}
-	if capturedMessage.RunnerSpec != expectedJob.RunnerSpec {
-		t.Errorf("RunnerSpec: expected %s, got %s", expectedJob.RunnerSpec, capturedMessage.RunnerSpec)
 	}
 }
 
@@ -1375,7 +1370,6 @@ func TestJobInfo_Structure(t *testing.T) {
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   2,
 	}
 
@@ -1396,9 +1390,6 @@ func TestJobInfo_Structure(t *testing.T) {
 	}
 	if info.Spot {
 		t.Error("Spot should be false")
-	}
-	if info.RunnerSpec != "2cpu-linux-arm64" {
-		t.Errorf("RunnerSpec = %s, want 2cpu-linux-arm64", info.RunnerSpec)
 	}
 	if info.RetryCount != 2 {
 		t.Errorf("RetryCount = %d, want 2", info.RetryCount)

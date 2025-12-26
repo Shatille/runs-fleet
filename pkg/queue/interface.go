@@ -53,7 +53,6 @@ type JobMessage struct {
 	InstanceType  string   `json:"instance_type"`
 	Pool          string   `json:"pool,omitempty"`
 	Spot          bool     `json:"spot"`
-	RunnerSpec    string   `json:"runner_spec"`
 	OriginalLabel string   `json:"original_label,omitempty"`
 	RetryCount    int      `json:"retry_count,omitempty"`
 	ForceOnDemand bool     `json:"force_on_demand,omitempty"`

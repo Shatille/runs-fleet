@@ -130,7 +130,6 @@ func TestValkeyClient_SendMessage_MarshalError(t *testing.T) {
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 	}
 
 	data, err := json.Marshal(job)
@@ -297,7 +296,6 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 		InstanceType:  "m6g.large",
 		Pool:          "gpu-pool",
 		Spot:          false,
-		RunnerSpec:    "4cpu-linux-arm64-gpu",
 		OriginalLabel: "self-hosted",
 		RetryCount:    2,
 		ForceOnDemand: true,
@@ -339,9 +337,6 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 	}
 	if decoded.Spot != job.Spot {
 		t.Errorf("Spot mismatch")
-	}
-	if decoded.RunnerSpec != job.RunnerSpec {
-		t.Errorf("RunnerSpec mismatch")
 	}
 	if decoded.OriginalLabel != job.OriginalLabel {
 		t.Errorf("OriginalLabel mismatch")
@@ -1001,7 +996,6 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 		InstanceType:  "c6g.xlarge",
 		Pool:          "compute",
 		Spot:          false,
-		RunnerSpec:    "4cpu-linux-arm64",
 		OriginalLabel: "self-hosted",
 		RetryCount:    3,
 		ForceOnDemand: true,

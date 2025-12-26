@@ -81,7 +81,6 @@ func TestStateStore_SaveJob_Validation(t *testing.T) {
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Spot:         false,
-		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   1,
 	}
 
@@ -248,7 +247,6 @@ func TestProviderJob_Fields(t *testing.T) {
 		InstanceType: "c5.xlarge",
 		Pool:         "gpu-pool",
 		Spot:         true,
-		RunnerSpec:   "4cpu-linux-amd64-gpu",
 		RetryCount:   3,
 		Status:       "running",
 	}
@@ -273,9 +271,6 @@ func TestProviderJob_Fields(t *testing.T) {
 	}
 	if !job.Spot {
 		t.Error("Spot = false, want true")
-	}
-	if job.RunnerSpec != "4cpu-linux-amd64-gpu" {
-		t.Errorf("RunnerSpec = %s, want 4cpu-linux-amd64-gpu", job.RunnerSpec)
 	}
 	if job.RetryCount != 3 {
 		t.Errorf("RetryCount = %d, want 3", job.RetryCount)
@@ -479,7 +474,6 @@ func TestStateStore_SaveJob_BuildsCorrectRecord(t *testing.T) {
 		InstanceType: "m6g.large",
 		Pool:         "build-pool",
 		Spot:         true,
-		RunnerSpec:   "8cpu-linux-arm64",
 		RetryCount:   3,
 	}
 
@@ -504,9 +498,6 @@ func TestStateStore_SaveJob_BuildsCorrectRecord(t *testing.T) {
 	}
 	if !job.Spot {
 		t.Error("Spot should be true")
-	}
-	if job.RunnerSpec != "8cpu-linux-arm64" {
-		t.Errorf("RunnerSpec = %s, want 8cpu-linux-arm64", job.RunnerSpec)
 	}
 	if job.RetryCount != 3 {
 		t.Errorf("RetryCount = %d, want 3", job.RetryCount)

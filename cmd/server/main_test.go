@@ -29,7 +29,6 @@ func TestBuildRunnerLabel(t *testing.T) {
 			name: "uses original label when present",
 			job: &queue.JobMessage{
 				RunID:         12345,
-				RunnerSpec:    "2cpu-linux",
 				OriginalLabel: "runs-fleet=12345/cpu=2",
 				Spot:          true,
 			},
@@ -39,7 +38,6 @@ func TestBuildRunnerLabel(t *testing.T) {
 			name: "uses original label with flexible spec",
 			job: &queue.JobMessage{
 				RunID:         67890,
-				RunnerSpec:    "4cpu-linux-arm64",
 				OriginalLabel: "runs-fleet=67890/cpu=4+8/arch=arm64",
 				Spot:          true,
 			},
@@ -48,38 +46,34 @@ func TestBuildRunnerLabel(t *testing.T) {
 		{
 			name: "basic label fallback",
 			job: &queue.JobMessage{
-				RunID:      12345,
-				RunnerSpec: "2cpu-linux-arm64",
-				Spot:       true,
+				RunID: 12345,
+				Spot:  true,
 			},
 			want: "runs-fleet=12345",
 		},
 		{
 			name: "with pool",
 			job: &queue.JobMessage{
-				RunID:      12345,
-				RunnerSpec: "2cpu-linux-arm64",
-				Pool:       "default",
-				Spot:       true,
+				RunID: 12345,
+				Pool:  "default",
+				Spot:  true,
 			},
 			want: "runs-fleet=12345/pool=default",
 		},
 		{
 			name: "with spot=false",
 			job: &queue.JobMessage{
-				RunID:      12345,
-				RunnerSpec: "2cpu-linux-arm64",
-				Spot:       false,
+				RunID: 12345,
+				Spot:  false,
 			},
 			want: "runs-fleet=12345/spot=false",
 		},
 		{
 			name: "pool and spot=false",
 			job: &queue.JobMessage{
-				RunID:      67890,
-				RunnerSpec: "8cpu-linux-arm64",
-				Pool:       "mypool",
-				Spot:       false,
+				RunID: 67890,
+				Pool:  "mypool",
+				Spot:  false,
 			},
 			want: "runs-fleet=67890/pool=mypool/spot=false",
 		},
@@ -442,9 +436,8 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			job := &queue.JobMessage{
-				RunID:      12345,
-				RunnerSpec: "spec",
-				Spot:       tt.spot,
+				RunID: 12345,
+				Spot:  tt.spot,
 			}
 			label := buildRunnerLabel(job)
 			if label == "" {
@@ -602,7 +595,6 @@ func TestBuildRunnerLabel_EmptyOriginalLabel(t *testing.T) {
 func TestBuildRunnerLabel_WhitespaceOriginalLabel(t *testing.T) {
 	job := &queue.JobMessage{
 		RunID:         12345,
-		RunnerSpec:    "2cpu-linux",
 		OriginalLabel: "   ", // Whitespace only - treated as non-empty
 		Spot:          true,
 	}
@@ -645,7 +637,6 @@ func TestJobMessage_AllFields(t *testing.T) {
 		InstanceType:  "t4g.medium",
 		Pool:          "default",
 		Spot:          false,
-		RunnerSpec:    "2cpu-linux-arm64",
 		OriginalLabel: "runs-fleet=456/cpu=2",
 		RetryCount:    3,
 		ForceOnDemand: true,
@@ -786,7 +777,7 @@ func TestHandleJobFailure_NoJobsTable(t *testing.T) {
 		WorkflowJob: &github.WorkflowJob{
 			ID:         ptr(int64(123)),
 			RunnerName: ptr("runs-fleet-i-1234567890abcdef0"),
-			Labels:     []string{"runs-fleet=12345/runner=2cpu-linux-arm64"},
+			Labels:     []string{"runs-fleet=12345/cpu=2/arch=arm64"},
 		},
 	}
 
@@ -972,7 +963,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
 		Pool:          "default",
 		Spot:          true,
-		RunnerSpec:    "2cpu-linux-arm64",
 		OriginalLabel: "runs-fleet=67890/cpu=2",
 		RetryCount:    0,
 		ForceOnDemand: false,
@@ -991,7 +981,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		InstanceTypes: originalJob.InstanceTypes,
 		Pool:          originalJob.Pool,
 		Spot:          false,
-		RunnerSpec:    originalJob.RunnerSpec,
 		OriginalLabel: originalJob.OriginalLabel,
 		RetryCount:    originalJob.RetryCount + 1,
 		ForceOnDemand: true,

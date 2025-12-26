@@ -415,7 +415,6 @@ func TestJob_Fields(t *testing.T) {
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Spot:         true,
-		RunnerSpec:   "2cpu-linux-arm64",
 		RetryCount:   0,
 		Status:       stateRunning,
 		CreatedAt:    now,
