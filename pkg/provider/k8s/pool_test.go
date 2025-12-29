@@ -280,7 +280,6 @@ func TestPoolProvider_IdleTracking(t *testing.T) {
 	}
 
 	p := NewPoolProvider(clientset, cfg)
-	p.SetCoordinator(&mockCoordinator{leader: true})
 
 	// Reconcile initializes idle tracking for running pods
 	p.reconcile(context.Background())
@@ -333,41 +332,23 @@ func TestPoolProvider_IdleTracking(t *testing.T) {
 	}
 }
 
-type mockCoordinator struct {
-	leader bool
-}
-
-func (m *mockCoordinator) IsLeader() bool {
-	return m.leader
-}
-
 func TestPoolProvider_Reconcile(t *testing.T) {
 	tests := []struct {
-		name           string
-		podName        string
-		isLeader       bool
-		idleDuration   time.Duration
+		name            string
+		podName         string
+		idleDuration    time.Duration
 		expectTerminate bool
 	}{
 		{
-			name:           "terminates idle pods past threshold",
-			podName:        "idle-runner",
-			isLeader:       true,
-			idleDuration:   15 * time.Minute, // threshold is 10 min
+			name:            "terminates idle pods past threshold",
+			podName:         "idle-runner",
+			idleDuration:    15 * time.Minute, // threshold is 10 min
 			expectTerminate: true,
 		},
 		{
-			name:           "skips reconcile when not leader",
-			podName:        "idle-runner",
-			isLeader:       false,
-			idleDuration:   15 * time.Minute,
-			expectTerminate: false,
-		},
-		{
-			name:           "keeps recently idle pods",
-			podName:        "recent-idle-runner",
-			isLeader:       true,
-			idleDuration:   5 * time.Minute, // within 10 min threshold
+			name:            "keeps recently idle pods",
+			podName:         "recent-idle-runner",
+			idleDuration:    5 * time.Minute, // within 10 min threshold
 			expectTerminate: false,
 		},
 	}
@@ -391,7 +372,6 @@ func TestPoolProvider_Reconcile(t *testing.T) {
 
 			cfg := &config.Config{KubeNamespace: "runs-fleet"}
 			p := NewPoolProvider(clientset, cfg)
-			p.SetCoordinator(&mockCoordinator{leader: tt.isLeader})
 
 			p.mu.Lock()
 			p.podIdle[tt.podName] = time.Now().Add(-tt.idleDuration)
@@ -417,7 +397,6 @@ func TestPoolProvider_ReconcileCleansUpStalePodIdle(t *testing.T) {
 		KubeIdleTimeoutMinutes: 10,
 	}
 	p := NewPoolProvider(clientset, cfg)
-	p.SetCoordinator(&mockCoordinator{leader: true})
 
 	// Add stale entries for pods that no longer exist
 	p.mu.Lock()
@@ -457,7 +436,6 @@ func TestPoolProvider_ReconcileInitializesUntrackedPods(t *testing.T) {
 		KubeIdleTimeoutMinutes: 10,
 	}
 	p := NewPoolProvider(clientset, cfg)
-	p.SetCoordinator(&mockCoordinator{leader: true})
 
 	// Verify pod is not tracked
 	p.mu.RLock()

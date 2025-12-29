@@ -52,14 +52,6 @@ func (m *mockStateStore) DeleteK8sPoolConfig(_ context.Context, poolName string)
 	return nil
 }
 
-type mockCoordinator struct {
-	isLeader bool
-}
-
-func (m *mockCoordinator) IsLeader() bool {
-	return m.isLeader
-}
-
 func createTestDeployment(name, namespace string, replicas int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -528,37 +520,6 @@ func TestK8sManager_GetScheduledDesiredCounts(t *testing.T) {
 	}
 }
 
-func TestK8sManager_CoordinatorRespected(t *testing.T) {
-	ctx := context.Background()
-
-	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 1),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 1),
-	)
-
-	stateStore := newMockStateStore()
-	stateStore.pools[DefaultPoolName] = &state.K8sPoolConfig{
-		PoolName:      DefaultPoolName,
-		Arm64Replicas: 5,
-		Amd64Replicas: 5,
-	}
-
-	cfg := &config.Config{
-		KubeNamespace:   testNamespace,
-		KubeReleaseName: "runs-fleet",
-	}
-
-	manager := NewK8sManager(clientset, stateStore, cfg)
-	manager.SetCoordinator(&mockCoordinator{isLeader: false})
-
-	manager.reconcile(ctx)
-
-	arm64Deploy, _ := clientset.AppsV1().Deployments(testNamespace).Get(ctx, "runs-fleet-placeholder-arm64", metav1.GetOptions{})
-	if *arm64Deploy.Spec.Replicas != 1 {
-		t.Errorf("expected no change when not leader, got replicas %d", *arm64Deploy.Spec.Replicas)
-	}
-}
-
 func TestK8sManager_PlaceholderDeploymentName(t *testing.T) {
 	tests := []struct {
 		releaseName string
@@ -623,7 +584,7 @@ func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
 	}
 }
 
-func TestK8sManager_ReconcileWithLeader(t *testing.T) {
+func TestK8sManager_ReconcileScalesDeployments(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
@@ -644,49 +605,17 @@ func TestK8sManager_ReconcileWithLeader(t *testing.T) {
 	}
 
 	manager := NewK8sManager(clientset, stateStore, cfg)
-	manager.SetCoordinator(&mockCoordinator{isLeader: true})
 
 	manager.reconcile(ctx)
 
 	arm64Deploy, _ := clientset.AppsV1().Deployments(testNamespace).Get(ctx, "runs-fleet-placeholder-arm64", metav1.GetOptions{})
 	if *arm64Deploy.Spec.Replicas != 3 {
-		t.Errorf("expected arm64 replicas 3 when leader, got %d", *arm64Deploy.Spec.Replicas)
+		t.Errorf("expected arm64 replicas 3, got %d", *arm64Deploy.Spec.Replicas)
 	}
 
 	amd64Deploy, _ := clientset.AppsV1().Deployments(testNamespace).Get(ctx, "runs-fleet-placeholder-amd64", metav1.GetOptions{})
 	if *amd64Deploy.Spec.Replicas != 2 {
-		t.Errorf("expected amd64 replicas 2 when leader, got %d", *amd64Deploy.Spec.Replicas)
-	}
-}
-
-func TestK8sManager_ReconcileNoCoordinator(t *testing.T) {
-	ctx := context.Background()
-
-	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 1),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 1),
-	)
-
-	stateStore := newMockStateStore()
-	stateStore.pools[DefaultPoolName] = &state.K8sPoolConfig{
-		PoolName:      DefaultPoolName,
-		Arm64Replicas: 5,
-		Amd64Replicas: 5,
-	}
-
-	cfg := &config.Config{
-		KubeNamespace:   testNamespace,
-		KubeReleaseName: "runs-fleet",
-	}
-
-	manager := NewK8sManager(clientset, stateStore, cfg)
-	// No coordinator set - should act as leader
-
-	manager.reconcile(ctx)
-
-	arm64Deploy, _ := clientset.AppsV1().Deployments(testNamespace).Get(ctx, "runs-fleet-placeholder-arm64", metav1.GetOptions{})
-	if *arm64Deploy.Spec.Replicas != 5 {
-		t.Errorf("expected arm64 replicas 5 with no coordinator, got %d", *arm64Deploy.Spec.Replicas)
+		t.Errorf("expected amd64 replicas 2, got %d", *amd64Deploy.Spec.Replicas)
 	}
 }
 

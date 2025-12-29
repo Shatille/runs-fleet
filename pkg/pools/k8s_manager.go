@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -20,11 +19,6 @@ import (
 // so multi-pool support is not available. Use "default" for all operations.
 const DefaultPoolName = "default"
 
-// K8sCoordinator defines distributed coordination operations.
-type K8sCoordinator interface {
-	IsLeader() bool
-}
-
 // K8sStateStore defines state operations for K8s pool configuration.
 type K8sStateStore interface {
 	GetK8sPoolConfig(ctx context.Context, poolName string) (*state.K8sPoolConfig, error)
@@ -37,12 +31,11 @@ type K8sStateStore interface {
 // K8sManager orchestrates K8s warm pool operations by managing placeholder Deployments.
 // Note: K8s warm pools support only a single pool ("default") because Helm creates
 // fixed deployments (one per architecture). For multi-pool support, use EC2 backend.
+// K8s scaling operations are idempotent, so concurrent reconciliation is safe.
 type K8sManager struct {
-	mu          sync.RWMutex
-	clientset   kubernetes.Interface
-	stateStore  K8sStateStore
-	coordinator K8sCoordinator
-	config      *config.Config
+	clientset  kubernetes.Interface
+	stateStore K8sStateStore
+	config     *config.Config
 
 	// Deployment naming
 	releaseName string // Helm release name for deployment naming
@@ -60,13 +53,6 @@ func NewK8sManager(clientset kubernetes.Interface, stateStore K8sStateStore, cfg
 		config:      cfg,
 		releaseName: releaseName,
 	}
-}
-
-// SetCoordinator sets the coordinator for leader election.
-func (m *K8sManager) SetCoordinator(coordinator K8sCoordinator) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.coordinator = coordinator
 }
 
 // ReconcileLoop runs periodically to maintain pool size.
@@ -90,20 +76,12 @@ func (m *K8sManager) ReconcileLoop(ctx context.Context) {
 const reconcileTimeout = 30 * time.Second
 
 func (m *K8sManager) reconcile(ctx context.Context) {
-	// Hold RLock for entire operation to prevent TOCTOU race between leader check and K8s API calls.
-	// RLock blocks SetCoordinator but allows concurrent reads - acceptable tradeoff.
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.coordinator != nil && !m.coordinator.IsLeader() {
-		return
-	}
-
 	// Timeout context prevents indefinite hangs on unresponsive K8s API.
 	timeoutCtx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
 
 	// Only reconcile the default pool (K8s has fixed deployments from Helm)
+	// Multiple instances may reconcile concurrently - K8s handles this gracefully
 	if err := m.reconcilePool(timeoutCtx, DefaultPoolName); err != nil {
 		log.Printf("K8s pool manager: failed to reconcile pool %s: %v", DefaultPoolName, err)
 	}
