@@ -1,20 +1,26 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import PoolForm from '@/components/pool-form';
 import { Pool, PoolFormData } from '@/lib/types';
 
-export default function EditPoolPage() {
+function EditPoolContent() {
   const router = useRouter();
-  const params = useParams();
-  const poolName = params.name as string;
+  const searchParams = useSearchParams();
+  const poolName = searchParams.get('name');
 
   const [pool, setPool] = useState<Pool | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!poolName) {
+      setError('Pool name is required');
+      setLoading(false);
+      return;
+    }
+
     async function fetchPool() {
       try {
         const res = await fetch(`/api/pools/${poolName}`);
@@ -37,6 +43,8 @@ export default function EditPoolPage() {
   }, [poolName]);
 
   async function handleSubmit(data: PoolFormData) {
+    if (!poolName) return;
+
     const res = await fetch(`/api/pools/${poolName}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -86,5 +94,17 @@ export default function EditPoolPage() {
       </div>
       <PoolForm pool={pool} onSubmit={handleSubmit} isEdit />
     </div>
+  );
+}
+
+export default function EditPoolPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-64">
+        <div className="text-gray-500">Loading...</div>
+      </div>
+    }>
+      <EditPoolContent />
+    </Suspense>
   );
 }

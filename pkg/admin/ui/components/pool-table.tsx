@@ -65,7 +65,7 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                 <a
-                  href={`/admin/pools/${pool.pool_name}/`}
+                  href={`/admin/pools/edit/?name=${encodeURIComponent(pool.pool_name)}`}
                   className="text-blue-600 hover:text-blue-900 mr-4"
                 >
                   Edit
