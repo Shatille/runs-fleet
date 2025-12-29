@@ -15,7 +15,8 @@ export function clearAuthToken(): void {
 
 export async function apiFetch(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs = 10000
 ): Promise<Response> {
   const token = getAuthToken();
   const headers = new Headers(options.headers);
@@ -24,12 +25,23 @@ export async function apiFetch(
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const res = await fetch(url, { ...options, headers });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (res.status === 401) {
-    clearAuthToken();
-    window.dispatchEvent(new CustomEvent('auth-required'));
+  try {
+    const res = await fetch(url, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+
+    if (res.status === 401) {
+      clearAuthToken();
+      window.dispatchEvent(new CustomEvent('auth-required'));
+    }
+
+    return res;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return res;
 }
