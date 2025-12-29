@@ -11,6 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
+// Test constants for table names.
+const testPoolsTable = "pools-table"
+
 // MockDynamoDBAPI implements DynamoDBAPI interface.
 //
 //nolint:dupl // Mock mirrors interface - intentional pattern
@@ -1322,7 +1325,7 @@ func TestTouchPoolActivity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			poolsTable := "pools-table"
+			poolsTable := testPoolsTable
 			if tt.noTable {
 				poolsTable = ""
 			}
@@ -1388,7 +1391,7 @@ func TestDeletePoolConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			poolsTable := "pools-table"
+			poolsTable := testPoolsTable
 			if tt.noTable {
 				poolsTable = ""
 			}

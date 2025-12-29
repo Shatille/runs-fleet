@@ -23,10 +23,12 @@ const (
 
 // MockDBClient implements DBClient interface
 type MockDBClient struct {
-	GetPoolConfigFunc         func(ctx context.Context, poolName string) (*db.PoolConfig, error)
-	UpdatePoolStateFunc       func(ctx context.Context, poolName string, running, stopped int) error
-	ListPoolsFunc             func(ctx context.Context) ([]string, error)
-	GetPoolPeakConcurrencyFunc func(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolConfigFunc            func(ctx context.Context, poolName string) (*db.PoolConfig, error)
+	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
+	ListPoolsFunc                func(ctx context.Context) ([]string, error)
+	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
+	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
+	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 }
 
 func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -55,6 +57,20 @@ func (m *MockDBClient) GetPoolPeakConcurrency(ctx context.Context, poolName stri
 		return m.GetPoolPeakConcurrencyFunc(ctx, poolName, windowHours)
 	}
 	return 0, nil
+}
+
+func (m *MockDBClient) AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error {
+	if m.AcquirePoolReconcileLockFunc != nil {
+		return m.AcquirePoolReconcileLockFunc(ctx, poolName, owner, ttl)
+	}
+	return nil
+}
+
+func (m *MockDBClient) ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error {
+	if m.ReleasePoolReconcileLockFunc != nil {
+		return m.ReleasePoolReconcileLockFunc(ctx, poolName, owner)
+	}
+	return nil
 }
 
 // MockFleetAPI implements FleetAPI interface
@@ -250,15 +266,6 @@ func (m *MockEC2API) TerminateInstances(ctx context.Context, params *ec2.Termina
 	return &ec2.TerminateInstancesOutput{}, nil
 }
 
-// MockCoordinator implements Coordinator interface
-type MockCoordinator struct {
-	isLeader bool
-}
-
-func (m *MockCoordinator) IsLeader() bool {
-	return m.isLeader
-}
-
 func TestSetEC2Client(t *testing.T) {
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	mockEC2 := &MockEC2API{}
@@ -267,17 +274,6 @@ func TestSetEC2Client(t *testing.T) {
 
 	if manager.ec2Client != mockEC2 {
 		t.Error("ec2Client not set correctly")
-	}
-}
-
-func TestSetCoordinator(t *testing.T) {
-	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
-	mockCoord := &MockCoordinator{isLeader: true}
-
-	manager.SetCoordinator(mockCoord)
-
-	if manager.coordinator != mockCoord {
-		t.Error("coordinator not set correctly")
 	}
 }
 
@@ -570,20 +566,30 @@ func TestTerminateInstances(t *testing.T) {
 	}
 }
 
-func TestReconcileWithCoordinator(t *testing.T) {
-	// Test that reconcile is skipped when not leader
+func TestReconcileWithLockHeld(t *testing.T) {
+	// Test that pool reconciliation is skipped when lock is held by another instance
+	getPoolConfigCalled := false
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
-			t.Error("ListPools should not be called when not leader")
-			return []string{}, nil
+			return []string{"test-pool"}, nil
+		},
+		AcquirePoolReconcileLockFunc: func(_ context.Context, _, _ string, _ time.Duration) error {
+			return db.ErrPoolReconcileLockHeld
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			getPoolConfigCalled = true
+			return &db.PoolConfig{DesiredRunning: 1}, nil
 		},
 	}
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: false})
 	manager.SetEC2Client(&MockEC2API{})
 
-	// This should return early because not leader
 	manager.reconcile(context.Background())
+
+	// GetPoolConfig should NOT be called when lock is held
+	if getPoolConfigCalled {
+		t.Error("GetPoolConfig should not be called when lock is held by another instance")
+	}
 }
 
 func TestReconcileWithoutEC2Client(t *testing.T) {
@@ -596,7 +602,6 @@ func TestReconcileWithoutEC2Client(t *testing.T) {
 		},
 	}
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	// Don't set EC2 client
 
 	manager.reconcile(context.Background())
@@ -614,7 +619,6 @@ func TestReconcileListPoolsError(_ *testing.T) {
 		},
 	}
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(&MockEC2API{})
 
 	// Should not panic, just log error
@@ -631,7 +635,6 @@ func TestReconcilePoolConfigError(_ *testing.T) {
 		},
 	}
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(&MockEC2API{})
 
 	// Should not panic, just log error
@@ -648,7 +651,6 @@ func TestReconcilePoolConfigNotFound(_ *testing.T) {
 		},
 	}
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(&MockEC2API{})
 
 	// Should not panic, just log error
@@ -789,7 +791,6 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -854,7 +855,6 @@ func TestReconcilePoolStartStoppedInstances(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -921,7 +921,6 @@ func TestReconcilePoolScaleDown(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	// Mark instances as idle for long enough
@@ -998,7 +997,6 @@ func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1060,7 +1058,6 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1107,7 +1104,6 @@ func TestReconcilePoolUpdateStateError(_ *testing.T) {
 	}
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	// Should not panic, just log error
@@ -1161,7 +1157,6 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1204,7 +1199,6 @@ func TestReconcilePoolCreateFleetError(_ *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	// Should not panic
@@ -1254,7 +1248,6 @@ func TestReconcilePoolStopInstancesError(_ *testing.T) {
 	}
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	// Mark instance as idle
@@ -1304,7 +1297,6 @@ func TestReconcilePoolTerminateInstancesError(_ *testing.T) {
 	}
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	// Mark instance as idle
@@ -1433,7 +1425,6 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1484,7 +1475,6 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{})
-	manager.SetCoordinator(&MockCoordinator{isLeader: true})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
