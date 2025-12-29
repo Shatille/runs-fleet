@@ -104,17 +104,145 @@ See [docs/USAGE.md](docs/USAGE.md) for full spec table and examples.
 
 ## Configuration
 
-Required env vars (see `.envrc.example`):
+All configuration is via environment variables. See `.envrc.example` for a template.
 
-```bash
-# GitHub App
-RUNS_FLEET_GITHUB_APP_ID, RUNS_FLEET_GITHUB_APP_PRIVATE_KEY, RUNS_FLEET_GITHUB_WEBHOOK_SECRET
+### Core (Required)
 
-# AWS (from Terraform)
-AWS_REGION, RUNS_FLEET_QUEUE_URL, RUNS_FLEET_POOL_QUEUE_URL
-RUNS_FLEET_JOBS_TABLE, RUNS_FLEET_POOLS_TABLE, RUNS_FLEET_CACHE_BUCKET
-RUNS_FLEET_VPC_ID, RUNS_FLEET_PUBLIC_SUBNET_IDS, RUNS_FLEET_INSTANCE_PROFILE_ARN
+| Variable | Description |
+|----------|-------------|
+| `RUNS_FLEET_GITHUB_APP_ID` | GitHub App ID |
+| `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` | GitHub App private key (PEM format) |
+| `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` | Webhook HMAC secret |
+| `AWS_REGION` | AWS region (default: `ap-northeast-1`) |
+| `RUNS_FLEET_MODE` | Backend mode: `ec2` or `k8s` (default: `ec2`) |
+
+### Queues (SQS - EC2 mode)
+
+| Variable | Description |
+|----------|-------------|
+| `RUNS_FLEET_QUEUE_URL` | Main job queue URL (required for EC2) |
+| `RUNS_FLEET_QUEUE_DLQ_URL` | Dead letter queue URL |
+| `RUNS_FLEET_POOL_QUEUE_URL` | Warm pool batch queue URL |
+| `RUNS_FLEET_EVENTS_QUEUE_URL` | EventBridge events queue (spot interruptions) |
+| `RUNS_FLEET_TERMINATION_QUEUE_URL` | Instance termination notifications |
+| `RUNS_FLEET_HOUSEKEEPING_QUEUE_URL` | Cleanup task scheduling |
+
+### DynamoDB
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_JOBS_TABLE` | | Job state tracking |
+| `RUNS_FLEET_POOLS_TABLE` | | Pool configurations |
+| `RUNS_FLEET_LOCKS_TABLE` | | Distributed leader election |
+| `RUNS_FLEET_CIRCUIT_BREAKER_TABLE` | `runs-fleet-circuit-state` | Circuit breaker state |
+
+### S3 & SNS
+
+| Variable | Description |
+|----------|-------------|
+| `RUNS_FLEET_CACHE_BUCKET` | GitHub Actions cache artifacts |
+| `RUNS_FLEET_COST_REPORT_BUCKET` | Cost report storage |
+| `RUNS_FLEET_COST_REPORT_SNS_TOPIC` | Cost report notifications |
+
+### EC2 Backend (required when `RUNS_FLEET_MODE=ec2`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_VPC_ID` | | VPC ID (required) |
+| `RUNS_FLEET_PUBLIC_SUBNET_IDS` | | Comma-separated subnet IDs (required) |
+| `RUNS_FLEET_PRIVATE_SUBNET_IDS` | | Private subnets (optional) |
+| `RUNS_FLEET_SECURITY_GROUP_ID` | | Security group ID (required) |
+| `RUNS_FLEET_INSTANCE_PROFILE_ARN` | | IAM instance profile ARN (required) |
+| `RUNS_FLEET_RUNNER_IMAGE` | | ECR image URL for runners (required) |
+| `RUNS_FLEET_KEY_NAME` | | EC2 key pair name (optional) |
+| `RUNS_FLEET_SPOT_ENABLED` | `true` | Enable spot instances |
+| `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
+| `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
+| `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |
+| `RUNS_FLEET_LOG_LEVEL` | `info` | Log verbosity |
+
+### Kubernetes Backend (required when `RUNS_FLEET_MODE=k8s`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_KUBE_NAMESPACE` | | Runner namespace (required) |
+| `RUNS_FLEET_KUBE_RUNNER_IMAGE` | | Runner container image (required) |
+| `RUNS_FLEET_KUBE_CONFIG` | | Kubeconfig path (empty = in-cluster) |
+| `RUNS_FLEET_KUBE_SERVICE_ACCOUNT` | `runs-fleet-runner` | Runner ServiceAccount |
+| `RUNS_FLEET_KUBE_NODE_SELECTOR` | | Node selector (`key=value,...`) |
+| `RUNS_FLEET_KUBE_TOLERATIONS` | | Tolerations (JSON array) |
+| `RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES` | `10` | Pod idle timeout |
+| `RUNS_FLEET_KUBE_RELEASE_NAME` | `runs-fleet` | Helm release name |
+| `RUNS_FLEET_KUBE_STORAGE_CLASS` | | PVC storage class |
+
+### Kubernetes DinD (Docker-in-Docker)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_KUBE_DIND_IMAGE` | `docker:dind` | DinD sidecar image |
+| `RUNS_FLEET_KUBE_DAEMON_JSON_CONFIGMAP` | | ConfigMap for daemon.json |
+| `RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS` | `120` | Docker daemon startup wait (10-300) |
+| `RUNS_FLEET_KUBE_DOCKER_GROUP_GID` | `123` | Docker socket GID (1-65535) |
+| `RUNS_FLEET_KUBE_REGISTRY_MIRROR` | | Registry mirror URL |
+
+### Valkey Queue (K8s mode)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_VALKEY_ADDR` | `valkey:6379` | Valkey/Redis address (required for K8s) |
+| `RUNS_FLEET_VALKEY_PASSWORD` | | Valkey password |
+| `RUNS_FLEET_VALKEY_DB` | `0` | Database number |
+
+### Distributed Coordinator
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_COORDINATOR_ENABLED` | `false` | Enable leader election |
+| `RUNS_FLEET_INSTANCE_ID` | | Unique instance ID (required if coordinator enabled) |
+
+### Cache
+
+| Variable | Description |
+|----------|-------------|
+| `RUNS_FLEET_CACHE_SECRET` | HMAC secret for cache auth |
+| `RUNS_FLEET_CACHE_URL` | Cache service URL (passed to runners) |
+
+### Metrics
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_METRICS_NAMESPACE` | `RunsFleet` | Metric namespace/prefix |
+| `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` | `true` | Enable CloudWatch metrics |
+| `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` | `false` | Enable Prometheus `/metrics` endpoint |
+| `RUNS_FLEET_METRICS_PROMETHEUS_PATH` | `/metrics` | Prometheus endpoint path |
+| `RUNS_FLEET_METRICS_DATADOG_ENABLED` | `false` | Enable Datadog DogStatsD |
+| `RUNS_FLEET_METRICS_DATADOG_ADDR` | `127.0.0.1:8125` | DogStatsD address |
+| `RUNS_FLEET_METRICS_DATADOG_TAGS` | | Global tags (comma-separated) |
+
+## Admin UI
+
+Web-based pool configuration management at `/admin/`:
+
+- View all pools with key metrics
+- Create, edit, and delete pools
+- Delete restricted to ephemeral pools only
+
+**API Endpoints:**
 ```
+GET    /api/pools          # List all pools
+GET    /api/pools/{name}   # Get pool config
+POST   /api/pools          # Create pool
+PUT    /api/pools/{name}   # Update pool
+DELETE /api/pools/{name}   # Delete pool (ephemeral only)
+```
+
+**Build:**
+```bash
+make build-admin-ui   # Build Next.js static export
+make build-server     # Build server (includes UI)
+```
+
+The UI is embedded in the Go binary as static files.
 
 ## Development
 
