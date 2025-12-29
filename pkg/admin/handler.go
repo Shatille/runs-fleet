@@ -26,12 +26,17 @@ type PoolDB interface {
 
 // Handler provides HTTP endpoints for pool configuration management.
 type Handler struct {
-	db PoolDB
+	db   PoolDB
+	auth *AuthMiddleware
 }
 
-// NewHandler creates a new admin handler.
-func NewHandler(db PoolDB) *Handler {
-	return &Handler{db: db}
+// NewHandler creates a new admin handler with authentication.
+// If adminSecret is empty, authentication is disabled.
+func NewHandler(db PoolDB, adminSecret string) *Handler {
+	return &Handler{
+		db:   db,
+		auth: NewAuthMiddleware(adminSecret),
+	}
 }
 
 // poolNamePattern validates pool names: alphanumeric, hyphens, underscores.
@@ -101,12 +106,13 @@ type ErrorResponse struct {
 }
 
 // RegisterRoutes registers admin API routes on the given mux.
+// All endpoints require authentication when RUNS_FLEET_ADMIN_SECRET is set.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/pools", h.ListPools)
-	mux.HandleFunc("GET /api/pools/{name}", h.GetPool)
-	mux.HandleFunc("POST /api/pools", h.CreatePool)
-	mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)
-	mux.HandleFunc("DELETE /api/pools/{name}", h.DeletePool)
+	mux.Handle("GET /api/pools", h.auth.WrapFunc(h.ListPools))
+	mux.Handle("GET /api/pools/{name}", h.auth.WrapFunc(h.GetPool))
+	mux.Handle("POST /api/pools", h.auth.WrapFunc(h.CreatePool))
+	mux.Handle("PUT /api/pools/{name}", h.auth.WrapFunc(h.UpdatePool))
+	mux.Handle("DELETE /api/pools/{name}", h.auth.WrapFunc(h.DeletePool))
 }
 
 // ListPools handles GET /api/pools.

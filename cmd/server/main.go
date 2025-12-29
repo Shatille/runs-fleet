@@ -437,10 +437,14 @@ func main() {
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
 
-	adminHandler := admin.NewHandler(dbClient)
+	adminHandler := admin.NewHandler(dbClient, cfg.AdminSecret)
 	adminHandler.RegisterRoutes(mux)
 	mux.Handle("/admin/", admin.UIHandler())
-	log.Println("Admin API enabled at /api/pools, UI at /admin/")
+	if cfg.AdminSecret != "" {
+		log.Println("Admin API enabled at /api/pools with authentication, UI at /admin/")
+	} else {
+		log.Println("Admin API enabled at /api/pools (no authentication), UI at /admin/")
+	}
 
 	mux.HandleFunc("/webhook", makeWebhookHandler(cfg, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem))
 
