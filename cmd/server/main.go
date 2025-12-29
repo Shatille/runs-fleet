@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/admin"
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -435,6 +436,11 @@ func main() {
 
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
+
+	adminHandler := admin.NewHandler(dbClient)
+	adminHandler.RegisterRoutes(mux)
+	mux.Handle("/admin/", admin.UIHandler())
+	log.Println("Admin API enabled at /api/pools, UI at /admin/")
 
 	mux.HandleFunc("/webhook", makeWebhookHandler(cfg, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem))
 
