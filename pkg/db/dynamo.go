@@ -274,6 +274,10 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 // ErrPoolAlreadyExists is returned when trying to create an ephemeral pool that already exists.
 var ErrPoolAlreadyExists = errors.New("pool already exists")
 
+// ErrPoolReconcileLockHeld is returned when attempting to acquire a reconciliation lock
+// that is already held by another instance.
+var ErrPoolReconcileLockHeld = errors.New("pool reconciliation lock held by another instance")
+
 // CreateEphemeralPool creates a new ephemeral pool only if it doesn't already exist.
 // Returns ErrPoolAlreadyExists if the pool is already present.
 // This prevents race conditions when multiple concurrent jobs try to create the same pool.
@@ -374,6 +378,115 @@ func (c *Client) DeletePoolConfig(ctx context.Context, poolName string) error {
 			return fmt.Errorf("pool %s is not ephemeral or does not exist", poolName)
 		}
 		return fmt.Errorf("failed to delete pool config: %w", err)
+	}
+
+	return nil
+}
+
+// ErrPoolNotFound is returned when attempting to acquire a lock on a non-existent pool.
+var ErrPoolNotFound = errors.New("pool not found")
+
+// AcquirePoolReconcileLock attempts to acquire a reconciliation lock for the specified pool.
+// Returns nil if the lock was acquired successfully.
+// Returns ErrPoolReconcileLockHeld if another instance holds the lock.
+// Returns ErrPoolNotFound if the pool does not exist.
+// The lock expires after the specified TTL to handle crashed instances.
+//
+// The owner parameter should be a unique process identifier (e.g., UUID generated at startup),
+// not a persistent identifier like hostname. This ensures crashed instances cannot bypass
+// the TTL safety mechanism by reusing the same owner ID.
+//
+// Note: This implementation uses client-side timestamps for TTL calculation. In multi-region
+// deployments, ensure NTP synchronization across instances to prevent clock skew issues.
+func (c *Client) AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error {
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+	if owner == "" {
+		return fmt.Errorf("owner cannot be empty")
+	}
+	if ttl <= 0 {
+		return fmt.Errorf("TTL must be positive")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	// First check if pool exists to provide clear error messages
+	pool, err := c.GetPoolConfig(ctx, poolName)
+	if err != nil {
+		return fmt.Errorf("failed to check pool existence: %w", err)
+	}
+	if pool == nil {
+		return ErrPoolNotFound
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(ttl).Unix()
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: poolName},
+		},
+		UpdateExpression: aws.String("SET reconcile_lock_owner = :owner, reconcile_lock_expires = :expires"),
+		ConditionExpression: aws.String(
+			"attribute_exists(pool_name) AND " +
+				"(attribute_not_exists(reconcile_lock_expires) OR reconcile_lock_expires < :now OR reconcile_lock_owner = :owner)",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":owner":   &types.AttributeValueMemberS{Value: owner},
+			":expires": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", expiresAt)},
+			":now":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrPoolReconcileLockHeld
+		}
+		return fmt.Errorf("failed to acquire pool reconcile lock: %w", err)
+	}
+
+	return nil
+}
+
+// ReleasePoolReconcileLock releases a reconciliation lock for the specified pool.
+// Only releases if the current instance is the lock owner.
+// Returns nil even if the lock was already released or owned by another instance.
+func (c *Client) ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error {
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+	if owner == "" {
+		return fmt.Errorf("owner cannot be empty")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	_, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: poolName},
+		},
+		UpdateExpression: aws.String("REMOVE reconcile_lock_owner, reconcile_lock_expires"),
+		ConditionExpression: aws.String(
+			"attribute_exists(pool_name) AND reconcile_lock_owner = :owner",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":owner": &types.AttributeValueMemberS{Value: owner},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			// Lock not held by us or already released - this is fine
+			return nil
+		}
+		return fmt.Errorf("failed to release pool reconcile lock: %w", err)
 	}
 
 	return nil

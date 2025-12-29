@@ -1668,3 +1668,356 @@ func TestPoolConfig_EphemeralFields(t *testing.T) {
 		t.Errorf("Families = %v, want [c7g, m7g]", result.Families)
 	}
 }
+
+func TestAcquirePoolReconcileLock(t *testing.T) {
+	// Helper to create a mock that returns a pool for GetItem
+	poolExistsMock := func(updateFunc func(context.Context, *dynamodb.UpdateItemInput, ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)) *MockDynamoDBAPI {
+		return &MockDynamoDBAPI{
+			GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+				item, _ := attributevalue.MarshalMap(map[string]interface{}{
+					"pool_name": "test-pool",
+				})
+				return &dynamodb.GetItemOutput{Item: item}, nil
+			},
+			UpdateItemFunc: updateFunc,
+		}
+	}
+
+	tests := []struct {
+		name     string
+		poolName string
+		owner    string
+		ttl      time.Duration
+		mockDB   *MockDynamoDBAPI
+		wantErr  error
+	}{
+		{
+			name:     "Success",
+			poolName: "test-pool",
+			owner:    "instance-1",
+			ttl:      65 * time.Second,
+			mockDB: poolExistsMock(func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+				if *params.TableName != "pools-table" {
+					t.Errorf("TableName = %s, want pools-table", *params.TableName)
+				}
+				return &dynamodb.UpdateItemOutput{}, nil
+			}),
+			wantErr: nil,
+		},
+		{
+			name:     "Lock Already Held",
+			poolName: "test-pool",
+			owner:    "instance-1",
+			ttl:      65 * time.Second,
+			mockDB: poolExistsMock(func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+				return nil, &types.ConditionalCheckFailedException{}
+			}),
+			wantErr: ErrPoolReconcileLockHeld,
+		},
+		{
+			name:     "Pool Not Found",
+			poolName: "nonexistent-pool",
+			owner:    "instance-1",
+			ttl:      65 * time.Second,
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: nil}, nil // Pool does not exist
+				},
+			},
+			wantErr: ErrPoolNotFound,
+		},
+		{
+			name:     "Empty Pool Name",
+			poolName: "",
+			owner:    "instance-1",
+			ttl:      65 * time.Second,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("pool name cannot be empty"),
+		},
+		{
+			name:     "Empty Owner",
+			poolName: "test-pool",
+			owner:    "",
+			ttl:      65 * time.Second,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("owner cannot be empty"),
+		},
+		{
+			name:     "Zero TTL",
+			poolName: "test-pool",
+			owner:    "instance-1",
+			ttl:      0,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("TTL must be positive"),
+		},
+		{
+			name:     "Negative TTL",
+			poolName: "test-pool",
+			owner:    "instance-1",
+			ttl:      -1 * time.Second,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("TTL must be positive"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   "pools-table",
+			}
+
+			err := client.AcquirePoolReconcileLock(context.Background(), tt.poolName, tt.owner, tt.ttl)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Errorf("AcquirePoolReconcileLock() error = nil, wantErr %v", tt.wantErr)
+					return
+				}
+				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
+					t.Errorf("AcquirePoolReconcileLock() error = %v, wantErr %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Errorf("AcquirePoolReconcileLock() error = %v, wantErr nil", err)
+			}
+		})
+	}
+}
+
+func TestAcquirePoolReconcileLock_ReentrantByOwner(t *testing.T) {
+	// Verify that same owner can re-acquire lock (condition includes reconcile_lock_owner = :owner)
+	updateCalls := 0
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"pool_name": "test-pool",
+			})
+			return &dynamodb.GetItemOutput{Item: item}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			updateCalls++
+			// Verify condition allows re-entry by same owner
+			condition := *params.ConditionExpression
+			if condition == "" {
+				t.Error("ConditionExpression should not be empty")
+			}
+			// Condition should include owner check for re-entry
+			if params.ExpressionAttributeValues[":owner"] == nil {
+				t.Error("Owner should be in expression values")
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	// First acquisition
+	err := client.AcquirePoolReconcileLock(context.Background(), "test-pool", "owner-1", 65*time.Second)
+	if err != nil {
+		t.Errorf("First AcquirePoolReconcileLock() error = %v", err)
+	}
+
+	// Second acquisition by same owner (re-entrant)
+	err = client.AcquirePoolReconcileLock(context.Background(), "test-pool", "owner-1", 65*time.Second)
+	if err != nil {
+		t.Errorf("Second AcquirePoolReconcileLock() error = %v", err)
+	}
+
+	if updateCalls != 2 {
+		t.Errorf("UpdateItem called %d times, want 2", updateCalls)
+	}
+}
+
+func TestAcquirePoolReconcileLock_ExpiredLockCanBeAcquired(t *testing.T) {
+	// Verify that an expired lock can be acquired by a new owner
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"pool_name": "test-pool",
+			})
+			return &dynamodb.GetItemOutput{Item: item}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			// Verify condition includes timestamp check for expiration
+			condition := *params.ConditionExpression
+			if condition == "" {
+				t.Error("ConditionExpression should not be empty")
+			}
+			// Condition should check reconcile_lock_expires < :now
+			if params.ExpressionAttributeValues[":now"] == nil {
+				t.Error("Now timestamp should be in expression values")
+			}
+			// Simulate: lock was expired so condition passes
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	err := client.AcquirePoolReconcileLock(context.Background(), "test-pool", "new-owner", 65*time.Second)
+	if err != nil {
+		t.Errorf("AcquirePoolReconcileLock() on expired lock error = %v", err)
+	}
+}
+
+func TestAcquirePoolReconcileLock_NoPoolsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		poolsTable:   "",
+	}
+
+	err := client.AcquirePoolReconcileLock(context.Background(), "test-pool", "instance-1", 65*time.Second)
+	if err == nil {
+		t.Error("AcquirePoolReconcileLock() should fail when pools table not configured")
+	}
+	if err.Error() != "pools table not configured" {
+		t.Errorf("AcquirePoolReconcileLock() error = %v, want 'pools table not configured'", err)
+	}
+}
+
+func TestAcquirePoolReconcileLock_GetPoolConfigError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return nil, errors.New("network error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	err := client.AcquirePoolReconcileLock(context.Background(), "test-pool", "instance-1", 65*time.Second)
+	if err == nil {
+		t.Error("AcquirePoolReconcileLock() should fail on GetPoolConfig error")
+	}
+}
+
+func TestAcquirePoolReconcileLock_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"pool_name": "test-pool",
+			})
+			return &dynamodb.GetItemOutput{Item: item}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("network error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	err := client.AcquirePoolReconcileLock(context.Background(), "test-pool", "instance-1", 65*time.Second)
+	if err == nil {
+		t.Error("AcquirePoolReconcileLock() should fail on DynamoDB error")
+	}
+	if err.Error() != "failed to acquire pool reconcile lock: network error" {
+		t.Errorf("AcquirePoolReconcileLock() error = %v, want 'failed to acquire pool reconcile lock: network error'", err)
+	}
+}
+
+func TestReleasePoolReconcileLock(t *testing.T) {
+	tests := []struct {
+		name     string
+		poolName string
+		owner    string
+		mockDB   *MockDynamoDBAPI
+		wantErr  bool
+	}{
+		{
+			name:     "Success",
+			poolName: "test-pool",
+			owner:    "instance-1",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					if *params.TableName != "pools-table" {
+						t.Errorf("TableName = %s, want pools-table", *params.TableName)
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:     "Lock Not Held By Us",
+			poolName: "test-pool",
+			owner:    "instance-1",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr: false, // Should NOT error - silently succeed
+		},
+		{
+			name:     "Empty Pool Name",
+			poolName: "",
+			owner:    "instance-1",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "Empty Owner",
+			poolName: "test-pool",
+			owner:    "",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   "pools-table",
+			}
+
+			err := client.ReleasePoolReconcileLock(context.Background(), tt.poolName, tt.owner)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ReleasePoolReconcileLock() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReleasePoolReconcileLock_NoPoolsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		poolsTable:   "",
+	}
+
+	err := client.ReleasePoolReconcileLock(context.Background(), "test-pool", "instance-1")
+	if err == nil {
+		t.Error("ReleasePoolReconcileLock() should fail when pools table not configured")
+	}
+	if err.Error() != "pools table not configured" {
+		t.Errorf("ReleasePoolReconcileLock() error = %v, want 'pools table not configured'", err)
+	}
+}
+
+func TestReleasePoolReconcileLock_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("network error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   "pools-table",
+	}
+
+	err := client.ReleasePoolReconcileLock(context.Background(), "test-pool", "instance-1")
+	if err == nil {
+		t.Error("ReleasePoolReconcileLock() should fail on DynamoDB error")
+	}
+}
