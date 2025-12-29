@@ -61,9 +61,6 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
-            - name: metrics
-              containerPort: {{ .Values.metrics.port }}
-              protocol: TCP
           env:
             # Mode selection
             - name: RUNS_FLEET_MODE
@@ -189,10 +186,29 @@ spec:
               value: {{ .Values.logging.level }}
             - name: RUNS_FLEET_LOG_FORMAT
               value: {{ .Values.logging.format }}
-            - name: RUNS_FLEET_METRICS_ENABLED
-              value: {{ .Values.metrics.enabled | quote }}
-            - name: RUNS_FLEET_METRICS_PORT
-              value: {{ .Values.metrics.port | quote }}
+            # Metrics configuration
+            {{- if .Values.metrics.namespace }}
+            - name: RUNS_FLEET_METRICS_NAMESPACE
+              value: {{ .Values.metrics.namespace | quote }}
+            {{- end }}
+            - name: RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED
+              value: {{ .Values.metrics.cloudwatch.enabled | quote }}
+            - name: RUNS_FLEET_METRICS_PROMETHEUS_ENABLED
+              value: {{ .Values.metrics.prometheus.enabled | quote }}
+            {{- if .Values.metrics.prometheus.path }}
+            - name: RUNS_FLEET_METRICS_PROMETHEUS_PATH
+              value: {{ .Values.metrics.prometheus.path | quote }}
+            {{- end }}
+            - name: RUNS_FLEET_METRICS_DATADOG_ENABLED
+              value: {{ .Values.metrics.datadog.enabled | quote }}
+            {{- if .Values.metrics.datadog.address }}
+            - name: RUNS_FLEET_METRICS_DATADOG_ADDR
+              value: {{ .Values.metrics.datadog.address | quote }}
+            {{- end }}
+            {{- if .Values.metrics.datadog.tags }}
+            - name: RUNS_FLEET_METRICS_DATADOG_TAGS
+              value: {{ .Values.metrics.datadog.tags | join "," | quote }}
+            {{- end }}
             - name: RUNS_FLEET_POOL_ENABLED
               value: {{ .Values.warmPool.enabled | quote }}
           envFrom:
