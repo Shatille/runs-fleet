@@ -1,4 +1,4 @@
-.PHONY: init build test coverage lint clean docker-build docker-push docker-build-runner docker-push-runner
+.PHONY: init build test coverage lint clean docker-build docker-push docker-build-runner docker-push-runner build-admin-ui
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
@@ -18,8 +18,13 @@ init:
 	go mod verify
 	@echo "Project initialized successfully"
 
+# Build admin UI
+build-admin-ui:
+	@echo "Building admin UI..."
+	cd pkg/admin/ui && npm ci && npm run build
+
 # Build server binary
-build-server:
+build-server: build-admin-ui
 	@echo "Building server..."
 	@mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux go build -ldflags '-extldflags "-static"' \
@@ -49,6 +54,7 @@ clean:
 	@echo "Cleaning..."
 	rm -rf bin/
 	rm -f coverage.out
+	rm -rf pkg/admin/ui/.next pkg/admin/ui/out pkg/admin/ui/node_modules
 
 # Build Docker image
 docker-build:
@@ -139,7 +145,8 @@ ci: deps lint test build
 help:
 	@echo "Available targets:"
 	@echo "  init                    - Initialize project (download deps, setup)"
-	@echo "  build-server            - Build server binary"
+	@echo "  build-admin-ui          - Build admin UI (Next.js static export)"
+	@echo "  build-server            - Build server binary (includes UI)"
 	@echo "  build                   - Build all binaries"
 	@echo "  test                    - Run tests"
 	@echo "  coverage                - Run tests with coverage"

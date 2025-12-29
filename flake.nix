@@ -18,6 +18,28 @@
 
         version = "0.1.0";
 
+        # Build admin UI (Next.js static export)
+        admin-ui = pkgs.buildNpmPackage {
+          pname = "runs-fleet-admin-ui";
+          inherit version;
+          src = ./pkg/admin/ui;
+
+          npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Update after first build
+
+          buildPhase = ''
+            npm run build
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            cp -r out/* $out/
+          '';
+
+          meta = {
+            description = "Admin UI for runs-fleet pool management";
+          };
+        };
+
         runs-fleet-server = pkgs.buildGoModule {
           pname = "runs-fleet-server";
           inherit version;
@@ -91,6 +113,7 @@
           agent-amd64 = runs-fleet-agent "amd64";
           agent-arm64 = runs-fleet-agent "arm64";
           docker = runs-fleet-docker;
+          admin-ui = admin-ui;
           default = runs-fleet-server;
         };
 
