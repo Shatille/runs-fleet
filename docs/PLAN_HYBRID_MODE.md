@@ -73,7 +73,6 @@ aws:
   housekeepingQueueUrl: ""
 
   # DynamoDB tables
-  locksTable: "runs-fleet-locks"
   jobsTable: "runs-fleet-jobs"
   poolsTable: "runs-fleet-pools"
   circuitBreakerTable: "runs-fleet-circuit-state"

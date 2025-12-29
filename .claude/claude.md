@@ -41,39 +41,25 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/termination/` - Instance termination notifications
 - `pkg/events/` - EventBridge event processing (spot interruptions)
 - `pkg/cost/` - Cost reporting and pricing calculations
-- `pkg/coordinator/` - Distributed leader election (DynamoDB-based)
 
 ## Distributed Locking
 
-**Purpose**: Enable multi-instance Fargate deployments with leader election.
+**Purpose**: Enable multi-instance Fargate deployments without global leader election.
 
-**Implementation**: DynamoDB-based leader election with 60s lease, 20s heartbeat.
+**Implementation**: Per-pool reconciliation locks stored in pools DynamoDB table.
 
-**Protected operations:**
-- Pool convergence (runs on leader only, every 60s)
-
-**Configuration:**
-```bash
-# Enable coordinator
-RUNS_FLEET_COORDINATOR_ENABLED=true
-
-# Set unique instance ID (required for multi-instance)
-RUNS_FLEET_INSTANCE_ID=$(hostname)
-
-# Specify DynamoDB locks table (default: runs-fleet-locks)
-RUNS_FLEET_LOCKS_TABLE=runs-fleet-locks
-```
+**How it works:**
+- Each pool has `reconcile_lock_owner` and `reconcile_lock_expires` attributes
+- Before reconciling a pool, instance acquires lock with 65s TTL (> 60s reconcile interval)
+- Lock acquisition uses DynamoDB conditional writes (atomic)
+- On completion or failure, lock is released
+- Expired locks are automatically overwritten
 
 **Behavior:**
-- Single leader executes background tasks (pool convergence)
-- Automatic failover on leader failure (max 60s)
-- No-op coordinator for local development (always leader)
-- Cost: ~$0.18-0.20/month for DynamoDB operations
-
-**Leader election parameters:**
-- Lease duration: 60 seconds
-- Heartbeat interval: 20 seconds
-- Retry interval: 30 seconds
+- Multiple instances can reconcile different pools concurrently
+- Same pool is reconciled by only one instance at a time
+- Lock expiration prevents deadlocks from crashed instances
+- K8s backend: relies on API idempotency (no locks needed)
 
 ## Job Labels
 
@@ -120,8 +106,8 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 ## Data Stores
 
 **DynamoDB:**
-- `runs-fleet-locks` - Distributed locks
 - `runs-fleet-jobs` - Job state (GSI: next-check-time)
+- `runs-fleet-pools` - Pool configuration and per-pool reconciliation locks
 
 **S3:**
 - `runs-fleet-cache` - GitHub Actions cache artifacts (30-day lifecycle)
@@ -146,8 +132,6 @@ Critical env vars:
 - `RUNS_FLEET_*_BUCKET` - S3 buckets
 - `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_*_SUBNET_IDS` - Network config
 - `RUNS_FLEET_SPOT_ENABLED` - Enable spot instances (default: true)
-- `RUNS_FLEET_COORDINATOR_ENABLED` - Enable distributed locking (default: false)
-- `RUNS_FLEET_INSTANCE_ID` - Unique instance identifier for leader election
 
 ## Development Commands
 
