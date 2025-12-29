@@ -107,8 +107,6 @@ spec:
               value: {{ .Values.aws.housekeepingQueueUrl | quote }}
             {{- end }}
             # DynamoDB tables
-            - name: RUNS_FLEET_LOCKS_TABLE
-              value: {{ .Values.aws.locksTable | quote }}
             - name: RUNS_FLEET_JOBS_TABLE
               value: {{ .Values.aws.jobsTable | quote }}
             {{- if .Values.aws.poolsTable }}
@@ -185,12 +183,6 @@ spec:
             - name: RUNS_FLEET_VALKEY_ADDR
               value: {{ include "runs-fleet.valkey.address" . }}
             {{- end }}
-            - name: RUNS_FLEET_COORDINATOR_ENABLED
-              value: {{ .Values.coordinator.enabled | quote }}
-            - name: RUNS_FLEET_INSTANCE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             - name: RUNS_FLEET_GITHUB_APP_ID
               value: {{ .Values.github.appId | quote }}
             - name: RUNS_FLEET_LOG_LEVEL

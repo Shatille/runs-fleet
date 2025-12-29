@@ -21,7 +21,6 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
-	"github.com/Shavakan/runs-fleet/pkg/coordinator"
 	"github.com/Shavakan/runs-fleet/pkg/cost"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/events"
@@ -37,10 +36,10 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/google/go-github/v57/github"
+	"github.com/google/uuid"
 )
 
 const (
@@ -56,16 +55,6 @@ var (
 	retryDelay          = 1 * time.Second
 	fleetRetryBaseDelay = 2 * time.Second
 )
-
-type stdLogger struct{}
-
-func (l *stdLogger) Printf(format string, v ...interface{}) {
-	log.Printf(format, v...)
-}
-
-func (l *stdLogger) Println(v ...interface{}) {
-	log.Println(v...)
-}
 
 // jobProcessor handles immediate job processing from webhooks.
 // It encapsulates all dependencies needed to process a job without going through SQS.
@@ -173,28 +162,19 @@ func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessa
 	return true
 }
 
-func initCoordinator(_ context.Context, awsCfg aws.Config, cfg *config.Config, logger coordinator.Logger) coordinator.Coordinator {
-	if cfg.CoordinatorEnabled && cfg.InstanceID != "" && cfg.LocksTableName != "" {
-		dynamoClient := dynamodb.NewFromConfig(awsCfg)
-		coordCfg := coordinator.DefaultConfig(cfg.InstanceID)
-		coordCfg.LockTableName = cfg.LocksTableName
-		coord := coordinator.NewDynamoDBCoordinator(coordCfg, dynamoClient, logger)
-		log.Printf("Distributed coordinator enabled: instance_id=%s, table=%s", cfg.InstanceID, cfg.LocksTableName)
-		return coord
-	}
-	log.Println("Distributed coordinator disabled (no-op coordinator)")
-	return coordinator.NewNoOpCoordinator(logger)
-}
-
 func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
 	if cfg.IsK8sBackend() {
+		consumerID := os.Getenv("HOSTNAME")
+		if consumerID == "" {
+			consumerID = uuid.NewString()
+		}
 		valkeyClient, err := queue.NewValkeyClient(queue.ValkeyConfig{
 			Addr:       cfg.ValkeyAddr,
 			Password:   cfg.ValkeyPassword,
 			DB:         cfg.ValkeyDB,
 			Stream:     "runs-fleet:jobs",
 			Group:      "orchestrator",
-			ConsumerID: cfg.InstanceID,
+			ConsumerID: consumerID,
 		})
 		if err != nil {
 			log.Fatalf("Failed to create Valkey client: %v", err)
@@ -370,21 +350,11 @@ func main() {
 		eventHandler = events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 	}
 
-	logger := &stdLogger{}
-	coord := initCoordinator(ctx, awsCfg, cfg, logger)
-	if err := coord.Start(ctx); err != nil {
-		log.Fatalf("Failed to start coordinator: %v", err)
-	}
-
-	// Backend-specific coordinator setup
+	// Backend-specific setup
 	if poolManager != nil {
-		poolManager.SetCoordinator(coord)
 		ec2Client := ec2.NewFromConfig(awsCfg)
 		poolManager.SetEC2Client(ec2Client)
 		log.Println("Pool manager initialized with EC2 client for reconciliation")
-	}
-	if k8sPoolProvider != nil {
-		k8sPoolProvider.SetCoordinator(coord)
 	}
 
 	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
@@ -489,10 +459,6 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
-
-	if err := coord.Stop(shutdownCtx); err != nil {
-		log.Printf("Coordinator shutdown failed: %v", err)
-	}
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("Server shutdown failed: %v", err)

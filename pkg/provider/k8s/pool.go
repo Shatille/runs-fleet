@@ -18,19 +18,14 @@ import (
 // defaultIdleTimeoutMinutes is used when config value is zero.
 const defaultIdleTimeoutMinutes = 10
 
-// Coordinator defines distributed coordination operations.
-type Coordinator interface {
-	IsLeader() bool
-}
-
 // PoolProvider implements provider.PoolProvider for Kubernetes.
 // K8s pools use labeled pods; "stopped" state is not supported (pods are running or terminated).
+// K8s operations are idempotent, so concurrent reconciliation is safe.
 type PoolProvider struct {
-	mu          sync.RWMutex
-	clientset   kubernetes.Interface
-	config      *config.Config
-	coordinator Coordinator
-	podIdle     map[string]time.Time // tracks when pods became idle
+	mu        sync.RWMutex
+	clientset kubernetes.Interface
+	config    *config.Config
+	podIdle   map[string]time.Time // tracks when pods became idle
 }
 
 // NewPoolProvider creates a K8s pool provider.
@@ -169,13 +164,6 @@ func (p *PoolProvider) MarkRunnerIdle(runnerID string) {
 	p.podIdle[runnerID] = time.Now()
 }
 
-// SetCoordinator sets the coordinator for leader election.
-func (p *PoolProvider) SetCoordinator(coordinator Coordinator) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.coordinator = coordinator
-}
-
 // ReconcileLoop runs periodically to terminate idle pods.
 func (p *PoolProvider) ReconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
@@ -198,12 +186,10 @@ func (p *PoolProvider) reconcile(ctx context.Context) {
 	// Hold lock for entire reconcile to prevent race where pod becomes busy
 	// after termination decision but before delete. Blocks MarkRunnerBusy,
 	// MarkRunnerIdle, ListPoolRunners during pod termination (50-500ms typical).
+	// K8s Delete operations are idempotent across multiple orchestrator instances,
+	// but podIdle map is local and requires mutex within this instance.
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if p.coordinator != nil && !p.coordinator.IsLeader() {
-		return
-	}
 
 	namespace := p.config.KubeNamespace
 

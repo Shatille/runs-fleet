@@ -102,7 +102,6 @@ RUNS_FLEET_POOL_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/runs-flee
 RUNS_FLEET_EVENTS_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/runs-fleet-events.fifo
 RUNS_FLEET_TERMINATION_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/runs-fleet-termination.fifo
 RUNS_FLEET_JOBS_TABLE=runs-fleet-jobs
-RUNS_FLEET_LOCKS_TABLE=runs-fleet-locks
 RUNS_FLEET_POOLS_TABLE=runs-fleet-pools
 RUNS_FLEET_CACHE_BUCKET=runs-fleet-cache
 
@@ -115,8 +114,6 @@ RUNS_FLEET_INSTANCE_PROFILE_ARN=arn:aws:iam::<account>:instance-profile/runs-fle
 # Optional
 RUNS_FLEET_SPOT_ENABLED=true
 RUNS_FLEET_CACHE_SECRET=<32-char-secret>
-RUNS_FLEET_COORDINATOR_ENABLED=true
-RUNS_FLEET_INSTANCE_ID=${HOSTNAME}
 ```
 
 ## 6. Deploy ECS Service

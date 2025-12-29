@@ -42,8 +42,7 @@ type Config struct {
 	EventsQueueURL       string
 	TerminationQueueURL  string
 	HousekeepingQueueURL string
-	LocksTableName       string
-	JobsTableName        string
+	JobsTableName string
 	PoolsTableName       string
 	CircuitBreakerTable  string
 	CacheBucketName    string
@@ -64,9 +63,6 @@ type Config struct {
 	LaunchTemplateName string
 	RunnerImage        string            // Container image for EC2 runners (ECR URL)
 	Tags               map[string]string // Custom tags for EC2 resources
-
-	CoordinatorEnabled bool
-	InstanceID         string
 
 	CacheSecret string
 	CacheURL    string
@@ -145,7 +141,6 @@ func Load() (*Config, error) {
 		EventsQueueURL:       getEnv("RUNS_FLEET_EVENTS_QUEUE_URL", ""),
 		TerminationQueueURL:  getEnv("RUNS_FLEET_TERMINATION_QUEUE_URL", ""),
 		HousekeepingQueueURL: getEnv("RUNS_FLEET_HOUSEKEEPING_QUEUE_URL", ""),
-		LocksTableName:       getEnv("RUNS_FLEET_LOCKS_TABLE", ""),
 		JobsTableName:        getEnv("RUNS_FLEET_JOBS_TABLE", ""),
 		PoolsTableName:       getEnv("RUNS_FLEET_POOLS_TABLE", ""),
 		CircuitBreakerTable:  getEnv("RUNS_FLEET_CIRCUIT_BREAKER_TABLE", "runs-fleet-circuit-state"),
@@ -166,9 +161,6 @@ func Load() (*Config, error) {
 		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:               make(map[string]string),
-
-		CoordinatorEnabled: getEnvBool("RUNS_FLEET_COORDINATOR_ENABLED", false),
-		InstanceID:         getEnv("RUNS_FLEET_INSTANCE_ID", ""),
 
 		CacheSecret: getEnv("RUNS_FLEET_CACHE_SECRET", ""),
 		CacheURL:    getEnv("RUNS_FLEET_CACHE_URL", ""),

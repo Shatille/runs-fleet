@@ -132,8 +132,7 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNS_FLEET_JOBS_TABLE` | | Job state tracking |
-| `RUNS_FLEET_POOLS_TABLE` | | Pool configurations |
-| `RUNS_FLEET_LOCKS_TABLE` | | Distributed leader election |
+| `RUNS_FLEET_POOLS_TABLE` | | Pool configurations (includes per-pool reconciliation locks) |
 | `RUNS_FLEET_CIRCUIT_BREAKER_TABLE` | `runs-fleet-circuit-state` | Circuit breaker state |
 
 ### S3 & SNS
@@ -192,13 +191,6 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_VALKEY_ADDR` | `valkey:6379` | Valkey/Redis address (required for K8s) |
 | `RUNS_FLEET_VALKEY_PASSWORD` | | Valkey password |
 | `RUNS_FLEET_VALKEY_DB` | `0` | Database number |
-
-### Distributed Coordinator
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUNS_FLEET_COORDINATOR_ENABLED` | `false` | Enable leader election |
-| `RUNS_FLEET_INSTANCE_ID` | | Unique instance ID (required if coordinator enabled) |
 
 ### Cache
 

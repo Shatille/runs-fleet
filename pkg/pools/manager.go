@@ -3,6 +3,7 @@ package pools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/google/uuid"
 )
 
 // DBClient defines DynamoDB operations for pool configuration.
@@ -23,6 +25,8 @@ type DBClient interface {
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
+	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
+	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 }
 
 // FleetAPI defines EC2 fleet operations for instance provisioning.
@@ -36,11 +40,6 @@ type EC2API interface {
 	StartInstances(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
 	StopInstances(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
-}
-
-// Coordinator defines distributed coordination operations.
-type Coordinator interface {
-	IsLeader() bool
 }
 
 // PoolInstance represents an EC2 instance in a pool.
@@ -58,18 +57,20 @@ type Manager struct {
 	dbClient      DBClient
 	fleetManager  FleetAPI
 	ec2Client     EC2API
-	coordinator   Coordinator
 	config        *config.Config
+	instanceID    string               // Unique identifier for this instance (for distributed locking)
 	instanceIdle  map[string]time.Time // Tracks when instances became idle
 	poolInstances map[string][]string  // Cache of instance IDs per pool
 }
 
 // NewManager creates pool manager with DB and fleet clients.
+// Generates a unique instance ID for distributed locking.
 func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *Manager {
 	return &Manager{
 		dbClient:      dbClient,
 		fleetManager:  fleetManager,
 		config:        cfg,
+		instanceID:    uuid.New().String(),
 		instanceIdle:  make(map[string]time.Time),
 		poolInstances: make(map[string][]string),
 	}
@@ -78,11 +79,6 @@ func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *M
 // SetEC2Client sets the EC2 client for instance management.
 func (m *Manager) SetEC2Client(ec2Client EC2API) {
 	m.ec2Client = ec2Client
-}
-
-// SetCoordinator sets the coordinator for leader election.
-func (m *Manager) SetCoordinator(coordinator Coordinator) {
-	m.coordinator = coordinator
 }
 
 // ReconcileLoop runs periodically to maintain pool size.
@@ -104,10 +100,6 @@ func (m *Manager) ReconcileLoop(ctx context.Context) {
 }
 
 func (m *Manager) reconcile(ctx context.Context) {
-	if m.coordinator != nil && !m.coordinator.IsLeader() {
-		return
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -129,7 +121,22 @@ func (m *Manager) reconcile(ctx context.Context) {
 	}
 }
 
+//nolint:gocyclo // Core reconciliation logic with multiple scale up/down paths
 func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
+	// Acquire per-pool lock (65s TTL > 60s reconcile interval)
+	if err := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, 65*time.Second); err != nil {
+		// Lock held by another instance or pool deleted - skip silently
+		if errors.Is(err, db.ErrPoolReconcileLockHeld) || errors.Is(err, db.ErrPoolNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed to acquire pool lock: %w", err)
+	}
+	defer func() {
+		if err := m.dbClient.ReleasePoolReconcileLock(ctx, poolName, m.instanceID); err != nil {
+			log.Printf("Failed to release pool lock for %s: %v", poolName, err)
+		}
+	}()
+
 	poolConfig, err := m.dbClient.GetPoolConfig(ctx, poolName)
 	if err != nil {
 		return fmt.Errorf("failed to get pool config: %w", err)

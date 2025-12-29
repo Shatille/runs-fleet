@@ -272,14 +272,6 @@ func TestDeleteMessageWithRetry_AllFail(t *testing.T) {
 	}
 }
 
-func TestStdLogger(_ *testing.T) {
-	logger := &stdLogger{}
-
-	// Should not panic
-	logger.Printf("test format %s", "arg")
-	logger.Println("test message")
-}
-
 func TestHousekeepingMetricsAdapter(t *testing.T) {
 	// Test that the adapter struct can be created with nil publisher
 	adapter := &housekeepingMetricsAdapter{publisher: nil}
@@ -503,27 +495,6 @@ func TestDeleteMessageWithRetry_RetryThenSuccess(t *testing.T) {
 	if callCount != maxDeleteRetries {
 		t.Errorf("called %d times, want %d", callCount, maxDeleteRetries)
 	}
-}
-
-func TestStdLogger_Printf(_ *testing.T) {
-	logger := &stdLogger{}
-
-	// Should not panic with various format strings
-	logger.Printf("%s", "simple")
-	logger.Printf("%d", 42)
-	logger.Printf("%v", map[string]int{"key": 1})
-	logger.Printf("no format")
-}
-
-func TestStdLogger_Println(_ *testing.T) {
-	logger := &stdLogger{}
-
-	// Should not panic with various arguments
-	logger.Println()
-	logger.Println("single")
-	logger.Println("a", "b", "c")
-	logger.Println(1, 2, 3)
-	logger.Println(map[string]int{"key": 1})
 }
 
 func TestHousekeepingMetricsAdapter_NilPublisher(_ *testing.T) {
