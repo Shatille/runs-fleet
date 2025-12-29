@@ -23,7 +23,6 @@ aws:
   housekeepingQueueUrl: ""
 
   # DynamoDB tables
-  locksTable: "runs-fleet-locks"
   jobsTable: "runs-fleet-jobs"
   poolsTable: "runs-fleet-pools"
   circuitBreakerTable: "runs-fleet-circuit-state"
@@ -194,10 +193,6 @@ warmPool:
   priorityClass:
     name: runs-fleet-placeholder
     value: -10 # Negative priority, easily preempted by real jobs
-
-# Coordinator configuration (for multi-replica deployments)
-coordinator:
-  enabled: true
 
 # Istio service mesh configuration
 istio:
