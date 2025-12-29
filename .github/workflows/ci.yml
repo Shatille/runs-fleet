@@ -23,6 +23,13 @@ jobs:
       - name: Build admin UI
         run: make build-admin-ui
 
+      - name: Upload UI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-ui
+          path: pkg/admin/ui/out
+          retention-days: 1
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -45,6 +52,12 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download UI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-ui
+          path: pkg/admin/ui/out
 
       - uses: actions/setup-go@v5
         with:
@@ -81,6 +94,12 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download UI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-ui
+          path: pkg/admin/ui/out
 
       - uses: actions/setup-go@v5
         with:
