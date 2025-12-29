@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import PoolForm from '@/components/pool-form';
 import { Pool, PoolFormData } from '@/lib/types';
+import { apiFetch } from '@/lib/api';
 
 function EditPoolContent() {
   const router = useRouter();
@@ -23,7 +24,7 @@ function EditPoolContent() {
 
     async function fetchPool() {
       try {
-        const res = await fetch(`/api/pools/${poolName}`);
+        const res = await apiFetch(`/api/pools/${poolName}`);
         if (!res.ok) {
           if (res.status === 404) {
             throw new Error('Pool not found');
@@ -45,7 +46,7 @@ function EditPoolContent() {
   async function handleSubmit(data: PoolFormData) {
     if (!poolName) return;
 
-    const res = await fetch(`/api/pools/${poolName}`, {
+    const res = await apiFetch(`/api/pools/${poolName}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import AuthWrapper from '@/components/auth-wrapper';
 
 export const metadata: Metadata = {
   title: 'runs-fleet Admin',
@@ -27,7 +28,7 @@ export default function RootLayout({
           </div>
         </nav>
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {children}
+          <AuthWrapper>{children}</AuthWrapper>
         </main>
       </body>
     </html>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import PoolTable from '@/components/pool-table';
 import { Pool } from '@/lib/types';
+import { apiFetch } from '@/lib/api';
 
 export default function HomePage() {
   const [pools, setPools] = useState<Pool[]>([]);
@@ -16,7 +17,7 @@ export default function HomePage() {
   async function fetchPools() {
     try {
       setLoading(true);
-      const res = await fetch('/api/pools');
+      const res = await apiFetch('/api/pools');
       if (!res.ok) {
         throw new Error(`Failed to fetch pools: ${res.statusText}`);
       }
@@ -33,7 +34,7 @@ export default function HomePage() {
     if (!confirm(`Delete pool "${poolName}"?`)) return;
 
     try {
-      const res = await fetch(`/api/pools/${poolName}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/pools/${poolName}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || 'Failed to delete pool');

@@ -3,12 +3,13 @@
 import { useRouter } from 'next/navigation';
 import PoolForm from '@/components/pool-form';
 import { PoolFormData } from '@/lib/types';
+import { apiFetch } from '@/lib/api';
 
 export default function NewPoolPage() {
   const router = useRouter();
 
   async function handleSubmit(data: PoolFormData) {
-    const res = await fetch('/api/pools', {
+    const res = await apiFetch('/api/pools', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
