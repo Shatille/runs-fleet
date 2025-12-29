@@ -70,6 +70,7 @@ type Config struct {
 
 	CacheSecret string
 	CacheURL    string
+	AdminSecret string
 
 	// K8s-specific configuration
 	KubeConfig             string            // Path to kubeconfig (empty = in-cluster)
@@ -171,6 +172,7 @@ func Load() (*Config, error) {
 
 		CacheSecret: getEnv("RUNS_FLEET_CACHE_SECRET", ""),
 		CacheURL:    getEnv("RUNS_FLEET_CACHE_URL", ""),
+		AdminSecret: getEnv("RUNS_FLEET_ADMIN_SECRET", ""),
 
 		// K8s-specific
 		KubeConfig:             getEnv("RUNS_FLEET_KUBE_CONFIG", ""),
