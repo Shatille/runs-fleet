@@ -21,14 +21,14 @@ func init() {
 }
 
 const (
-	testPathOrgInstallation    = "/orgs/myorg/installation"
-	testPathUserInstallation   = "/users/myuser/installation"
-	testPathAccessTokens123    = "/app/installations/123/access_tokens"
-	testPathAccessTokens456    = "/app/installations/456/access_tokens"
-	testPathRegTokenMyOrg      = "/repos/myorg/myrepo/actions/runners/registration-token"
-	testPathRegTokenMyUser     = "/repos/myuser/myrepo/actions/runners/registration-token"
-	testPathOrgTestOrg         = "/orgs/testorg/installation"
-	testPathOrgMyUser          = "/orgs/myuser/installation"
+	testPathOrgInstallation  = "/orgs/myorg/installation"
+	testPathUserInstallation = "/users/myuser/installation"
+	testPathAccessTokens123  = "/app/installations/123/access_tokens"
+	testPathAccessTokens456  = "/app/installations/456/access_tokens"
+	testPathRegTokenMyOrg    = "/repos/myorg/myrepo/actions/runners/registration-token"
+	testPathRegTokenMyUser   = "/repos/myuser/myrepo/actions/runners/registration-token"
+	testPathOrgTestOrg       = "/orgs/testorg/installation"
+	testPathOrgMyUser        = "/orgs/myuser/installation"
 )
 
 // generateTestKey generates a test RSA key pair and returns the base64-encoded PEM.
@@ -740,6 +740,7 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 	keyBase64 := generateTestKey(t)
 
 	attempts := 0
+	attemptCh := make(chan struct{}, 1) // Signal when registration token endpoint is hit
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case testPathOrgInstallation:
@@ -757,6 +758,11 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 			})
 		case testPathRegTokenMyOrg:
 			attempts++
+			// Signal that an attempt was made
+			select {
+			case attemptCh <- struct{}{}:
+			default:
+			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -784,7 +790,12 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 	}()
 
 	// Wait for first attempt to fail, then cancel during backoff
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-attemptCh:
+		// First attempt received, cancel during backoff
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first attempt")
+	}
 	cancel()
 
 	select {
@@ -1142,4 +1153,3 @@ func TestIsRetryableError_AllStatusCodes(t *testing.T) {
 		})
 	}
 }
-
