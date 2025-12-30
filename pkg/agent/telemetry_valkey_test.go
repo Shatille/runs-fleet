@@ -31,19 +31,19 @@ func TestNewValkeyTelemetry_ConnectionFailure(t *testing.T) {
 	go func() {
 		defer close(done)
 		for {
-			conn, err := listener.Accept()
-			if err != nil {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
 				return // Listener closed
 			}
 			// Read the PING command (or any command) and respond with error
 			buf := make([]byte, 128)
 			_, _ = conn.Read(buf)
 			_, _ = conn.Write([]byte("-ERR mock server rejecting connection\r\n"))
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 	defer func() {
-		listener.Close()
+		_ = listener.Close()
 		<-done
 	}()
 
