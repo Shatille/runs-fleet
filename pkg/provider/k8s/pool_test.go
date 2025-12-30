@@ -99,7 +99,7 @@ func TestPoolProvider_ListPoolRunners(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
 			cfg := &config.Config{
@@ -163,7 +163,7 @@ func TestPoolProvider_TerminateRunners(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
 			cfg := &config.Config{
@@ -189,7 +189,7 @@ func TestPoolProvider_TerminateRunners(t *testing.T) {
 }
 
 func TestPoolProvider_StopRunners(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "runner-1",
@@ -217,7 +217,7 @@ func TestPoolProvider_StopRunners(t *testing.T) {
 }
 
 func TestPoolProvider_StartRunners(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace: "runs-fleet",
 	}
@@ -232,7 +232,7 @@ func TestPoolProvider_StartRunners(t *testing.T) {
 }
 
 func TestPoolProvider_MarkRunnerBusyIdle(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace: "runs-fleet",
 	}
@@ -259,7 +259,7 @@ func TestPoolProvider_MarkRunnerBusyIdle(t *testing.T) {
 }
 
 func TestPoolProvider_IdleTracking(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "runner-1",
@@ -355,7 +355,7 @@ func TestPoolProvider_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      tt.podName,
@@ -390,7 +390,7 @@ func TestPoolProvider_Reconcile(t *testing.T) {
 }
 
 func TestPoolProvider_ReconcileCleansUpStalePodIdle(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	cfg := &config.Config{
 		KubeNamespace:          "runs-fleet",
@@ -415,7 +415,7 @@ func TestPoolProvider_ReconcileCleansUpStalePodIdle(t *testing.T) {
 }
 
 func TestPoolProvider_ReconcileInitializesUntrackedPods(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	// Create a running pod that is not tracked in podIdle
 	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

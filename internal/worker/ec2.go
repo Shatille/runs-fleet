@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,7 +27,9 @@ const (
 )
 
 var (
-	RetryDelay          = 1 * time.Second
+	// RetryDelay is the delay between retry attempts for queue operations.
+	RetryDelay = 1 * time.Second
+	// FleetRetryBaseDelay is the base delay for exponential backoff in fleet creation.
 	FleetRetryBaseDelay = 2 * time.Second
 )
 
@@ -46,64 +47,9 @@ type EC2WorkerDeps struct {
 
 // RunEC2Worker starts the EC2 queue processing loop.
 func RunEC2Worker(ctx context.Context, deps EC2WorkerDeps) {
-	log.Println("Starting worker loop...")
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
-
-	const maxConcurrency = 5
-	sem := make(chan struct{}, maxConcurrency)
-	var activeWork sync.WaitGroup
-
-	defer func() {
-		log.Println("Waiting for in-flight work to complete...")
-		activeWork.Wait()
-		log.Println("Worker shutdown complete")
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			timeout := 25 * time.Second
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := time.Until(deadline)
-				if remaining < timeout {
-					timeout = remaining
-				}
-			}
-			recvCtx, cancel := context.WithTimeout(ctx, timeout)
-			messages, err := deps.Queue.ReceiveMessages(recvCtx, 10, 20)
-			cancel()
-			if err != nil {
-				log.Printf("Failed to receive messages: %v", err)
-				continue
-			}
-
-			if len(messages) == 0 {
-				continue
-			}
-
-			for _, msg := range messages {
-				msg := msg
-				activeWork.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("panic in processMessage: %v", r)
-						}
-					}()
-					defer activeWork.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
-					defer processCancel()
-					processEC2Message(processCtx, deps, msg)
-				}()
-			}
-		}
-	}
+	RunWorkerLoop(ctx, "EC2", deps.Queue, func(ctx context.Context, msg queue.Message) {
+		processEC2Message(ctx, deps, msg)
+	})
 }
 
 func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Message) {

@@ -73,7 +73,7 @@ func TestProvider_CreateRunner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			cfg := &config.Config{
 				KubeNamespace:      "runs-fleet",
 				KubeServiceAccount: "runner-sa",
@@ -142,7 +142,7 @@ func TestProvider_TerminateRunner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
 			cfg := &config.Config{
@@ -231,7 +231,7 @@ func TestProvider_DescribeRunner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
 			cfg := &config.Config{
@@ -346,7 +346,7 @@ func TestGetResourceRequirements(t *testing.T) {
 }
 
 func TestProvider_CreateRunner_Error(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	// Add reactor to simulate creation error
 	clientset.PrependReactor("create", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
@@ -462,7 +462,7 @@ func TestProvider_WaitForPodRunning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
 			cfg := &config.Config{
@@ -520,7 +520,7 @@ func TestSanitizePodName(t *testing.T) {
 }
 
 func TestCreateRunner_MultipleJobsSameWorkflow(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -637,7 +637,7 @@ func TestBuildTolerations(t *testing.T) {
 }
 
 func TestCreateRunner_CreatesPVC(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -696,7 +696,7 @@ func TestCreateRunner_CreatesPVC(t *testing.T) {
 }
 
 func TestTerminateRunner_DeletesPVC(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -740,7 +740,7 @@ func TestTerminateRunner_DeletesPVC(t *testing.T) {
 }
 
 func TestCreateRunner_PVCDefaultStorage(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -775,7 +775,7 @@ func TestCreateRunner_PVCDefaultStorage(t *testing.T) {
 }
 
 func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -810,7 +810,7 @@ func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
 }
 
 func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:           "runs-fleet",
 		KubeRunnerImage:         "runner:latest",
@@ -842,7 +842,7 @@ func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
 }
 
 func TestCreateRunner_IdempotentOnAlreadyExists(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -878,7 +878,7 @@ func TestCreateRunner_IdempotentOnAlreadyExists(t *testing.T) {
 }
 
 func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
@@ -925,7 +925,7 @@ func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
 		KubeDockerGroupGID:  999,
 		KubeDockerWaitSeconds: 120,
 	}
-	p := NewProviderWithClient(fake.NewSimpleClientset(), cfg)
+	p := NewProviderWithClient(fake.NewClientset(), cfg)
 	spec := &provider.RunnerSpec{
 		RunID:    50001,
 		JobID:    50002,

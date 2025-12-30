@@ -70,7 +70,7 @@ func createTestDeployment(name string, replicas int32) *appsv1.Deployment {
 func TestK8sManager_ScalePool(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",0),
 		createTestDeployment("runs-fleet-placeholder-amd64",0),
 	)
@@ -125,7 +125,7 @@ func TestK8sManager_CreatePool(t *testing.T) {
 		KubeNamespace: testNamespace,
 	}
 
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	err := manager.CreatePool(ctx, DefaultPoolName, 5, 3)
@@ -157,7 +157,7 @@ func TestK8sManager_CreatePoolInvalidName(t *testing.T) {
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	err := manager.CreatePool(ctx, "custom-pool", 1, 1)
@@ -173,7 +173,7 @@ func TestK8sManager_CreatePoolNegativeReplicas(t *testing.T) {
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	err := manager.CreatePool(ctx, DefaultPoolName, -1, 1)
@@ -190,7 +190,7 @@ func TestK8sManager_CreatePoolNegativeReplicas(t *testing.T) {
 func TestK8sManager_DeletePool(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",3),
 		createTestDeployment("runs-fleet-placeholder-amd64",2),
 	)
@@ -227,7 +227,7 @@ func TestK8sManager_DeletePool(t *testing.T) {
 
 func TestK8sManager_DeletePoolInvalidName(t *testing.T) {
 	ctx := context.Background()
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
 	manager := NewK8sManager(clientset, stateStore, cfg)
@@ -251,7 +251,7 @@ func TestK8sManager_SetSchedule(t *testing.T) {
 		KubeNamespace: testNamespace,
 	}
 
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	schedules := []state.K8sPoolSchedule{
@@ -284,7 +284,7 @@ func TestK8sManager_SetScheduleNonexistent(t *testing.T) {
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
 
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	err := manager.SetSchedule(ctx, DefaultPoolName, nil)
@@ -297,7 +297,7 @@ func TestK8sManager_SetScheduleInvalidName(t *testing.T) {
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	err := manager.SetSchedule(ctx, "custom-pool", nil)
@@ -313,7 +313,7 @@ func TestK8sManager_SetScheduleInvalidHours(t *testing.T) {
 		PoolName: DefaultPoolName,
 	}
 	cfg := &config.Config{KubeNamespace: testNamespace}
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewK8sManager(clientset, stateStore, cfg)
 
 	tests := []struct {
@@ -555,7 +555,7 @@ func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
 	arm64Deploy := createTestDeployment("runs-fleet-placeholder-arm64",3)
 	arm64Deploy.Status.ReadyReplicas = 2
 
-	clientset := fake.NewSimpleClientset(arm64Deploy)
+	clientset := fake.NewClientset(arm64Deploy)
 
 	cfg := &config.Config{
 		KubeNamespace:   testNamespace,
@@ -587,7 +587,7 @@ func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
 func TestK8sManager_ReconcileScalesDeployments(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",1),
 		createTestDeployment("runs-fleet-placeholder-amd64",1),
 	)
@@ -622,7 +622,7 @@ func TestK8sManager_ReconcileScalesDeployments(t *testing.T) {
 func TestK8sManager_ReconcilePoolNotConfigured(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",1),
 	)
 	stateStore := newMockStateStore()
@@ -648,7 +648,7 @@ func TestK8sManager_ReconcilePoolNotConfigured(t *testing.T) {
 func TestK8sManager_ScaleToZero(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",5),
 		createTestDeployment("runs-fleet-placeholder-amd64",3),
 	)
@@ -685,7 +685,7 @@ func TestK8sManager_ScaleToZero(t *testing.T) {
 
 func TestK8sManager_ScalePoolInvalidName(t *testing.T) {
 	ctx := context.Background()
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
 	manager := NewK8sManager(clientset, stateStore, cfg)
@@ -698,7 +698,7 @@ func TestK8sManager_ScalePoolInvalidName(t *testing.T) {
 
 func TestK8sManager_ScalePoolNegativeReplicas(t *testing.T) {
 	ctx := context.Background()
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
 	manager := NewK8sManager(clientset, stateStore, cfg)
@@ -717,7 +717,7 @@ func TestK8sManager_ScalePoolNegativeReplicas(t *testing.T) {
 func TestK8sManager_ScalePoolCreateNew(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",0),
 		createTestDeployment("runs-fleet-placeholder-amd64",0),
 	)
@@ -762,7 +762,7 @@ func (e *errorStateStore) GetK8sPoolConfig(_ context.Context, poolName string) (
 func TestK8sManager_ReconcileGetConfigError(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",1),
 	)
 	store := &errorStateStore{
@@ -791,7 +791,7 @@ func TestK8sManager_ReconcileGetConfigError(t *testing.T) {
 func TestK8sManager_GetCurrentReplicas(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",3),
 	)
 
@@ -817,7 +817,7 @@ func TestK8sManager_GetCurrentReplicas(t *testing.T) {
 func TestK8sManager_ScaleDeploymentNoChange(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		createTestDeployment("runs-fleet-placeholder-arm64",3),
 	)
 
@@ -841,7 +841,7 @@ func TestK8sManager_ScaleDeploymentNoChange(t *testing.T) {
 func TestK8sManager_ScaleDeploymentNotFound(t *testing.T) {
 	ctx := context.Background()
 
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	cfg := &config.Config{
 		KubeNamespace:   testNamespace,
