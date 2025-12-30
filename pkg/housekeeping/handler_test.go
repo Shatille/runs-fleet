@@ -61,7 +61,7 @@ func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
 	return m.orphanedErr
 }
 
-func (m *mockTaskExecutor) ExecuteStaleSSM(_ context.Context) error {
+func (m *mockTaskExecutor) ExecuteStaleSecrets(_ context.Context) error {
 	m.ssmCall++
 	return m.ssmErr
 }
@@ -143,7 +143,7 @@ func TestHandler_ProcessMessage_StaleSSM(t *testing.T) {
 	handler := NewHandler(q, executor, cfg)
 
 	msg := Message{
-		TaskType:  TaskStaleSSM,
+		TaskType:  TaskStaleSecrets,
 		Timestamp: time.Now(),
 	}
 	body, _ := json.Marshal(msg)
@@ -508,7 +508,7 @@ func TestTaskTypeConstants(t *testing.T) {
 		expected string
 	}{
 		{TaskOrphanedInstances, "orphaned_instances"},
-		{TaskStaleSSM, "stale_ssm"},
+		{TaskStaleSecrets, "stale_secrets"},
 		{TaskOldJobs, "old_jobs"},
 		{TaskPoolAudit, "pool_audit"},
 		{TaskCostReport, "cost_report"},

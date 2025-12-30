@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -16,19 +17,12 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 // EC2API defines EC2 operations for housekeeping.
 type EC2API interface {
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
-}
-
-// SSMAPI defines SSM operations for housekeeping.
-type SSMAPI interface {
-	GetParametersByPath(ctx context.Context, params *ssm.GetParametersByPathInput, optFns ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error)
-	DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error)
 }
 
 // DynamoDBAPI defines DynamoDB operations for housekeeping.
@@ -74,7 +68,7 @@ type PoolDBAPI interface {
 // Tasks implements housekeeping task execution.
 type Tasks struct {
 	ec2Client    EC2API
-	ssmClient    SSMAPI
+	secretsStore secrets.Store
 	dynamoClient DynamoDBAPI
 	sqsClient    SQSAPI
 	poolDB       PoolDBAPI
@@ -84,10 +78,10 @@ type Tasks struct {
 }
 
 // NewTasks creates a new Tasks executor.
-func NewTasks(cfg aws.Config, appConfig *config.Config, metrics MetricsAPI, costReporter CostReporter) *Tasks {
+func NewTasks(cfg aws.Config, appConfig *config.Config, secretsStore secrets.Store, metrics MetricsAPI, costReporter CostReporter) *Tasks {
 	return &Tasks{
 		ec2Client:    ec2.NewFromConfig(cfg),
-		ssmClient:    ssm.NewFromConfig(cfg),
+		secretsStore: secretsStore,
 		dynamoClient: dynamodb.NewFromConfig(cfg),
 		sqsClient:    sqs.NewFromConfig(cfg),
 		metrics:      metrics,
@@ -160,61 +154,35 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	return nil
 }
 
-// ExecuteStaleSSM cleans up stale SSM parameters.
-func (t *Tasks) ExecuteStaleSSM(ctx context.Context) error {
-	log.Println("Executing stale SSM parameter cleanup...")
+// ExecuteStaleSecrets cleans up stale runner secrets.
+func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
+	log.Println("Executing stale secrets cleanup...")
 
-	path := "/runs-fleet/runners/"
-	var nextToken *string
+	if t.secretsStore == nil {
+		log.Println("Secrets store not configured, skipping")
+		return nil
+	}
+
+	runnerIDs, err := t.secretsStore.List(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list runner configs: %w", err)
+	}
+
 	var deletedCount int
-
-	for {
-		input := &ssm.GetParametersByPathInput{
-			Path:      aws.String(path),
-			Recursive: aws.Bool(true),
-			NextToken: nextToken,
-		}
-
-		output, err := t.ssmClient.GetParametersByPath(ctx, input)
+	for _, runnerID := range runnerIDs {
+		exists, err := t.instanceExists(ctx, runnerID)
 		if err != nil {
-			return fmt.Errorf("failed to get parameters: %w", err)
+			log.Printf("Warning: failed to check instance %s: %v", runnerID, err)
+			continue
 		}
 
-		for _, param := range output.Parameters {
-			if param.Name == nil {
-				continue
+		if !exists {
+			if err := t.secretsStore.Delete(ctx, runnerID); err != nil {
+				log.Printf("Warning: failed to delete config for %s: %v", runnerID, err)
+			} else {
+				deletedCount++
+				log.Printf("Deleted stale config for runner: %s", runnerID)
 			}
-
-			// Extract instance ID from parameter name
-			// Format: /runs-fleet/runners/{instance-id}/config
-			parts := strings.Split(*param.Name, "/")
-			if len(parts) < 4 {
-				continue
-			}
-			instanceID := parts[3]
-
-			exists, err := t.instanceExists(ctx, instanceID)
-			if err != nil {
-				log.Printf("Warning: failed to check instance %s: %v", instanceID, err)
-				continue
-			}
-
-			if !exists {
-				_, err := t.ssmClient.DeleteParameter(ctx, &ssm.DeleteParameterInput{
-					Name: param.Name,
-				})
-				if err != nil {
-					log.Printf("Warning: failed to delete parameter %s: %v", *param.Name, err)
-				} else {
-					deletedCount++
-					log.Printf("Deleted stale parameter: %s", *param.Name)
-				}
-			}
-		}
-
-		nextToken = output.NextToken
-		if nextToken == nil {
-			break
 		}
 	}
 
@@ -225,7 +193,7 @@ func (t *Tasks) ExecuteStaleSSM(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("Deleted %d stale SSM parameters", deletedCount)
+	log.Printf("Deleted %d stale runner configs", deletedCount)
 	return nil
 }
 

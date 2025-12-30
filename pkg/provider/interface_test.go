@@ -58,16 +58,6 @@ func (m *mockPoolProvider) MarkRunnerBusy(_ string) {}
 
 func (m *mockPoolProvider) MarkRunnerIdle(_ string) {}
 
-type mockConfigStore struct{}
-
-func (m *mockConfigStore) StoreRunnerConfig(_ context.Context, _ *StoreConfigRequest) error {
-	return nil
-}
-
-func (m *mockConfigStore) DeleteRunnerConfig(_ context.Context, _ string) error {
-	return nil
-}
-
 type mockStateStore struct{}
 
 func (m *mockStateStore) SaveJob(_ context.Context, _ *Job) error {
@@ -185,24 +175,6 @@ func TestPoolProviderInterface(t *testing.T) {
 	// These should not panic
 	pp.MarkRunnerBusy("r1")
 	pp.MarkRunnerIdle("r1")
-}
-
-func TestConfigStoreInterface(t *testing.T) {
-	var cs ConfigStore = &mockConfigStore{}
-
-	ctx := context.Background()
-
-	req := &StoreConfigRequest{
-		RunnerID: "runner-1",
-		JobID:    "job-1",
-	}
-	if err := cs.StoreRunnerConfig(ctx, req); err != nil {
-		t.Errorf("StoreRunnerConfig() error = %v", err)
-	}
-
-	if err := cs.DeleteRunnerConfig(ctx, "runner-1"); err != nil {
-		t.Errorf("DeleteRunnerConfig() error = %v", err)
-	}
 }
 
 func TestStateStoreInterface(t *testing.T) {
@@ -379,29 +351,6 @@ func TestPoolRunner_Fields(t *testing.T) {
 	}
 	if runner.IdleSince.After(runner.LaunchTime) {
 		t.Error("PoolRunner.IdleSince should be before LaunchTime")
-	}
-}
-
-func TestStoreConfigRequest_Fields(t *testing.T) {
-	req := StoreConfigRequest{
-		RunnerID:   "runner-1",
-		JobID:      "job-1",
-		RunID:      "run-1",
-		Repo:       "owner/repo",
-		Labels:     []string{"self-hosted"},
-		JITToken:   "token",
-		CacheToken: "cache",
-		CacheURL:   "https://cache.example.com",
-	}
-
-	if req.RunnerID != "runner-1" {
-		t.Errorf("StoreConfigRequest.RunnerID = %q, want runner-1", req.RunnerID)
-	}
-	if len(req.Labels) != 1 {
-		t.Errorf("StoreConfigRequest.Labels length = %d, want 1", len(req.Labels))
-	}
-	if req.CacheURL != "https://cache.example.com" {
-		t.Errorf("StoreConfigRequest.CacheURL = %q, want https://cache.example.com", req.CacheURL)
 	}
 }
 

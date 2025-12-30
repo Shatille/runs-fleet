@@ -28,11 +28,11 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/google/go-github/v57/github"
 	"github.com/google/uuid"
 )
@@ -88,19 +88,20 @@ func main() {
 
 	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
 
+	var secretsStore secrets.Store
 	var terminationHandler *termination.Handler
 	var housekeepingHandler *housekeeping.Handler
 	var housekeepingScheduler *housekeeping.Scheduler
 	if cfg.IsEC2Backend() {
+		secretsStore = initSecretsStore(ctx, awsCfg, cfg)
 		if cfg.TerminationQueueURL != "" {
 			terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
-			ssmClient := ssm.NewFromConfig(awsCfg)
-			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
+			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
 		}
-		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher, dbClient)
+		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient)
 	}
 
-	runnerManager := initRunnerManager(awsCfg, cfg)
+	runnerManager := initRunnerManager(secretsStore, cfg)
 
 	var subnetIndex uint64
 	var directProcessor *worker.DirectProcessor
@@ -212,7 +213,7 @@ func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
 	return queue.NewSQSClient(awsCfg, cfg.QueueURL)
 }
 
-func initRunnerManager(awsCfg aws.Config, cfg *config.Config) *runner.Manager {
+func initRunnerManager(secretsStore secrets.Store, cfg *config.Config) *runner.Manager {
 	if cfg.GitHubAppID == "" || cfg.GitHubAppPrivateKey == "" {
 		log.Println("WARNING: Runner manager not initialized - GitHub App credentials not configured")
 		return nil
@@ -221,12 +222,12 @@ func initRunnerManager(awsCfg aws.Config, cfg *config.Config) *runner.Manager {
 	if err != nil {
 		log.Fatalf("Failed to create GitHub client: %v", err)
 	}
-	rm := runner.NewManager(awsCfg, githubClient, runner.ManagerConfig{
+	rm := runner.NewManager(githubClient, secretsStore, runner.ManagerConfig{
 		CacheSecret:         cfg.CacheSecret,
 		CacheURL:            cfg.CacheURL,
 		TerminationQueueURL: cfg.TerminationQueueURL,
 	})
-	log.Println("Runner manager initialized for SSM configuration")
+	log.Println("Runner manager initialized for secrets store")
 	return rm
 }
 
@@ -244,7 +245,28 @@ func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Conf
 	return cb
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher metrics.Publisher, dbClient *db.Client) (*housekeeping.Handler, *housekeeping.Scheduler) {
+func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config) secrets.Store {
+	secretsCfg := secrets.Config{
+		Backend: cfg.SecretsBackend,
+		SSM: secrets.SSMConfig{
+			Prefix: cfg.SecretsPathPrefix,
+		},
+		Vault: secrets.VaultConfig{
+			Address:  cfg.VaultAddr,
+			KVMount:  cfg.VaultKVMount,
+			BasePath: cfg.VaultKVPath,
+			AWSRole:  cfg.VaultAWSRole,
+		},
+	}
+	store, err := secrets.NewStore(ctx, secretsCfg, awsCfg)
+	if err != nil {
+		log.Fatalf("Failed to create secrets store: %v", err)
+	}
+	log.Printf("Secrets store initialized (backend: %s)", cfg.SecretsBackend)
+	return store
+}
+
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client) (*housekeeping.Handler, *housekeeping.Scheduler) {
 	if cfg.HousekeepingQueueURL == "" {
 		return nil, nil
 	}
@@ -257,7 +279,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher me
 	}
 
 	housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
-	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
+	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, housekeepingMetrics, costReporter)
 
 	if dbClient != nil {
 		tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})

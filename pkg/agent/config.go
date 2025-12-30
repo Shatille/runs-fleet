@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
 // ConfigFetcher defines the interface for fetching runner configuration.
 type ConfigFetcher interface {
-	FetchConfig(ctx context.Context, source string) (*RunnerConfig, error)
+	FetchConfig(ctx context.Context, source string) (*secrets.RunnerConfig, error)
 }
 
 // FileConfigFetcher reads runner configuration from mounted files (K8s ConfigMap/Secret).
@@ -28,7 +30,7 @@ func NewFileConfigFetcher(logger Logger) *FileConfigFetcher {
 
 // FetchConfig reads runner configuration from a JSON file.
 // source is the path to the configuration file.
-func (f *FileConfigFetcher) FetchConfig(_ context.Context, source string) (*RunnerConfig, error) {
+func (f *FileConfigFetcher) FetchConfig(_ context.Context, source string) (*secrets.RunnerConfig, error) {
 	f.logger.Printf("Reading config from file: %s", source)
 
 	data, err := os.ReadFile(source)
@@ -36,7 +38,7 @@ func (f *FileConfigFetcher) FetchConfig(_ context.Context, source string) (*Runn
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var config RunnerConfig
+	var config secrets.RunnerConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
@@ -61,8 +63,8 @@ func DefaultK8sConfigPaths() K8sConfigPaths {
 // FetchK8sConfig assembles RunnerConfig from K8s mounted volumes.
 // ConfigMap contains: repo, labels, runner_group
 // Secret contains: jit_token, cache_token
-func FetchK8sConfig(_ context.Context, paths K8sConfigPaths, logger Logger) (*RunnerConfig, error) {
-	config := &RunnerConfig{}
+func FetchK8sConfig(_ context.Context, paths K8sConfigPaths, logger Logger) (*secrets.RunnerConfig, error) {
+	config := &secrets.RunnerConfig{}
 
 	// Read from ConfigMap (required: repo; optional: org, runner_group, job_id, labels)
 	if repo, err := readFileContent(filepath.Join(paths.ConfigDir, "repo")); err == nil {

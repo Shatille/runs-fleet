@@ -99,6 +99,14 @@ type Config struct {
 	MetricsDatadogEnabled    bool     // Enable Datadog DogStatsD metrics
 	MetricsDatadogAddr       string   // DogStatsD address (default: "127.0.0.1:8125")
 	MetricsDatadogTags       []string // Global Datadog tags
+
+	// Secrets backend configuration (EC2 mode only)
+	SecretsBackend    string // "ssm" or "vault" (default: "ssm")
+	SecretsPathPrefix string // Path prefix for secrets (default: "/runs-fleet/runners")
+	VaultAddr         string // Vault server address (required if vault backend)
+	VaultKVMount      string // Vault KV mount path (default: "secret")
+	VaultKVPath       string // Vault KV path prefix (default: "runs-fleet/runners")
+	VaultAWSRole      string // Vault AWS auth role (default: "runs-fleet")
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -195,6 +203,14 @@ func Load() (*Config, error) {
 		MetricsDatadogEnabled:    getEnvBool("RUNS_FLEET_METRICS_DATADOG_ENABLED", false),
 		MetricsDatadogAddr:       getEnv("RUNS_FLEET_METRICS_DATADOG_ADDR", "127.0.0.1:8125"),
 		MetricsDatadogTags:       splitAndFilter(getEnv("RUNS_FLEET_METRICS_DATADOG_TAGS", "")),
+
+		// Secrets backend (EC2 mode)
+		SecretsBackend:    getEnv("RUNS_FLEET_SECRETS_BACKEND", "ssm"),
+		SecretsPathPrefix: getEnv("RUNS_FLEET_SECRETS_PATH_PREFIX", "/runs-fleet/runners"),
+		VaultAddr:         getEnv("VAULT_ADDR", ""),
+		VaultKVMount:      getEnv("VAULT_KV_MOUNT", "secret"),
+		VaultKVPath:       getEnv("VAULT_KV_PATH", "runs-fleet/runners"),
+		VaultAWSRole:      getEnv("VAULT_AWS_ROLE", "runs-fleet"),
 	}
 
 	// Parse node selector with validation (only for K8s backend)
@@ -287,6 +303,9 @@ func (c *Config) Validate() error {
 		if err := c.validateEC2Config(); err != nil {
 			return err
 		}
+		if err := c.validateSecretsConfig(); err != nil {
+			return err
+		}
 	}
 	if c.IsK8sBackend() {
 		if err := c.validateK8sConfig(); err != nil {
@@ -335,6 +354,21 @@ func validateECRImageURL(url string) error {
 	}
 	if !ecrImageURLPattern.MatchString(url) {
 		return fmt.Errorf("invalid ECR URL format: %q", url)
+	}
+	return nil
+}
+
+// validateSecretsConfig validates secrets backend configuration.
+func (c *Config) validateSecretsConfig() error {
+	switch c.SecretsBackend {
+	case "ssm", "":
+		// SSM is the default, no additional validation needed
+	case "vault":
+		if c.VaultAddr == "" {
+			return fmt.Errorf("VAULT_ADDR is required when RUNS_FLEET_SECRETS_BACKEND=vault")
+		}
+	default:
+		return fmt.Errorf("RUNS_FLEET_SECRETS_BACKEND must be 'ssm' or 'vault', got %q", c.SecretsBackend)
 	}
 	return nil
 }

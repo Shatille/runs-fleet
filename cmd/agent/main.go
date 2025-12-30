@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"k8s.io/client-go/kubernetes"
@@ -31,9 +32,10 @@ func (l *stdLogger) Println(v ...interface{}) {
 type agentConfig struct {
 	telemetry    agent.TelemetryClient
 	terminator   agent.InstanceTerminator
-	runnerConfig *agent.RunnerConfig
+	runnerConfig *secrets.RunnerConfig
 	cwLogger     *agent.CloudWatchLogger
 	awsCfg       aws.Config
+	secretsStore secrets.Store
 	cleanup      func() // Cleanup function for deferred resources
 }
 
@@ -200,16 +202,18 @@ func initEC2Mode(ctx context.Context, instanceID, runID string, logger *stdLogge
 
 	ac.terminator = agent.NewEC2Terminator(awsCfg, ac.telemetry, logger)
 
-	// Fetch config from SSM
-	ssmParameterPath := os.Getenv("RUNS_FLEET_SSM_PARAMETER")
-	if ssmParameterPath == "" {
-		ssmParameterPath = "/runs-fleet/runners/" + instanceID + "/config"
-	}
-
-	registrar := agent.NewRegistrar(awsCfg, logger)
-	runnerConfig, err := registrar.FetchConfig(ctx, ssmParameterPath)
+	// Initialize secrets store
+	secretsCfg := secrets.LoadConfig()
+	secretsStore, err := secrets.NewStore(ctx, secretsCfg, awsCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch config from SSM: %w", err)
+		return nil, fmt.Errorf("failed to create secrets store: %w", err)
+	}
+	ac.secretsStore = secretsStore
+
+	// Fetch runner config from secrets store
+	runnerConfig, err := secretsStore.Get(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch config from secrets store: %w", err)
 	}
 	ac.runnerConfig = runnerConfig
 
@@ -253,9 +257,9 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 
 	var registrar *agent.Registrar
 	if isK8s {
-		registrar = agent.NewRegistrarWithoutAWS(logger)
+		registrar = agent.NewRegistrarWithoutSecrets(logger)
 	} else {
-		registrar = agent.NewRegistrar(ac.awsCfg, logger)
+		registrar = agent.NewRegistrar(ac.secretsStore, logger)
 	}
 
 	if regErr := registrar.RegisterRunner(ctx, ac.runnerConfig, runnerPath); regErr != nil {

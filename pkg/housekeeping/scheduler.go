@@ -128,7 +128,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.scheduleTask(ctx, TaskOrphanedInstances)
 
 		case <-ssmTicker.C:
-			s.scheduleTask(ctx, TaskStaleSSM)
+			s.scheduleTask(ctx, TaskStaleSecrets)
 
 		case <-jobsTicker.C:
 			s.scheduleTask(ctx, TaskOldJobs)

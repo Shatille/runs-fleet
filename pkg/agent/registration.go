@@ -3,7 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,14 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
-
-// SSMAPI defines SSM operations for fetching runner configuration.
-type SSMAPI interface {
-	GetParameter(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
-}
 
 // Logger defines logging interface for the registrar.
 type Logger interface {
@@ -30,44 +23,32 @@ type Logger interface {
 // Exposed as a variable to allow testing with shorter durations.
 var registrationRetryBaseDelay = 1 * time.Second
 
-// RunnerConfig represents configuration for registering a runner.
-type RunnerConfig struct {
-	Org         string   `json:"org"`
-	Repo        string   `json:"repo,omitempty"`
-	JITToken    string   `json:"jit_token"`
-	Labels      []string `json:"labels"`
-	RunnerGroup string   `json:"runner_group,omitempty"`
-	JobID       string   `json:"job_id,omitempty"`
-	CacheToken  string   `json:"cache_token,omitempty"`
-	IsOrg       bool     `json:"is_org"` // Deprecated: kept for JSON compatibility
-}
-
 // Registrar handles runner registration with GitHub.
 type Registrar struct {
-	ssmClient SSMAPI
-	logger    Logger
+	secretsStore secrets.Store
+	logger       Logger
 }
 
 // NewRegistrar creates a new registrar for GitHub Actions runners.
-func NewRegistrar(cfg aws.Config, logger Logger) *Registrar {
+func NewRegistrar(secretsStore secrets.Store, logger Logger) *Registrar {
 	return &Registrar{
-		ssmClient: ssm.NewFromConfig(cfg),
-		logger:    logger,
+		secretsStore: secretsStore,
+		logger:       logger,
 	}
 }
 
-// NewRegistrarWithoutAWS creates a registrar without AWS SSM client.
-// Used in K8s mode where config is loaded from files instead of SSM.
-func NewRegistrarWithoutAWS(logger Logger) *Registrar {
+// NewRegistrarWithoutSecrets creates a registrar without a secrets store.
+// Used in K8s mode where config is loaded from files instead of secrets backend.
+func NewRegistrarWithoutSecrets(logger Logger) *Registrar {
 	return &Registrar{
-		ssmClient: nil,
-		logger:    logger,
+		secretsStore: nil,
+		logger:       logger,
 	}
 }
 
-// FetchConfig retrieves runner configuration from SSM Parameter Store.
-func (r *Registrar) FetchConfig(ctx context.Context, parameterPath string) (*RunnerConfig, error) {
-	var config *RunnerConfig
+// FetchConfig retrieves runner configuration from the secrets backend.
+func (r *Registrar) FetchConfig(ctx context.Context, runnerID string) (*secrets.RunnerConfig, error) {
+	var config *secrets.RunnerConfig
 	var lastErr error
 
 	// Retry up to 3 times with backoff
@@ -79,28 +60,16 @@ func (r *Registrar) FetchConfig(ctx context.Context, parameterPath string) (*Run
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			r.logger.Printf("Retrying SSM fetch (attempt %d/3)...", attempt+1)
+			r.logger.Printf("Retrying secrets fetch (attempt %d/3)...", attempt+1)
 		}
 
-		output, err := r.ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
-			Name:           aws.String(parameterPath),
-			WithDecryption: aws.Bool(true),
-		})
+		cfg, err := r.secretsStore.Get(ctx, runnerID)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
-		if output.Parameter == nil || output.Parameter.Value == nil {
-			lastErr = fmt.Errorf("parameter value is nil")
-			continue
-		}
-
-		config = &RunnerConfig{}
-		if err := json.Unmarshal([]byte(*output.Parameter.Value), config); err != nil {
-			return nil, fmt.Errorf("failed to parse runner config: %w", err)
-		}
-
+		config = cfg
 		return config, nil
 	}
 
@@ -108,7 +77,7 @@ func (r *Registrar) FetchConfig(ctx context.Context, parameterPath string) (*Run
 }
 
 // RegisterRunner registers the runner with GitHub using the config.sh script.
-func (r *Registrar) RegisterRunner(ctx context.Context, config *RunnerConfig, runnerPath string) error {
+func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerConfig, runnerPath string) error {
 	configScript := filepath.Join(runnerPath, "config.sh")
 
 	// Verify config.sh exists

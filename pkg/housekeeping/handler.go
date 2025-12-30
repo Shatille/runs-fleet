@@ -24,8 +24,8 @@ type TaskType string
 const (
 	// TaskOrphanedInstances detects and terminates orphaned instances.
 	TaskOrphanedInstances TaskType = "orphaned_instances"
-	// TaskStaleSSM cleans up stale SSM parameters.
-	TaskStaleSSM TaskType = "stale_ssm"
+	// TaskStaleSecrets cleans up stale secrets (SSM parameters or Vault entries).
+	TaskStaleSecrets TaskType = "stale_secrets"
 	// TaskOldJobs archives or deletes old job records.
 	TaskOldJobs TaskType = "old_jobs"
 	// TaskPoolAudit generates pool utilization reports.
@@ -48,7 +48,7 @@ type Message struct {
 // TaskExecutor executes housekeeping tasks.
 type TaskExecutor interface {
 	ExecuteOrphanedInstances(ctx context.Context) error
-	ExecuteStaleSSM(ctx context.Context) error
+	ExecuteStaleSecrets(ctx context.Context) error
 	ExecuteOldJobs(ctx context.Context) error
 	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
@@ -122,8 +122,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	switch hkMsg.TaskType {
 	case TaskOrphanedInstances:
 		err = h.taskExecutor.ExecuteOrphanedInstances(taskCtx)
-	case TaskStaleSSM:
-		err = h.taskExecutor.ExecuteStaleSSM(taskCtx)
+	case TaskStaleSecrets:
+		err = h.taskExecutor.ExecuteStaleSecrets(taskCtx)
 	case TaskOldJobs:
 		err = h.taskExecutor.ExecuteOldJobs(taskCtx)
 	case TaskPoolAudit:
