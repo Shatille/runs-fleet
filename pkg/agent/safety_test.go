@@ -7,6 +7,20 @@ import (
 	"time"
 )
 
+// waitForCheck waits for n check callbacks with a timeout.
+// Returns true if all checks were received, false on timeout.
+func waitForCheck(ch <-chan struct{}, n int, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ch:
+		case <-deadline:
+			return false
+		}
+	}
+	return true
+}
+
 func TestNewSafetyMonitor(t *testing.T) {
 	logger := &mockLogger{}
 	maxRuntime := 1 * time.Hour
@@ -61,10 +75,10 @@ func TestSafetyMonitor_GetRemainingTime(t *testing.T) {
 
 func TestSafetyMonitor_GetRemainingTime_Expired(t *testing.T) {
 	logger := &mockLogger{}
-	monitor := NewSafetyMonitor(1*time.Millisecond, logger)
+	monitor := NewSafetyMonitor(1*time.Minute, logger)
 
-	// Wait for expiration
-	time.Sleep(10 * time.Millisecond)
+	// Set startTime in the past to simulate expiration (no time.Sleep needed)
+	monitor.startTime = time.Now().Add(-2 * time.Minute)
 
 	remaining := monitor.GetRemainingTime()
 	if remaining != 0 {
@@ -83,10 +97,10 @@ func TestSafetyMonitor_IsExpired_NotExpired(t *testing.T) {
 
 func TestSafetyMonitor_IsExpired_Expired(t *testing.T) {
 	logger := &mockLogger{}
-	monitor := NewSafetyMonitor(1*time.Millisecond, logger)
+	monitor := NewSafetyMonitor(1*time.Minute, logger)
 
-	// Wait for expiration
-	time.Sleep(10 * time.Millisecond)
+	// Set startTime in the past to simulate expiration (no time.Sleep needed)
+	monitor.startTime = time.Now().Add(-2 * time.Minute)
 
 	if !monitor.IsExpired() {
 		t.Error("expected monitor to be expired")
@@ -98,6 +112,15 @@ func TestSafetyMonitor_Monitor_Cancellation(t *testing.T) {
 	monitor := NewSafetyMonitor(1*time.Hour, logger)
 	monitor.checkInterval = 10 * time.Millisecond
 
+	// Set up check callback to signal when a check occurs
+	checkCh := make(chan struct{}, 1)
+	monitor.SetCheckCallback(func() {
+		select {
+		case checkCh <- struct{}{}:
+		default:
+		}
+	})
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -106,8 +129,10 @@ func TestSafetyMonitor_Monitor_Cancellation(t *testing.T) {
 		close(done)
 	}()
 
-	// Cancel after a short time
-	time.Sleep(50 * time.Millisecond)
+	// Wait for at least one check to confirm monitor is running (channel-based sync)
+	if !waitForCheck(checkCh, 1, 2*time.Second) {
+		t.Fatal("timed out waiting for check to be called")
+	}
 	cancel()
 
 	// Wait for monitor to stop
@@ -121,10 +146,10 @@ func TestSafetyMonitor_Monitor_Cancellation(t *testing.T) {
 
 func TestSafetyMonitor_check_TimeoutCallback(t *testing.T) {
 	logger := &mockLogger{}
-	monitor := NewSafetyMonitor(1*time.Millisecond, logger)
+	monitor := NewSafetyMonitor(1*time.Minute, logger)
 
-	// Wait for expiration
-	time.Sleep(10 * time.Millisecond)
+	// Set startTime in the past to simulate expiration (no time.Sleep needed)
+	monitor.startTime = time.Now().Add(-2 * time.Minute)
 
 	var mu sync.Mutex
 	called := false
@@ -206,20 +231,31 @@ func TestConstants(t *testing.T) {
 	}
 }
 
-func TestSafetyMonitor_Monitor_PeriodicCheck(_ *testing.T) {
+func TestSafetyMonitor_Monitor_PeriodicCheck(t *testing.T) {
 	logger := &mockLogger{}
 	monitor := NewSafetyMonitor(1*time.Hour, logger)
-	monitor.checkInterval = 50 * time.Millisecond
+	monitor.checkInterval = 10 * time.Millisecond
+
+	// Set up check callback to signal when checks occur
+	checkCh := make(chan struct{}, 10)
+	monitor.SetCheckCallback(func() {
+		select {
+		case checkCh <- struct{}{}:
+		default:
+		}
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go monitor.Monitor(ctx)
 
-	// Wait for at least one check interval
-	time.Sleep(100 * time.Millisecond)
+	// Wait for at least 2 checks to confirm periodic checking works (channel-based sync)
+	if !waitForCheck(checkCh, 2, 2*time.Second) {
+		t.Fatal("timed out waiting for periodic checks")
+	}
 
-	// Cancel and verify we got some messages from checks
+	// Cancel and verify we got checks
 	cancel()
 
 	// Note: The number of messages depends on the system
