@@ -352,3 +352,82 @@ func TestSSMStore_CustomPrefix(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestSSMStore_Get_NilParameter(t *testing.T) {
+	mock := &mockSSMClient{
+		getFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+			return &ssm.GetParameterOutput{
+				Parameter: nil,
+			}, nil
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	_, err := store.Get(context.Background(), "i-123456")
+	if err == nil {
+		t.Error("Get() expected error for nil parameter")
+	}
+}
+
+func TestSSMStore_List_SkipsNilNames(t *testing.T) {
+	mock := &mockSSMClient{
+		getParametersByPath: func(_ context.Context, _ *ssm.GetParametersByPathInput, _ ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
+			return &ssm.GetParametersByPathOutput{
+				Parameters: []types.Parameter{
+					{Name: aws.String("/runs-fleet/runners/i-111/config")},
+					{Name: nil},
+					{Name: aws.String("/runs-fleet/runners/i-222/config")},
+				},
+			}, nil
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	ids, err := store.List(context.Background())
+	if err != nil {
+		t.Errorf("List() error = %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("List() got %d ids, want 2", len(ids))
+	}
+}
+
+func TestSSMStore_extractRunnerID_EdgeCases(t *testing.T) {
+	store := NewSSMStoreWithClient(nil, "/runs-fleet/runners")
+
+	tests := []struct {
+		name   string
+		path   string
+		wantID string
+	}{
+		{"deeply nested", "/runs-fleet/runners/i-123/extra/nested/config", "i-123"},
+		{"wrong suffix", "/runs-fleet/runners/i-123/notconfig", ""},
+		{"only prefix", "/runs-fleet/runners/", ""},
+		{"prefix without trailing slash", "/runs-fleet/runners", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := store.extractRunnerID(tt.path)
+			if id != tt.wantID {
+				t.Errorf("extractRunnerID(%s) = %s, want %s", tt.path, id, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestSSMStore_DefaultPrefix(t *testing.T) {
+	store := NewSSMStoreWithClient(nil, "")
+	if store.prefix != DefaultSSMPrefix {
+		t.Errorf("prefix = %s, want %s", store.prefix, DefaultSSMPrefix)
+	}
+}
+
+func TestSSMStore_parameterPath(t *testing.T) {
+	store := NewSSMStoreWithClient(nil, "/test/prefix")
+	path := store.parameterPath("i-abc123")
+	expected := "/test/prefix/i-abc123/config"
+	if path != expected {
+		t.Errorf("parameterPath() = %s, want %s", path, expected)
+	}
+}
