@@ -23,8 +23,10 @@ const (
 
 // Downloader handles downloading GitHub Actions runner binaries.
 type Downloader struct {
-	prebakedPaths     []string // Paths to check for pre-baked runner (for testing)
-	skipPrebakedCheck bool     // Skip pre-baked runner check (for testing)
+	prebakedPaths     []string     // Paths to check for pre-baked runner (for testing)
+	skipPrebakedCheck bool         // Skip pre-baked runner check (for testing)
+	HTTPClient        *http.Client // HTTP client to use (nil uses http.DefaultClient)
+	releasesURL       string       // URL for GitHub releases API (empty uses default)
 }
 
 // NewDownloader creates a new Downloader instance.
@@ -81,7 +83,7 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 		githubArch = "x64"
 	}
 
-	release, err := fetchLatestRelease(ctx)
+	release, err := d.fetchLatestRelease(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
@@ -119,13 +121,23 @@ func (d *Downloader) DownloadRunner(ctx context.Context) (string, error) {
 	return runnerDir, nil
 }
 
-func fetchLatestRelease(ctx context.Context) (*Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubReleasesAPI, nil)
+func (d *Downloader) fetchLatestRelease(ctx context.Context) (*Release, error) {
+	url := d.releasesURL
+	if url == "" {
+		url = githubReleasesAPI
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := d.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
