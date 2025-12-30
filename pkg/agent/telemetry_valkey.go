@@ -21,14 +21,20 @@ var _ TelemetryClient = (*ValkeyTelemetry)(nil)
 
 // NewValkeyTelemetry creates a new Valkey telemetry client.
 func NewValkeyTelemetry(addr, password string, db int, stream string, logger Logger) (*ValkeyTelemetry, error) {
-	client := redis.NewClient(&redis.Options{
+	return newValkeyTelemetryWithOptions(&redis.Options{
 		Addr:     addr,
 		Password: password,
 		DB:       db,
-	})
+	}, 5*time.Second, stream, logger)
+}
+
+// newValkeyTelemetryWithOptions creates a Valkey telemetry client with custom options.
+// This is an internal function primarily for testing with custom timeouts.
+func newValkeyTelemetryWithOptions(opts *redis.Options, pingTimeout time.Duration, stream string, logger Logger) (*ValkeyTelemetry, error) {
+	client := redis.NewClient(opts)
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {

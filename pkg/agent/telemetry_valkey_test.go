@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -16,10 +17,45 @@ func TestValkeyTelemetry_ImplementsTelemetryClient(_ *testing.T) {
 func TestNewValkeyTelemetry_ConnectionFailure(t *testing.T) {
 	logger := &mockLogger{}
 
-	// Try to connect to a non-existent Valkey server
-	_, err := NewValkeyTelemetry("localhost:59999", "", 0, "test-stream", logger)
+	// Create a mock Redis server that accepts connections but responds
+	// with an error to PING commands. Combined with short timeouts, this
+	// tests connection failure handling in <100ms vs original ~2.1s.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	addr := listener.Addr().String()
+
+	// Handle connections in goroutine
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return // Listener closed
+			}
+			// Read the PING command (or any command) and respond with error
+			buf := make([]byte, 128)
+			_, _ = conn.Read(buf)
+			_, _ = conn.Write([]byte("-ERR mock server rejecting connection\r\n"))
+			conn.Close()
+		}
+	}()
+	defer func() {
+		listener.Close()
+		<-done
+	}()
+
+	// Use internal function with short timeouts for fast test execution
+	opts := &redis.Options{
+		Addr:        addr,
+		DialTimeout: 10 * time.Millisecond,
+		ReadTimeout: 10 * time.Millisecond,
+	}
+	_, err = newValkeyTelemetryWithOptions(opts, 50*time.Millisecond, "test-stream", logger)
 	if err == nil {
-		t.Error("NewValkeyTelemetry() expected error for invalid connection")
+		t.Error("newValkeyTelemetryWithOptions() expected error for invalid connection")
 	}
 }
 
