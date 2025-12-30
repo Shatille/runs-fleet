@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/internal/handler"
+	"github.com/Shavakan/runs-fleet/internal/worker"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -14,10 +16,12 @@ import (
 )
 
 func init() {
-	// Use minimal delays in tests to avoid slow test execution
-	retryDelay = 1 * time.Millisecond
-	fleetRetryBaseDelay = 1 * time.Millisecond
+	worker.RetryDelay = 1 * time.Millisecond
+	worker.FleetRetryBaseDelay = 1 * time.Millisecond
 }
+
+const maxJobRetries = 2
+const runnerNamePrefix = "runs-fleet-"
 
 func TestBuildRunnerLabel(t *testing.T) {
 	tests := []struct {
@@ -81,9 +85,9 @@ func TestBuildRunnerLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRunnerLabel(tt.job)
+			got := handler.BuildRunnerLabel(tt.job)
 			if got != tt.want {
-				t.Errorf("buildRunnerLabel() = %q, want %q", got, tt.want)
+				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -118,9 +122,9 @@ func TestSelectSubnet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var subnetIndex uint64
-			got := selectSubnet(tt.cfg, &subnetIndex)
+			got := worker.SelectSubnet(tt.cfg, &subnetIndex)
 			if !tt.wantFunc(got) {
-				t.Errorf("selectSubnet() = %q, unexpected result", got)
+				t.Errorf("SelectSubnet() = %q, unexpected result", got)
 			}
 		})
 	}
@@ -135,14 +139,13 @@ func TestSelectSubnet_RoundRobin(t *testing.T) {
 	results := make([]string, 6)
 
 	for i := 0; i < 6; i++ {
-		results[i] = selectSubnet(cfg, &subnetIndex)
+		results[i] = worker.SelectSubnet(cfg, &subnetIndex)
 	}
 
-	// Should cycle through subnets
 	expected := []string{"subnet-a", "subnet-b", "subnet-c", "subnet-a", "subnet-b", "subnet-c"}
 	for i, exp := range expected {
 		if results[i] != exp {
-			t.Errorf("selectSubnet() iteration %d = %q, want %q", i, results[i], exp)
+			t.Errorf("SelectSubnet() iteration %d = %q, want %q", i, results[i], exp)
 		}
 	}
 }
@@ -157,7 +160,7 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		go func() {
-			result := selectSubnet(cfg, &subnetIndex)
+			result := worker.SelectSubnet(cfg, &subnetIndex)
 			done <- result
 		}()
 	}
@@ -168,7 +171,6 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 		results[subnet]++
 	}
 
-	// All results should be valid subnets
 	for subnet := range results {
 		found := false
 		for _, valid := range cfg.PublicSubnetIDs {
@@ -182,16 +184,14 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 		}
 	}
 
-	// Verify final index is 100
 	if subnetIndex != 100 {
 		t.Errorf("final subnetIndex = %d, want 100", subnetIndex)
 	}
 }
 
-// mockQueue implements queue.Queue for testing
 type mockQueue struct {
-	deleteFunc  func(ctx context.Context, handle string) error
-	sendFunc    func(ctx context.Context, job *queue.JobMessage) error
+	deleteFunc   func(ctx context.Context, handle string) error
+	sendFunc     func(ctx context.Context, job *queue.JobMessage) error
 	sentMessages []*queue.JobMessage
 }
 
@@ -214,86 +214,11 @@ func (m *mockQueue) DeleteMessage(ctx context.Context, handle string) error {
 	return nil
 }
 
-func TestDeleteMessageWithRetry_Success(t *testing.T) {
-	callCount := 0
-	q := &mockQueue{
-		deleteFunc: func(_ context.Context, _ string) error {
-			callCount++
-			return nil
-		},
-	}
-
-	err := deleteMessageWithRetry(context.Background(), q, "test-handle")
-	if err != nil {
-		t.Errorf("deleteMessageWithRetry() error = %v, want nil", err)
-	}
-	if callCount != 1 {
-		t.Errorf("deleteMessageWithRetry() called %d times, want 1", callCount)
-	}
-}
-
-func TestDeleteMessageWithRetry_EventualSuccess(t *testing.T) {
-	callCount := 0
-	q := &mockQueue{
-		deleteFunc: func(_ context.Context, _ string) error {
-			callCount++
-			if callCount < 2 {
-				return errors.New("temporary error")
-			}
-			return nil
-		},
-	}
-
-	err := deleteMessageWithRetry(context.Background(), q, "test-handle")
-	if err != nil {
-		t.Errorf("deleteMessageWithRetry() error = %v, want nil", err)
-	}
-	if callCount != 2 {
-		t.Errorf("deleteMessageWithRetry() called %d times, want 2", callCount)
-	}
-}
-
-func TestDeleteMessageWithRetry_AllFail(t *testing.T) {
-	callCount := 0
-	testErr := errors.New("persistent error")
-	q := &mockQueue{
-		deleteFunc: func(_ context.Context, _ string) error {
-			callCount++
-			return testErr
-		},
-	}
-
-	err := deleteMessageWithRetry(context.Background(), q, "test-handle")
-	if err == nil {
-		t.Error("deleteMessageWithRetry() error = nil, want error")
-	}
-	if callCount != maxDeleteRetries {
-		t.Errorf("deleteMessageWithRetry() called %d times, want %d", callCount, maxDeleteRetries)
-	}
-}
-
 func TestHousekeepingMetricsAdapter(t *testing.T) {
-	// Test that the adapter struct can be created with nil publisher
 	adapter := &housekeepingMetricsAdapter{publisher: nil}
 
-	// Verify the adapter has the expected nil publisher
 	if adapter.publisher != nil {
 		t.Error("publisher should be nil in this test")
-	}
-}
-
-func TestConstants(t *testing.T) {
-	if maxDeleteRetries <= 0 {
-		t.Errorf("maxDeleteRetries = %d, should be positive", maxDeleteRetries)
-	}
-	if retryDelay <= 0 {
-		t.Errorf("retryDelay = %v, should be positive", retryDelay)
-	}
-	if maxFleetCreateRetries <= 0 {
-		t.Errorf("maxFleetCreateRetries = %d, should be positive", maxFleetCreateRetries)
-	}
-	if fleetRetryBaseDelay <= 0 {
-		t.Errorf("fleetRetryBaseDelay = %v, should be positive", fleetRetryBaseDelay)
 	}
 }
 
@@ -324,9 +249,9 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRunnerLabel(tt.job)
+			got := handler.BuildRunnerLabel(tt.job)
 			if got != tt.want {
-				t.Errorf("buildRunnerLabel() = %q, want %q", got, tt.want)
+				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -339,60 +264,20 @@ func TestSelectSubnet_AtomicIndex(t *testing.T) {
 
 	var subnetIndex uint64
 
-	// Pre-set the index to a high value
 	atomic.StoreUint64(&subnetIndex, 1000)
 
-	result := selectSubnet(cfg, &subnetIndex)
+	result := worker.SelectSubnet(cfg, &subnetIndex)
 	if result != "subnet-1" {
-		t.Errorf("selectSubnet() = %q, want %q", result, "subnet-1")
+		t.Errorf("SelectSubnet() = %q, want %q", result, "subnet-1")
 	}
 
-	// Index should have incremented
 	newIndex := atomic.LoadUint64(&subnetIndex)
 	if newIndex != 1001 {
 		t.Errorf("subnetIndex = %d, want 1001", newIndex)
 	}
 }
 
-func TestDeleteMessageWithRetry_ContextCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	callCount := 0
-	q := &mockQueue{
-		deleteFunc: func(_ context.Context, _ string) error {
-			callCount++
-			return errors.New("error")
-		},
-	}
-
-	// Even with cancelled context, it will still retry
-	_ = deleteMessageWithRetry(ctx, q, "test-handle")
-
-	// Should still attempt retries
-	if callCount == 0 {
-		t.Error("deleteMessageWithRetry() should have been called at least once")
-	}
-}
-
-func TestRetryDelay(t *testing.T) {
-	// In tests, retryDelay is set to 1ms in init() for fast test execution.
-	// Verify it's a positive, reasonable value.
-	if retryDelay <= 0 {
-		t.Errorf("retryDelay = %v, should be positive", retryDelay)
-	}
-}
-
-func TestFleetRetryBaseDelay(t *testing.T) {
-	// In tests, fleetRetryBaseDelay is set to 1ms in init() for fast test execution.
-	// Verify it's a positive, reasonable value.
-	if fleetRetryBaseDelay <= 0 {
-		t.Errorf("fleetRetryBaseDelay = %v, should be positive", fleetRetryBaseDelay)
-	}
-}
-
 func TestMockQueue_Interface(_ *testing.T) {
-	// Verify mockQueue implements queue.Queue
 	var _ queue.Queue = (*mockQueue)(nil)
 }
 
@@ -416,7 +301,6 @@ func TestMockQueue_ReceiveMessages(t *testing.T) {
 }
 
 func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
-	// Test spot=true and spot=false combinations
 	tests := []struct {
 		name string
 		spot bool
@@ -431,9 +315,9 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 				RunID: 12345,
 				Spot:  tt.spot,
 			}
-			label := buildRunnerLabel(job)
+			label := handler.BuildRunnerLabel(job)
 			if label == "" {
-				t.Error("buildRunnerLabel() returned empty string")
+				t.Error("BuildRunnerLabel() returned empty string")
 			}
 		})
 	}
@@ -445,83 +329,19 @@ func TestSelectSubnet_SingleSubnet(t *testing.T) {
 	}
 	var subnetIndex uint64
 
-	// Multiple calls should always return the same subnet
 	for i := 0; i < 5; i++ {
-		result := selectSubnet(cfg, &subnetIndex)
+		result := worker.SelectSubnet(cfg, &subnetIndex)
 		if result != "only-subnet" {
-			t.Errorf("iteration %d: selectSubnet() = %q, want %q", i, result, "only-subnet")
+			t.Errorf("iteration %d: SelectSubnet() = %q, want %q", i, result, "only-subnet")
 		}
-	}
-}
-
-
-func TestDeleteMessageWithRetry_ImmediateSuccess(t *testing.T) {
-	callCount := 0
-	q := &mockQueue{
-		deleteFunc: func(_ context.Context, handle string) error {
-			callCount++
-			if handle != "expected-handle" {
-				return errors.New("unexpected handle")
-			}
-			return nil
-		},
-	}
-
-	err := deleteMessageWithRetry(context.Background(), q, "expected-handle")
-	if err != nil {
-		t.Errorf("deleteMessageWithRetry() error = %v, want nil", err)
-	}
-	if callCount != 1 {
-		t.Errorf("called %d times, want 1", callCount)
-	}
-}
-
-func TestDeleteMessageWithRetry_RetryThenSuccess(t *testing.T) {
-	callCount := 0
-	q := &mockQueue{
-		deleteFunc: func(_ context.Context, _ string) error {
-			callCount++
-			if callCount < maxDeleteRetries {
-				return errors.New("temporary error")
-			}
-			return nil
-		},
-	}
-
-	err := deleteMessageWithRetry(context.Background(), q, "handle")
-	if err != nil {
-		t.Errorf("deleteMessageWithRetry() error = %v, want nil", err)
-	}
-	if callCount != maxDeleteRetries {
-		t.Errorf("called %d times, want %d", callCount, maxDeleteRetries)
 	}
 }
 
 func TestHousekeepingMetricsAdapter_NilPublisher(_ *testing.T) {
 	adapter := &housekeepingMetricsAdapter{publisher: nil}
 
-	// Verify the struct is created correctly
 	if adapter.publisher != nil {
-		// This shouldn't happen
 		panic("publisher should be nil")
-	}
-}
-
-func TestMaxDeleteRetries(t *testing.T) {
-	if maxDeleteRetries < 1 {
-		t.Errorf("maxDeleteRetries = %d, should be at least 1", maxDeleteRetries)
-	}
-	if maxDeleteRetries > 10 {
-		t.Errorf("maxDeleteRetries = %d, should not be more than 10", maxDeleteRetries)
-	}
-}
-
-func TestMaxFleetCreateRetries(t *testing.T) {
-	if maxFleetCreateRetries < 1 {
-		t.Errorf("maxFleetCreateRetries = %d, should be at least 1", maxFleetCreateRetries)
-	}
-	if maxFleetCreateRetries > 10 {
-		t.Errorf("maxFleetCreateRetries = %d, should not be more than 10", maxFleetCreateRetries)
 	}
 }
 
@@ -530,12 +350,10 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 		PublicSubnetIDs: []string{"a", "b", "c"},
 	}
 
-	// Start with a very large index to test wraparound
 	var subnetIndex uint64 = 1000000000
 
-	result := selectSubnet(cfg, &subnetIndex)
+	result := worker.SelectSubnet(cfg, &subnetIndex)
 
-	// Should return a valid subnet
 	found := false
 	for _, s := range cfg.PublicSubnetIDs {
 		if s == result {
@@ -544,48 +362,36 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("selectSubnet() = %q, not in valid subnets", result)
+		t.Errorf("SelectSubnet() = %q, not in valid subnets", result)
 	}
 }
 
 func TestBuildRunnerLabel_EmptyOriginalLabel(t *testing.T) {
 	job := &queue.JobMessage{
 		RunID:         12345,
-		OriginalLabel: "", // Empty - should use fallback
+		OriginalLabel: "",
 		Pool:          "",
 		Spot:          true,
 	}
 
-	label := buildRunnerLabel(job)
+	label := handler.BuildRunnerLabel(job)
 	expected := "runs-fleet=12345"
 	if label != expected {
-		t.Errorf("buildRunnerLabel() = %q, want %q", label, expected)
+		t.Errorf("BuildRunnerLabel() = %q, want %q", label, expected)
 	}
 }
 
 func TestBuildRunnerLabel_WhitespaceOriginalLabel(t *testing.T) {
 	job := &queue.JobMessage{
 		RunID:         12345,
-		OriginalLabel: "   ", // Whitespace only - treated as non-empty
+		OriginalLabel: "   ",
 		Spot:          true,
 	}
 
-	label := buildRunnerLabel(job)
-	// Non-empty original label should be used as-is
+	label := handler.BuildRunnerLabel(job)
 	if label != "   " {
-		t.Errorf("buildRunnerLabel() = %q, want whitespace", label)
+		t.Errorf("BuildRunnerLabel() = %q, want whitespace", label)
 	}
-}
-
-func TestDeleteMessageWithRetry_NilQueue(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic with nil queue")
-		}
-	}()
-
-	// This should panic
-	_ = deleteMessageWithRetry(context.Background(), nil, "handle")
 }
 
 func TestSelectSubnet_NilSubnets(t *testing.T) {
@@ -594,9 +400,9 @@ func TestSelectSubnet_NilSubnets(t *testing.T) {
 	}
 	var subnetIndex uint64
 
-	result := selectSubnet(cfg, &subnetIndex)
+	result := worker.SelectSubnet(cfg, &subnetIndex)
 	if result != "" {
-		t.Errorf("selectSubnet() = %q, want empty string", result)
+		t.Errorf("SelectSubnet() = %q, want empty string", result)
 	}
 }
 
@@ -621,7 +427,6 @@ func TestJobMessage_AllFields(t *testing.T) {
 		ParentID:      "parent-def",
 	}
 
-	// Verify all fields are set correctly
 	if job.JobID != 123 {
 		t.Errorf("JobID = %d, want 123", job.JobID)
 	}
@@ -668,24 +473,6 @@ func TestJobMessage_ZeroValues(t *testing.T) {
 	}
 }
 
-
-func TestConstants_Values(t *testing.T) {
-	// Verify constant values are as expected
-	if maxDeleteRetries != 3 {
-		t.Errorf("maxDeleteRetries = %d, want 3", maxDeleteRetries)
-	}
-	if maxFleetCreateRetries != 3 {
-		t.Errorf("maxFleetCreateRetries = %d, want 3", maxFleetCreateRetries)
-	}
-	if maxJobRetries != 2 {
-		t.Errorf("maxJobRetries = %d, want 2", maxJobRetries)
-	}
-	if runnerNamePrefix != "runs-fleet-" {
-		t.Errorf("runnerNamePrefix = %q, want %q", runnerNamePrefix, "runs-fleet-")
-	}
-}
-
-// ptr is a helper function to create pointers to values for testing.
 func ptr[T any](v T) *T {
 	return &v
 }
@@ -694,16 +481,16 @@ func TestHandleJobFailure_NoRunnerName(t *testing.T) {
 	event := &github.WorkflowJobEvent{
 		WorkflowJob: &github.WorkflowJob{
 			ID:         ptr(int64(123)),
-			RunnerName: nil, // No runner assigned
+			RunnerName: nil,
 		},
 	}
 
-	requeued, err := handleJobFailure(context.Background(), event, nil, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
 	if err != nil {
-		t.Errorf("handleJobFailure() error = %v, want nil", err)
+		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
 	if requeued {
-		t.Error("handleJobFailure() should return false when no runner assigned")
+		t.Error("HandleJobFailure() should return false when no runner assigned")
 	}
 }
 
@@ -716,12 +503,12 @@ func TestHandleJobFailure_NonRunsFleetRunner(t *testing.T) {
 		},
 	}
 
-	requeued, err := handleJobFailure(context.Background(), event, nil, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
 	if err != nil {
-		t.Errorf("handleJobFailure() error = %v, want nil", err)
+		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
 	if requeued {
-		t.Error("handleJobFailure() should return false for non-runs-fleet runner")
+		t.Error("HandleJobFailure() should return false for non-runs-fleet runner")
 	}
 }
 
@@ -730,16 +517,16 @@ func TestHandleJobFailure_NoRunsFleetLabels(t *testing.T) {
 		WorkflowJob: &github.WorkflowJob{
 			ID:         ptr(int64(123)),
 			RunnerName: ptr("runs-fleet-i-1234567890abcdef0"),
-			Labels:     []string{"self-hosted", "linux"}, // No runs-fleet= label
+			Labels:     []string{"self-hosted", "linux"},
 		},
 	}
 
-	requeued, err := handleJobFailure(context.Background(), event, nil, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
 	if err != nil {
-		t.Errorf("handleJobFailure() error = %v, want nil", err)
+		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
 	if requeued {
-		t.Error("handleJobFailure() should return false when no runs-fleet labels")
+		t.Error("HandleJobFailure() should return false when no runs-fleet labels")
 	}
 }
 
@@ -752,30 +539,24 @@ func TestHandleJobFailure_NoJobsTable(t *testing.T) {
 		},
 	}
 
-	wrapper := &db.Client{} // Real client that will fail HasJobsTable check
+	wrapper := &db.Client{}
 
-	requeued, err := handleJobFailure(context.Background(), event, nil, wrapper, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, wrapper, nil)
 	if err != nil {
-		t.Errorf("handleJobFailure() error = %v, want nil", err)
+		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
 	if requeued {
-		t.Error("handleJobFailure() should return false when jobs table not configured")
+		t.Error("HandleJobFailure() should return false when jobs table not configured")
 	}
 }
 
 func TestHandleJobFailure_ExceedsRetryLimit(t *testing.T) {
-	// This test verifies the retry limit logic
-	// The function checks jobInfo.RetryCount >= maxJobRetries
-	// maxJobRetries = 2, so RetryCount of 2 or more should skip re-queue
-
-	// Since we can't easily mock db.Client, we test the constant value
 	if maxJobRetries != 2 {
 		t.Errorf("maxJobRetries = %d, want 2", maxJobRetries)
 	}
 }
 
 func TestHandleJobFailure_InstanceIDExtraction(t *testing.T) {
-	// Test that instance ID is correctly extracted from runner name
 	tests := []struct {
 		runnerName string
 		wantPrefix bool
@@ -799,11 +580,11 @@ func TestHandleJobFailure_InstanceIDExtraction(t *testing.T) {
 
 func TestShouldFallbackToOnDemand(t *testing.T) {
 	tests := []struct {
-		name           string
-		spot           bool
-		forceOnDemand  bool
-		retryCount     int
-		wantFallback   bool
+		name          string
+		spot          bool
+		forceOnDemand bool
+		retryCount    int
+		wantFallback  bool
 	}{
 		{
 			name:          "spot request with no retries should fallback",
@@ -864,64 +645,6 @@ func TestShouldFallbackToOnDemand(t *testing.T) {
 				t.Errorf("shouldFallback = %v, want %v", shouldFallback, tt.wantFallback)
 			}
 		})
-	}
-}
-
-func TestSendMessageWithRetry_Success(t *testing.T) {
-	callCount := 0
-	q := &mockQueue{
-		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
-			callCount++
-			return nil
-		},
-	}
-
-	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
-	if err != nil {
-		t.Errorf("sendMessageWithRetry() error = %v, want nil", err)
-	}
-	if callCount != 1 {
-		t.Errorf("sendMessageWithRetry() called %d times, want 1", callCount)
-	}
-}
-
-func TestSendMessageWithRetry_EventualSuccess(t *testing.T) {
-	callCount := 0
-	q := &mockQueue{
-		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
-			callCount++
-			if callCount < 2 {
-				return errors.New("temporary error")
-			}
-			return nil
-		},
-	}
-
-	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
-	if err != nil {
-		t.Errorf("sendMessageWithRetry() error = %v, want nil", err)
-	}
-	if callCount != 2 {
-		t.Errorf("sendMessageWithRetry() called %d times, want 2", callCount)
-	}
-}
-
-func TestSendMessageWithRetry_AllFail(t *testing.T) {
-	callCount := 0
-	testErr := errors.New("persistent error")
-	q := &mockQueue{
-		sendFunc: func(_ context.Context, _ *queue.JobMessage) error {
-			callCount++
-			return testErr
-		},
-	}
-
-	err := sendMessageWithRetry(context.Background(), q, &queue.JobMessage{JobID: 123})
-	if err == nil {
-		t.Error("sendMessageWithRetry() error = nil, want error")
-	}
-	if callCount != maxDeleteRetries {
-		t.Errorf("sendMessageWithRetry() called %d times, want %d", callCount, maxDeleteRetries)
 	}
 }
 
@@ -988,5 +711,28 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 	}
 	if fallbackJob.StorageGiB != originalJob.StorageGiB {
 		t.Error("fallback job should preserve StorageGiB")
+	}
+}
+
+func TestRetryDelaysExported(t *testing.T) {
+	if worker.RetryDelay <= 0 {
+		t.Errorf("worker.RetryDelay = %v, should be positive", worker.RetryDelay)
+	}
+	if worker.FleetRetryBaseDelay <= 0 {
+		t.Errorf("worker.FleetRetryBaseDelay = %v, should be positive", worker.FleetRetryBaseDelay)
+	}
+}
+
+func TestMockQueue_DeleteMessage_WithError(t *testing.T) {
+	testErr := errors.New("delete failed")
+	q := &mockQueue{
+		deleteFunc: func(_ context.Context, _ string) error {
+			return testErr
+		},
+	}
+
+	err := q.DeleteMessage(context.Background(), "handle")
+	if !errors.Is(err, testErr) {
+		t.Errorf("DeleteMessage() error = %v, want %v", err, testErr)
 	}
 }

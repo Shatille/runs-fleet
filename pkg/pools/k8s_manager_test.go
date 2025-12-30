@@ -52,11 +52,11 @@ func (m *mockStateStore) DeleteK8sPoolConfig(_ context.Context, poolName string)
 	return nil
 }
 
-func createTestDeployment(name, namespace string, replicas int32) *appsv1.Deployment {
+func createTestDeployment(name string, replicas int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: testNamespace,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(replicas),
@@ -71,8 +71,8 @@ func TestK8sManager_ScalePool(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 0),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 0),
+		createTestDeployment("runs-fleet-placeholder-arm64",0),
+		createTestDeployment("runs-fleet-placeholder-amd64",0),
 	)
 
 	stateStore := newMockStateStore()
@@ -191,8 +191,8 @@ func TestK8sManager_DeletePool(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 3),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 2),
+		createTestDeployment("runs-fleet-placeholder-arm64",3),
+		createTestDeployment("runs-fleet-placeholder-amd64",2),
 	)
 
 	stateStore := newMockStateStore()
@@ -552,7 +552,7 @@ func TestK8sManager_PlaceholderDeploymentName(t *testing.T) {
 func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
 	ctx := context.Background()
 
-	arm64Deploy := createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 3)
+	arm64Deploy := createTestDeployment("runs-fleet-placeholder-arm64",3)
 	arm64Deploy.Status.ReadyReplicas = 2
 
 	clientset := fake.NewSimpleClientset(arm64Deploy)
@@ -588,8 +588,8 @@ func TestK8sManager_ReconcileScalesDeployments(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 1),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 1),
+		createTestDeployment("runs-fleet-placeholder-arm64",1),
+		createTestDeployment("runs-fleet-placeholder-amd64",1),
 	)
 
 	stateStore := newMockStateStore()
@@ -623,7 +623,7 @@ func TestK8sManager_ReconcilePoolNotConfigured(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 1),
+		createTestDeployment("runs-fleet-placeholder-arm64",1),
 	)
 	stateStore := newMockStateStore()
 	// No pool config - reconcile should be a no-op
@@ -649,8 +649,8 @@ func TestK8sManager_ScaleToZero(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 5),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 3),
+		createTestDeployment("runs-fleet-placeholder-arm64",5),
+		createTestDeployment("runs-fleet-placeholder-amd64",3),
 	)
 
 	stateStore := newMockStateStore()
@@ -718,8 +718,8 @@ func TestK8sManager_ScalePoolCreateNew(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 0),
-		createTestDeployment("runs-fleet-placeholder-amd64", testNamespace, 0),
+		createTestDeployment("runs-fleet-placeholder-arm64",0),
+		createTestDeployment("runs-fleet-placeholder-amd64",0),
 	)
 
 	stateStore := newMockStateStore()
@@ -763,7 +763,7 @@ func TestK8sManager_ReconcileGetConfigError(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 1),
+		createTestDeployment("runs-fleet-placeholder-arm64",1),
 	)
 	store := &errorStateStore{
 		mockStateStore: mockStateStore{pools: map[string]*state.K8sPoolConfig{
@@ -792,7 +792,7 @@ func TestK8sManager_GetCurrentReplicas(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 3),
+		createTestDeployment("runs-fleet-placeholder-arm64",3),
 	)
 
 	cfg := &config.Config{
@@ -818,7 +818,7 @@ func TestK8sManager_ScaleDeploymentNoChange(t *testing.T) {
 	ctx := context.Background()
 
 	clientset := fake.NewSimpleClientset(
-		createTestDeployment("runs-fleet-placeholder-arm64", testNamespace, 3),
+		createTestDeployment("runs-fleet-placeholder-arm64",3),
 	)
 
 	cfg := &config.Config{
