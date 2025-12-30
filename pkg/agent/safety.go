@@ -30,6 +30,7 @@ type SafetyMonitor struct {
 	startTime     time.Time
 	logger        Logger
 	onTimeout     func()
+	onCheck       func() // Called after each check() for test synchronization
 }
 
 // NewSafetyMonitor creates a new safety monitor.
@@ -45,6 +46,11 @@ func NewSafetyMonitor(maxRuntime time.Duration, logger Logger) *SafetyMonitor {
 // SetTimeoutCallback sets a callback to invoke on timeout.
 func (s *SafetyMonitor) SetTimeoutCallback(cb func()) {
 	s.onTimeout = cb
+}
+
+// SetCheckCallback sets a callback to invoke after each check (used for test synchronization).
+func (s *SafetyMonitor) SetCheckCallback(cb func()) {
+	s.onCheck = cb
 }
 
 // Monitor starts monitoring resources in the background.
@@ -65,6 +71,13 @@ func (s *SafetyMonitor) Monitor(ctx context.Context) {
 
 // check performs safety checks.
 func (s *SafetyMonitor) check() {
+	// Signal check completion for test synchronization
+	defer func() {
+		if s.onCheck != nil {
+			s.onCheck()
+		}
+	}()
+
 	elapsed := time.Since(s.startTime)
 	if elapsed > s.maxRuntime {
 		s.logger.Printf("SAFETY: Maximum runtime exceeded (%v > %v)", elapsed, s.maxRuntime)
