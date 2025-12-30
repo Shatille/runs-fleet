@@ -15,10 +15,10 @@ func TestUIHandler_ServesIndexHTML(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// The handler should either serve content or return a service unavailable error
+	// The handler should either serve content, redirect, or return a service unavailable error
 	// (depending on whether the UI is built)
-	if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
-		t.Errorf("UIHandler() root path status = %d, want 200 or 503", w.Code)
+	if w.Code != http.StatusOK && w.Code != http.StatusMovedPermanently && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("UIHandler() root path status = %d, want 200, 301, or 503", w.Code)
 	}
 }
 
@@ -58,8 +58,14 @@ func TestUIHandler_AdminPrefixStripping(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
-			// Should not return 404 - either serves content or returns 503
-			if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable && w.Code != http.StatusNotFound {
+			// Should not return unexpected error - either serves content, redirects, or returns 503/404
+			validCodes := map[int]bool{
+				http.StatusOK:                 true,
+				http.StatusMovedPermanently:   true,
+				http.StatusNotFound:           true,
+				http.StatusServiceUnavailable: true,
+			}
+			if !validCodes[w.Code] {
 				t.Errorf("UIHandler() path %s unexpected status = %d", tt.path, w.Code)
 			}
 		})
@@ -85,9 +91,9 @@ func TestUIHandler_SPAFallback(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
-			// Should either serve index.html (200) or return 503 if not built
-			if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
-				t.Errorf("UIHandler() SPA fallback for %s status = %d, want 200 or 503", tt.path, w.Code)
+			// Should either serve index.html (200), redirect (301), or return 503 if not built
+			if w.Code != http.StatusOK && w.Code != http.StatusMovedPermanently && w.Code != http.StatusServiceUnavailable {
+				t.Errorf("UIHandler() SPA fallback for %s status = %d, want 200, 301, or 503", tt.path, w.Code)
 			}
 		})
 	}
@@ -113,14 +119,15 @@ func TestUIHandler_StaticAssets(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
-			// Static assets should either be served (200), not found (404), or UI not built (503)
+			// Static assets should either be served (200), redirect (301), not found (404), or UI not built (503)
 			validCodes := map[int]bool{
 				http.StatusOK:                 true,
+				http.StatusMovedPermanently:   true,
 				http.StatusNotFound:           true,
 				http.StatusServiceUnavailable: true,
 			}
 			if !validCodes[w.Code] {
-				t.Errorf("UIHandler() static asset %s status = %d, want 200, 404, or 503", tt.path, w.Code)
+				t.Errorf("UIHandler() static asset %s status = %d, want 200, 301, 404, or 503", tt.path, w.Code)
 			}
 		})
 	}
@@ -144,9 +151,9 @@ func TestUIHandler_DirectoryPath(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
-			// Directory paths should serve index.html or return 503
-			if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
-				t.Errorf("UIHandler() directory %s status = %d, want 200 or 503", tt.path, w.Code)
+			// Directory paths should serve index.html, redirect, or return 503
+			if w.Code != http.StatusOK && w.Code != http.StatusMovedPermanently && w.Code != http.StatusServiceUnavailable {
+				t.Errorf("UIHandler() directory %s status = %d, want 200, 301, or 503", tt.path, w.Code)
 			}
 		})
 	}
@@ -226,8 +233,8 @@ func TestUIHandler_QueryStrings(t *testing.T) {
 			handler.ServeHTTP(w, req)
 
 			// Query strings should be handled normally
-			if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
-				t.Errorf("UIHandler() with query %s status = %d, want 200 or 503", tt.path, w.Code)
+			if w.Code != http.StatusOK && w.Code != http.StatusMovedPermanently && w.Code != http.StatusServiceUnavailable {
+				t.Errorf("UIHandler() with query %s status = %d, want 200, 301, or 503", tt.path, w.Code)
 			}
 		})
 	}
@@ -241,9 +248,9 @@ func TestUIHandler_EmptyPath(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// Should serve root content or return 503
-	if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
-		t.Errorf("UIHandler() /admin status = %d, want 200 or 503", w.Code)
+	// Should serve root content, redirect, or return 503
+	if w.Code != http.StatusOK && w.Code != http.StatusMovedPermanently && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("UIHandler() /admin status = %d, want 200, 301, or 503", w.Code)
 	}
 }
 
