@@ -166,8 +166,24 @@ logging:
 
 # Metrics configuration
 metrics:
-  enabled: true
-  port: 9090
+  # Namespace for all metrics backends (empty = use backend defaults)
+  # Defaults: CloudWatch="RunsFleet", Prometheus/Datadog="runs_fleet"
+  namespace: ""
+
+  # CloudWatch metrics (EC2 mode, enabled by default)
+  cloudwatch:
+    enabled: true
+
+  # Prometheus metrics endpoint
+  prometheus:
+    enabled: false
+    path: "/metrics"
+
+  # Datadog DogStatsD metrics
+  datadog:
+    enabled: false
+    address: "127.0.0.1:8125"
+    tags: [] # Global tags, e.g., ["env:production", "service:runs-fleet"]
 
 # Warm pool configuration (mode: k8s only, placeholder pods for faster job startup)
 warmPool:

@@ -14,7 +14,3 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
-    - name: metrics
-      port: {{ .Values.metrics.port }}
-      targetPort: metrics
-      protocol: TCP
