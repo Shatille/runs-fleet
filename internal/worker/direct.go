@@ -122,7 +122,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 }
 
 // TryDirectProcessing attempts to process a job directly if capacity is available.
-func TryDirectProcessing(processor *DirectProcessor, sem chan struct{}, jobMsg *queue.JobMessage) {
+func TryDirectProcessing(ctx context.Context, processor *DirectProcessor, sem chan struct{}, jobMsg *queue.JobMessage) {
 	if processor == nil || sem == nil {
 		return
 	}
@@ -135,7 +135,7 @@ func TryDirectProcessing(processor *DirectProcessor, sem chan struct{}, jobMsg *
 				}
 			}()
 			defer func() { <-sem }()
-			directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
+			directCtx, cancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 			defer cancel()
 			processor.ProcessJobDirect(directCtx, jobMsg)
 		}()

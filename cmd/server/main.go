@@ -412,7 +412,7 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 		if err != nil || jobMsg == nil {
 			return false, ""
 		}
-		worker.TryDirectProcessing(directProcessor, directProcessorSem, jobMsg)
+		worker.TryDirectProcessing(ctx, directProcessor, directProcessorSem, jobMsg)
 		return true, "Job queued"
 
 	case "completed":
