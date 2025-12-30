@@ -15,9 +15,14 @@ type MessageProcessor func(ctx context.Context, msg queue.Message)
 
 // RunWorkerLoop runs a generic worker loop that polls a queue and processes messages concurrently.
 func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor MessageProcessor) {
-	log.Printf("Starting %s worker loop...", name)
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
+	RunWorkerLoopWithTicker(ctx, name, q, processor, ticker.C)
+}
+
+// RunWorkerLoopWithTicker runs the worker loop with an injectable ticker for testing.
+func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, tick <-chan time.Time) {
+	log.Printf("Starting %s worker loop...", name)
 
 	const maxConcurrency = 5
 	sem := make(chan struct{}, maxConcurrency)
@@ -33,7 +38,7 @@ func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor Me
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tick:
 			timeout := 25 * time.Second
 			if deadline, ok := ctx.Deadline(); ok {
 				remaining := time.Until(deadline)

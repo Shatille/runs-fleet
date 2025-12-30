@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,21 +53,19 @@ func (m *MockQueue) GetReceiveCalls() int {
 func TestRunWorkerLoop_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	mockQueue := &MockQueue{}
+	tick := make(chan time.Time)
 
 	done := make(chan struct{})
 	go func() {
-		RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {})
+		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, tick)
 		close(done)
 	}()
 
-	// Cancel context immediately
 	cancel()
 
-	// Wait for worker to stop
 	select {
 	case <-done:
-		// Success
-	case <-time.After(2 * time.Second):
+	case <-time.After(100 * time.Millisecond):
 		t.Fatal("RunWorkerLoop did not stop on context cancellation")
 	}
 }
@@ -76,78 +75,60 @@ func TestRunWorkerLoop_ProcessesMessages(t *testing.T) {
 	defer cancel()
 
 	var processed int32
-	processingDone := make(chan struct{})
-	processedCount := 3
+	processedCount := int32(3)
+	tick := make(chan time.Time)
 
 	mockQueue := &MockQueue{
 		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-			// Return messages only until we've processed enough
-			if atomic.LoadInt32(&processed) < int32(processedCount) {
-				return []queue.Message{
-					{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"},
-				}, nil
-			}
-			// After processing, signal completion and return empty
-			select {
-			case <-processingDone:
-			default:
-				close(processingDone)
-			}
-			return nil, nil
+			return []queue.Message{
+				{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"},
+			}, nil
 		},
 	}
 
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	})
+	}, tick)
 
-	// Wait for messages to be processed or timeout
-	select {
-	case <-processingDone:
-		// Success
-	case <-time.After(90 * time.Second):
-		t.Fatal("Messages were not processed in time")
+	for atomic.LoadInt32(&processed) < processedCount {
+		tick <- time.Now()
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	if atomic.LoadInt32(&processed) < int32(processedCount) {
+	if atomic.LoadInt32(&processed) < processedCount {
 		t.Errorf("Expected at least %d messages processed, got %d", processedCount, atomic.LoadInt32(&processed))
 	}
-
-	cancel()
 }
 
-func TestRunWorkerLoop_PanicRecovery(_ *testing.T) {
+func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	panicTriggered := int32(0)
+	var panicCount int32
+	tick := make(chan time.Time)
 
 	mockQueue := &MockQueue{
 		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-			// Only return message if panic hasn't been triggered yet
-			if atomic.CompareAndSwapInt32(&panicTriggered, 0, 1) {
-				return []queue.Message{
-					{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"},
-				}, nil
-			}
-			// Wait for a bit to give time for panic recovery
-			time.Sleep(100 * time.Millisecond)
-			return nil, nil
+			return []queue.Message{
+				{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"},
+			}, nil
 		},
 	}
 
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
-		defer func() {
-			_ = recover() // Consume the panic
-		}()
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+		atomic.AddInt32(&panicCount, 1)
 		panic("test panic")
-	})
+	}, tick)
 
-	// The worker should continue running after the panic
-	// Wait briefly to allow panic/recovery to occur
-	time.Sleep(200 * time.Millisecond)
-	// Worker is still running (expected), cancel to clean up
-	cancel()
+	tick <- time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	tick <- time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	if atomic.LoadInt32(&panicCount) < 2 {
+		t.Error("Worker should continue after panic")
+	}
 }
 
 func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
@@ -157,18 +138,17 @@ func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
 	var concurrent int32
 	var maxConcurrent int32
 	var mu sync.Mutex
+	tick := make(chan time.Time)
 
 	processingStarted := make(chan struct{}, 20)
 	allowProcessing := make(chan struct{})
-	allDone := make(chan struct{})
 
 	mockQueue := &MockQueue{
 		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-			// Return 10 messages to test concurrency limit (max is 5)
 			messages := make([]queue.Message, 10)
 			for i := 0; i < 10; i++ {
 				messages[i] = queue.Message{
-					ID:     "msg-" + string(rune('0'+i)),
+					ID:     fmt.Sprintf("msg-%d", i),
 					Body:   `{"run_id": 123}`,
 					Handle: "handle",
 				}
@@ -177,8 +157,7 @@ func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
 		},
 	}
 
-	processedCount := int32(0)
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		current := atomic.AddInt32(&concurrent, 1)
 		mu.Lock()
 		if current > maxConcurrent {
@@ -193,46 +172,36 @@ func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
 
 		<-allowProcessing
 		atomic.AddInt32(&concurrent, -1)
+	}, tick)
 
-		if atomic.AddInt32(&processedCount, 1) >= 10 {
-			select {
-			case <-allDone:
-			default:
-				close(allDone)
-			}
-		}
-	})
+	tick <- time.Now()
 
-	// Wait for concurrent processors to start
 	startedCount := 0
 	for startedCount < 5 {
 		select {
 		case <-processingStarted:
 			startedCount++
-		case <-time.After(60 * time.Second):
+		case <-time.After(100 * time.Millisecond):
 			t.Fatalf("Not enough processors started, got %d", startedCount)
 		}
 	}
 
-	// Give a moment for any additional processors to start
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	mu.Lock()
 	maxConcurrentValue := maxConcurrent
 	mu.Unlock()
 
-	// Max concurrency should be 5 (as defined in RunWorkerLoop)
 	if maxConcurrentValue > 5 {
 		t.Errorf("Max concurrent = %d, expected <= 5", maxConcurrentValue)
 	}
 
-	// Allow processing to complete
 	close(allowProcessing)
-	cancel()
 }
 
 func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
 
 	processingStarted := make(chan struct{})
 	processingCompleted := make(chan struct{})
@@ -248,38 +217,35 @@ func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 
 	receivedOnce := int32(0)
 	go func() {
-		RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 			if atomic.CompareAndSwapInt32(&receivedOnce, 0, 1) {
 				close(processingStarted)
-				// Simulate some work
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 				close(processingCompleted)
 			}
-		})
+		}, tick)
 		close(workerDone)
 	}()
 
-	// Wait for processing to start
+	tick <- time.Now()
+
 	select {
 	case <-processingStarted:
-	case <-time.After(60 * time.Second):
+	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Processing did not start")
 	}
 
-	// Cancel while message is being processed
 	cancel()
 
-	// Worker should wait for in-flight work
 	select {
 	case <-processingCompleted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(200 * time.Millisecond):
 		t.Error("Processing did not complete before worker shutdown")
 	}
 
-	// Worker should now be done
 	select {
 	case <-workerDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Worker did not shut down gracefully")
 	}
 }
@@ -287,28 +253,24 @@ func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 func TestRunWorkerLoop_EmptyMessages(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	tick := make(chan time.Time)
 
 	mockQueue := &MockQueue{
 		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-			// Always return empty messages
 			return []queue.Message{}, nil
 		},
 	}
 
 	processorCalled := int32(0)
-	done := make(chan struct{})
 
-	go func() {
-		// Run for a short time and verify processor is never called
-		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer runCancel()
-		RunWorkerLoop(runCtx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
-			atomic.AddInt32(&processorCalled, 1)
-		})
-		close(done)
-	}()
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+		atomic.AddInt32(&processorCalled, 1)
+	}, tick)
 
-	<-done
+	for i := 0; i < 5; i++ {
+		tick <- time.Now()
+	}
+	time.Sleep(50 * time.Millisecond)
 
 	if atomic.LoadInt32(&processorCalled) > 0 {
 		t.Error("Processor should not be called when no messages are received")
@@ -317,56 +279,51 @@ func TestRunWorkerLoop_EmptyMessages(t *testing.T) {
 
 func TestRunWorkerLoop_ReceiveError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tick := make(chan time.Time)
 
 	errorCount := int32(0)
-	done := make(chan struct{})
 
 	mockQueue := &MockQueue{
 		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-			count := atomic.AddInt32(&errorCount, 1)
-			if count >= 2 {
-				close(done)
-			}
+			atomic.AddInt32(&errorCount, 1)
 			return nil, context.DeadlineExceeded
 		},
 	}
 
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {})
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, tick)
 
-	// Wait for a couple errors to occur (proving the loop continues)
-	select {
-	case <-done:
-		// Success - loop continued after errors
-	case <-time.After(60 * time.Second):
+	tick <- time.Now()
+	tick <- time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	if atomic.LoadInt32(&errorCount) < 2 {
 		t.Fatal("Worker loop did not continue after receive error")
 	}
-
-	cancel()
 }
 
 func TestRunWorkerLoop_ContextDeadline(t *testing.T) {
-	// Test that context deadline is respected in timeout calculation
 	deadline := time.Now().Add(10 * time.Second)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	tick := make(chan time.Time)
 
+	deadlineVerified := int32(0)
 	mockQueue := &MockQueue{
 		ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
-			// Verify context has a deadline
-			if _, ok := ctx.Deadline(); !ok {
-				t.Error("Expected context to have a deadline")
+			if _, ok := ctx.Deadline(); ok {
+				atomic.StoreInt32(&deadlineVerified, 1)
 			}
 			return nil, nil
 		},
 	}
 
-	done := make(chan struct{})
-	go func() {
-		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer runCancel()
-		RunWorkerLoop(runCtx, "test", mockQueue, func(_ context.Context, _ queue.Message) {})
-		close(done)
-	}()
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, tick)
 
-	<-done
+	tick <- time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	if atomic.LoadInt32(&deadlineVerified) != 1 {
+		t.Error("Expected context to have a deadline")
+	}
 }
