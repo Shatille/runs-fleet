@@ -409,6 +409,7 @@ func TestHandlerRunContextCancellation(t *testing.T) {
 
 func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 	receiveCallCount := 0
+	receiveCalled := make(chan struct{}, 1)
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
 			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
@@ -416,6 +417,10 @@ func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 				_, ok := ctx.Deadline()
 				if !ok {
 					t.Error("Expected context with deadline, got none")
+				}
+				select {
+				case receiveCalled <- struct{}{}:
+				default:
 				}
 				return nil, nil
 			},
@@ -428,13 +433,18 @@ func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for at least one ReceiveMessages call
+	select {
+	case <-receiveCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for ReceiveMessages to be called")
+	}
 	cancel()
 	<-done
 
@@ -446,6 +456,7 @@ func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 	var capturedTime time.Time
 	var capturedDeadline time.Time
+	receiveCalled := make(chan struct{}, 1)
 	handler := &Handler{
 		queueClient: &MockQueueAPI{
 			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
@@ -455,6 +466,10 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 					t.Fatal("Expected context with deadline, got none")
 				}
 				capturedDeadline = deadline
+				select {
+				case receiveCalled <- struct{}{}:
+				default:
+				}
 				return nil, nil
 			},
 		},
@@ -466,13 +481,18 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for ReceiveMessages to be called and capture deadline
+	select {
+	case <-receiveCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for ReceiveMessages to be called")
+	}
 	cancel()
 	<-done
 
@@ -489,6 +509,8 @@ func TestConcurrentEventProcessing(t *testing.T) {
 	var processStartTimes []time.Time
 	var mu sync.Mutex
 	var messageReturned bool
+	var wg sync.WaitGroup
+	wg.Add(numMessages)
 
 	messages := make([]queue.Message, numMessages)
 	for i := 0; i < numMessages; i++ {
@@ -507,6 +529,7 @@ func TestConcurrentEventProcessing(t *testing.T) {
 			processStartTimes = append(processStartTimes, time.Now())
 			mu.Unlock()
 			time.Sleep(processingDelay)
+			wg.Done()
 			return nil
 		},
 	}
@@ -534,14 +557,24 @@ func TestConcurrentEventProcessing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	// Wait long enough for all messages to be processed (10 messages * 10ms / 5 concurrency = 20ms + overhead)
-	time.Sleep(100 * time.Millisecond)
+	// Wait for all messages to be processed
+	allProcessed := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(allProcessed)
+	}()
+
+	select {
+	case <-allProcessed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for all messages to be processed")
+	}
 	cancel()
 	<-done
 
@@ -575,6 +608,7 @@ func TestBoundedConcurrency(t *testing.T) {
 	var activeTasks int32
 	var maxActive int32
 	var mu sync.Mutex
+	concurrencyObserved := make(chan struct{}, 1)
 
 	messages := make([]queue.Message, numMessages)
 	for i := 0; i < numMessages; i++ {
@@ -594,6 +628,13 @@ func TestBoundedConcurrency(t *testing.T) {
 			mu.Lock()
 			if active > maxActive {
 				maxActive = active
+			}
+			// Signal when we've observed concurrent execution
+			if active >= 2 {
+				select {
+				case concurrencyObserved <- struct{}{}:
+				default:
+				}
 			}
 			mu.Unlock()
 
@@ -620,13 +661,18 @@ func TestBoundedConcurrency(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait until we observe concurrent execution
+	select {
+	case <-concurrencyObserved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for concurrent execution to be observed")
+	}
 	cancel()
 	<-done
 
@@ -645,11 +691,16 @@ func TestBoundedConcurrency(t *testing.T) {
 func TestMetricsCallsHaveTimeout(t *testing.T) {
 	var capturedCtx context.Context
 	var mu sync.Mutex
+	metricsCalled := make(chan struct{}, 1)
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(ctx context.Context) error {
 			mu.Lock()
 			capturedCtx = ctx
 			mu.Unlock()
+			select {
+			case metricsCalled <- struct{}{}:
+			default:
+			}
 			return nil
 		},
 	}
@@ -677,13 +728,18 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for PublishSpotInterruption to be called
+	select {
+	case <-metricsCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for PublishSpotInterruption to be called")
+	}
 	cancel()
 	<-done
 
@@ -721,15 +777,22 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 
 	callCount := 0
 	var mu sync.Mutex
+	bothProcessed := make(chan struct{}, 1)
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(_ context.Context) error {
 			mu.Lock()
 			callCount++
-			isFirst := callCount == 1
+			currentCount := callCount
 			mu.Unlock()
 
-			if isFirst {
+			if currentCount == 1 {
 				time.Sleep(100 * time.Millisecond)
+			}
+			if currentCount >= 2 {
+				select {
+				case bothProcessed <- struct{}{}:
+				default:
+				}
 			}
 			return nil
 		},
@@ -752,18 +815,27 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for both messages to be processed
+	select {
+	case <-bothProcessed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for both messages to be processed")
+	}
 	cancel()
 	<-done
 
-	if callCount != 2 {
-		t.Errorf("Expected 2 metrics calls, got %d", callCount)
+	mu.Lock()
+	finalCount := callCount
+	mu.Unlock()
+
+	if finalCount < 2 {
+		t.Errorf("Expected at least 2 metrics calls, got %d", finalCount)
 	}
 }
 
@@ -802,12 +874,20 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			callCount := 0
 			var mu sync.Mutex
 			messageReturned := false
+			expectedCallsReached := make(chan struct{}, 1)
 
 			mockMetrics := &MockMetricsAPI{
 				PublishSpotInterruptionFunc: func(_ context.Context) error {
 					mu.Lock()
 					callCount++
 					currentCall := callCount
+					// Signal when we've reached the expected number of calls
+					if currentCall >= tt.expectedCalls {
+						select {
+						case expectedCallsReached <- struct{}{}:
+						default:
+						}
+					}
 					mu.Unlock()
 
 					if currentCall <= tt.failCount {
@@ -846,13 +926,18 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			done := make(chan bool)
+			done := make(chan struct{})
 			go func() {
 				handler.Run(ctx)
-				done <- true
+				close(done)
 			}()
 
-			time.Sleep(50 * time.Millisecond)
+			// Wait for expected number of calls to be reached
+			select {
+			case <-expectedCallsReached:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Timeout waiting for expected calls to be reached")
+			}
 			cancel()
 			<-done
 
@@ -872,6 +957,7 @@ func TestPanicRecovery(t *testing.T) {
 	processCount := 0
 	deletedReceipts := make(map[string]bool)
 	var mu sync.Mutex
+	bothDeleted := make(chan struct{}, 1)
 
 	messages := []queue.Message{
 		{
@@ -893,12 +979,14 @@ func TestPanicRecovery(t *testing.T) {
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(_ context.Context) error {
 			mu.Lock()
-			defer mu.Unlock()
 			processCount++
-			if processCount == 1 {
+			currentCount := processCount
+			if currentCount == 1 {
 				panicCount++
+				mu.Unlock()
 				panic("test panic in processEvent")
 			}
+			mu.Unlock()
 			return nil
 		},
 	}
@@ -915,8 +1003,15 @@ func TestPanicRecovery(t *testing.T) {
 			},
 			DeleteMessageFunc: func(_ context.Context, receiptHandle string) error {
 				mu.Lock()
-				defer mu.Unlock()
 				deletedReceipts[receiptHandle] = true
+				// Signal when both receipts have been deleted
+				if deletedReceipts["receipt-panic"] && deletedReceipts["receipt-normal"] {
+					select {
+					case bothDeleted <- struct{}{}:
+					default:
+					}
+				}
+				mu.Unlock()
 				return nil
 			},
 		},
@@ -928,13 +1023,18 @@ func TestPanicRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	done := make(chan bool)
+	done := make(chan struct{})
 	go func() {
 		handler.Run(ctx)
-		done <- true
+		close(done)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for both messages to be deleted
+	select {
+	case <-bothDeleted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for both messages to be deleted")
+	}
 	cancel()
 	<-done
 
