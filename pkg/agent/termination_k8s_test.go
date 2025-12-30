@@ -68,7 +68,7 @@ func TestK8sTerminator_ImplementsInstanceTerminator(_ *testing.T) {
 func TestNewK8sTerminator(t *testing.T) {
 	logger := &mockLogger{}
 	telemetry := &mockTelemetryClient{}
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	terminator := NewK8sTerminator(clientset, testNamespace, telemetry, logger)
 
@@ -336,7 +336,7 @@ func TestK8sTerminator_CleanupResources(t *testing.T) {
 		configMapName := podName + "-config"
 
 		// Create fake clientset with pre-existing resources
-		clientset := fake.NewSimpleClientset(
+		clientset := fake.NewClientset(
 			&corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
@@ -380,7 +380,7 @@ func TestK8sTerminator_CleanupResources(t *testing.T) {
 		podName := "runner-nonexistent"
 
 		// Create fake clientset with no resources
-		clientset := fake.NewSimpleClientset()
+		clientset := fake.NewClientset()
 
 		logger := &mockLogger{}
 		terminator := NewK8sTerminator(clientset, namespace, nil, logger)
@@ -415,7 +415,7 @@ func TestK8sTerminator_CleanupResources(t *testing.T) {
 		secretName := podName + "-secrets"
 		configMapName := podName + "-config"
 
-		clientset := fake.NewSimpleClientset(
+		clientset := fake.NewClientset(
 			&corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,

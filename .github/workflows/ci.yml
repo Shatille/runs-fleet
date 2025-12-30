@@ -76,12 +76,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bin
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-golangci-v2.1.6
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-golangci-v2.7.2
 
       - name: Install golangci-lint
         run: |
           mkdir -p bin
-          test -f ./bin/golangci-lint || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b ./bin v2.1.6
+          test -f ./bin/golangci-lint || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b ./bin v2.7.2
 
       - name: Lint
         run: |

@@ -3,20 +3,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/internal/handler"
+	"github.com/Shavakan/runs-fleet/internal/worker"
 	"github.com/Shavakan/runs-fleet/pkg/admin"
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
@@ -29,7 +25,6 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
-	"github.com/Shavakan/runs-fleet/pkg/provider"
 	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
@@ -42,124 +37,155 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	maxDeleteRetries      = 3
-	maxFleetCreateRetries = 3
-	maxJobRetries         = 2 // Max re-queue attempts for failed jobs (total attempts = maxJobRetries + 1)
+func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	runnerNamePrefix = "runs-fleet-" // Prefix for runner names to extract instance ID
-)
+	log.Println("Starting runs-fleet server...")
 
-// Retry delays - variables to allow testing with shorter durations.
-var (
-	retryDelay          = 1 * time.Second
-	fleetRetryBaseDelay = 2 * time.Second
-)
-
-// jobProcessor handles immediate job processing from webhooks.
-// It encapsulates all dependencies needed to process a job without going through SQS.
-type jobProcessor struct {
-	fleet       *fleet.Manager
-	pool        *pools.Manager
-	metrics     metrics.Publisher
-	runner      *runner.Manager
-	db          *db.Client
-	cfg         *config.Config
-	subnetIndex *uint64
-}
-
-// processJobDirect processes a job immediately without SQS.
-// Returns true if fleet was created, false if job was already claimed or processing failed.
-func (p *jobProcessor) processJobDirect(ctx context.Context, job *queue.JobMessage) bool {
-	log.Printf("Direct processing job for run %d", job.RunID)
-
-	if p.db != nil && p.db.HasJobsTable() {
-		if err := p.db.ClaimJob(ctx, job.JobID); err != nil {
-			if errors.Is(err, db.ErrJobAlreadyClaimed) {
-				log.Printf("Job %d already claimed (direct path)", job.JobID)
-				return false
-			}
-			log.Printf("Job %d claim failed (direct path): %v, deferring to queue", job.JobID, err)
-			if p.metrics != nil {
-				if metricErr := p.metrics.PublishJobClaimFailure(ctx); metricErr != nil {
-					log.Printf("Failed to publish job claim failure metric: %v", metricErr)
-				}
-			}
-			return false
-		}
-	}
-
-	spec := &fleet.LaunchSpec{
-		RunID:         job.RunID,
-		InstanceType:  job.InstanceType,
-		InstanceTypes: job.InstanceTypes,
-		SubnetID:      selectSubnet(p.cfg, p.subnetIndex),
-		Spot:          job.Spot,
-		Pool:          job.Pool,
-		ForceOnDemand: job.ForceOnDemand,
-		RetryCount:    job.RetryCount,
-		Region:        job.Region,
-		Environment:   job.Environment,
-		OS:            job.OS,
-		Arch:          job.Arch,
-		StorageGiB:    job.StorageGiB,
-	}
-
-	instanceIDs, err := createFleetWithRetry(ctx, p.fleet, spec)
+	cfg, err := config.Load()
 	if err != nil {
-		log.Printf("Direct processing: failed to create fleet for job %d: %v", job.JobID, err)
-		if p.db != nil && p.db.HasJobsTable() {
-			if claimErr := p.db.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
-				log.Printf("Direct processing: failed to delete job claim for %d: %v", job.JobID, claimErr)
-			}
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
+	if err != nil {
+		log.Fatalf("Failed to load AWS config: %v", err)
+	}
+
+	jobQueue := initJobQueue(awsCfg, cfg)
+	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
+	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
+	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
+
+	var fleetManager *fleet.Manager
+	var poolManager *pools.Manager
+	var eventHandler *events.Handler
+	var k8sProvider *k8s.Provider
+	var k8sPoolProvider *k8s.PoolProvider
+
+	if cfg.IsK8sBackend() {
+		log.Printf("Initializing K8s backend (namespace: %s)", cfg.KubeNamespace)
+		k8sProvider, err = k8s.NewProvider(cfg)
+		if err != nil {
+			log.Fatalf("Failed to create K8s provider: %v", err)
 		}
-		return false
+		k8sPoolProvider = k8s.NewPoolProvider(k8sProvider.Clientset(), cfg)
+		log.Println("K8s provider and pool provider initialized")
+	} else {
+		log.Println("Initializing EC2 backend")
+		eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
+		fleetManager = fleet.NewManager(awsCfg, cfg)
+		poolManager = pools.NewManager(dbClient, fleetManager, cfg)
+		eventHandler = events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 	}
 
-	if p.db != nil && p.db.HasJobsTable() {
-		for _, instanceID := range instanceIDs {
-			jobRecord := &db.JobRecord{
-				JobID:        job.JobID,
-				RunID:        job.RunID,
-				Repo:         job.Repo,
-				InstanceID:   instanceID,
-				InstanceType: job.InstanceType,
-				Pool:         job.Pool,
-				Spot:         job.Spot,
-				RetryCount:   job.RetryCount,
-			}
-			if err := p.db.SaveJob(ctx, jobRecord); err != nil {
-				log.Printf("Direct processing: failed to save job record: %v", err)
-			}
+	if poolManager != nil {
+		ec2Client := ec2.NewFromConfig(awsCfg)
+		poolManager.SetEC2Client(ec2Client)
+		log.Println("Pool manager initialized with EC2 client for reconciliation")
+	}
+
+	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
+
+	var terminationHandler *termination.Handler
+	var housekeepingHandler *housekeeping.Handler
+	var housekeepingScheduler *housekeeping.Scheduler
+	if cfg.IsEC2Backend() {
+		if cfg.TerminationQueueURL != "" {
+			terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
+			ssmClient := ssm.NewFromConfig(awsCfg)
+			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
 		}
+		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher, dbClient)
 	}
 
-	if p.runner != nil {
-		for _, instanceID := range instanceIDs {
-			label := buildRunnerLabel(job)
-			prepareReq := runner.PrepareRunnerRequest{
-				InstanceID: instanceID,
-				JobID:      fmt.Sprintf("%d", job.JobID),
-				RunID:      fmt.Sprintf("%d", job.RunID),
-				Repo:       job.Repo,
-				Labels:     []string{label},
-			}
-			if err := p.runner.PrepareRunner(ctx, prepareReq); err != nil {
-				log.Printf("Direct processing: failed to prepare runner: %v", err)
-			}
+	runnerManager := initRunnerManager(awsCfg, cfg)
+
+	var subnetIndex uint64
+	var directProcessor *worker.DirectProcessor
+	var directProcessorSem chan struct{}
+	if cfg.IsEC2Backend() {
+		directProcessor = &worker.DirectProcessor{
+			Fleet:       fleetManager,
+			Pool:        poolManager,
+			Metrics:     metricsPublisher,
+			Runner:      runnerManager,
+			DB:          dbClient,
+			Config:      cfg,
+			SubnetIndex: &subnetIndex,
 		}
+		directProcessorSem = make(chan struct{}, 10)
 	}
 
-	for _, instanceID := range instanceIDs {
-		p.pool.MarkInstanceBusy(instanceID)
+	mux := setupHTTPRoutes(cfg, jobQueue, dbClient, cacheServer, metricsPublisher, prometheusHandler, directProcessor, directProcessorSem)
+
+	server := &http.Server{
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
-	if err := p.metrics.PublishFleetSizeIncrement(ctx); err != nil {
-		log.Printf("Direct processing: failed to publish metric: %v", err)
+	if cfg.IsK8sBackend() {
+		go worker.RunK8sWorker(ctx, worker.K8sWorkerDeps{
+			Queue:        jobQueue,
+			Provider:     k8sProvider,
+			PoolProvider: k8sPoolProvider,
+			Metrics:      metricsPublisher,
+			Runner:       runnerManager,
+			DB:           dbClient,
+			Config:       cfg,
+		})
+		go k8sPoolProvider.ReconcileLoop(ctx)
+	} else {
+		go worker.RunEC2Worker(ctx, worker.EC2WorkerDeps{
+			Queue:       jobQueue,
+			Fleet:       fleetManager,
+			Pool:        poolManager,
+			Metrics:     metricsPublisher,
+			Runner:      runnerManager,
+			DB:          dbClient,
+			Config:      cfg,
+			SubnetIndex: &subnetIndex,
+		})
+		go poolManager.ReconcileLoop(ctx)
+		go eventHandler.Run(ctx)
 	}
 
-	log.Printf("Direct processing: launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
-	return true
+	if terminationHandler != nil {
+		go terminationHandler.Run(ctx)
+	}
+	if housekeepingHandler != nil {
+		go housekeepingHandler.Run(ctx)
+	}
+	if housekeepingScheduler != nil {
+		go housekeepingScheduler.Run(ctx)
+	}
+
+	go func() {
+		log.Printf("Server listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("Shutdown signal received, gracefully stopping...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
+	defer shutdownCancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server shutdown failed: %v", err)
+	}
+
+	if err := metricsPublisher.Close(); err != nil {
+		log.Printf("Metrics publisher close failed: %v", err)
+	}
+
+	log.Println("Server stopped")
 }
 
 func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
@@ -233,19 +259,18 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, metricsPublisher me
 	housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
 	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, housekeepingMetrics, costReporter)
 
-	// Set pool DB for ephemeral pool cleanup
 	if dbClient != nil {
 		tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
 	}
 
-	handler := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
+	h := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
 
 	schedulerCfg := housekeeping.DefaultSchedulerConfig()
 	scheduler := housekeeping.NewSchedulerFromConfig(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
 	scheduler.SetMetrics(metricsPublisher)
 
 	log.Printf("Housekeeping handler and scheduler initialized with queue: %s", cfg.HousekeepingQueueURL)
-	return handler, scheduler
+	return h, scheduler
 }
 
 func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http.Handler) {
@@ -302,94 +327,7 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 	return metrics.NewMultiPublisher(publishers...), prometheusHandler
 }
 
-func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	log.Println("Starting runs-fleet server...")
-
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
-	if err != nil {
-		log.Fatalf("Failed to load AWS config: %v", err)
-	}
-
-	// Initialize queue based on backend mode
-	jobQueue := initJobQueue(awsCfg, cfg)
-
-	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
-	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
-
-	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
-
-	// Backend-specific initialization
-	var fleetManager *fleet.Manager
-	var poolManager *pools.Manager
-	var eventHandler *events.Handler
-	var k8sProvider *k8s.Provider
-	var k8sPoolProvider *k8s.PoolProvider
-
-	if cfg.IsK8sBackend() {
-		log.Printf("Initializing K8s backend (namespace: %s)", cfg.KubeNamespace)
-		var err error
-		k8sProvider, err = k8s.NewProvider(cfg)
-		if err != nil {
-			log.Fatalf("Failed to create K8s provider: %v", err)
-		}
-		k8sPoolProvider = k8s.NewPoolProvider(k8sProvider.Clientset(), cfg)
-		log.Println("K8s provider and pool provider initialized")
-	} else {
-		log.Println("Initializing EC2 backend")
-		eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
-		fleetManager = fleet.NewManager(awsCfg, cfg)
-		poolManager = pools.NewManager(dbClient, fleetManager, cfg)
-		eventHandler = events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
-	}
-
-	// Backend-specific setup
-	if poolManager != nil {
-		ec2Client := ec2.NewFromConfig(awsCfg)
-		poolManager.SetEC2Client(ec2Client)
-		log.Println("Pool manager initialized with EC2 client for reconciliation")
-	}
-
-	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
-
-	// EC2-specific handlers (SSM-based termination and EC2 housekeeping)
-	var terminationHandler *termination.Handler
-	var housekeepingHandler *housekeeping.Handler
-	var housekeepingScheduler *housekeeping.Scheduler
-	if cfg.IsEC2Backend() {
-		if cfg.TerminationQueueURL != "" {
-			terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
-			ssmClient := ssm.NewFromConfig(awsCfg)
-			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, ssmClient, cfg)
-		}
-		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, metricsPublisher, dbClient)
-	}
-
-	runnerManager := initRunnerManager(awsCfg, cfg)
-
-	var subnetIndex uint64
-	var directProcessor *jobProcessor
-	var directProcessorSem chan struct{}
-	if cfg.IsEC2Backend() {
-		directProcessor = &jobProcessor{
-			fleet:       fleetManager,
-			pool:        poolManager,
-			metrics:     metricsPublisher,
-			runner:      runnerManager,
-			db:          dbClient,
-			cfg:         cfg,
-			subnetIndex: &subnetIndex,
-		}
-		directProcessorSem = make(chan struct{}, 10) // Limit concurrent direct processing
-	}
-
+func setupHTTPRoutes(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, cacheServer *cache.Server, metricsPublisher metrics.Publisher, prometheusHandler http.Handler, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -418,620 +356,9 @@ func main() {
 
 	mux.HandleFunc("/webhook", makeWebhookHandler(cfg, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem))
 
-	server := &http.Server{
-		Addr:         ":8080",
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	if cfg.IsK8sBackend() {
-		go runK8sWorker(ctx, jobQueue, k8sProvider, k8sPoolProvider, metricsPublisher, runnerManager, dbClient, cfg)
-		go k8sPoolProvider.ReconcileLoop(ctx)
-	} else {
-		go runWorker(ctx, jobQueue, fleetManager, poolManager, metricsPublisher, runnerManager, dbClient, cfg, &subnetIndex)
-		go poolManager.ReconcileLoop(ctx)
-		go eventHandler.Run(ctx)
-	}
-
-	if terminationHandler != nil {
-		go terminationHandler.Run(ctx)
-	}
-
-	if housekeepingHandler != nil {
-		go housekeepingHandler.Run(ctx)
-	}
-
-	if housekeepingScheduler != nil {
-		go housekeepingScheduler.Run(ctx)
-	}
-
-	go func() {
-		log.Printf("Server listening on %s", server.Addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
-		}
-	}()
-
-	<-ctx.Done()
-	log.Println("Shutdown signal received, gracefully stopping...")
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
-	defer shutdownCancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server shutdown failed: %v", err)
-	}
-
-	if err := metricsPublisher.Close(); err != nil {
-		log.Printf("Metrics publisher close failed: %v", err)
-	}
-
-	log.Println("Server stopped")
+	return mux
 }
 
-func handleWorkflowJob(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
-	log.Printf("Received workflow_job queued: %s", event.GetWorkflowJob().GetName())
-
-	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
-	if err != nil {
-		log.Printf("Skipping job (no runs-fleet labels): %v", err)
-		return nil, nil
-	}
-
-	runID, err := strconv.ParseInt(jobConfig.RunID, 10, 64)
-	if err != nil {
-		log.Printf("Invalid run_id in label %q: %v", jobConfig.RunID, err)
-		return nil, nil
-	}
-
-	// Handle ephemeral pool creation/update
-	if jobConfig.Pool != "" && dbc != nil {
-		if err := ensureEphemeralPool(ctx, dbc, jobConfig); err != nil {
-			log.Printf("Failed to ensure ephemeral pool %s: %v", jobConfig.Pool, err)
-			// Continue anyway - job will cold-start if pool doesn't exist
-		}
-	}
-
-	msg := &queue.JobMessage{
-		JobID:         event.GetWorkflowJob().GetID(),
-		RunID:         runID,
-		Repo:          event.GetRepo().GetFullName(), // owner/repo for repo-level registration
-		InstanceType:  jobConfig.InstanceType,
-		Pool:          jobConfig.Pool,
-		Spot:          jobConfig.Spot,
-		OriginalLabel: jobConfig.OriginalLabel,
-		// Sprint 4 features
-		Region:      jobConfig.Region,      // Phase 3: Multi-region support
-		Environment: jobConfig.Environment, // Phase 6: Per-stack environments
-		OS:          jobConfig.OS,          // Phase 4: Windows support
-		Arch:        jobConfig.Arch,        // Phase 4: Architecture support
-		// Flexible instance selection (Phase 10)
-		InstanceTypes: jobConfig.InstanceTypes,
-		// Storage configuration
-		StorageGiB: jobConfig.StorageGiB,
-	}
-
-	if err := q.SendMessage(ctx, msg); err != nil {
-		log.Printf("Failed to enqueue job: %v", err)
-		return nil, fmt.Errorf("failed to enqueue job: %w", err)
-	}
-
-	if err := m.PublishJobQueued(ctx); err != nil {
-		log.Printf("Failed to publish job queued metric: %v", err)
-	}
-	if err := m.PublishQueueDepth(ctx, 1); err != nil {
-		log.Printf("Failed to publish queue depth metric: %v", err)
-	}
-	if len(jobConfig.InstanceTypes) > 1 {
-		log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s, instanceTypes=%d)",
-			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment, len(jobConfig.InstanceTypes))
-	} else {
-		log.Printf("Enqueued job for run %s (os=%s, arch=%s, region=%s, env=%s)",
-			jobConfig.RunID, jobConfig.OS, jobConfig.Arch, jobConfig.Region, jobConfig.Environment)
-	}
-	return msg, nil
-}
-
-// ensureEphemeralPool creates or updates an ephemeral pool for the given job config.
-// If an explicit (non-ephemeral) pool config exists, it does nothing.
-// If an ephemeral pool exists, it updates the last job time.
-// If no pool exists, it creates a new ephemeral pool with the job's instance spec.
-// Uses conditional writes to prevent race conditions when multiple jobs try to create the same pool.
-func ensureEphemeralPool(ctx context.Context, dbc *db.Client, jobConfig *gh.JobConfig) error {
-	poolConfig, err := dbc.GetPoolConfig(ctx, jobConfig.Pool)
-	if err != nil {
-		return fmt.Errorf("failed to get pool config: %w", err)
-	}
-
-	if poolConfig != nil {
-		if !poolConfig.Ephemeral {
-			// Explicit config exists - don't touch
-			return nil
-		}
-		// Ephemeral pool exists - update activity timestamp
-		if err := dbc.TouchPoolActivity(ctx, jobConfig.Pool); err != nil {
-			return fmt.Errorf("failed to update pool activity: %w", err)
-		}
-		log.Printf("Updated ephemeral pool %s activity", jobConfig.Pool)
-		return nil
-	}
-
-	// Pool doesn't exist - create ephemeral pool with conditional write
-	config := &db.PoolConfig{
-		PoolName:           jobConfig.Pool,
-		Ephemeral:          true,
-		DesiredRunning:     1, // Start with 1, auto-scaling will adjust
-		DesiredStopped:     0,
-		IdleTimeoutMinutes: 30,
-		LastJobTime:        time.Now(),
-		// Inherit instance spec from job
-		InstanceType: jobConfig.InstanceType,
-		Arch:         jobConfig.Arch,
-		CPUMin:       jobConfig.CPUMin,
-		CPUMax:       jobConfig.CPUMax,
-		RAMMin:       jobConfig.RAMMin,
-		RAMMax:       jobConfig.RAMMax,
-		Families:     jobConfig.Families,
-	}
-
-	if err := dbc.CreateEphemeralPool(ctx, config); err != nil {
-		if errors.Is(err, db.ErrPoolAlreadyExists) {
-			// Race condition: another job created the pool between GetPoolConfig and CreateEphemeralPool
-			// Update activity timestamp instead
-			if touchErr := dbc.TouchPoolActivity(ctx, jobConfig.Pool); touchErr != nil {
-				log.Printf("Pool %s created by concurrent job, failed to update activity: %v", jobConfig.Pool, touchErr)
-			} else {
-				log.Printf("Pool %s created by concurrent job, updated activity", jobConfig.Pool)
-			}
-			return nil
-		}
-		return fmt.Errorf("failed to create ephemeral pool: %w", err)
-	}
-
-	log.Printf("Created ephemeral pool %s (arch=%s, cpu=%d-%d, ram=%.1f-%.1f)",
-		jobConfig.Pool, jobConfig.Arch, jobConfig.CPUMin, jobConfig.CPUMax, jobConfig.RAMMin, jobConfig.RAMMax)
-	return nil
-}
-
-// handleJobFailure processes workflow_job completed events with failure conclusion.
-// If the job failed due to runner death (not a normal job failure), it re-queues the job.
-// Returns (true, nil) if job was re-queued, (false, nil) if skipped, or (false, error) on error.
-func handleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (bool, error) {
-	job := event.GetWorkflowJob()
-	runnerName := job.GetRunnerName()
-
-	// Skip if no runner was assigned (job failed before runner picked it up)
-	if runnerName == "" {
-		log.Printf("Job %d failed with no runner assigned, skipping re-queue", job.GetID())
-		return false, nil
-	}
-
-	// Extract instance ID from runner name (format: runs-fleet-{instance-id})
-	if !strings.HasPrefix(runnerName, runnerNamePrefix) {
-		log.Printf("Job %d failed on non-runs-fleet runner %q, skipping", job.GetID(), runnerName)
-		return false, nil
-	}
-	instanceID := strings.TrimPrefix(runnerName, runnerNamePrefix)
-
-	// Check if this is a runs-fleet managed job by parsing labels
-	_, err := gh.ParseLabels(job.Labels)
-	if err != nil {
-		log.Printf("Job %d not a runs-fleet job, skipping: %v", job.GetID(), err)
-		return false, nil
-	}
-
-	// Skip if jobs table not configured
-	if !dbc.HasJobsTable() {
-		log.Printf("Jobs table not configured, cannot check job state for instance %s", instanceID)
-		return false, nil
-	}
-
-	// Look up job in DynamoDB
-	jobInfo, err := dbc.GetJobByInstance(ctx, instanceID)
-	if err != nil {
-		return false, fmt.Errorf("failed to get job for instance %s: %w", instanceID, err)
-	}
-
-	// If no job record found, it was already cleaned up or never tracked
-	if jobInfo == nil {
-		log.Printf("No job record for instance %s, skipping re-queue", instanceID)
-		return false, nil
-	}
-
-	// Check retry limit
-	if jobInfo.RetryCount >= maxJobRetries {
-		log.Printf("Job %d exceeded max retries (%d), not re-queuing", jobInfo.JobID, maxJobRetries)
-		return false, nil
-	}
-
-	// Validate required fields before re-queuing
-	if jobInfo.RunID == 0 || jobInfo.Repo == "" {
-		log.Printf("Invalid job data for instance %s (RunID=%d, Repo=%q), skipping re-queue",
-			instanceID, jobInfo.RunID, jobInfo.Repo)
-		return false, nil
-	}
-
-	// Atomically mark job as requeued (only succeeds if status is "running")
-	// This prevents duplicate re-queuing from concurrent webhooks or EventBridge
-	marked, err := dbc.MarkJobRequeued(ctx, instanceID)
-	if err != nil {
-		return false, fmt.Errorf("failed to mark job requeued: %w", err)
-	}
-	if !marked {
-		// Job was already in terminating/requeued state - EventBridge or another handler got it first
-		log.Printf("Job %d for instance %s already handled (not in running state), skipping", jobInfo.JobID, instanceID)
-		return false, nil
-	}
-
-	// Re-queue with ForceOnDemand to avoid another spot interruption
-	// Note: Some fields (OriginalLabel, Region, etc.) are not stored in JobRecord.
-	// Re-queued jobs use basic config. Full field storage is a future enhancement.
-	requeueMsg := &queue.JobMessage{
-		JobID:         jobInfo.JobID,
-		RunID:         jobInfo.RunID,
-		Repo:          jobInfo.Repo,
-		InstanceType:  jobInfo.InstanceType,
-		Pool:          jobInfo.Pool,
-		Spot:          false, // ForceOnDemand uses on-demand instances
-		RetryCount:    jobInfo.RetryCount + 1,
-		ForceOnDemand: true,
-	}
-
-	if err := q.SendMessage(ctx, requeueMsg); err != nil {
-		return false, fmt.Errorf("failed to re-queue job %d: %w", jobInfo.JobID, err)
-	}
-
-	log.Printf("Re-queued failed job %d from instance %s (RetryCount=%d, ForceOnDemand=true)",
-		jobInfo.JobID, instanceID, requeueMsg.RetryCount)
-
-	// Publish metric for job retry
-	if err := m.PublishJobQueued(ctx); err != nil {
-		log.Printf("Failed to publish job queued metric: %v", err)
-	}
-
-	return true, nil
-}
-
-func runWorker(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config, subnetIndex *uint64) {
-	log.Println("Starting worker loop...")
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
-
-	const maxConcurrency = 5
-	sem := make(chan struct{}, maxConcurrency)
-	var activeWork sync.WaitGroup
-
-	defer func() {
-		log.Println("Waiting for in-flight work to complete...")
-		activeWork.Wait()
-		log.Println("Worker shutdown complete")
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			timeout := 25 * time.Second
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := time.Until(deadline)
-				if remaining < timeout {
-					timeout = remaining
-				}
-			}
-			recvCtx, cancel := context.WithTimeout(ctx, timeout)
-			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
-			cancel()
-			if err != nil {
-				log.Printf("Failed to receive messages: %v", err)
-				continue
-			}
-
-			if len(messages) == 0 {
-				continue
-			}
-
-			for _, msg := range messages {
-				msg := msg
-				activeWork.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("panic in processMessage: %v", r)
-						}
-					}()
-					defer activeWork.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
-					defer processCancel()
-					processMessage(processCtx, q, f, pm, m, rm, dbc, msg, cfg, subnetIndex)
-				}()
-			}
-		}
-	}
-}
-
-func deleteMessageWithRetry(ctx context.Context, q queue.Queue, receiptHandle string) error {
-	err := q.DeleteMessage(ctx, receiptHandle)
-	for attempts := 1; attempts < maxDeleteRetries && err != nil; attempts++ {
-		time.Sleep(retryDelay)
-		err = q.DeleteMessage(ctx, receiptHandle)
-	}
-	return err
-}
-
-func sendMessageWithRetry(ctx context.Context, q queue.Queue, job *queue.JobMessage) error {
-	err := q.SendMessage(ctx, job)
-	for attempts := 1; attempts < maxDeleteRetries && err != nil; attempts++ {
-		time.Sleep(retryDelay)
-		err = q.SendMessage(ctx, job)
-	}
-	return err
-}
-
-func selectSubnet(cfg *config.Config, subnetIndex *uint64) string {
-	if len(cfg.PublicSubnetIDs) > 0 {
-		idx := atomic.AddUint64(subnetIndex, 1) - 1
-		return cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
-	}
-	return ""
-}
-
-func createFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.LaunchSpec) ([]string, error) {
-	var instanceIDs []string
-	var err error
-	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
-		if attempt > 0 {
-			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-			log.Printf("Retrying fleet creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
-			time.Sleep(backoff)
-		}
-
-		instanceIDs, err = f.CreateFleet(ctx, spec)
-		if err == nil {
-			return instanceIDs, nil
-		}
-
-		log.Printf("Fleet creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
-	}
-	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
-}
-
-func createK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
-	var result *provider.RunnerResult
-	var err error
-	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
-		if attempt > 0 {
-			backoff := fleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-			log.Printf("Retrying K8s pod creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
-			time.Sleep(backoff)
-		}
-
-		result, err = p.CreateRunner(ctx, spec)
-		if err == nil {
-			return result, nil
-		}
-
-		log.Printf("K8s pod creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
-	}
-	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
-}
-
-func saveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, instanceIDs []string) {
-	if dbc == nil || !dbc.HasJobsTable() {
-		return
-	}
-	for _, instanceID := range instanceIDs {
-		jobRecord := &db.JobRecord{
-			JobID:        job.JobID,
-			RunID:        job.RunID,
-			Repo:         job.Repo,
-			InstanceID:   instanceID,
-			InstanceType: job.InstanceType,
-			Pool:         job.Pool,
-			Spot:         job.Spot,
-			RetryCount:   job.RetryCount,
-		}
-		var saveErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
-				break
-			}
-			if attempt < 2 {
-				time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond)
-			}
-		}
-		if saveErr != nil {
-			log.Printf("ERROR: Failed to save job record after retries for instance %s: %v (spot interruption tracking disabled)", instanceID, saveErr)
-		}
-	}
-}
-
-func prepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessage, instanceIDs []string) {
-	if rm == nil {
-		return
-	}
-	for _, instanceID := range instanceIDs {
-		label := buildRunnerLabel(job)
-		prepareReq := runner.PrepareRunnerRequest{
-			InstanceID: instanceID,
-			JobID:      fmt.Sprintf("%d", job.JobID),
-			RunID:      fmt.Sprintf("%d", job.RunID),
-			Repo:       job.Repo,
-			Labels:     []string{label},
-		}
-		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
-			log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
-		}
-	}
-}
-
-func processMessage(ctx context.Context, q queue.Queue, f *fleet.Manager, pm *pools.Manager, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, cfg *config.Config, subnetIndex *uint64) {
-	startTime := time.Now()
-	fleetCreated := false
-	poisonMessage := false
-	alreadyClaimed := false
-
-	defer func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-		defer cleanupCancel()
-
-		if fleetCreated {
-			if err := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); err != nil {
-				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
-			}
-
-			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
-			}
-
-			if metricErr := m.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
-				log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
-			}
-		}
-
-		if alreadyClaimed {
-			if err := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); err != nil {
-				log.Printf("Failed to delete already-claimed message: %v", err)
-			}
-
-			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
-			}
-		}
-
-		if poisonMessage {
-			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
-			}
-		}
-
-		if err := m.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
-			log.Printf("Failed to publish job duration metric: %v", err)
-		}
-	}()
-
-	var job queue.JobMessage
-	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
-		log.Printf("Failed to unmarshal message: %v", err)
-		poisonMessage = true
-
-		if err := deleteMessageWithRetry(ctx, q, msg.Handle); err != nil {
-			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
-		}
-
-		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
-		defer metricCancel()
-		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-			log.Printf("Failed to publish poison message metric: %v", metricErr)
-		}
-		return
-	}
-
-	log.Printf("Processing job for run %d (retry=%d, forceOnDemand=%v, os=%s, region=%s, env=%s)",
-		job.RunID, job.RetryCount, job.ForceOnDemand, job.OS, job.Region, job.Environment)
-
-	if dbc != nil && dbc.HasJobsTable() {
-		if err := dbc.ClaimJob(ctx, job.JobID); err != nil {
-			if errors.Is(err, db.ErrJobAlreadyClaimed) {
-				log.Printf("Job %d already claimed, skipping (duplicate from queue)", job.JobID)
-				alreadyClaimed = true
-				return
-			}
-			log.Printf("Job %d claim failed: %v, will retry via visibility timeout", job.JobID, err)
-			if metricErr := m.PublishJobClaimFailure(ctx); metricErr != nil {
-				log.Printf("Failed to publish job claim failure metric: %v", metricErr)
-			}
-			return
-		}
-	}
-
-	spec := &fleet.LaunchSpec{
-		RunID:         job.RunID,
-		InstanceType:  job.InstanceType,
-		InstanceTypes: job.InstanceTypes, // Flexible instance selection (Phase 10)
-		SubnetID:      selectSubnet(cfg, subnetIndex),
-		Spot:          job.Spot,
-		Pool:          job.Pool,
-		ForceOnDemand: job.ForceOnDemand,
-		RetryCount:    job.RetryCount,
-		// Sprint 4 features
-		Region:      job.Region,      // Phase 3: Multi-region support
-		Environment: job.Environment, // Phase 6: Per-stack environments
-		OS:          job.OS,          // Phase 4: Windows support
-		Arch:        job.Arch,        // Phase 4: Architecture support
-		// Storage configuration
-		StorageGiB: job.StorageGiB,
-	}
-
-	instanceIDs, err := createFleetWithRetry(ctx, f, spec)
-	if err != nil {
-		log.Printf("Failed to create fleet: %v", err)
-		if dbc != nil && dbc.HasJobsTable() {
-			if claimErr := dbc.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
-				log.Printf("Failed to delete job claim for %d: %v", job.JobID, claimErr)
-			}
-		}
-
-		// Fallback to on-demand if spot failed and under retry limit
-		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {
-			// Delete original message first to prevent duplicate processing
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-			if delErr := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); delErr != nil {
-				cleanupCancel()
-				log.Printf("Failed to delete original message, skipping fallback to prevent duplicates: %v", delErr)
-				return
-			}
-			cleanupCancel()
-
-			fallbackJob := &queue.JobMessage{
-				JobID:         job.JobID,
-				RunID:         job.RunID,
-				Repo:          job.Repo,
-				InstanceType:  job.InstanceType,
-				InstanceTypes: job.InstanceTypes,
-				Pool:          job.Pool,
-				Spot:          false,
-				OriginalLabel: job.OriginalLabel,
-				RetryCount:    job.RetryCount + 1,
-				ForceOnDemand: true,
-				Region:        job.Region,
-				Environment:   job.Environment,
-				OS:            job.OS,
-				Arch:          job.Arch,
-				StorageGiB:    job.StorageGiB,
-			}
-			if sendErr := sendMessageWithRetry(ctx, q, fallbackJob); sendErr != nil {
-				log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)
-			} else {
-				log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
-				if metricErr := m.PublishJobQueued(ctx); metricErr != nil {
-					log.Printf("Failed to publish job queued metric: %v", metricErr)
-				}
-			}
-		}
-		return
-	}
-
-	fleetCreated = true
-
-	saveJobRecords(ctx, dbc, &job, instanceIDs)
-	prepareRunners(ctx, rm, &job, instanceIDs)
-
-	// Mark instances as busy for idle timeout tracking
-	for _, instanceID := range instanceIDs {
-		pm.MarkInstanceBusy(instanceID)
-	}
-
-	log.Printf("Successfully launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
-}
-
-// makeReadinessHandler returns a handler that checks queue connectivity.
-// Pinger is optional: K8s/Valkey needs verification, EC2/SQS is AWS-managed.
 func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pinger, ok := q.(queue.Pinger); ok {
@@ -1048,7 +375,7 @@ func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
 	}
 }
 
-func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *jobProcessor, directProcessorSem chan struct{}) http.HandlerFunc {
+func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1073,7 +400,7 @@ func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.C
 	}
 }
 
-func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *jobProcessor, directProcessorSem chan struct{}) (bool, string) {
+func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) (bool, string) {
 	event, ok := payload.(*github.WorkflowJobEvent)
 	if !ok {
 		return false, ""
@@ -1081,18 +408,18 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 
 	switch event.GetAction() {
 	case "queued":
-		jobMsg, err := handleWorkflowJob(ctx, event, jobQueue, dbClient, metricsPublisher)
+		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, jobQueue, dbClient, metricsPublisher)
 		if err != nil || jobMsg == nil {
 			return false, ""
 		}
-		tryDirectProcessing(directProcessor, directProcessorSem, jobMsg)
+		worker.TryDirectProcessing(ctx, directProcessor, directProcessorSem, jobMsg)
 		return true, "Job queued"
 
 	case "completed":
 		if event.GetWorkflowJob().GetConclusion() != "failure" {
 			return false, ""
 		}
-		requeued, err := handleJobFailure(ctx, event, jobQueue, dbClient, metricsPublisher)
+		requeued, err := handler.HandleJobFailure(ctx, event, jobQueue, dbClient, metricsPublisher)
 		if err != nil {
 			log.Printf("Failed to handle job failure: %v", err)
 		}
@@ -1101,46 +428,6 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 		}
 	}
 	return false, ""
-}
-
-func tryDirectProcessing(directProcessor *jobProcessor, directProcessorSem chan struct{}, jobMsg *queue.JobMessage) {
-	if directProcessor == nil || directProcessorSem == nil {
-		return
-	}
-	select {
-	case directProcessorSem <- struct{}{}:
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("Panic in direct processing for job %d: %v", jobMsg.JobID, r)
-				}
-			}()
-			defer func() { <-directProcessorSem }()
-			directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
-			defer cancel()
-			directProcessor.processJobDirect(directCtx, jobMsg)
-		}()
-	default:
-		log.Printf("Direct processing at capacity, job %d will be processed via queue", jobMsg.JobID)
-	}
-}
-
-// buildRunnerLabel returns the runs-fleet label for GitHub runner registration.
-// Uses the original label from the webhook to ensure exact matching with workflow runs-on.
-func buildRunnerLabel(job *queue.JobMessage) string {
-	if job.OriginalLabel != "" {
-		return job.OriginalLabel
-	}
-	// Fallback for messages queued before OriginalLabel was added.
-	// Generates a label from job metadata - this path is only for migration.
-	label := fmt.Sprintf("runs-fleet=%d", job.RunID)
-	if job.Pool != "" {
-		label += fmt.Sprintf("/pool=%s", job.Pool)
-	}
-	if !job.Spot {
-		label += "/spot=false"
-	}
-	return label
 }
 
 // housekeepingMetricsAdapter adapts metrics.Publisher to housekeeping.MetricsAPI.
@@ -1190,210 +477,4 @@ func (p *poolDBAdapter) GetPoolConfig(ctx context.Context, poolName string) (*ho
 
 func (p *poolDBAdapter) DeletePoolConfig(ctx context.Context, poolName string) error {
 	return p.client.DeletePoolConfig(ctx, poolName)
-}
-
-// K8s backend functions
-
-func runK8sWorker(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, cfg *config.Config) {
-	log.Println("Starting K8s worker loop...")
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
-
-	const maxConcurrency = 5
-	sem := make(chan struct{}, maxConcurrency)
-	var activeWork sync.WaitGroup
-
-	defer func() {
-		log.Println("Waiting for in-flight K8s work to complete...")
-		activeWork.Wait()
-		log.Println("K8s worker shutdown complete")
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			timeout := 25 * time.Second
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := time.Until(deadline)
-				if remaining < timeout {
-					timeout = remaining
-				}
-			}
-			recvCtx, cancel := context.WithTimeout(ctx, timeout)
-			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
-			cancel()
-			if err != nil {
-				log.Printf("Failed to receive messages: %v", err)
-				continue
-			}
-
-			if len(messages) == 0 {
-				continue
-			}
-
-			for _, msg := range messages {
-				msg := msg
-				activeWork.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("panic in processK8sMessage: %v", r)
-						}
-					}()
-					defer activeWork.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
-					defer processCancel()
-					processK8sMessage(processCtx, q, p, pp, m, rm, dbc, msg, cfg)
-				}()
-			}
-		}
-	}
-}
-
-func processK8sMessage(ctx context.Context, q queue.Queue, p *k8s.Provider, pp *k8s.PoolProvider, m metrics.Publisher, rm *runner.Manager, dbc *db.Client, msg queue.Message, _ *config.Config) {
-	startTime := time.Now()
-	podCreated := false
-	poisonMessage := false
-
-	defer func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-		defer cleanupCancel()
-
-		if podCreated {
-			if err := deleteMessageWithRetry(cleanupCtx, q, msg.Handle); err != nil {
-				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
-			}
-
-			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
-			}
-		}
-
-		if poisonMessage {
-			if err := m.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
-			}
-		}
-
-		if err := m.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
-			log.Printf("Failed to publish job duration metric: %v", err)
-		}
-	}()
-
-	if msg.Body == "" {
-		log.Printf("Received message with empty body")
-		poisonMessage = true
-		return
-	}
-
-	var job queue.JobMessage
-	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
-		log.Printf("Failed to unmarshal message: %v", err)
-		poisonMessage = true
-
-		if err := deleteMessageWithRetry(ctx, q, msg.Handle); err != nil {
-			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
-		}
-
-		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
-		defer metricCancel()
-		if metricErr := m.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-			log.Printf("Failed to publish poison message metric: %v", metricErr)
-		}
-		return
-	}
-
-	log.Printf("Processing K8s job for run %d (os=%s, arch=%s, pool=%s)",
-		job.RunID, job.OS, job.Arch, job.Pool)
-
-	// Get registration token from GitHub before creating pod
-	var jitToken string
-	if rm == nil {
-		log.Printf("Runner manager not initialized for K8s job %d", job.RunID)
-		poisonMessage = true
-		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing"); metricErr != nil {
-			log.Printf("Failed to publish runner manager missing metric: %v", metricErr)
-		}
-		return
-	}
-	regResult, err := rm.GetRegistrationToken(ctx, job.Repo)
-	if err != nil {
-		log.Printf("Failed to get registration token for K8s job %d: %v", job.RunID, err)
-		poisonMessage = true
-		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-registration-token"); metricErr != nil {
-			log.Printf("Failed to publish registration token failure metric: %v", metricErr)
-		}
-		return
-	}
-	jitToken = regResult.Token
-
-	spec := &provider.RunnerSpec{
-		RunID:        job.RunID,
-		JobID:        job.JobID,
-		Repo:         job.Repo,
-		Labels:       []string{buildRunnerLabel(&job)},
-		Pool:         job.Pool,
-		OS:           job.OS,
-		Arch:         job.Arch,
-		InstanceType: job.InstanceType,
-		Spot:         job.Spot,
-		Environment:  job.Environment,
-		RetryCount:   job.RetryCount,
-		StorageGiB:   job.StorageGiB,
-		JITToken:     jitToken,
-	}
-
-	result, err := createK8sRunnerWithRetry(ctx, p, spec)
-	if err != nil {
-		log.Printf("Failed to create K8s runner: %v", err)
-		if metricErr := m.PublishSchedulingFailure(ctx, "k8s-pod-creation"); metricErr != nil {
-			log.Printf("Failed to publish pod creation failure metric: %v", metricErr)
-		}
-		return
-	}
-
-	podCreated = true
-
-	// Save job records in DynamoDB with retry (only if jobs table is configured)
-	if dbc != nil && dbc.HasJobsTable() {
-		for _, runnerID := range result.RunnerIDs {
-			jobRecord := &db.JobRecord{
-				JobID:        job.JobID,
-				RunID:        job.RunID,
-				Repo:         job.Repo,
-				InstanceID:   runnerID,
-				InstanceType: job.InstanceType,
-				Pool:         job.Pool,
-				Spot:         job.Spot,
-				RetryCount:   job.RetryCount,
-			}
-			var saveErr error
-			for attempt := 0; attempt < 3; attempt++ {
-				if saveErr = dbc.SaveJob(ctx, jobRecord); saveErr == nil {
-					break
-				}
-				if attempt < 2 {
-					time.Sleep(time.Duration(1<<attempt) * 100 * time.Millisecond)
-				}
-			}
-			if saveErr != nil {
-				log.Printf("ERROR: Failed to save job record after retries for pod %s: %v", runnerID, saveErr)
-				if metricErr := m.PublishSchedulingFailure(ctx, "k8s-job-record-save"); metricErr != nil {
-					log.Printf("Failed to publish job record save failure metric: %v", metricErr)
-				}
-			}
-		}
-	}
-
-	// Mark pods as busy for idle timeout tracking
-	for _, runnerID := range result.RunnerIDs {
-		pp.MarkRunnerBusy(runnerID)
-	}
-
-	log.Printf("Successfully created %d K8s pod(s) for run %d", len(result.RunnerIDs), job.RunID)
 }
