@@ -116,11 +116,10 @@ func TestRunWorkerLoop_ProcessesMessages(t *testing.T) {
 	cancel()
 }
 
-func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
+func TestRunWorkerLoop_PanicRecovery(_ *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	panicRecovered := make(chan struct{})
 	panicTriggered := int32(0)
 
 	mockQueue := &MockQueue{
@@ -139,20 +138,16 @@ func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
 
 	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		defer func() {
-			if r := recover(); r == nil {
-				// If we're still running after the panic, the recovery worked
-				close(panicRecovered)
-			}
+			recover() // Consume the panic
 		}()
 		panic("test panic")
 	})
 
 	// The worker should continue running after the panic
-	select {
-	case <-time.After(60 * time.Second):
-		// Worker is still running (expected), cancel to clean up
-		cancel()
-	}
+	// Wait briefly to allow panic/recovery to occur
+	time.Sleep(200 * time.Millisecond)
+	// Worker is still running (expected), cancel to clean up
+	cancel()
 }
 
 func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {

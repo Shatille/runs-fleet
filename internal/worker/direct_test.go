@@ -14,6 +14,11 @@ func TestTryDirectProcessing_NilProcessor(t *testing.T) {
 	job := &queue.JobMessage{JobID: 12345}
 
 	// Should not panic with nil processor
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("TryDirectProcessing panicked with nil processor: %v", r)
+		}
+	}()
 	TryDirectProcessing(context.Background(), nil, sem, job)
 }
 
@@ -24,6 +29,11 @@ func TestTryDirectProcessing_NilSemaphore(t *testing.T) {
 	job := &queue.JobMessage{JobID: 12345}
 
 	// Should not panic with nil semaphore
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("TryDirectProcessing panicked with nil semaphore: %v", r)
+		}
+	}()
 	TryDirectProcessing(context.Background(), processor, nil, job)
 }
 
@@ -31,6 +41,11 @@ func TestTryDirectProcessing_BothNil(t *testing.T) {
 	job := &queue.JobMessage{JobID: 12345}
 
 	// Should not panic with both nil
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("TryDirectProcessing panicked with both nil: %v", r)
+		}
+	}()
 	TryDirectProcessing(context.Background(), nil, nil, job)
 }
 

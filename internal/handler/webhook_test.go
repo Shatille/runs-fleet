@@ -56,7 +56,7 @@ func (m *MockMetrics) PublishJobQueued(ctx context.Context) error {
 	return nil
 }
 
-func (m *MockMetrics) PublishQueueDepth(ctx context.Context, depth float64) error {
+func (m *MockMetrics) PublishQueueDepth(_ context.Context, _ float64) error {
 	m.QueueDepthCalled = true
 	return nil
 }

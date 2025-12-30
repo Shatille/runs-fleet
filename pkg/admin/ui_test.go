@@ -197,6 +197,11 @@ func TestUIHandler_PathNormalization(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			// Should not panic
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("UIHandler panicked for path %s: %v", tt.path, r)
+				}
+			}()
 			handler.ServeHTTP(w, req)
 		})
 	}
@@ -250,8 +255,10 @@ func TestUIHandler_ReturnType(t *testing.T) {
 		t.Fatal("UIHandler() returned nil")
 	}
 
-	// Verify it implements http.Handler interface
-	var _ http.Handler = handler
+	// Verify it implements http.Handler interface by calling ServeHTTP
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
 }
 
 func TestUIHandler_ContentType(t *testing.T) {
@@ -276,6 +283,11 @@ func TestUIHandler_ConcurrentRequests(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("UIHandler panicked during concurrent request: %v", r)
+				}
+			}()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -298,6 +310,11 @@ func TestUIHandler_LongPath(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	// Should not panic
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("UIHandler panicked for long path: %v", r)
+		}
+	}()
 	handler.ServeHTTP(w, req)
 }
 
@@ -319,6 +336,11 @@ func TestUIHandler_SpecialCharacters(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			// Should not panic
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("UIHandler panicked for path %s: %v", tt.path, r)
+				}
+			}()
 			handler.ServeHTTP(w, req)
 		})
 	}
