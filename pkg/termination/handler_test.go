@@ -26,16 +26,23 @@ const (
 
 // mockQueueAPI implements QueueAPI for testing.
 type mockQueueAPI struct {
-	messages      []queue.Message
-	receiveErr    error
-	deleteErr     error
-	receiveCalls  int
-	deleteCalls   int
-	deleteReceipt string
+	messages       []queue.Message
+	receiveErr     error
+	deleteErr      error
+	receiveCalls   int
+	deleteCalls    int
+	deleteReceipt  string
+	receiveCalled  chan struct{} // signals when ReceiveMessages is called
 }
 
 func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
 	m.receiveCalls++
+	if m.receiveCalled != nil {
+		select {
+		case m.receiveCalled <- struct{}{}:
+		default:
+		}
+	}
 	if m.receiveErr != nil {
 		return nil, m.receiveErr
 	}
@@ -676,6 +683,7 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 	}
 	body, _ := json.Marshal(msg)
 
+	receiveCalled := make(chan struct{}, 1)
 	q := &mockQueueAPI{
 		messages: []queue.Message{
 			{
@@ -683,6 +691,7 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 				Handle: "receipt-1",
 			},
 		},
+		receiveCalled: receiveCalled,
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
@@ -698,8 +707,13 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for the ticker to fire (using short test interval)
-	time.Sleep(50 * time.Millisecond)
+	// Wait for ReceiveMessages to be called (channel-based synchronization)
+	select {
+	case <-receiveCalled:
+		// ReceiveMessages was called, message processing initiated
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ReceiveMessages to be called")
+	}
 	cancel()
 
 	select {
@@ -716,8 +730,10 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 }
 
 func TestHandler_Run_ReceiveError(t *testing.T) {
+	receiveCalled := make(chan struct{}, 1)
 	q := &mockQueueAPI{
-		receiveErr: errors.New("receive error"),
+		receiveErr:    errors.New("receive error"),
+		receiveCalled: receiveCalled,
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
@@ -733,8 +749,13 @@ func TestHandler_Run_ReceiveError(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for ticker to fire (using short test interval)
-	time.Sleep(50 * time.Millisecond)
+	// Wait for ReceiveMessages to be called (channel-based synchronization)
+	select {
+	case <-receiveCalled:
+		// ReceiveMessages was called (even though it returns error)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ReceiveMessages to be called")
+	}
 	cancel()
 
 	select {
