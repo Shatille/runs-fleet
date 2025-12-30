@@ -97,7 +97,7 @@ func TestRunWorkerLoop_ProcessesMessages(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, msg queue.Message) {
+	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
 	})
 
@@ -137,7 +137,7 @@ func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, msg queue.Message) {
+	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		defer func() {
 			if r := recover(); r == nil {
 				// If we're still running after the panic, the recovery worked
@@ -183,7 +183,7 @@ func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
 	}
 
 	processedCount := int32(0)
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, msg queue.Message) {
+	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		current := atomic.AddInt32(&concurrent, 1)
 		mu.Lock()
 		if current > maxConcurrent {
@@ -253,7 +253,7 @@ func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 
 	receivedOnce := int32(0)
 	go func() {
-		RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, msg queue.Message) {
+		RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 			if atomic.CompareAndSwapInt32(&receivedOnce, 0, 1) {
 				close(processingStarted)
 				// Simulate some work
@@ -307,7 +307,7 @@ func TestRunWorkerLoop_EmptyMessages(t *testing.T) {
 		// Run for a short time and verify processor is never called
 		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer runCancel()
-		RunWorkerLoop(runCtx, "test", mockQueue, func(_ context.Context, msg queue.Message) {
+		RunWorkerLoop(runCtx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 			atomic.AddInt32(&processorCalled, 1)
 		})
 		close(done)
@@ -336,7 +336,7 @@ func TestRunWorkerLoop_ReceiveError(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, msg queue.Message) {})
+	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {})
 
 	// Wait for a couple errors to occur (proving the loop continues)
 	select {
@@ -369,7 +369,7 @@ func TestRunWorkerLoop_ContextDeadline(t *testing.T) {
 	go func() {
 		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer runCancel()
-		RunWorkerLoop(runCtx, "test", mockQueue, func(_ context.Context, msg queue.Message) {})
+		RunWorkerLoop(runCtx, "test", mockQueue, func(_ context.Context, _ queue.Message) {})
 		close(done)
 	}()
 
