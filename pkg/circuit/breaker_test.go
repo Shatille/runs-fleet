@@ -537,7 +537,7 @@ func TestCleanupExpiredCache(t *testing.T) {
 	}
 }
 
-func TestStartCacheCleanup(_ *testing.T) {
+func TestStartCacheCleanup(t *testing.T) {
 	b := &Breaker{
 		dynamoClient: newMockDynamoDB(),
 		tableName:    "test-table",
@@ -547,13 +547,18 @@ func TestStartCacheCleanup(_ *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Start cleanup routine
-	b.StartCacheCleanup(ctx)
+	done := b.StartCacheCleanup(ctx)
 
 	// Cancel context to stop the goroutine
 	cancel()
 
-	// Give goroutine time to stop
-	time.Sleep(10 * time.Millisecond)
+	// Wait for goroutine to exit
+	select {
+	case <-done:
+		// Success - goroutine exited cleanly
+	case <-time.After(time.Second):
+		t.Fatal("cleanup goroutine did not stop within timeout")
+	}
 }
 
 func TestStateConstants(t *testing.T) {
