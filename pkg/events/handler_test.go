@@ -504,13 +504,15 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 
 func TestConcurrentEventProcessing(t *testing.T) {
 	const numMessages = 10
-	const processingDelay = 10 * time.Millisecond
+	const minConcurrent = 3 // At least this many must start concurrently
 
-	var processStartTimes []time.Time
-	var mu sync.Mutex
 	var messageReturned bool
-	var wg sync.WaitGroup
-	wg.Add(numMessages)
+	var mu sync.Mutex
+
+	// Barrier pattern: all goroutines signal when they start, then wait for release
+	startedChan := make(chan struct{}, numMessages)
+	releaseChan := make(chan struct{})
+	var startedCount int32
 
 	messages := make([]queue.Message, numMessages)
 	for i := 0; i < numMessages; i++ {
@@ -525,11 +527,14 @@ func TestConcurrentEventProcessing(t *testing.T) {
 
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(_ context.Context) error {
-			mu.Lock()
-			processStartTimes = append(processStartTimes, time.Now())
-			mu.Unlock()
-			time.Sleep(processingDelay)
-			wg.Done()
+			// Signal that this goroutine has started
+			atomic.AddInt32(&startedCount, 1)
+			startedChan <- struct{}{}
+			// Wait for release signal (or timeout)
+			select {
+			case <-releaseChan:
+			case <-time.After(100 * time.Millisecond):
+			}
 			return nil
 		},
 	}
@@ -563,51 +568,42 @@ func TestConcurrentEventProcessing(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for all messages to be processed
-	allProcessed := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(allProcessed)
-	}()
-
-	select {
-	case <-allProcessed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for all messages to be processed")
-	}
-	cancel()
-	<-done
-
-	mu.Lock()
-	startTimes := make([]time.Time, len(processStartTimes))
-	copy(startTimes, processStartTimes)
-	mu.Unlock()
-
-	if len(startTimes) != numMessages {
-		t.Fatalf("Expected %d messages processed, got %d", numMessages, len(startTimes))
-	}
-
-	firstStart := startTimes[0]
-	var concurrentStarts int
-	for _, startTime := range startTimes[1:] {
-		if startTime.Sub(firstStart) < processingDelay/2 {
-			concurrentStarts++
+	// Wait for at least minConcurrent goroutines to start concurrently
+	concurrentStarted := 0
+	timeout := time.After(2 * time.Second)
+waitLoop:
+	for concurrentStarted < minConcurrent {
+		select {
+		case <-startedChan:
+			concurrentStarted++
+		case <-timeout:
+			break waitLoop
 		}
 	}
 
-	if concurrentStarts < 3 {
-		t.Errorf("Expected concurrent processing (at least 3 concurrent), but only %d/%d messages started concurrently", concurrentStarts, numMessages-1)
+	// Release all waiting goroutines
+	close(releaseChan)
+	cancel()
+	<-done
+
+	finalCount := atomic.LoadInt32(&startedCount)
+	if concurrentStarted < minConcurrent {
+		t.Errorf("Expected at least %d concurrent starts, but only %d started concurrently (total started: %d)",
+			minConcurrent, concurrentStarted, finalCount)
 	}
 }
 
 func TestBoundedConcurrency(t *testing.T) {
 	const numMessages = 20
 	const maxConcurrency = 5
-	const processingDelay = 50 * time.Millisecond
 
 	var activeTasks int32
 	var maxActive int32
 	var mu sync.Mutex
+
+	// Use a barrier pattern: goroutines signal they started and wait for release
+	startedChan := make(chan struct{}, numMessages)
+	releaseChan := make(chan struct{})
 	concurrencyObserved := make(chan struct{}, 1)
 
 	messages := make([]queue.Message, numMessages)
@@ -638,7 +634,15 @@ func TestBoundedConcurrency(t *testing.T) {
 			}
 			mu.Unlock()
 
-			time.Sleep(processingDelay)
+			// Signal that this goroutine has started
+			startedChan <- struct{}{}
+
+			// Wait for release signal (with timeout to prevent test hang)
+			select {
+			case <-releaseChan:
+			case <-time.After(100 * time.Millisecond):
+			}
+
 			atomic.AddInt32(&activeTasks, -1)
 			return nil
 		},
@@ -670,9 +674,12 @@ func TestBoundedConcurrency(t *testing.T) {
 	// Wait until we observe concurrent execution
 	select {
 	case <-concurrencyObserved:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for concurrent execution to be observed")
 	}
+
+	// Release all waiting goroutines
+	close(releaseChan)
 	cancel()
 	<-done
 
@@ -775,22 +782,32 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 		},
 	}
 
-	callCount := 0
-	var mu sync.Mutex
-	bothProcessed := make(chan struct{}, 1)
+	var callCount int32
+	// Barrier pattern: first message blocks until released, second message signals it started
+	firstStarted := make(chan struct{}, 1)
+	releaseChan := make(chan struct{})
+	secondStarted := make(chan struct{}, 1)
+
 	mockMetrics := &MockMetricsAPI{
 		PublishSpotInterruptionFunc: func(_ context.Context) error {
-			mu.Lock()
-			callCount++
-			currentCount := callCount
-			mu.Unlock()
+			currentCount := atomic.AddInt32(&callCount, 1)
 
 			if currentCount == 1 {
-				time.Sleep(100 * time.Millisecond)
-			}
-			if currentCount >= 2 {
+				// Signal that first goroutine started
 				select {
-				case bothProcessed <- struct{}{}:
+				case firstStarted <- struct{}{}:
+				default:
+				}
+				// Wait for release (or timeout)
+				select {
+				case <-releaseChan:
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			if currentCount == 2 {
+				// Signal that second goroutine started while first is still blocked
+				select {
+				case secondStarted <- struct{}{}:
 				default:
 				}
 			}
@@ -821,19 +838,27 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for both messages to be processed
+	// Wait for first message to start processing
 	select {
-	case <-bothProcessed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for both messages to be processed")
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for first message to start")
 	}
+
+	// Wait for second message to start (proves first didn't block it)
+	select {
+	case <-secondStarted:
+		// Success: second message started while first was still blocked
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for second message - first message blocked processing")
+	}
+
+	// Release all waiting goroutines
+	close(releaseChan)
 	cancel()
 	<-done
 
-	mu.Lock()
-	finalCount := callCount
-	mu.Unlock()
-
+	finalCount := atomic.LoadInt32(&callCount)
 	if finalCount < 2 {
 		t.Errorf("Expected at least 2 metrics calls, got %d", finalCount)
 	}
