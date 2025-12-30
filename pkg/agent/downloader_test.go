@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,8 +21,7 @@ func TestNewDownloader(t *testing.T) {
 	}
 }
 
-func TestDownloadRunner_UnsupportedArch(t *testing.T) {
-	// Create a mock server that returns a valid release response
+func TestDownloadRunner_HTTPClientInjection(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		release := Release{
 			TagName: "v2.300.0",
@@ -51,13 +51,26 @@ func TestDownloadRunner_UnsupportedArch(t *testing.T) {
 	ctx := context.Background()
 	_, err := d.DownloadRunner(ctx)
 
-	// On supported architectures (amd64, arm64), the test will proceed past the arch check
-	// and attempt to download - which is expected behavior with the mock server.
-	// The test verifies that:
-	// 1. The HTTP client injection works correctly
-	// 2. The releases URL override works correctly
-	// 3. No real network calls are made (test completes quickly)
-	_ = err
+	if err == nil {
+		t.Fatal("expected error since download URL and directories are not mocked")
+	}
+	// Test verifies HTTP client injection works: release fetch succeeded (mock intercepted)
+	// Error occurs at later stages: directory creation or download
+	validErrors := []string{
+		"failed to download runner:",
+		"failed to create runner directory:",
+	}
+	errStr := err.Error()
+	hasValidPrefix := false
+	for _, prefix := range validErrors {
+		if strings.HasPrefix(errStr, prefix) {
+			hasValidPrefix = true
+			break
+		}
+	}
+	if !hasValidPrefix {
+		t.Fatalf("expected download or directory error, got: %v", err)
+	}
 }
 
 func TestVerifyChecksum_Success(t *testing.T) {
