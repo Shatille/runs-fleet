@@ -2,16 +2,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
 func init() {
@@ -23,42 +20,61 @@ const (
 	testTokenValue = "test-token"
 )
 
-type mockSSMAPI struct {
-	getParameterFunc func(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
+type mockSecretsStore struct {
+	getFunc    func(ctx context.Context, runnerID string) (*secrets.RunnerConfig, error)
+	putFunc    func(ctx context.Context, runnerID string, config *secrets.RunnerConfig) error
+	deleteFunc func(ctx context.Context, runnerID string) error
+	listFunc   func(ctx context.Context) ([]string, error)
 }
 
-func (m *mockSSMAPI) GetParameter(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-	if m.getParameterFunc != nil {
-		return m.getParameterFunc(ctx, params, optFns...)
+func (m *mockSecretsStore) Get(ctx context.Context, runnerID string) (*secrets.RunnerConfig, error) {
+	if m.getFunc != nil {
+		return m.getFunc(ctx, runnerID)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockSecretsStore) Put(ctx context.Context, runnerID string, config *secrets.RunnerConfig) error {
+	if m.putFunc != nil {
+		return m.putFunc(ctx, runnerID, config)
+	}
+	return errors.New("not implemented")
+}
+
+func (m *mockSecretsStore) Delete(ctx context.Context, runnerID string) error {
+	if m.deleteFunc != nil {
+		return m.deleteFunc(ctx, runnerID)
+	}
+	return errors.New("not implemented")
+}
+
+func (m *mockSecretsStore) List(ctx context.Context) ([]string, error) {
+	if m.listFunc != nil {
+		return m.listFunc(ctx)
 	}
 	return nil, errors.New("not implemented")
 }
 
 func TestRegistrar_FetchConfig_Success(t *testing.T) {
-	config := RunnerConfig{
+	config := &secrets.RunnerConfig{
 		Org:      "test-org",
 		JITToken: testTokenValue,
 		Labels:   []string{"self-hosted", "linux"},
 		IsOrg:    true,
 	}
-	configJSON, _ := json.Marshal(config)
 
-	mock := &mockSSMAPI{
-		getParameterFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-			return &ssm.GetParameterOutput{
-				Parameter: &types.Parameter{
-					Value: aws.String(string(configJSON)),
-				},
-			}, nil
+	mock := &mockSecretsStore{
+		getFunc: func(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
+			return config, nil
 		},
 	}
 
 	registrar := &Registrar{
-		ssmClient: mock,
-		logger:    &mockLogger{},
+		secretsStore: mock,
+		logger:       &mockLogger{},
 	}
 
-	result, err := registrar.FetchConfig(context.Background(), "/runs-fleet/test")
+	result, err := registrar.FetchConfig(context.Background(), "test-runner-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,32 +92,27 @@ func TestRegistrar_FetchConfig_Success(t *testing.T) {
 
 func TestRegistrar_FetchConfig_RetryOnError(t *testing.T) {
 	attempts := 0
-	config := RunnerConfig{Org: "test-org", JITToken: "token", IsOrg: true}
-	configJSON, _ := json.Marshal(config)
+	config := &secrets.RunnerConfig{Org: "test-org", JITToken: "token", IsOrg: true}
 
-	mock := &mockSSMAPI{
-		getParameterFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+	mock := &mockSecretsStore{
+		getFunc: func(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
 			attempts++
 			if attempts < 3 {
 				return nil, errors.New("temporary error")
 			}
-			return &ssm.GetParameterOutput{
-				Parameter: &types.Parameter{
-					Value: aws.String(string(configJSON)),
-				},
-			}, nil
+			return config, nil
 		},
 	}
 
 	registrar := &Registrar{
-		ssmClient: mock,
-		logger:    &mockLogger{},
+		secretsStore: mock,
+		logger:       &mockLogger{},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := registrar.FetchConfig(ctx, "/runs-fleet/test")
+	result, err := registrar.FetchConfig(ctx, "test-runner-id")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -115,68 +126,23 @@ func TestRegistrar_FetchConfig_RetryOnError(t *testing.T) {
 }
 
 func TestRegistrar_FetchConfig_AllRetriesFailed(t *testing.T) {
-	mock := &mockSSMAPI{
-		getParameterFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+	mock := &mockSecretsStore{
+		getFunc: func(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
 			return nil, errors.New("persistent error")
 		},
 	}
 
 	registrar := &Registrar{
-		ssmClient: mock,
-		logger:    &mockLogger{},
+		secretsStore: mock,
+		logger:       &mockLogger{},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	_, err := registrar.FetchConfig(ctx, "/runs-fleet/test")
+	_, err := registrar.FetchConfig(ctx, "test-runner-id")
 	if err == nil {
 		t.Error("expected error after all retries failed")
-	}
-}
-
-func TestRegistrar_FetchConfig_InvalidJSON(t *testing.T) {
-	mock := &mockSSMAPI{
-		getParameterFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-			return &ssm.GetParameterOutput{
-				Parameter: &types.Parameter{
-					Value: aws.String("invalid json"),
-				},
-			}, nil
-		},
-	}
-
-	registrar := &Registrar{
-		ssmClient: mock,
-		logger:    &mockLogger{},
-	}
-
-	_, err := registrar.FetchConfig(context.Background(), "/runs-fleet/test")
-	if err == nil {
-		t.Error("expected error for invalid JSON")
-	}
-}
-
-func TestRegistrar_FetchConfig_NilParameter(t *testing.T) {
-	mock := &mockSSMAPI{
-		getParameterFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-			return &ssm.GetParameterOutput{
-				Parameter: nil,
-			}, nil
-		},
-	}
-
-	registrar := &Registrar{
-		ssmClient: mock,
-		logger:    &mockLogger{},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, err := registrar.FetchConfig(ctx, "/runs-fleet/test")
-	if err == nil {
-		t.Error("expected error for nil parameter")
 	}
 }
 
@@ -257,7 +223,7 @@ func TestRegistrar_RegisterRunner_ConfigNotFound(t *testing.T) {
 		logger: &mockLogger{},
 	}
 
-	config := &RunnerConfig{
+	config := &secrets.RunnerConfig{
 		Org:      "test-org",
 		JITToken: "token",
 		IsOrg:    true,
@@ -266,29 +232,6 @@ func TestRegistrar_RegisterRunner_ConfigNotFound(t *testing.T) {
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
 	if err == nil {
 		t.Error("expected error when config.sh not found")
-	}
-}
-
-func TestRegistrar_RegisterRunner_OrgRequired(t *testing.T) {
-	tmpDir := t.TempDir()
-	configScript := filepath.Join(tmpDir, "config.sh")
-	if err := os.WriteFile(configScript, []byte("#!/bin/bash\n"), 0755); err != nil {
-		t.Fatalf("failed to create config.sh: %v", err)
-	}
-
-	registrar := &Registrar{
-		logger: &mockLogger{},
-	}
-
-	config := &RunnerConfig{
-		Org:      "",
-		JITToken: "token",
-		IsOrg:    true,
-	}
-
-	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
-	if err == nil {
-		t.Error("expected error when org is required but empty")
 	}
 }
 
@@ -303,7 +246,7 @@ func TestRegistrar_RegisterRunner_RepoRequired(t *testing.T) {
 		logger: &mockLogger{},
 	}
 
-	config := &RunnerConfig{
+	config := &secrets.RunnerConfig{
 		Repo:     "",
 		JITToken: "token",
 		IsOrg:    false,

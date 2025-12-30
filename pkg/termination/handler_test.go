@@ -10,7 +10,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
 func init() {
@@ -104,29 +104,39 @@ func (m *mockMetricsAPI) PublishJobFailure(_ context.Context) error {
 	return m.failureErr
 }
 
-// mockSSMAPI implements SSMAPI for testing.
-type mockSSMAPI struct {
+// mockSecretsStore implements secrets.Store for testing.
+type mockSecretsStore struct {
 	deleteErr   error
 	deleteCalls int
-	deletedName string
+	deletedID   string
 }
 
-func (m *mockSSMAPI) DeleteParameter(_ context.Context, params *ssm.DeleteParameterInput, _ ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
+func (m *mockSecretsStore) Delete(_ context.Context, runnerID string) error {
 	m.deleteCalls++
-	if params.Name != nil {
-		m.deletedName = *params.Name
-	}
-	return nil, m.deleteErr
+	m.deletedID = runnerID
+	return m.deleteErr
+}
+
+func (m *mockSecretsStore) Get(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockSecretsStore) Put(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
+	return errors.New("not implemented")
+}
+
+func (m *mockSecretsStore) List(_ context.Context) ([]string, error) {
+	return nil, errors.New("not implemented")
 }
 
 func TestNewHandler(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
 
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	if handler.queueClient != q {
 		t.Error("expected queueClient to be set")
@@ -137,8 +147,8 @@ func TestNewHandler(t *testing.T) {
 	if handler.metrics != metrics {
 		t.Error("expected metrics to be set")
 	}
-	if handler.ssmClient != ssmClient {
-		t.Error("expected ssmClient to be set")
+	if handler.secretsStore != secretsStore {
+		t.Error("expected secretsStore to be set")
 	}
 	if handler.config != cfg {
 		t.Error("expected config to be set")
@@ -149,9 +159,9 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := Message{
 		InstanceID:      "i-12345",
@@ -203,9 +213,9 @@ func TestHandler_processMessage_Failure(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := Message{
 		InstanceID:      "i-12345",
@@ -238,9 +248,9 @@ func TestHandler_processMessage_Started(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := Message{
 		InstanceID: "i-12345",
@@ -272,9 +282,9 @@ func TestHandler_processMessage_EmptyBody(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	queueMsg := queue.Message{
 		Body:   "",
@@ -291,9 +301,9 @@ func TestHandler_processMessage_InvalidJSON(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	queueMsg := queue.Message{
 		Body:   "invalid json",
@@ -369,9 +379,9 @@ func TestHandler_processTermination_MarkCompleteError(t *testing.T) {
 		markCompleteErr: errors.New("db error"),
 	}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -385,13 +395,13 @@ func TestHandler_processTermination_MarkCompleteError(t *testing.T) {
 	}
 }
 
-func TestHandler_processTermination_DeleteSSMParameter(t *testing.T) {
+func TestHandler_processTermination_DeleteRunnerConfig(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -404,38 +414,48 @@ func TestHandler_processTermination_DeleteSSMParameter(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ssmClient.deleteCalls != 1 {
-		t.Errorf("expected 1 SSM delete call, got %d", ssmClient.deleteCalls)
+	if secretsStore.deleteCalls != 1 {
+		t.Errorf("expected 1 secrets store delete call, got %d", secretsStore.deleteCalls)
 	}
 
-	expectedParam := "/runs-fleet/runners/i-12345/config"
-	if ssmClient.deletedName != expectedParam {
-		t.Errorf("expected deleted parameter '%s', got '%s'", expectedParam, ssmClient.deletedName)
+	expectedID := "i-12345"
+	if secretsStore.deletedID != expectedID {
+		t.Errorf("expected deleted runner ID '%s', got '%s'", expectedID, secretsStore.deletedID)
 	}
 }
 
-func TestHandler_deleteSSMParameter_NotFound(t *testing.T) {
-	ssmClient := &mockSSMAPI{
-		deleteErr: errors.New("ParameterNotFound"),
+func TestHandler_deleteRunnerConfig_NotFound(t *testing.T) {
+	secretsStore := &mockSecretsStore{
+		deleteErr: errors.New("not found"),
 	}
-	handler := &Handler{ssmClient: ssmClient}
+	handler := &Handler{secretsStore: secretsStore}
 
-	// Should not return error if parameter already deleted
-	err := handler.deleteSSMParameter(context.Background(), "i-12345")
+	// Should not return error if config already deleted
+	err := handler.deleteRunnerConfig(context.Background(), "i-12345")
 	if err != nil {
-		t.Fatalf("unexpected error for ParameterNotFound: %v", err)
+		t.Fatalf("unexpected error for not found: %v", err)
 	}
 }
 
-func TestHandler_deleteSSMParameter_OtherError(t *testing.T) {
-	ssmClient := &mockSSMAPI{
-		deleteErr: errors.New("other error"),
+func TestHandler_deleteRunnerConfig_OtherError(t *testing.T) {
+	secretsStore := &mockSecretsStore{
+		deleteErr: errors.New("access denied"),
 	}
-	handler := &Handler{ssmClient: ssmClient}
+	handler := &Handler{secretsStore: secretsStore}
 
-	err := handler.deleteSSMParameter(context.Background(), "i-12345")
+	err := handler.deleteRunnerConfig(context.Background(), "i-12345")
 	if err == nil {
-		t.Fatal("expected error for other SSM error")
+		t.Fatal("expected error for other error")
+	}
+}
+
+func TestHandler_deleteRunnerConfig_NilStore(t *testing.T) {
+	handler := &Handler{secretsStore: nil}
+
+	// Should not return error when store is nil
+	err := handler.deleteRunnerConfig(context.Background(), "i-12345")
+	if err != nil {
+		t.Fatalf("unexpected error for nil store: %v", err)
 	}
 }
 
@@ -445,9 +465,9 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := Message{
 		InstanceID: "i-12345",
@@ -473,9 +493,9 @@ func TestHandler_Run_Cancellation(t *testing.T) {
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -626,9 +646,9 @@ func TestHandler_processTermination_NoDuration(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID:      "i-12345",
@@ -652,9 +672,9 @@ func TestHandler_processTermination_NoTimestamps(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -695,9 +715,9 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -737,9 +757,9 @@ func TestHandler_Run_ReceiveError(t *testing.T) {
 	}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -778,9 +798,9 @@ func TestHandler_processTermination_MetricsErrors(t *testing.T) {
 		durationErr: errors.New("duration error"),
 		successErr:  errors.New("success error"),
 	}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID:      "i-12345",
@@ -802,9 +822,9 @@ func TestHandler_processTermination_FailureMetricsError(t *testing.T) {
 	metrics := &mockMetricsAPI{
 		failureErr: errors.New("failure metric error"),
 	}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -825,9 +845,9 @@ func TestHandler_processTermination_UpdateMetricsError(t *testing.T) {
 		updateMetricsErr: errors.New("update metrics error"),
 	}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	now := time.Now()
 	msg := &Message{
@@ -849,9 +869,9 @@ func TestHandler_processMessage_NoHandle(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := Message{
 		InstanceID: "i-12345",
@@ -880,9 +900,9 @@ func TestHandler_processTermination_Timeout(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -905,9 +925,9 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{}
+	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID:    "i-12345",
@@ -927,15 +947,15 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 	}
 }
 
-func TestHandler_processTermination_SSMDeleteError(t *testing.T) {
+func TestHandler_processTermination_SecretsDeleteError(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
-	ssmClient := &mockSSMAPI{
+	secretsStore := &mockSecretsStore{
 		deleteErr: errors.New("access denied"),
 	}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, ssmClient, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -943,7 +963,7 @@ func TestHandler_processTermination_SSMDeleteError(t *testing.T) {
 		Status:     testStatusSuccess,
 	}
 
-	// Should not fail even if SSM delete fails (just logs warning)
+	// Should not fail even if secrets delete fails (just logs warning)
 	err := handler.processTermination(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

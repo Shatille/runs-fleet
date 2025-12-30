@@ -42,15 +42,6 @@ type PoolProvider interface {
 	MarkRunnerIdle(runnerID string)
 }
 
-// ConfigStore manages runner configuration delivery.
-type ConfigStore interface {
-	// StoreRunnerConfig saves config for agent retrieval.
-	StoreRunnerConfig(ctx context.Context, req *StoreConfigRequest) error
-
-	// DeleteRunnerConfig cleans up config after job.
-	DeleteRunnerConfig(ctx context.Context, runnerID string) error
-}
-
 // StateStore manages job and pool state persistence.
 type StateStore interface {
 	// Job operations
@@ -130,18 +121,6 @@ type PoolRunner struct {
 	InstanceType string
 	LaunchTime   time.Time
 	IdleSince    time.Time
-}
-
-// StoreConfigRequest contains parameters for storing runner config.
-type StoreConfigRequest struct {
-	RunnerID   string
-	JobID      string
-	RunID      string
-	Repo       string
-	Labels     []string
-	JITToken   string
-	CacheToken string
-	CacheURL   string
 }
 
 // Job represents a workflow job record.

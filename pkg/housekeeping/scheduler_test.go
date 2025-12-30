@@ -167,7 +167,7 @@ func TestScheduler_scheduleTask_Success(t *testing.T) {
 func TestScheduler_scheduleTask_AllTaskTypes(t *testing.T) {
 	taskTypes := []TaskType{
 		TaskOrphanedInstances,
-		TaskStaleSSM,
+		TaskStaleSecrets,
 		TaskOldJobs,
 		TaskPoolAudit,
 		TaskCostReport,

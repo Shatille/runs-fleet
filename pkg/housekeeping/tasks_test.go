@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -14,8 +15,6 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
 // mockEC2API implements EC2API for testing.
@@ -47,35 +46,39 @@ func (m *mockEC2API) TerminateInstances(_ context.Context, params *ec2.Terminate
 	return &ec2.TerminateInstancesOutput{}, nil
 }
 
-// mockTaskSSMAPI implements SSMAPI for testing.
-type mockTaskSSMAPI struct {
-	parameters     []ssmtypes.Parameter
-	getErr         error
-	deleteErr      error
-	getCalls       int
-	deleteCalls    int
-	deletedParams  []string
+// mockSecretsStore implements secrets.Store for testing.
+type mockSecretsStore struct {
+	runnerIDs    []string
+	listErr      error
+	deleteErr    error
+	listCalls    int
+	deleteCalls  int
+	deletedIDs   []string
 }
 
-func (m *mockTaskSSMAPI) GetParametersByPath(_ context.Context, _ *ssm.GetParametersByPathInput, _ ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
-	m.getCalls++
-	if m.getErr != nil {
-		return nil, m.getErr
+func (m *mockSecretsStore) List(_ context.Context) ([]string, error) {
+	m.listCalls++
+	if m.listErr != nil {
+		return nil, m.listErr
 	}
-	return &ssm.GetParametersByPathOutput{
-		Parameters: m.parameters,
-	}, nil
+	return m.runnerIDs, nil
 }
 
-func (m *mockTaskSSMAPI) DeleteParameter(_ context.Context, params *ssm.DeleteParameterInput, _ ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
+func (m *mockSecretsStore) Delete(_ context.Context, runnerID string) error {
 	m.deleteCalls++
-	if params.Name != nil {
-		m.deletedParams = append(m.deletedParams, *params.Name)
-	}
+	m.deletedIDs = append(m.deletedIDs, runnerID)
 	if m.deleteErr != nil {
-		return nil, m.deleteErr
+		return m.deleteErr
 	}
-	return &ssm.DeleteParameterOutput{}, nil
+	return nil
+}
+
+func (m *mockSecretsStore) Get(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockSecretsStore) Put(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
+	return errors.New("not implemented")
 }
 
 // mockTaskDynamoDBAPI implements DynamoDBAPI for testing.
@@ -328,15 +331,11 @@ func TestExecuteOrphanedInstances_TerminateError(t *testing.T) {
 	}
 }
 
-func TestExecuteStaleSSM_NoStaleParams(t *testing.T) {
+func TestExecuteStaleSecrets_NoStaleConfigs(t *testing.T) {
 	now := time.Now()
 
-	ssmClient := &mockTaskSSMAPI{
-		parameters: []ssmtypes.Parameter{
-			{
-				Name: strPtr("/runs-fleet/runners/i-exists/config"),
-			},
-		},
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-exists"},
 	}
 
 	ec2Client := &mockEC2API{
@@ -356,34 +355,91 @@ func TestExecuteStaleSSM_NoStaleParams(t *testing.T) {
 	}
 
 	tasks := &Tasks{
-		ec2Client: ec2Client,
-		ssmClient: ssmClient,
-		config:    &config.Config{},
+		ec2Client:    ec2Client,
+		secretsStore: secretsStore,
+		config:       &config.Config{},
 	}
 
-	err := tasks.ExecuteStaleSSM(context.Background())
+	err := tasks.ExecuteStaleSecrets(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ssmClient.deleteCalls != 0 {
-		t.Errorf("expected 0 delete calls, got %d", ssmClient.deleteCalls)
+	if secretsStore.deleteCalls != 0 {
+		t.Errorf("expected 0 delete calls, got %d", secretsStore.deleteCalls)
 	}
 }
 
-func TestExecuteStaleSSM_GetError(t *testing.T) {
-	ssmClient := &mockTaskSSMAPI{
-		getErr: errors.New("get error"),
+func TestExecuteStaleSecrets_ListError(t *testing.T) {
+	secretsStore := &mockSecretsStore{
+		listErr: errors.New("list error"),
 	}
 
 	tasks := &Tasks{
-		ssmClient: ssmClient,
-		config:    &config.Config{},
+		secretsStore: secretsStore,
+		config:       &config.Config{},
 	}
 
-	err := tasks.ExecuteStaleSSM(context.Background())
+	err := tasks.ExecuteStaleSecrets(context.Background())
 	if err == nil {
-		t.Fatal("expected error from get parameters")
+		t.Fatal("expected error from list")
+	}
+}
+
+func TestExecuteStaleSecrets_NoSecretsStore(t *testing.T) {
+	tasks := &Tasks{
+		secretsStore: nil,
+		config:       &config.Config{},
+	}
+
+	err := tasks.ExecuteStaleSecrets(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteStaleSecrets_WithStaleConfigs(t *testing.T) {
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-terminated", "i-exists"},
+	}
+
+	now := time.Now()
+	ec2Client := &mockEC2API{
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: strPtr("i-exists"),
+						LaunchTime: &now,
+						State: &ec2types.InstanceState{
+							Name: ec2types.InstanceStateNameRunning,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	metrics := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		secretsStore: secretsStore,
+		metrics:      metrics,
+		config:       &config.Config{},
+	}
+
+	// Override the describe instances to return no instances for i-terminated
+	ec2Client.instances = []ec2types.Reservation{} // First call returns empty
+
+	err := tasks.ExecuteStaleSecrets(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both configs will be deleted since mock returns empty for all describe calls
+	if secretsStore.deleteCalls != 2 {
+		t.Errorf("expected 2 delete calls, got %d", secretsStore.deleteCalls)
 	}
 }
 

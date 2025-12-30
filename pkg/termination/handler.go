@@ -13,8 +13,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
 // QueueAPI provides queue operations for termination event processing.
@@ -36,11 +35,6 @@ type MetricsAPI interface {
 	PublishJobFailure(ctx context.Context) error
 }
 
-// SSMAPI provides SSM parameter operations.
-type SSMAPI interface {
-	DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error)
-}
-
 // Message represents a termination notification from an agent.
 type Message struct {
 	InstanceID      string    `json:"instance_id"`
@@ -60,21 +54,21 @@ var handlerTickInterval = 1 * time.Second
 
 // Handler processes termination notifications from agents.
 type Handler struct {
-	queueClient QueueAPI
-	dbClient    DBAPI
-	metrics     MetricsAPI
-	ssmClient   SSMAPI
-	config      *config.Config
+	queueClient  QueueAPI
+	dbClient     DBAPI
+	metrics      MetricsAPI
+	secretsStore secrets.Store
+	config       *config.Config
 }
 
 // NewHandler creates a new termination handler.
-func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, ssmClient SSMAPI, cfg *config.Config) *Handler {
+func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, secretsStore secrets.Store, cfg *config.Config) *Handler {
 	return &Handler{
-		queueClient: q,
-		dbClient:    db,
-		metrics:     m,
-		ssmClient:   ssmClient,
-		config:      cfg,
+		queueClient:  q,
+		dbClient:     db,
+		metrics:      m,
+		secretsStore: secretsStore,
+		config:       cfg,
 	}
 }
 
@@ -214,31 +208,30 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		}
 	}
 
-	// Clean up SSM parameter
-	if err := h.deleteSSMParameter(ctx, msg.InstanceID); err != nil {
-		log.Printf("Warning: failed to delete SSM parameter: %v", err)
+	// Clean up runner config from secrets store
+	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {
+		log.Printf("Warning: failed to delete runner config: %v", err)
 	}
 
 	return nil
 }
 
-// deleteSSMParameter deletes the runner configuration parameter from SSM.
-func (h *Handler) deleteSSMParameter(ctx context.Context, instanceID string) error {
-	parameterPath := fmt.Sprintf("/runs-fleet/runners/%s/config", instanceID)
-
-	_, err := h.ssmClient.DeleteParameter(ctx, &ssm.DeleteParameterInput{
-		Name: aws.String(parameterPath),
-	})
-
-	if err != nil {
-		// Check if parameter was already deleted
-		if strings.Contains(err.Error(), "ParameterNotFound") {
-			log.Printf("SSM parameter already deleted: %s", parameterPath)
-			return nil
-		}
-		return fmt.Errorf("failed to delete SSM parameter %s: %w", parameterPath, err)
+// deleteRunnerConfig deletes the runner configuration from the secrets store.
+func (h *Handler) deleteRunnerConfig(ctx context.Context, instanceID string) error {
+	if h.secretsStore == nil {
+		return nil
 	}
 
-	log.Printf("Deleted SSM parameter: %s", parameterPath)
+	err := h.secretsStore.Delete(ctx, instanceID)
+	if err != nil {
+		// Check if config was already deleted
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound") {
+			log.Printf("Runner config already deleted: %s", instanceID)
+			return nil
+		}
+		return fmt.Errorf("failed to delete runner config for %s: %w", instanceID, err)
+	}
+
+	log.Printf("Deleted runner config: %s", instanceID)
 	return nil
 }

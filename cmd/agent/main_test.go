@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
+	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
 func TestStdLogger_Printf(_ *testing.T) {
@@ -240,7 +241,7 @@ func TestGetEnvInt_InvalidFormats(t *testing.T) {
 }
 
 func TestAgentConfig_WithRunnerConfig(t *testing.T) {
-	rc := &agent.RunnerConfig{
+	rc := &secrets.RunnerConfig{
 		Repo:       "owner/repo",
 		JITToken:   "test-token",
 		Labels:     []string{"self-hosted", "linux"},
@@ -369,7 +370,7 @@ func TestGetInstanceID_EmptyEnvVar(t *testing.T) {
 
 func TestAgentConfig_AllFieldsSet(t *testing.T) {
 	cleanupCalled := false
-	rc := &agent.RunnerConfig{
+	rc := &secrets.RunnerConfig{
 		Repo:     "test/repo",
 		JITToken: "token",
 		Labels:   []string{"label1"},
@@ -803,7 +804,7 @@ func TestJobStatus_Duration(t *testing.T) {
 }
 
 func TestRunnerConfig_AllFields(t *testing.T) {
-	rc := &agent.RunnerConfig{
+	rc := &secrets.RunnerConfig{
 		Repo:       "owner/repo",
 		JITToken:   "jit-token-value",
 		Labels:     []string{"self-hosted", "linux", "arm64"},
@@ -825,7 +826,7 @@ func TestRunnerConfig_AllFields(t *testing.T) {
 }
 
 func TestRunnerConfig_EmptyLabels(t *testing.T) {
-	rc := &agent.RunnerConfig{
+	rc := &secrets.RunnerConfig{
 		Repo:     "owner/repo",
 		JITToken: "token",
 		Labels:   []string{},
@@ -837,7 +838,7 @@ func TestRunnerConfig_EmptyLabels(t *testing.T) {
 }
 
 func TestRunnerConfig_NilLabels(t *testing.T) {
-	rc := &agent.RunnerConfig{
+	rc := &secrets.RunnerConfig{
 		Repo:     "owner/repo",
 		JITToken: "token",
 		Labels:   nil,
