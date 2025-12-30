@@ -138,7 +138,7 @@ func TestRunWorkerLoop_PanicRecovery(_ *testing.T) {
 
 	go RunWorkerLoop(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		defer func() {
-			recover() // Consume the panic
+			_ = recover() // Consume the panic
 		}()
 		panic("test panic")
 	})
