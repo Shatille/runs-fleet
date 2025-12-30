@@ -23,27 +23,55 @@ type mockSchedulerSQSAPI struct {
 	sendErr     error
 	sendErrOnce bool // Only error once then succeed
 	sendCalls   int
+	callCh      chan struct{} // Optional channel to signal each call
 }
 
 func (m *mockSchedulerSQSAPI) SendMessage(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.sendCalls++
+	callCh := m.callCh // Capture channel while holding lock
 
+	var err error
 	if m.sendErr != nil {
 		if m.sendErrOnce {
 			m.sendErrOnce = false
-			return nil, m.sendErr
-		}
-		if !m.sendErrOnce && m.sendCalls <= 3 {
-			return nil, m.sendErr
+			err = m.sendErr
+		} else if m.sendCalls <= 3 {
+			err = m.sendErr
 		}
 	}
 
-	if params.MessageBody != nil {
+	if err == nil && params.MessageBody != nil {
 		m.messages = append(m.messages, *params.MessageBody)
 	}
+	m.mu.Unlock()
+
+	// Signal call completion outside of lock to avoid blocking
+	if callCh != nil {
+		select {
+		case callCh <- struct{}{}:
+		default:
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
 	return &sqs.SendMessageOutput{}, nil
+}
+
+// waitForCalls waits for n calls to be signaled on the channel, with a timeout.
+// Returns true if all calls were received, false on timeout.
+func waitForCalls(ch <-chan struct{}, n int, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ch:
+		case <-deadline:
+			return false
+		}
+	}
+	return true
 }
 
 // mockSchedulerMetrics implements SchedulerMetrics for testing.
@@ -220,8 +248,10 @@ func TestScheduler_scheduleTask_ContextCancelled(t *testing.T) {
 func TestScheduler_scheduleTask_ContextCancelledDuringRetry(t *testing.T) {
 	// Explicit test verifying context cancellation is checked during retry backoff
 	// This addresses the code review concern about context handling in retry loop
+	callCh := make(chan struct{}, 10)
 	sqsClient := &mockSchedulerSQSAPI{
 		sendErr: errors.New("network error"),
+		callCh:  callCh,
 	}
 	cfg := DefaultSchedulerConfig()
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
@@ -235,8 +265,10 @@ func TestScheduler_scheduleTask_ContextCancelledDuringRetry(t *testing.T) {
 		close(done)
 	}()
 
-	// Give it a moment to make the first call and enter retry
-	time.Sleep(50 * time.Millisecond)
+	// Wait for first call to be made via channel (instead of time.Sleep)
+	if !waitForCalls(callCh, 1, 2*time.Second) {
+		t.Fatal("timed out waiting for first call")
+	}
 
 	// Cancel during the retry backoff
 	cancel()
@@ -250,13 +282,17 @@ func TestScheduler_scheduleTask_ContextCancelledDuringRetry(t *testing.T) {
 	}
 
 	// Verify it didn't exhaust all retries
-	if sqsClient.sendCalls >= maxScheduleRetries {
-		t.Logf("Note: %d calls made before cancellation took effect", sqsClient.sendCalls)
+	sqsClient.mu.Lock()
+	calls := sqsClient.sendCalls
+	sqsClient.mu.Unlock()
+	if calls >= maxScheduleRetries {
+		t.Logf("Note: %d calls made before cancellation took effect", calls)
 	}
 }
 
 func TestScheduler_Run_Cancellation(t *testing.T) {
-	sqsClient := &mockSchedulerSQSAPI{}
+	callCh := make(chan struct{}, 10)
+	sqsClient := &mockSchedulerSQSAPI{callCh: callCh}
 	cfg := SchedulerConfig{
 		OrphanedInstancesInterval:    100 * time.Millisecond,
 		StaleSSMInterval:             100 * time.Millisecond,
@@ -276,8 +312,10 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait a bit then cancel
-	time.Sleep(50 * time.Millisecond)
+	// Wait for immediate tasks to be scheduled (2 tasks run on startup)
+	if !waitForCalls(callCh, 2, 2*time.Second) {
+		t.Fatal("timed out waiting for immediate tasks")
+	}
 	cancel()
 
 	// Wait for scheduler to stop
@@ -290,7 +328,8 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 }
 
 func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
-	sqsClient := &mockSchedulerSQSAPI{}
+	callCh := make(chan struct{}, 10)
+	sqsClient := &mockSchedulerSQSAPI{callCh: callCh}
 	cfg := SchedulerConfig{
 		OrphanedInstancesInterval:    1 * time.Hour, // Long interval
 		StaleSSMInterval:             1 * time.Hour,
@@ -310,21 +349,28 @@ func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait a short time for the immediate task to be scheduled
-	time.Sleep(50 * time.Millisecond)
+	// Wait for immediate tasks to be scheduled (2 tasks run on startup)
+	if !waitForCalls(callCh, 2, 2*time.Second) {
+		t.Fatal("timed out waiting for immediate tasks")
+	}
 	cancel()
 
 	<-done
 
 	// Should have scheduled orphaned instances task immediately
-	if sqsClient.sendCalls < 1 {
+	sqsClient.mu.Lock()
+	sendCalls := sqsClient.sendCalls
+	messages := sqsClient.messages
+	sqsClient.mu.Unlock()
+
+	if sendCalls < 1 {
 		t.Error("expected at least 1 send call for immediate orphaned task")
 	}
 
 	// Verify it was the orphaned instances task
-	if len(sqsClient.messages) > 0 {
+	if len(messages) > 0 {
 		var msg Message
-		if err := json.Unmarshal([]byte(sqsClient.messages[0]), &msg); err == nil {
+		if err := json.Unmarshal([]byte(messages[0]), &msg); err == nil {
 			if msg.TaskType != TaskOrphanedInstances {
 				t.Errorf("expected first task to be '%s', got '%s'", TaskOrphanedInstances, msg.TaskType)
 			}
@@ -375,16 +421,17 @@ func TestConstants(t *testing.T) {
 }
 
 func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
-	sqsClient := &mockSchedulerSQSAPI{}
+	callCh := make(chan struct{}, 20)
+	sqsClient := &mockSchedulerSQSAPI{callCh: callCh}
 	// Use very short intervals for testing
 	cfg := SchedulerConfig{
-		OrphanedInstancesInterval:    50 * time.Millisecond,
-		StaleSSMInterval:             50 * time.Millisecond,
-		OldJobsInterval:              50 * time.Millisecond,
-		PoolAuditInterval:            50 * time.Millisecond,
-		CostReportInterval:           50 * time.Millisecond,
-		DLQRedriveInterval:           50 * time.Millisecond,
-		EphemeralPoolCleanupInterval: 50 * time.Millisecond,
+		OrphanedInstancesInterval:    10 * time.Millisecond,
+		StaleSSMInterval:             10 * time.Millisecond,
+		OldJobsInterval:              10 * time.Millisecond,
+		PoolAuditInterval:            10 * time.Millisecond,
+		CostReportInterval:           10 * time.Millisecond,
+		DLQRedriveInterval:           10 * time.Millisecond,
+		EphemeralPoolCleanupInterval: 10 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -396,15 +443,21 @@ func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for multiple ticker fires
-	time.Sleep(200 * time.Millisecond)
+	// Wait for at least 3 calls (2 immediate + 1 from ticker)
+	if !waitForCalls(callCh, 3, 2*time.Second) {
+		t.Fatal("timed out waiting for multiple task schedules")
+	}
 	cancel()
 
 	<-done
 
 	// Should have scheduled multiple tasks
-	if sqsClient.sendCalls < 3 {
-		t.Errorf("expected at least 3 send calls, got %d", sqsClient.sendCalls)
+	sqsClient.mu.Lock()
+	sendCalls := sqsClient.sendCalls
+	sqsClient.mu.Unlock()
+
+	if sendCalls < 3 {
+		t.Errorf("expected at least 3 send calls, got %d", sendCalls)
 	}
 }
 
