@@ -153,7 +153,7 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		return false, nil
 	}
 
-	if !dbc.HasJobsTable() {
+	if dbc == nil || !dbc.HasJobsTable() {
 		log.Printf("Jobs table not configured, cannot check job state for instance %s", instanceID)
 		return false, nil
 	}
