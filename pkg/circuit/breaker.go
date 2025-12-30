@@ -80,9 +80,12 @@ func NewBreaker(cfg aws.Config, tableName string) *Breaker {
 
 // StartCacheCleanup starts a background goroutine to periodically clean up expired cache entries.
 // This prevents memory leaks from accumulating cache entries over time.
-func (b *Breaker) StartCacheCleanup(ctx context.Context) {
+// Returns a channel that closes when the goroutine exits.
+func (b *Breaker) StartCacheCleanup(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
 	ticker := time.NewTicker(5 * time.Minute)
 	go func() {
+		defer close(done)
 		defer ticker.Stop()
 		for {
 			select {
@@ -93,6 +96,7 @@ func (b *Breaker) StartCacheCleanup(ctx context.Context) {
 			}
 		}
 	}()
+	return done
 }
 
 // cleanupExpiredCache removes cache entries that have exceeded their TTL.
