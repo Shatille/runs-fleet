@@ -586,3 +586,196 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleWorkflowJobQueued_InvalidRunID(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:     github.Int64(12345),
+			Name:   github.String("test-job"),
+			Labels: []string{"runs-fleet=not-a-number/cpu=4/arch=arm64"},
+		},
+		Repo: &github.Repository{
+			FullName: github.String("owner/repo"),
+		},
+	}
+
+	mockQueue := &MockQueue{}
+	mockMetrics := &MockMetrics{}
+
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	if err != nil {
+		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	// Invalid run_id should be logged and return nil, nil
+	if msg != nil {
+		t.Error("HandleWorkflowJobQueued() should return nil for invalid run_id")
+	}
+}
+
+func TestHandleWorkflowJobQueued_MessageFields(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:     github.Int64(12345),
+			Name:   github.String("test-job"),
+			Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64/pool=mypool/env=prod/region=us-east-1/spot=false/disk=200"},
+		},
+		Repo: &github.Repository{
+			FullName: github.String("owner/repo"),
+		},
+	}
+
+	mockQueue := &MockQueue{}
+	mockMetrics := &MockMetrics{}
+
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	if err != nil {
+		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("HandleWorkflowJobQueued() expected message, got nil")
+	}
+
+	// Verify all message fields are populated correctly
+	if msg.JobID != 12345 {
+		t.Errorf("JobID = %d, want 12345", msg.JobID)
+	}
+	if msg.RunID != 67890 {
+		t.Errorf("RunID = %d, want 67890", msg.RunID)
+	}
+	if msg.Repo != "owner/repo" {
+		t.Errorf("Repo = %s, want owner/repo", msg.Repo)
+	}
+	if msg.Pool != "mypool" {
+		t.Errorf("Pool = %s, want mypool", msg.Pool)
+	}
+	if msg.Spot != false {
+		t.Errorf("Spot = %v, want false", msg.Spot)
+	}
+	if msg.Region != "us-east-1" {
+		t.Errorf("Region = %s, want us-east-1", msg.Region)
+	}
+	if msg.Environment != "prod" {
+		t.Errorf("Environment = %s, want prod", msg.Environment)
+	}
+	if msg.OS != "linux" {
+		t.Errorf("OS = %s, want linux", msg.OS)
+	}
+	if msg.Arch != "arm64" {
+		t.Errorf("Arch = %s, want arm64", msg.Arch)
+	}
+	if msg.StorageGiB != 200 {
+		t.Errorf("StorageGiB = %d, want 200", msg.StorageGiB)
+	}
+	if msg.InstanceType == "" {
+		t.Error("InstanceType should not be empty")
+	}
+}
+
+func TestHandleJobFailure_RunnerNameExactlyPrefix(t *testing.T) {
+	// Test runner name that equals exactly the prefix (edge case)
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         github.Int64(12345),
+			RunnerName: github.String("runs-fleet-"),
+			Labels:     []string{"runs-fleet=67890/cpu=4"},
+		},
+	}
+
+	mockQueue := &MockQueue{}
+	mockMetrics := &MockMetrics{}
+
+	// This should not panic and should handle gracefully
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, mockMetrics)
+	if err != nil {
+		t.Errorf("HandleJobFailure() unexpected error: %v", err)
+	}
+	// Runner name "runs-fleet-" passes the prefix check but results in empty instanceID
+	// The dbc == nil check should still prevent further processing
+	if requeued {
+		t.Error("HandleJobFailure() should not requeue when DB client is nil")
+	}
+}
+
+func TestHandleWorkflowJobQueued_PublishQueueDepthCalled(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:     github.Int64(12345),
+			Name:   github.String("test-job"),
+			Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64"},
+		},
+		Repo: &github.Repository{
+			FullName: github.String("owner/repo"),
+		},
+	}
+
+	mockQueue := &MockQueue{}
+	mockMetrics := &MockMetrics{}
+
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	if err != nil {
+		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	if msg == nil {
+		t.Error("HandleWorkflowJobQueued() expected message, got nil")
+	}
+	if !mockMetrics.QueueDepthCalled {
+		t.Error("Expected PublishQueueDepth to be called")
+	}
+}
+
+func TestHandleWorkflowJobQueued_QueueSentMessage(t *testing.T) {
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:     github.Int64(12345),
+			Name:   github.String("test-job"),
+			Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64"},
+		},
+		Repo: &github.Repository{
+			FullName: github.String("owner/repo"),
+		},
+	}
+
+	mockQueue := &MockQueue{}
+	mockMetrics := &MockMetrics{}
+
+	_, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	if err != nil {
+		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+
+	// Verify the queue received the message
+	if len(mockQueue.SentMessages) != 1 {
+		t.Errorf("Expected 1 sent message, got %d", len(mockQueue.SentMessages))
+	}
+	if mockQueue.SentMessages[0].JobID != 12345 {
+		t.Errorf("Sent message JobID = %d, want 12345", mockQueue.SentMessages[0].JobID)
+	}
+}
+
+func TestHandleWorkflowJobQueued_OriginalLabel(t *testing.T) {
+	originalLabel := "runs-fleet=67890/cpu=4/arch=arm64/pool=test"
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:     github.Int64(12345),
+			Name:   github.String("test-job"),
+			Labels: []string{originalLabel},
+		},
+		Repo: &github.Repository{
+			FullName: github.String("owner/repo"),
+		},
+	}
+
+	mockQueue := &MockQueue{}
+	mockMetrics := &MockMetrics{}
+
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	if err != nil {
+		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("HandleWorkflowJobQueued() expected message, got nil")
+	}
+	if msg.OriginalLabel != originalLabel {
+		t.Errorf("OriginalLabel = %q, want %q", msg.OriginalLabel, originalLabel)
+	}
+}

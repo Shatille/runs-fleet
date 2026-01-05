@@ -913,3 +913,638 @@ func TestValidateECRImageURL(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEC2Config(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid EC2 config",
+			cfg: &Config{
+				VPCID:              "vpc-123",
+				SecurityGroupID:    "sg-123",
+				InstanceProfileARN: "arn:aws:iam::123456789012:instance-profile/test",
+				PublicSubnetIDs:    []string{"subnet-1", "subnet-2"},
+				RunnerImage:        "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner:latest",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing VPC ID",
+			cfg: &Config{
+				VPCID:              "",
+				SecurityGroupID:    "sg-123",
+				InstanceProfileARN: "arn:aws:iam::123456789012:instance-profile/test",
+				PublicSubnetIDs:    []string{"subnet-1"},
+				RunnerImage:        "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner:latest",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_VPC_ID",
+		},
+		{
+			name: "missing Security Group ID",
+			cfg: &Config{
+				VPCID:              "vpc-123",
+				SecurityGroupID:    "",
+				InstanceProfileARN: "arn:aws:iam::123456789012:instance-profile/test",
+				PublicSubnetIDs:    []string{"subnet-1"},
+				RunnerImage:        "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner:latest",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_SECURITY_GROUP_ID",
+		},
+		{
+			name: "missing Instance Profile ARN",
+			cfg: &Config{
+				VPCID:              "vpc-123",
+				SecurityGroupID:    "sg-123",
+				InstanceProfileARN: "",
+				PublicSubnetIDs:    []string{"subnet-1"},
+				RunnerImage:        "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner:latest",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_INSTANCE_PROFILE_ARN",
+		},
+		{
+			name: "empty Public Subnet IDs",
+			cfg: &Config{
+				VPCID:              "vpc-123",
+				SecurityGroupID:    "sg-123",
+				InstanceProfileARN: "arn:aws:iam::123456789012:instance-profile/test",
+				PublicSubnetIDs:    []string{},
+				RunnerImage:        "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner:latest",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_PUBLIC_SUBNET_IDS",
+		},
+		{
+			name: "missing Runner Image",
+			cfg: &Config{
+				VPCID:              "vpc-123",
+				SecurityGroupID:    "sg-123",
+				InstanceProfileARN: "arn:aws:iam::123456789012:instance-profile/test",
+				PublicSubnetIDs:    []string{"subnet-1"},
+				RunnerImage:        "",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_RUNNER_IMAGE",
+		},
+		{
+			name: "invalid Runner Image URL",
+			cfg: &Config{
+				VPCID:              "vpc-123",
+				SecurityGroupID:    "sg-123",
+				InstanceProfileARN: "arn:aws:iam::123456789012:instance-profile/test",
+				PublicSubnetIDs:    []string{"subnet-1"},
+				RunnerImage:        "docker.io/invalid:latest",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_RUNNER_IMAGE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.validateEC2Config()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateEC2Config() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("validateEC2Config() error = %v, should contain %q", err, tt.errMsg)
+			}
+		})
+	}
+}
+
+func TestValidateSecretsConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "SSM backend (default empty)",
+			cfg: &Config{
+				SecretsBackend: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "SSM backend explicit",
+			cfg: &Config{
+				SecretsBackend: "ssm",
+			},
+			wantErr: false,
+		},
+		{
+			name: "Vault backend with VaultAddr",
+			cfg: &Config{
+				SecretsBackend: "vault",
+				VaultAddr:      "https://vault.example.com:8200",
+			},
+			wantErr: false,
+		},
+		{
+			name: "Vault backend without VaultAddr",
+			cfg: &Config{
+				SecretsBackend: "vault",
+				VaultAddr:      "",
+			},
+			wantErr: true,
+			errMsg:  "VAULT_ADDR",
+		},
+		{
+			name: "Invalid backend",
+			cfg: &Config{
+				SecretsBackend: "kms",
+			},
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_SECRETS_BACKEND",
+		},
+		{
+			name: "Invalid backend (random)",
+			cfg: &Config{
+				SecretsBackend: "invalid",
+			},
+			wantErr: true,
+			errMsg:  "ssm' or 'vault",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.validateSecretsConfig()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateSecretsConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("validateSecretsConfig() error = %v, should contain %q", err, tt.errMsg)
+			}
+		})
+	}
+}
+
+func TestValidate(t *testing.T) {
+	// Base valid EC2 config
+	validEC2Config := func() *Config {
+		return &Config{
+			DefaultBackend:      BackendEC2,
+			GitHubWebhookSecret: "secret",
+			GitHubAppID:         "123456",
+			GitHubAppPrivateKey: "key",
+			QueueURL:            "https://sqs.us-east-1.amazonaws.com/123/queue",
+			MaxRuntimeMinutes:   360,
+			VPCID:               "vpc-123",
+			SecurityGroupID:     "sg-123",
+			InstanceProfileARN:  "arn:aws:iam::123456789012:instance-profile/test",
+			PublicSubnetIDs:     []string{"subnet-1"},
+			RunnerImage:         "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner:latest",
+			SecretsBackend:      "ssm",
+		}
+	}
+
+	// Base valid K8s config
+	validK8sConfig := func() *Config {
+		return &Config{
+			DefaultBackend:        BackendK8s,
+			GitHubWebhookSecret:   "secret",
+			GitHubAppID:           "123456",
+			GitHubAppPrivateKey:   "key",
+			ValkeyAddr:            "valkey:6379",
+			MaxRuntimeMinutes:     360,
+			KubeNamespace:         "runs-fleet",
+			KubeRunnerImage:       "runner:latest",
+			KubeDockerWaitSeconds: 120,
+			KubeDockerGroupGID:    123,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid EC2 config",
+			cfg:     validEC2Config(),
+			wantErr: false,
+		},
+		{
+			name:    "valid K8s config",
+			cfg:     validK8sConfig(),
+			wantErr: false,
+		},
+		{
+			name: "invalid backend",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.DefaultBackend = "gcp"
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_MODE",
+		},
+		{
+			name: "missing GitHub webhook secret",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.GitHubWebhookSecret = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_GITHUB_WEBHOOK_SECRET",
+		},
+		{
+			name: "missing GitHub App ID",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.GitHubAppID = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_GITHUB_APP_ID",
+		},
+		{
+			name: "missing GitHub App Private Key",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.GitHubAppPrivateKey = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_GITHUB_APP_PRIVATE_KEY",
+		},
+		{
+			name: "EC2 missing queue URL",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.QueueURL = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_QUEUE_URL",
+		},
+		{
+			name: "K8s missing Valkey address",
+			cfg: func() *Config {
+				cfg := validK8sConfig()
+				cfg.ValkeyAddr = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_VALKEY_ADDR",
+		},
+		{
+			name: "MaxRuntimeMinutes zero",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.MaxRuntimeMinutes = 0
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_MAX_RUNTIME_MINUTES",
+		},
+		{
+			name: "MaxRuntimeMinutes negative",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.MaxRuntimeMinutes = -1
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "greater than 0",
+		},
+		{
+			name: "MaxRuntimeMinutes exceeds 1440",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.MaxRuntimeMinutes = 1441
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "not exceed 1440",
+		},
+		{
+			name: "MaxRuntimeMinutes at 1440 (boundary)",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.MaxRuntimeMinutes = 1440
+				return cfg
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "MaxRuntimeMinutes at 1 (minimum boundary)",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.MaxRuntimeMinutes = 1
+				return cfg
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "K8s missing namespace",
+			cfg: func() *Config {
+				cfg := validK8sConfig()
+				cfg.KubeNamespace = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_KUBE_NAMESPACE",
+		},
+		{
+			name: "K8s missing runner image",
+			cfg: func() *Config {
+				cfg := validK8sConfig()
+				cfg.KubeRunnerImage = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_KUBE_RUNNER_IMAGE",
+		},
+		{
+			name: "EC2 with vault backend missing VaultAddr",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.SecretsBackend = "vault"
+				cfg.VaultAddr = ""
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "VAULT_ADDR",
+		},
+		{
+			name: "EC2 with vault backend valid",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.SecretsBackend = "vault"
+				cfg.VaultAddr = "https://vault.example.com:8200"
+				return cfg
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "Datadog metrics enabled with invalid address",
+			cfg: func() *Config {
+				cfg := validEC2Config()
+				cfg.MetricsDatadogEnabled = true
+				cfg.MetricsDatadogAddr = "invalid-address"
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_METRICS_DATADOG_ADDR",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("Validate() error = %v, should contain %q", err, tt.errMsg)
+			}
+		})
+	}
+}
+
+func TestLoadK8sBackend(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{
+			name: "Valid K8s Config",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                 "k8s",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":         "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_KUBE_NAMESPACE":        "runs-fleet",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":     "runner:latest",
+				"RUNS_FLEET_VALKEY_ADDR":           "valkey:6379",
+			},
+			wantErr: false,
+		},
+		{
+			name: "K8s missing namespace",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                 "k8s",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":         "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":     "runner:latest",
+				"RUNS_FLEET_VALKEY_ADDR":           "valkey:6379",
+			},
+			wantErr: true,
+		},
+		{
+			name: "K8s with node selector",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                 "k8s",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":         "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_KUBE_NAMESPACE":        "runs-fleet",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":     "runner:latest",
+				"RUNS_FLEET_VALKEY_ADDR":           "valkey:6379",
+				"RUNS_FLEET_KUBE_NODE_SELECTOR":    "kubernetes.io/arch=arm64",
+			},
+			wantErr: false,
+		},
+		{
+			name: "K8s with invalid node selector",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                 "k8s",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":         "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_KUBE_NAMESPACE":        "runs-fleet",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":     "runner:latest",
+				"RUNS_FLEET_VALKEY_ADDR":           "valkey:6379",
+				"RUNS_FLEET_KUBE_NODE_SELECTOR":    "invalid-no-equals",
+			},
+			wantErr: true,
+		},
+		{
+			name: "K8s with tolerations",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                 "k8s",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":         "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_KUBE_NAMESPACE":        "runs-fleet",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":     "runner:latest",
+				"RUNS_FLEET_VALKEY_ADDR":           "valkey:6379",
+				"RUNS_FLEET_KUBE_TOLERATIONS":      `[{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"}]`,
+			},
+			wantErr: false,
+		},
+		{
+			name: "K8s with invalid tolerations JSON",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                 "k8s",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET": "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":         "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_KUBE_NAMESPACE":        "runs-fleet",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":     "runner:latest",
+				"RUNS_FLEET_VALKEY_ADDR":           "valkey:6379",
+				"RUNS_FLEET_KUBE_TOLERATIONS":      "not-valid-json",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			for k, v := range tt.env {
+				_ = os.Setenv(k, v)
+			}
+
+			cfg, err := Load()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && cfg != nil {
+				if cfg.DefaultBackend != BackendK8s {
+					t.Errorf("Load() DefaultBackend = %v, want %v", cfg.DefaultBackend, BackendK8s)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadInvalidIntegers(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	tests := []struct {
+		name   string
+		envKey string
+		envVal string
+	}{
+		{
+			name:   "Invalid MaxRuntimeMinutes",
+			envKey: "RUNS_FLEET_MAX_RUNTIME_MINUTES",
+			envVal: "not-a-number",
+		},
+		{
+			name:   "Invalid KubeIdleTimeoutMinutes",
+			envKey: "RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES",
+			envVal: "abc",
+		},
+		{
+			name:   "Invalid KubeDockerWaitSeconds",
+			envKey: "RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS",
+			envVal: "xyz",
+		},
+		{
+			name:   "Invalid KubeDockerGroupGID",
+			envKey: "RUNS_FLEET_KUBE_DOCKER_GROUP_GID",
+			envVal: "invalid",
+		},
+		{
+			name:   "Invalid ValkeyDB",
+			envKey: "RUNS_FLEET_VALKEY_DB",
+			envVal: "not-int",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			_ = os.Setenv(tt.envKey, tt.envVal)
+
+			_, err := Load()
+			if err == nil {
+				t.Errorf("Load() expected error for invalid %s, got nil", tt.envKey)
+			}
+		})
+	}
+}
+
+func TestLoadEC2WithTags(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	tests := []struct {
+		name    string
+		tags    string
+		wantErr bool
+	}{
+		{
+			name:    "valid tags",
+			tags:    `{"Team":"platform","Environment":"production"}`,
+			wantErr: false,
+		},
+		{
+			name:    "invalid tags JSON",
+			tags:    "not-valid-json",
+			wantErr: true,
+		},
+		{
+			name:    "aws prefix rejected",
+			tags:    `{"aws:created":"value"}`,
+			wantErr: true,
+		},
+	}
+
+	baseEnv := map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_PUBLIC_SUBNET_IDS":      "subnet-1",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			for k, v := range baseEnv {
+				_ = os.Setenv(k, v)
+			}
+			_ = os.Setenv("RUNS_FLEET_TAGS", tt.tags)
+
+			_, err := Load()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Load() with tags error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}

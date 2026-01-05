@@ -245,3 +245,134 @@ func TestJobMessage_Fields(t *testing.T) {
 		t.Errorf("JobMessage.ParentID = %q, want %q", job.ParentID, "parent-def")
 	}
 }
+
+func TestJobMessage_ZeroValues(t *testing.T) {
+	// Test JobMessage with all zero values
+	job := JobMessage{}
+
+	if job.JobID != 0 {
+		t.Errorf("JobMessage.JobID = %d, want 0", job.JobID)
+	}
+	if job.RunID != 0 {
+		t.Errorf("JobMessage.RunID = %d, want 0", job.RunID)
+	}
+	if job.Repo != "" {
+		t.Errorf("JobMessage.Repo = %q, want empty", job.Repo)
+	}
+	if job.InstanceType != "" {
+		t.Errorf("JobMessage.InstanceType = %q, want empty", job.InstanceType)
+	}
+	if job.Pool != "" {
+		t.Errorf("JobMessage.Pool = %q, want empty", job.Pool)
+	}
+	if job.Spot {
+		t.Error("JobMessage.Spot default should be false")
+	}
+	if job.RetryCount != 0 {
+		t.Errorf("JobMessage.RetryCount = %d, want 0", job.RetryCount)
+	}
+	if job.ForceOnDemand {
+		t.Error("JobMessage.ForceOnDemand default should be false")
+	}
+	if len(job.InstanceTypes) != 0 {
+		t.Errorf("JobMessage.InstanceTypes should be empty, got %d", len(job.InstanceTypes))
+	}
+	if job.StorageGiB != 0 {
+		t.Errorf("JobMessage.StorageGiB = %d, want 0", job.StorageGiB)
+	}
+}
+
+func TestJobMessage_StorageGiB(t *testing.T) {
+	tests := []struct {
+		name       string
+		storageGiB int
+	}{
+		{"zero storage", 0},
+		{"minimum storage", 1},
+		{"typical storage", 100},
+		{"large storage", 16384},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := JobMessage{
+				JobID:      123,
+				RunID:      456,
+				StorageGiB: tt.storageGiB,
+			}
+			if job.StorageGiB != tt.storageGiB {
+				t.Errorf("JobMessage.StorageGiB = %d, want %d", job.StorageGiB, tt.storageGiB)
+			}
+		})
+	}
+}
+
+func TestMessage_EmptyFields(t *testing.T) {
+	// Test with empty string fields
+	msg := Message{
+		ID:         "",
+		Body:       "",
+		Handle:     "",
+		Attributes: nil,
+	}
+
+	if msg.ID != "" {
+		t.Errorf("Message.ID = %q, want empty", msg.ID)
+	}
+	if msg.Body != "" {
+		t.Errorf("Message.Body = %q, want empty", msg.Body)
+	}
+	if msg.Handle != "" {
+		t.Errorf("Message.Handle = %q, want empty", msg.Handle)
+	}
+	if msg.Attributes != nil {
+		t.Error("Message.Attributes should be nil")
+	}
+}
+
+func TestExtractTraceContext_EmptyStringValues(t *testing.T) {
+	// Test with attributes present but with empty string values
+	msg := Message{
+		ID:     "msg-1",
+		Body:   `{"run_id":"123"}`,
+		Handle: "handle-1",
+		Attributes: map[string]string{
+			"TraceID":  "",
+			"SpanID":   "",
+			"ParentID": "",
+		},
+	}
+
+	traceID, spanID, parentID := ExtractTraceContext(msg)
+
+	if traceID != "" {
+		t.Errorf("ExtractTraceContext() traceID = %q, want empty", traceID)
+	}
+	if spanID != "" {
+		t.Errorf("ExtractTraceContext() spanID = %q, want empty", spanID)
+	}
+	if parentID != "" {
+		t.Errorf("ExtractTraceContext() parentID = %q, want empty", parentID)
+	}
+}
+
+func TestJobMessage_LargeValues(t *testing.T) {
+	// Test JobMessage with max values
+	job := JobMessage{
+		JobID:         9223372036854775807, // Max int64
+		RunID:         9223372036854775807,
+		RetryCount:    2147483647, // Max int
+		StorageGiB:    16384,
+		InstanceTypes: make([]string, 100), // Many instance types
+	}
+
+	if job.JobID != 9223372036854775807 {
+		t.Error("JobMessage.JobID should handle max int64")
+	}
+	if job.RunID != 9223372036854775807 {
+		t.Error("JobMessage.RunID should handle max int64")
+	}
+	if len(job.InstanceTypes) != 100 {
+		t.Errorf("JobMessage.InstanceTypes length = %d, want 100", len(job.InstanceTypes))
+	}
+}

@@ -706,3 +706,425 @@ func TestParseLabels_OriginalLabel(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLabels_Environment(t *testing.T) {
+	tests := []struct {
+		name            string
+		labels          []string
+		wantEnvironment string
+	}{
+		{
+			name:            "dev environment",
+			labels:          []string{"runs-fleet=12345/cpu=2/arch=arm64/env=dev"},
+			wantEnvironment: "dev",
+		},
+		{
+			name:            "staging environment",
+			labels:          []string{"runs-fleet=12345/cpu=2/arch=arm64/env=staging"},
+			wantEnvironment: "staging",
+		},
+		{
+			name:            "prod environment",
+			labels:          []string{"runs-fleet=12345/cpu=2/arch=arm64/env=prod"},
+			wantEnvironment: "prod",
+		},
+		{
+			name:            "invalid environment (silently ignored)",
+			labels:          []string{"runs-fleet=12345/cpu=2/arch=arm64/env=invalid"},
+			wantEnvironment: "", // Invalid values are silently ignored
+		},
+		{
+			name:            "no environment (default)",
+			labels:          []string{"runs-fleet=12345/cpu=2/arch=arm64"},
+			wantEnvironment: "",
+		},
+		{
+			name:            "environment with other options",
+			labels:          []string{"runs-fleet=12345/cpu=4/arch=amd64/env=prod/spot=false/pool=ci"},
+			wantEnvironment: "prod",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if got.Environment != tt.wantEnvironment {
+				t.Errorf("ParseLabels() Environment = %q, want %q", got.Environment, tt.wantEnvironment)
+			}
+		})
+	}
+}
+
+func TestParseLabels_Region(t *testing.T) {
+	tests := []struct {
+		name       string
+		labels     []string
+		wantRegion string
+	}{
+		{
+			name:       "us-east-1 region",
+			labels:     []string{"runs-fleet=12345/cpu=2/arch=arm64/region=us-east-1"},
+			wantRegion: "us-east-1",
+		},
+		{
+			name:       "eu-west-1 region",
+			labels:     []string{"runs-fleet=12345/cpu=2/arch=arm64/region=eu-west-1"},
+			wantRegion: "eu-west-1",
+		},
+		{
+			name:       "ap-southeast-1 region",
+			labels:     []string{"runs-fleet=12345/cpu=2/arch=arm64/region=ap-southeast-1"},
+			wantRegion: "ap-southeast-1",
+		},
+		{
+			name:       "no region (default)",
+			labels:     []string{"runs-fleet=12345/cpu=2/arch=arm64"},
+			wantRegion: "",
+		},
+		{
+			name:       "region with other options",
+			labels:     []string{"runs-fleet=12345/cpu=4/arch=amd64/region=us-west-2/spot=false/pool=ci"},
+			wantRegion: "us-west-2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if got.Region != tt.wantRegion {
+				t.Errorf("ParseLabels() Region = %q, want %q", got.Region, tt.wantRegion)
+			}
+		})
+	}
+}
+
+func TestParseLabels_ArchInvalidValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   []string
+		wantArch string
+	}{
+		{
+			name:     "valid arm64",
+			labels:   []string{"runs-fleet=12345/cpu=2/arch=arm64"},
+			wantArch: "arm64",
+		},
+		{
+			name:     "valid amd64",
+			labels:   []string{"runs-fleet=12345/cpu=2/arch=amd64"},
+			wantArch: "amd64",
+		},
+		{
+			name:     "invalid x86 (silently ignored)",
+			labels:   []string{"runs-fleet=12345/cpu=2/arch=x86"},
+			wantArch: "", // Invalid arch silently ignored
+		},
+		{
+			name:     "invalid x86_64 (silently ignored)",
+			labels:   []string{"runs-fleet=12345/cpu=2/arch=x86_64"},
+			wantArch: "", // Invalid arch silently ignored
+		},
+		{
+			name:     "invalid i386 (silently ignored)",
+			labels:   []string{"runs-fleet=12345/cpu=2/arch=i386"},
+			wantArch: "", // Invalid arch silently ignored
+		},
+		{
+			name:     "no arch (default empty)",
+			labels:   []string{"runs-fleet=12345/cpu=2"},
+			wantArch: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if got.Arch != tt.wantArch {
+				t.Errorf("ParseLabels() Arch = %q, want %q", got.Arch, tt.wantArch)
+			}
+		})
+	}
+}
+
+func TestParseLabels_DefaultValues(t *testing.T) {
+	labels := []string{"runs-fleet=12345/cpu=2"}
+	got, err := ParseLabels(labels)
+	if err != nil {
+		t.Fatalf("ParseLabels() error = %v", err)
+	}
+
+	// Verify all default values
+	if got.Spot != true {
+		t.Errorf("ParseLabels() Spot default = %v, want true", got.Spot)
+	}
+	if got.OS != "linux" {
+		t.Errorf("ParseLabels() OS = %q, want \"linux\"", got.OS)
+	}
+	if got.Arch != "" {
+		t.Errorf("ParseLabels() Arch default = %q, want \"\"", got.Arch)
+	}
+	if got.Environment != "" {
+		t.Errorf("ParseLabels() Environment default = %q, want \"\"", got.Environment)
+	}
+	if got.Region != "" {
+		t.Errorf("ParseLabels() Region default = %q, want \"\"", got.Region)
+	}
+	if got.Pool != "" {
+		t.Errorf("ParseLabels() Pool default = %q, want \"\"", got.Pool)
+	}
+	if got.Backend != "" {
+		t.Errorf("ParseLabels() Backend default = %q, want \"\"", got.Backend)
+	}
+	if got.StorageGiB != 0 {
+		t.Errorf("ParseLabels() StorageGiB default = %d, want 0", got.StorageGiB)
+	}
+}
+
+func TestParseLabels_LabelOrder(t *testing.T) {
+	// Verify that labels can appear in any order
+	tests := []struct {
+		name   string
+		labels []string
+	}{
+		{
+			name:   "cpu first, arch last",
+			labels: []string{"runs-fleet=12345/cpu=4/pool=default/spot=false/arch=arm64"},
+		},
+		{
+			name:   "arch first, cpu in middle",
+			labels: []string{"runs-fleet=12345/arch=arm64/pool=default/cpu=4/spot=false"},
+		},
+		{
+			name:   "spot first, others mixed",
+			labels: []string{"runs-fleet=12345/spot=false/arch=arm64/cpu=4/pool=default"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			// All orderings should produce the same result
+			if got.CPUMin != 4 {
+				t.Errorf("ParseLabels() CPUMin = %d, want 4", got.CPUMin)
+			}
+			if got.Arch != "arm64" {
+				t.Errorf("ParseLabels() Arch = %q, want \"arm64\"", got.Arch)
+			}
+			if got.Pool != "default" {
+				t.Errorf("ParseLabels() Pool = %q, want \"default\"", got.Pool)
+			}
+			if got.Spot != false {
+				t.Errorf("ParseLabels() Spot = %v, want false", got.Spot)
+			}
+		})
+	}
+}
+
+func TestParseLabels_InstanceTypeSelection(t *testing.T) {
+	// Verify that InstanceType is set to the first element of InstanceTypes
+	tests := []struct {
+		name        string
+		labels      []string
+		wantMinType int // Minimum expected instance types
+	}{
+		{
+			name:        "single instance type match",
+			labels:      []string{"runs-fleet=12345/cpu=4/arch=arm64"},
+			wantMinType: 1,
+		},
+		{
+			name:        "multiple instance types with range",
+			labels:      []string{"runs-fleet=12345/cpu=4+16/arch=arm64"},
+			wantMinType: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if len(got.InstanceTypes) < tt.wantMinType {
+				t.Errorf("ParseLabels() len(InstanceTypes) = %d, want at least %d", len(got.InstanceTypes), tt.wantMinType)
+			}
+			// InstanceType should equal first element of InstanceTypes
+			if got.InstanceType != got.InstanceTypes[0] {
+				t.Errorf("ParseLabels() InstanceType = %q, want first element %q", got.InstanceType, got.InstanceTypes[0])
+			}
+		})
+	}
+}
+
+func TestParseLabels_DiskBoundaries(t *testing.T) {
+	tests := []struct {
+		name           string
+		labels         []string
+		wantStorageGiB int
+		wantErr        bool
+	}{
+		{
+			name:           "minimum boundary (1 GiB)",
+			labels:         []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=1"},
+			wantStorageGiB: 1,
+			wantErr:        false,
+		},
+		{
+			name:           "maximum boundary (16384 GiB)",
+			labels:         []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=16384"},
+			wantStorageGiB: 16384,
+			wantErr:        false,
+		},
+		{
+			name:    "just over max (16385 GiB)",
+			labels:  []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=16385"},
+			wantErr: true,
+		},
+		{
+			name:    "just under min (0 GiB)",
+			labels:  []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=0"},
+			wantErr: true,
+		},
+		{
+			name:    "negative disk size",
+			labels:  []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=-1"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got.StorageGiB != tt.wantStorageGiB {
+				t.Errorf("ParseLabels() StorageGiB = %d, want %d", got.StorageGiB, tt.wantStorageGiB)
+			}
+		})
+	}
+}
+
+func TestResolveFlexibleSpec(t *testing.T) {
+	tests := []struct {
+		name              string
+		cfg               *JobConfig
+		wantCPUMin        int
+		wantOS            string
+		wantErr           bool
+		wantInstanceTypes int // minimum expected instance types
+	}{
+		{
+			name: "CPUMin defaults to 2 when zero",
+			cfg: &JobConfig{
+				RunID:  "12345",
+				CPUMin: 0,
+				Arch:   "arm64",
+			},
+			wantCPUMin:        2,
+			wantOS:            "linux",
+			wantInstanceTypes: 1,
+		},
+		{
+			name: "CPUMin preserved when set",
+			cfg: &JobConfig{
+				RunID:  "12345",
+				CPUMin: 4,
+				Arch:   "arm64",
+			},
+			wantCPUMin:        4,
+			wantOS:            "linux",
+			wantInstanceTypes: 1,
+		},
+		{
+			name: "Empty families uses defaults",
+			cfg: &JobConfig{
+				RunID:    "12345",
+				CPUMin:   2,
+				Arch:     "arm64",
+				Families: nil,
+			},
+			wantCPUMin:        2,
+			wantOS:            "linux",
+			wantInstanceTypes: 1,
+		},
+		{
+			name: "CPU range resolves multiple types",
+			cfg: &JobConfig{
+				RunID:  "12345",
+				CPUMin: 4,
+				CPUMax: 16,
+				Arch:   "arm64",
+			},
+			wantCPUMin:        4,
+			wantOS:            "linux",
+			wantInstanceTypes: 2,
+		},
+		{
+			name: "Very high CPU - no matches",
+			cfg: &JobConfig{
+				RunID:  "12345",
+				CPUMin: 1000,
+				Arch:   "arm64",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ResolveFlexibleSpec(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ResolveFlexibleSpec() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+
+			if tt.cfg.CPUMin != tt.wantCPUMin {
+				t.Errorf("ResolveFlexibleSpec() CPUMin = %d, want %d", tt.cfg.CPUMin, tt.wantCPUMin)
+			}
+			if tt.cfg.OS != tt.wantOS {
+				t.Errorf("ResolveFlexibleSpec() OS = %q, want %q", tt.cfg.OS, tt.wantOS)
+			}
+			if len(tt.cfg.InstanceTypes) < tt.wantInstanceTypes {
+				t.Errorf("ResolveFlexibleSpec() len(InstanceTypes) = %d, want at least %d", len(tt.cfg.InstanceTypes), tt.wantInstanceTypes)
+			}
+			if tt.cfg.InstanceType == "" {
+				t.Error("ResolveFlexibleSpec() InstanceType is empty")
+			}
+			if len(tt.cfg.InstanceTypes) > 0 && tt.cfg.InstanceType != tt.cfg.InstanceTypes[0] {
+				t.Errorf("ResolveFlexibleSpec() InstanceType = %q should equal first InstanceTypes[0] = %q", tt.cfg.InstanceType, tt.cfg.InstanceTypes[0])
+			}
+		})
+	}
+}
+
+func TestArchConstants(t *testing.T) {
+	// Verify architecture constants have correct values
+	if ArchARM64 != "arm64" {
+		t.Errorf("ArchARM64 = %q, want \"arm64\"", ArchARM64)
+	}
+	if ArchAMD64 != "amd64" {
+		t.Errorf("ArchAMD64 = %q, want \"amd64\"", ArchAMD64)
+	}
+}

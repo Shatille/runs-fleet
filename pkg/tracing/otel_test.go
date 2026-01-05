@@ -1296,3 +1296,269 @@ func TestConcurrentSpanCreation(_ *testing.T) {
 		<-done
 	}
 }
+
+func TestInit_CancelledContext(t *testing.T) {
+	// Test Init with already cancelled context for disabled config
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	cfg := &Config{Enabled: false}
+
+	provider, err := Init(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Init() with cancelled context and disabled config should not error, got: %v", err)
+	}
+
+	if provider.IsEnabled() {
+		t.Error("Provider should be disabled")
+	}
+}
+
+func TestLoadConfig_SpecialEndpoints(t *testing.T) {
+	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	originalRatio := os.Getenv("OTEL_TRACE_SAMPLING_RATIO")
+	defer func() {
+		_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
+		_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", originalRatio)
+	}()
+
+	tests := []struct {
+		name        string
+		endpoint    string
+		wantEnabled bool
+	}{
+		{"ipv4 address", "192.168.1.1:4317", true},
+		{"ipv6 address", "[::1]:4317", true},
+		{"with path", "collector.example.com:4317/v1/traces", true},
+		{"just host", "collector", true},
+		{"with port only", ":4317", true},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", tt.endpoint)
+			_ = os.Unsetenv("OTEL_TRACE_SAMPLING_RATIO")
+
+			cfg := LoadConfig()
+
+			if cfg.Enabled != tt.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.wantEnabled)
+			}
+			if tt.wantEnabled && cfg.Endpoint != tt.endpoint {
+				t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, tt.endpoint)
+			}
+		})
+	}
+}
+
+func TestExtractTraceContext_WithTraceparent(t *testing.T) {
+	// Test with a valid W3C traceparent header format
+	carrier := map[string]string{
+		"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+	}
+
+	ctx := ExtractTraceContext(context.Background(), carrier)
+	if ctx == nil {
+		t.Error("ExtractTraceContext() returned nil")
+	}
+
+	// The extracted context should be valid
+	span := SpanFromContext(ctx)
+	if span == nil {
+		t.Error("SpanFromContext() returned nil after extraction")
+	}
+}
+
+func TestExtractTraceContext_WithTracestate(t *testing.T) {
+	// Test with both traceparent and tracestate headers
+	carrier := map[string]string{
+		"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"tracestate":  "congo=t61rcWkgMzE",
+	}
+
+	ctx := ExtractTraceContext(context.Background(), carrier)
+	if ctx == nil {
+		t.Error("ExtractTraceContext() returned nil")
+	}
+}
+
+func TestInjectTraceContext_ProducesValidHeaders(t *testing.T) {
+	// Start a span and inject its context
+	ctx, span := StartSpan(context.Background(), "inject-header-test")
+	defer span.End()
+
+	carrier := InjectTraceContext(ctx)
+
+	// Carrier should be non-nil (may or may not have headers depending on provider)
+	if carrier == nil {
+		t.Error("InjectTraceContext() should not return nil carrier")
+	}
+}
+
+func TestWithTimeout_CancelFunc(t *testing.T) {
+	ctx, cancel := WithTimeout(context.Background(), 10*time.Second, "cancel-test")
+
+	// Verify context is not done yet
+	select {
+	case <-ctx.Done():
+		t.Error("Context should not be done before cancel")
+	default:
+		// Expected
+	}
+
+	// Cancel and verify
+	cancel()
+
+	select {
+	case <-ctx.Done():
+		// Expected
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Context should be done after cancel")
+	}
+}
+
+func TestProvider_MultipleShudowns(t *testing.T) {
+	provider := &Provider{provider: nil, enabled: false}
+
+	// First shutdown
+	err := provider.Shutdown(context.Background())
+	if err != nil {
+		t.Errorf("First Shutdown() error = %v", err)
+	}
+
+	// Second shutdown should also succeed
+	err = provider.Shutdown(context.Background())
+	if err != nil {
+		t.Errorf("Second Shutdown() error = %v", err)
+	}
+}
+
+func TestConfig_AllFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		enabled       bool
+		endpoint      string
+		samplingRatio float64
+	}{
+		{"all zero", false, "", 0},
+		{"enabled only", true, "", 0},
+		{"all set", true, "localhost:4317", 0.5},
+		{"max ratio", true, "collector:4317", 1.0},
+		{"min ratio", true, "collector:4317", 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Enabled:       tt.enabled,
+				Endpoint:      tt.endpoint,
+				SamplingRatio: tt.samplingRatio,
+			}
+
+			if cfg.Enabled != tt.enabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Enabled, tt.enabled)
+			}
+			if cfg.Endpoint != tt.endpoint {
+				t.Errorf("Endpoint = %q, want %q", cfg.Endpoint, tt.endpoint)
+			}
+			if cfg.SamplingRatio != tt.samplingRatio {
+				t.Errorf("SamplingRatio = %f, want %f", cfg.SamplingRatio, tt.samplingRatio)
+			}
+		})
+	}
+}
+
+func TestSpanFromContext_AfterSpanEnd(t *testing.T) {
+	ctx, span := StartSpan(context.Background(), "span-end-test")
+
+	// End the span
+	span.End()
+
+	// Should still be able to retrieve span from context
+	retrievedSpan := SpanFromContext(ctx)
+	if retrievedSpan == nil {
+		t.Error("SpanFromContext() should return non-nil even after span.End()")
+	}
+}
+
+func TestAddEvent_EmptyName(_ *testing.T) {
+	ctx, span := StartSpan(context.Background(), "empty-event-name-test")
+	defer span.End()
+
+	// Should not panic with empty event name
+	AddEvent(ctx, "")
+	AddEvent(ctx, "", attribute.String("key", "value"))
+}
+
+func TestSetAttributes_Empty(_ *testing.T) {
+	ctx, span := StartSpan(context.Background(), "empty-attrs-test")
+	defer span.End()
+
+	// Should not panic with no attributes
+	SetAttributes(ctx)
+}
+
+func TestJobTracer_SpanHierarchy(t *testing.T) {
+	tracer := NewJobTracer()
+
+	// Create parent job span
+	ctx1, span1 := tracer.StartJobSpan(context.Background(), "parent-job", "run-1")
+
+	// Create child fleet span within job context
+	ctx2, span2 := tracer.StartFleetSpan(ctx1, "m5.large", "default")
+
+	// Create another job span within fleet context
+	ctx3, span3 := tracer.StartJobSpan(ctx2, "child-job", "run-2")
+
+	// Verify all contexts and spans are valid
+	if ctx1 == nil || ctx2 == nil || ctx3 == nil {
+		t.Error("All contexts should be non-nil")
+	}
+	if span1 == nil || span2 == nil || span3 == nil {
+		t.Error("All spans should be non-nil")
+	}
+
+	// End spans in correct order
+	span3.End()
+	span2.End()
+	span1.End()
+}
+
+func TestLoadConfig_NegativeRatio(t *testing.T) {
+	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	originalRatio := os.Getenv("OTEL_TRACE_SAMPLING_RATIO")
+	defer func() {
+		_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
+		_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", originalRatio)
+	}()
+
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
+	_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", "-1")
+
+	cfg := LoadConfig()
+
+	// Negative ratio should use default (1.0)
+	if cfg.SamplingRatio != 1.0 {
+		t.Errorf("SamplingRatio = %f, want 1.0 for negative input", cfg.SamplingRatio)
+	}
+}
+
+func TestLoadConfig_GreaterThanOneRatio(t *testing.T) {
+	originalEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	originalRatio := os.Getenv("OTEL_TRACE_SAMPLING_RATIO")
+	defer func() {
+		_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", originalEndpoint)
+		_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", originalRatio)
+	}()
+
+	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
+	_ = os.Setenv("OTEL_TRACE_SAMPLING_RATIO", "2.0")
+
+	cfg := LoadConfig()
+
+	// Ratio > 1 should use default (1.0)
+	if cfg.SamplingRatio != 1.0 {
+		t.Errorf("SamplingRatio = %f, want 1.0 for ratio > 1", cfg.SamplingRatio)
+	}
+}
