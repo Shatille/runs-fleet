@@ -180,6 +180,49 @@ spec:
             - name: RUNS_FLEET_VALKEY_ADDR
               value: {{ include "runs-fleet.valkey.address" . }}
             {{- end }}
+            # Secrets backend configuration
+            - name: RUNS_FLEET_SECRETS_BACKEND
+              value: {{ .Values.secrets.backend | quote }}
+            {{- if eq .Values.secrets.backend "ssm" }}
+            - name: RUNS_FLEET_SSM_PREFIX
+              value: {{ .Values.secrets.ssm.prefix | quote }}
+            {{- end }}
+            {{- if eq .Values.secrets.backend "vault" }}
+            - name: VAULT_ADDR
+              value: {{ .Values.secrets.vault.address | quote }}
+            {{- if .Values.secrets.vault.namespace }}
+            - name: VAULT_NAMESPACE
+              value: {{ .Values.secrets.vault.namespace | quote }}
+            {{- end }}
+            - name: VAULT_KV_MOUNT
+              value: {{ .Values.secrets.vault.kvMount | quote }}
+            {{- if .Values.secrets.vault.kvVersion }}
+            - name: VAULT_KV_VERSION
+              value: {{ .Values.secrets.vault.kvVersion | quote }}
+            {{- end }}
+            - name: VAULT_BASE_PATH
+              value: {{ .Values.secrets.vault.basePath | quote }}
+            - name: VAULT_AUTH_METHOD
+              value: {{ .Values.secrets.vault.authMethod | quote }}
+            {{- if eq .Values.secrets.vault.authMethod "aws" }}
+            - name: VAULT_AWS_ROLE
+              value: {{ .Values.secrets.vault.aws.role | quote }}
+            {{- if .Values.secrets.vault.aws.region }}
+            - name: VAULT_AWS_REGION
+              value: {{ .Values.secrets.vault.aws.region | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if or (eq .Values.secrets.vault.authMethod "kubernetes") (eq .Values.secrets.vault.authMethod "k8s") }}
+            - name: VAULT_K8S_ROLE
+              value: {{ .Values.secrets.vault.kubernetes.role | quote }}
+            - name: VAULT_K8S_JWT_PATH
+              value: {{ .Values.secrets.vault.kubernetes.jwtPath | quote }}
+            {{- end }}
+            {{- if eq .Values.secrets.vault.authMethod "approle" }}
+            - name: VAULT_APP_ROLE_ID
+              value: {{ .Values.secrets.vault.appRole.roleId | quote }}
+            {{- end }}
+            {{- end }}
             - name: RUNS_FLEET_GITHUB_APP_ID
               value: {{ .Values.github.appId | quote }}
             - name: RUNS_FLEET_LOG_LEVEL
