@@ -127,6 +127,49 @@ github:
   webhookSecret: "" # Required: Webhook secret (ignored if existingSecret is set)
   existingSecret: "" # Use existing secret instead of creating one (e.g., from VaultSecretMap)
 
+# Secrets backend configuration
+secrets:
+  # Backend selection: "ssm" (default) or "vault"
+  backend: ssm
+
+  # SSM configuration (backend: ssm)
+  ssm:
+    prefix: "/runs-fleet/runners"
+
+  # Vault configuration (backend: vault)
+  vault:
+    # Vault server address (required when backend: vault)
+    address: ""
+    # Vault namespace (enterprise feature, optional)
+    namespace: ""
+    # KV secrets engine mount path
+    kvMount: "secret"
+    # KV version (0 = auto-detect, 1 or 2)
+    kvVersion: 0
+    # Base path for secrets within KV mount
+    basePath: "runs-fleet/runners"
+
+    # Authentication method: "aws", "kubernetes", "approle", or "token"
+    authMethod: "aws"
+
+    # AWS IAM auth configuration (authMethod: aws)
+    aws:
+      role: "runs-fleet"
+      region: "" # Defaults to AWS_REGION if empty
+
+    # Kubernetes auth configuration (authMethod: kubernetes)
+    kubernetes:
+      role: "" # Required for kubernetes auth
+      jwtPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+    # AppRole auth configuration (authMethod: approle)
+    appRole:
+      roleId: "" # Required for approle auth
+      secretId: "" # Required for approle auth (stored in secret)
+
+    # Token auth configuration (authMethod: token)
+    token: "" # Required for token auth (stored in secret)
+
 # Valkey (Redis-compatible) configuration (mode: k8s only)
 valkey:
   enabled: false
