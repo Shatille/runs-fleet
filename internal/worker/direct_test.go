@@ -2,13 +2,10 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
-	"github.com/Shavakan/runs-fleet/pkg/db"
-	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -107,73 +104,8 @@ func TestDirectProcessor_ZeroValues(t *testing.T) {
 	}
 }
 
-// mockPoolManager implements pools.Manager interface for testing.
-type mockPoolManager struct {
-	markedBusy []string
-}
-
-func (m *mockPoolManager) MarkInstanceBusy(instanceID string) {
-	m.markedBusy = append(m.markedBusy, instanceID)
-}
-
-func (m *mockPoolManager) MarkInstanceIdle(_ string) {}
-
-// mockDBClient implements db.Client interface for testing.
-type mockDBClient struct {
-	hasJobsTable     bool
-	claimJobFunc     func(ctx context.Context, jobID int64) error
-	deleteClaimFunc  func(ctx context.Context, jobID int64) error
-	saveJobFunc      func(ctx context.Context, jobRecord *db.JobRecord) error
-}
-
-func (m *mockDBClient) HasJobsTable() bool {
-	return m.hasJobsTable
-}
-
-func (m *mockDBClient) ClaimJob(ctx context.Context, jobID int64) error {
-	if m.claimJobFunc != nil {
-		return m.claimJobFunc(ctx, jobID)
-	}
-	return nil
-}
-
-func (m *mockDBClient) DeleteJobClaim(ctx context.Context, jobID int64) error {
-	if m.deleteClaimFunc != nil {
-		return m.deleteClaimFunc(ctx, jobID)
-	}
-	return nil
-}
-
-func (m *mockDBClient) SaveJob(ctx context.Context, jobRecord *db.JobRecord) error {
-	if m.saveJobFunc != nil {
-		return m.saveJobFunc(ctx, jobRecord)
-	}
-	return nil
-}
-
-func TestProcessJobDirect_Success(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
-
+func TestProcessJobDirect_NilFleet(t *testing.T) {
 	var subnetIndex uint64
-	poolMgr := &mockPoolManager{}
-
-	processor := &DirectProcessor{
-		Fleet: &fleet.Manager{},
-		Pool:  &pools.Manager{},
-		Metrics: metrics.NoopPublisher{},
-		Config: &config.Config{
-			PublicSubnetIDs: []string{"subnet-a"},
-		},
-		SubnetIndex: &subnetIndex,
-	}
-
-	// We can't directly inject a mock fleet manager into DirectProcessor
-	// since it uses *fleet.Manager, not an interface.
-	// Instead, test the helper functions and edge cases.
-
-	// Test with nil dependencies
 	job := &queue.JobMessage{
 		JobID:        12345,
 		RunID:        67890,
@@ -181,171 +113,45 @@ func TestProcessJobDirect_Success(t *testing.T) {
 		InstanceType: "t3.micro",
 	}
 
-	// With nil Fleet, should return false
-	processorNilFleet := &DirectProcessor{
+	processor := &DirectProcessor{
 		Pool:        &pools.Manager{},
 		Metrics:     metrics.NoopPublisher{},
 		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
-	result := processorNilFleet.ProcessJobDirect(context.Background(), job)
+	result := processor.ProcessJobDirect(context.Background(), job)
 	if result {
 		t.Error("Expected false when Fleet is nil")
 	}
-
-	// Silence unused variable warnings
-	_ = processor
-	_ = poolMgr
 }
 
-func TestProcessJobDirect_JobAlreadyClaimed(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
-
+func TestProcessJobDirect_NilDBSkipsClaimCheck(t *testing.T) {
 	var subnetIndex uint64
-
-	// Create a mock DB that returns ErrJobAlreadyClaimed
-	mockDB := &mockDBClient{
-		hasJobsTable: true,
-		claimJobFunc: func(_ context.Context, _ int64) error {
-			return db.ErrJobAlreadyClaimed
-		},
-	}
-
-	processor := &DirectProcessor{
-		Fleet:       nil, // Will not reach fleet creation
-		Pool:        nil,
-		Metrics:     metrics.NoopPublisher{},
-		DB:          createDBClientFromMock(mockDB),
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
-		SubnetIndex: &subnetIndex,
-	}
-
 	job := &queue.JobMessage{
 		JobID:        12345,
 		RunID:        67890,
 		Repo:         "owner/repo",
 		InstanceType: "t3.micro",
-	}
-
-	result := processor.ProcessJobDirect(context.Background(), job)
-	if result {
-		t.Error("Expected false when job is already claimed")
-	}
-}
-
-func TestProcessJobDirect_ClaimFailure(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
-
-	var subnetIndex uint64
-
-	// Create a mock DB that returns a generic error
-	mockDB := &mockDBClient{
-		hasJobsTable: true,
-		claimJobFunc: func(_ context.Context, _ int64) error {
-			return errors.New("db connection error")
-		},
 	}
 
 	processor := &DirectProcessor{
 		Fleet:       nil,
 		Pool:        nil,
 		Metrics:     metrics.NoopPublisher{},
-		DB:          createDBClientFromMock(mockDB),
+		DB:          nil, // Nil DB skips claim check
 		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
-	job := &queue.JobMessage{
-		JobID:        12345,
-		RunID:        67890,
-		Repo:         "owner/repo",
-		InstanceType: "t3.micro",
-	}
-
-	result := processor.ProcessJobDirect(context.Background(), job)
-	if result {
-		t.Error("Expected false when claim fails")
-	}
-}
-
-func TestProcessJobDirect_NoDBClient(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
-
-	var subnetIndex uint64
-
-	processor := &DirectProcessor{
-		Fleet:       nil, // Will fail at fleet creation
-		Pool:        nil,
-		Metrics:     metrics.NoopPublisher{},
-		DB:          nil, // No DB client
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
-		SubnetIndex: &subnetIndex,
-	}
-
-	job := &queue.JobMessage{
-		JobID:        12345,
-		RunID:        67890,
-		Repo:         "owner/repo",
-		InstanceType: "t3.micro",
-	}
-
-	// Should not panic with nil DB
-	result := processor.ProcessJobDirect(context.Background(), job)
-	// Will fail because Fleet is nil, but should not panic
-	if result {
-		t.Error("Expected false when Fleet is nil")
-	}
-}
-
-func TestProcessJobDirect_DBWithoutJobsTable(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
-
-	var subnetIndex uint64
-
-	// Create a mock DB that has no jobs table
-	mockDB := &mockDBClient{
-		hasJobsTable: false,
-	}
-
-	processor := &DirectProcessor{
-		Fleet:       nil, // Will fail at fleet creation
-		Pool:        nil,
-		Metrics:     metrics.NoopPublisher{},
-		DB:          createDBClientFromMock(mockDB),
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
-		SubnetIndex: &subnetIndex,
-	}
-
-	job := &queue.JobMessage{
-		JobID:        12345,
-		RunID:        67890,
-		Repo:         "owner/repo",
-		InstanceType: "t3.micro",
-	}
-
-	// Should skip DB claim check and fail at fleet creation
+	// With nil DB and nil Fleet, should return false (Fleet nil check comes after DB check)
 	result := processor.ProcessJobDirect(context.Background(), job)
 	if result {
 		t.Error("Expected false when Fleet is nil")
 	}
 }
 
-// createDBClientFromMock creates a real db.Client that delegates to our mock.
-// Since db.Client is a concrete type, we need to use interface wrapping.
-func createDBClientFromMock(_ *mockDBClient) *db.Client {
-	// We can't easily mock db.Client since it's a concrete type.
-	// Return nil and test paths that don't require DB, or use the mock directly.
-	return nil
-}
+
 
 func TestTryDirectProcessing_WithCapacity(t *testing.T) {
 	var subnetIndex uint64
@@ -414,9 +220,3 @@ func TestTryDirectProcessing_PanicRecovery(t *testing.T) {
 	}
 }
 
-// Silence unused variable warnings for test imports
-var (
-	_ = db.ErrJobAlreadyClaimed
-	_ = fleet.LaunchSpec{}
-	_ = pools.PoolInstance{}
-)

@@ -11,9 +11,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/provider"
-	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	"github.com/Shavakan/runs-fleet/pkg/runner"
 )
 
 func TestK8sWorkerDeps_ZeroValues(t *testing.T) {
@@ -444,8 +442,3 @@ func TestMockK8sPoolProvider_MarksRunnerBusy(t *testing.T) {
 	}
 }
 
-// Silence unused variable warnings for test imports
-var (
-	_ = k8s.NewPoolProvider
-	_ = runner.NewManager
-)
