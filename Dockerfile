@@ -1,7 +1,18 @@
 # Multi-stage build for runs-fleet orchestrator server
 # Optimized for cross-compilation with buildx
 
-# Stage 1: Build server binary
+# Stage 1: Build admin UI
+FROM --platform=$BUILDPLATFORM node:22-alpine AS ui-builder
+
+WORKDIR /build/pkg/admin/ui
+
+# Copy UI source and build
+COPY pkg/admin/ui/package*.json ./
+RUN npm ci
+COPY pkg/admin/ui/ ./
+RUN npm run build
+
+# Stage 2: Build server binary
 # Use BUILDPLATFORM to run Go compiler natively (not under QEMU)
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
@@ -20,12 +31,15 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Copy built UI from ui-builder stage
+COPY --from=ui-builder /build/pkg/admin/ui/out ./pkg/admin/ui/out
+
 # Build server binary for target architecture (cross-compile)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-server ./cmd/server
 
-# Stage 2: Final runtime image
+# Stage 3: Final runtime image
 FROM alpine:3.19
 
 WORKDIR /app
