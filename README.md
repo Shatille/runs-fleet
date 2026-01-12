@@ -158,7 +158,6 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |
-| `RUNS_FLEET_LOG_LEVEL` | `info` | Log verbosity |
 
 ### Kubernetes Backend (required when `RUNS_FLEET_MODE=k8s`)
 
@@ -210,6 +209,44 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_METRICS_DATADOG_ENABLED` | `false` | Enable Datadog DogStatsD |
 | `RUNS_FLEET_METRICS_DATADOG_ADDR` | `127.0.0.1:8125` | DogStatsD address |
 | `RUNS_FLEET_METRICS_DATADOG_TAGS` | | Global tags (comma-separated) |
+
+### Secrets Backend
+
+Runner configuration secrets can be stored in SSM Parameter Store (default) or HashiCorp Vault.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_SECRETS_BACKEND` | `ssm` | Backend: `ssm` or `vault` |
+| `RUNS_FLEET_SSM_PREFIX` | `/runs-fleet/runners` | SSM parameter path prefix |
+
+**Vault Configuration** (when `RUNS_FLEET_SECRETS_BACKEND=vault`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VAULT_ADDR` | | Vault server address (required) |
+| `VAULT_NAMESPACE` | | Vault namespace (enterprise) |
+| `VAULT_KV_MOUNT` | `secret` | KV secrets engine mount path |
+| `VAULT_KV_VERSION` | auto-detect | KV version (1 or 2) |
+| `VAULT_BASE_PATH` | `runs-fleet/runners` | Base path for secrets |
+| `VAULT_AUTH_METHOD` | `aws` | Auth: `aws`, `kubernetes`, `approle`, `token` |
+
+**Vault Auth Methods:**
+
+| Auth | Variables |
+|------|-----------|
+| `aws` | `VAULT_AWS_ROLE` (default: `runs-fleet`), `VAULT_AWS_REGION` |
+| `kubernetes` | `VAULT_K8S_ROLE` (required), `VAULT_K8S_JWT_PATH` |
+| `approle` | `VAULT_APP_ROLE_ID`, `VAULT_APP_SECRET_ID` (both required) |
+| `token` | `VAULT_TOKEN` (required) |
+
+### Logging & Admin
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `RUNS_FLEET_LOG_FORMAT` | `json` | Log format: `json` or `text` |
+| `RUNS_FLEET_ADMIN_SECRET` | | Admin UI authentication secret |
+| `RUNS_FLEET_POOL_ENABLED` | `false` | Enable warm pool processing |
 
 ## Admin UI
 
