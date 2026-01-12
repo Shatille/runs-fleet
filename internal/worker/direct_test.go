@@ -383,13 +383,11 @@ func TestTryDirectProcessing_WithCapacity(t *testing.T) {
 		close(done)
 	}()
 
-	// Give goroutine time to start
-	time.Sleep(50 * time.Millisecond)
-
+	// Wait for completion with timeout
 	select {
 	case <-done:
 		// Success
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(1 * time.Second):
 		t.Fatal("TryDirectProcessing did not complete")
 	}
 }

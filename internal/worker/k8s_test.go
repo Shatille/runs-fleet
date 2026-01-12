@@ -340,7 +340,8 @@ type k8sProviderInterface interface {
 	CreateRunner(ctx context.Context, spec *provider.RunnerSpec) (*provider.RunnerResult, error)
 }
 
-// createK8sRunnerWithRetryTestable is a testable version that accepts an interface.
+// createK8sRunnerWithRetryTestable mirrors CreateK8sRunnerWithRetry logic but accepts an interface for testing.
+// SYNC NOTE: Keep retry logic (attempts, backoff) in sync with CreateK8sRunnerWithRetry in k8s.go.
 func createK8sRunnerWithRetryTestable(ctx context.Context, p k8sProviderInterface, spec *provider.RunnerSpec) (*provider.RunnerResult, error) {
 	var result *provider.RunnerResult
 	var err error
@@ -419,14 +420,15 @@ func TestRunK8sWorker_ProcessesMessages(t *testing.T) {
 		atomic.AddInt32(&processed, 1)
 	}, tick)
 
-	// Send ticks to trigger message processing
+	// Send ticks to trigger message processing with timeout
+	timeout := time.After(1 * time.Second)
 	for atomic.LoadInt32(&processed) < 3 {
-		tick <- time.Now()
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if atomic.LoadInt32(&processed) < 3 {
-		t.Errorf("Expected at least 3 messages processed, got %d", atomic.LoadInt32(&processed))
+		select {
+		case <-timeout:
+			t.Fatalf("Timeout waiting for messages, processed %d", atomic.LoadInt32(&processed))
+		case tick <- time.Now():
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 

@@ -311,7 +311,8 @@ type fleetManagerInterface interface {
 	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
 }
 
-// createFleetWithRetryTestable is a testable version that accepts an interface.
+// createFleetWithRetryTestable mirrors CreateFleetWithRetry logic but accepts an interface for testing.
+// SYNC NOTE: Keep retry logic (attempts, backoff) in sync with CreateFleetWithRetry in ec2.go.
 func createFleetWithRetryTestable(ctx context.Context, f fleetManagerInterface, spec *fleet.LaunchSpec) ([]string, error) {
 	var instanceIDs []string
 	var err error
@@ -554,14 +555,15 @@ func TestRunEC2Worker_ProcessesMessages(t *testing.T) {
 		atomic.AddInt32(&processed, 1)
 	}, tick)
 
-	// Send ticks to trigger message processing
+	// Send ticks to trigger message processing with timeout
+	timeout := time.After(1 * time.Second)
 	for atomic.LoadInt32(&processed) < 3 {
-		tick <- time.Now()
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if atomic.LoadInt32(&processed) < 3 {
-		t.Errorf("Expected at least 3 messages processed, got %d", atomic.LoadInt32(&processed))
+		select {
+		case <-timeout:
+			t.Fatalf("Timeout waiting for messages, processed %d", atomic.LoadInt32(&processed))
+		case tick <- time.Now():
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 
