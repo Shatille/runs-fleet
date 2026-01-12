@@ -12,8 +12,13 @@ import (
 	"github.com/hashicorp/vault/api"
 )
 
+const (
+	testAppRoleLoginPath    = "/v1/auth/approle/login"
+	testKubernetesLoginPath = "/v1/auth/kubernetes/login"
+)
+
 func TestAuthenticate_TokenMethod(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -39,7 +44,7 @@ func TestAuthenticate_TokenMethod(t *testing.T) {
 }
 
 func TestAuthenticate_TokenMethod_EmptyToken(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -62,7 +67,7 @@ func TestAuthenticate_TokenMethod_EmptyToken(t *testing.T) {
 }
 
 func TestAuthenticate_UnsupportedMethod(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -87,7 +92,7 @@ func TestAuthenticate_EmptyMethod_WithEnvToken(t *testing.T) {
 	_ = os.Setenv("VAULT_TOKEN", "env-token-123")
 	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -113,7 +118,7 @@ func TestAuthenticate_EmptyMethod_WithEnvToken(t *testing.T) {
 
 func TestAuthenticate_AppRole_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/approle/login" {
+		if r.URL.Path == testAppRoleLoginPath {
 			response := map[string]interface{}{
 				"auth": map[string]interface{}{
 					"client_token":   "test-approle-token",
@@ -152,7 +157,7 @@ func TestAuthenticate_AppRole_Success(t *testing.T) {
 
 func TestAuthenticate_AppRole_Failure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/approle/login" {
+		if r.URL.Path == testAppRoleLoginPath {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"errors": ["invalid credentials"]}`))
 			return
@@ -180,7 +185,7 @@ func TestAuthenticate_AppRole_Failure(t *testing.T) {
 
 func TestAuthenticate_AppRole_NilAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/approle/login" {
+		if r.URL.Path == testAppRoleLoginPath {
 			// Return response without auth field
 			response := map[string]interface{}{
 				"data": map[string]interface{}{},
@@ -219,7 +224,7 @@ func TestAuthenticate_Kubernetes_Success(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/kubernetes/login" {
+		if r.URL.Path == testKubernetesLoginPath {
 			response := map[string]interface{}{
 				"auth": map[string]interface{}{
 					"client_token":   "test-k8s-token",
@@ -265,7 +270,7 @@ func TestAuthenticate_Kubernetes_K8sAlias(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/kubernetes/login" {
+		if r.URL.Path == testKubernetesLoginPath {
 			response := map[string]interface{}{
 				"auth": map[string]interface{}{
 					"client_token": "test-k8s-token",
@@ -298,7 +303,7 @@ func TestAuthenticate_Kubernetes_K8sAlias(t *testing.T) {
 }
 
 func TestAuthenticate_Kubernetes_FileNotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -329,7 +334,7 @@ func TestAuthenticate_Kubernetes_NilAuth(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/kubernetes/login" {
+		if r.URL.Path == testKubernetesLoginPath {
 			// Return response without auth field
 			response := map[string]interface{}{
 				"data": map[string]interface{}{},
@@ -361,7 +366,7 @@ func TestAuthenticate_Kubernetes_NilAuth(t *testing.T) {
 
 func TestAuthenticate_Kubernetes_DefaultJWTPath(t *testing.T) {
 	// Test that default JWT path is used when not specified
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -387,7 +392,7 @@ func TestAuthenticate_Kubernetes_DefaultJWTPath(t *testing.T) {
 func TestAuthenticateAWS_WithRoleAndRegion(t *testing.T) {
 	// This test verifies the AWS auth code path but will fail without AWS credentials
 	// We're testing that the function constructs the auth request correctly
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -406,7 +411,7 @@ func TestAuthenticateAWS_WithRoleAndRegion(t *testing.T) {
 }
 
 func TestAuthenticateAWS_EmptyRoleAndRegion(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -426,7 +431,7 @@ func TestAuthenticateAWS_EmptyRoleAndRegion(t *testing.T) {
 
 func TestAuthenticateAppRole_DirectCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/approle/login" {
+		if r.URL.Path == testAppRoleLoginPath {
 			response := map[string]interface{}{
 				"auth": map[string]interface{}{
 					"client_token": "direct-approle-token",
@@ -464,7 +469,7 @@ func TestAuthenticateK8s_DirectCall(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/kubernetes/login" {
+		if r.URL.Path == testKubernetesLoginPath {
 			response := map[string]interface{}{
 				"auth": map[string]interface{}{
 					"client_token": "direct-k8s-token",
@@ -502,7 +507,7 @@ func TestAuthenticateK8s_LoginFailure(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/auth/kubernetes/login" {
+		if r.URL.Path == testKubernetesLoginPath {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"errors": ["permission denied"]}`))
 			return

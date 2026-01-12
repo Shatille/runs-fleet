@@ -129,6 +129,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 	}
 
+	if deps.Fleet == nil {
+		log.Printf("Fleet manager is nil, cannot process job %d", job.JobID)
+		return
+	}
+
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,

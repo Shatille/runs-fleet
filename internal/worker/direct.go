@@ -32,6 +32,11 @@ type DirectProcessor struct {
 func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMessage) bool {
 	log.Printf("Direct processing job for run %d", job.RunID)
 
+	if p.Fleet == nil {
+		log.Printf("Direct processing: Fleet manager is nil for job %d", job.JobID)
+		return false
+	}
+
 	if p.DB != nil && p.DB.HasJobsTable() {
 		if err := p.DB.ClaimJob(ctx, job.JobID); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {

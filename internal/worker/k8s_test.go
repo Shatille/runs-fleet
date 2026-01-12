@@ -114,11 +114,11 @@ func (m *mockK8sProvider) CreateRunner(ctx context.Context, spec *provider.Runne
 	return &provider.RunnerResult{RunnerIDs: []string{"pod-123"}}, nil
 }
 
-func (m *mockK8sProvider) TerminateRunner(ctx context.Context, runnerID string) error {
+func (m *mockK8sProvider) TerminateRunner(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *mockK8sProvider) DescribeRunner(ctx context.Context, runnerID string) (*provider.RunnerState, error) {
+func (m *mockK8sProvider) DescribeRunner(_ context.Context, runnerID string) (*provider.RunnerState, error) {
 	return &provider.RunnerState{RunnerID: runnerID, State: "running"}, nil
 }
 
@@ -131,19 +131,19 @@ type mockK8sPoolProvider struct {
 	markedBusy []string
 }
 
-func (m *mockK8sPoolProvider) ListPoolRunners(ctx context.Context, poolName string) ([]provider.PoolRunner, error) {
+func (m *mockK8sPoolProvider) ListPoolRunners(_ context.Context, _ string) ([]provider.PoolRunner, error) {
 	return nil, nil
 }
 
-func (m *mockK8sPoolProvider) StartRunners(ctx context.Context, runnerIDs []string) error {
+func (m *mockK8sPoolProvider) StartRunners(_ context.Context, _ []string) error {
 	return nil
 }
 
-func (m *mockK8sPoolProvider) StopRunners(ctx context.Context, runnerIDs []string) error {
+func (m *mockK8sPoolProvider) StopRunners(_ context.Context, _ []string) error {
 	return nil
 }
 
-func (m *mockK8sPoolProvider) TerminateRunners(ctx context.Context, runnerIDs []string) error {
+func (m *mockK8sPoolProvider) TerminateRunners(_ context.Context, _ []string) error {
 	return nil
 }
 
@@ -151,14 +151,9 @@ func (m *mockK8sPoolProvider) MarkRunnerBusy(runnerID string) {
 	m.markedBusy = append(m.markedBusy, runnerID)
 }
 
-func (m *mockK8sPoolProvider) MarkRunnerIdle(runnerID string) {}
+func (m *mockK8sPoolProvider) MarkRunnerIdle(_ string) {}
 
-// mockRunnerManager wraps runner.Manager for testing.
-type mockRunnerManager struct {
-	GetRegistrationTokenFunc func(ctx context.Context, repo string) (*runner.RegistrationResult, error)
-}
-
-func TestProcessK8sMessage_EmptyBody(t *testing.T) {
+func TestProcessK8sMessage_EmptyBody(_ *testing.T) {
 	origRetryDelay := FleetRetryBaseDelay
 	defer func() { FleetRetryBaseDelay = origRetryDelay }()
 	FleetRetryBaseDelay = 1 * time.Millisecond
@@ -213,7 +208,7 @@ func TestProcessK8sMessage_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestProcessK8sMessage_NilRunnerManager(t *testing.T) {
+func TestProcessK8sMessage_NilRunnerManager(_ *testing.T) {
 	origRetryDelay := FleetRetryBaseDelay
 	defer func() { FleetRetryBaseDelay = origRetryDelay }()
 	FleetRetryBaseDelay = 1 * time.Millisecond

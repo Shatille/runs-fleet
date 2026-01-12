@@ -107,18 +107,6 @@ func TestDirectProcessor_ZeroValues(t *testing.T) {
 	}
 }
 
-// mockFleetManager implements fleet.Manager interface for testing.
-type mockFleetManager struct {
-	CreateFleetFunc func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
-}
-
-func (m *mockFleetManager) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
-	if m.CreateFleetFunc != nil {
-		return m.CreateFleetFunc(ctx, spec)
-	}
-	return []string{"i-123"}, nil
-}
-
 // mockPoolManager implements pools.Manager interface for testing.
 type mockPoolManager struct {
 	markedBusy []string
@@ -128,7 +116,7 @@ func (m *mockPoolManager) MarkInstanceBusy(instanceID string) {
 	m.markedBusy = append(m.markedBusy, instanceID)
 }
 
-func (m *mockPoolManager) MarkInstanceIdle(instanceID string) {}
+func (m *mockPoolManager) MarkInstanceIdle(_ string) {}
 
 // mockDBClient implements db.Client interface for testing.
 type mockDBClient struct {
@@ -353,7 +341,7 @@ func TestProcessJobDirect_DBWithoutJobsTable(t *testing.T) {
 
 // createDBClientFromMock creates a real db.Client that delegates to our mock.
 // Since db.Client is a concrete type, we need to use interface wrapping.
-func createDBClientFromMock(mock *mockDBClient) *db.Client {
+func createDBClientFromMock(_ *mockDBClient) *db.Client {
 	// We can't easily mock db.Client since it's a concrete type.
 	// Return nil and test paths that don't require DB, or use the mock directly.
 	return nil

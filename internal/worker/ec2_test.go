@@ -273,23 +273,23 @@ func (m *mockQueueEC2) DeleteMessage(ctx context.Context, handle string) error {
 	return nil
 }
 
-func TestSaveJobRecords_NilDB(t *testing.T) {
+func TestSaveJobRecords_NilDB(_ *testing.T) {
 	// Should not panic with nil DB
 	SaveJobRecords(context.Background(), nil, &queue.JobMessage{}, []string{"i-123"})
 }
 
-func TestSaveJobRecords_NoJobsTable(t *testing.T) {
+func TestSaveJobRecords_NoJobsTable(_ *testing.T) {
 	// Create a DB client without jobs table configured
 	// Since db.Client is a concrete type, we test nil path
 	SaveJobRecords(context.Background(), nil, &queue.JobMessage{}, []string{"i-123"})
 }
 
-func TestPrepareRunners_NilRunnerManager(t *testing.T) {
+func TestPrepareRunners_NilRunnerManager(_ *testing.T) {
 	// Should not panic with nil runner manager
 	PrepareRunners(context.Background(), nil, &queue.JobMessage{}, []string{"i-123"})
 }
 
-func TestPrepareRunners_EmptyInstanceIDs(t *testing.T) {
+func TestPrepareRunners_EmptyInstanceIDs(_ *testing.T) {
 	// Should not panic with empty instance IDs
 	PrepareRunners(context.Background(), nil, &queue.JobMessage{}, []string{})
 }
@@ -453,7 +453,7 @@ func TestProcessEC2Message_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestProcessEC2Message_ValidJSON_NilFleet(t *testing.T) {
+func TestProcessEC2Message_ValidJSON_NilFleet(_ *testing.T) {
 	origRetryDelay := FleetRetryBaseDelay
 	defer func() { FleetRetryBaseDelay = origRetryDelay }()
 	FleetRetryBaseDelay = 1 * time.Millisecond
