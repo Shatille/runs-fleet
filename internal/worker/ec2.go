@@ -129,6 +129,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 	}
 
+	if deps.Fleet == nil {
+		log.Printf("ERROR: Fleet manager is nil, cannot process job %d - this indicates a configuration error", job.JobID)
+		return
+	}
+
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
@@ -155,39 +160,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 
 		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-			if delErr := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); delErr != nil {
-				cleanupCancel()
-				log.Printf("Failed to delete original message, skipping fallback to prevent duplicates: %v", delErr)
-				return
-			}
-			cleanupCancel()
-
-			fallbackJob := &queue.JobMessage{
-				JobID:         job.JobID,
-				RunID:         job.RunID,
-				Repo:          job.Repo,
-				InstanceType:  job.InstanceType,
-				InstanceTypes: job.InstanceTypes,
-				Pool:          job.Pool,
-				Spot:          false,
-				OriginalLabel: job.OriginalLabel,
-				RetryCount:    job.RetryCount + 1,
-				ForceOnDemand: true,
-				Region:        job.Region,
-				Environment:   job.Environment,
-				OS:            job.OS,
-				Arch:          job.Arch,
-				StorageGiB:    job.StorageGiB,
-			}
-			if sendErr := sendMessageWithRetry(ctx, deps.Queue, fallbackJob); sendErr != nil {
-				log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)
-			} else {
-				log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
-				if metricErr := deps.Metrics.PublishJobQueued(ctx); metricErr != nil {
-					log.Printf("Failed to publish job queued metric: %v", metricErr)
-				}
-			}
+			handleOnDemandFallback(ctx, deps, &job, msg.Handle)
 		}
 		return
 	}
@@ -281,6 +254,42 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 		}
 		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
 			log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
+		}
+	}
+}
+
+func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+	if delErr := deleteMessageWithRetry(cleanupCtx, deps.Queue, msgHandle); delErr != nil {
+		cleanupCancel()
+		log.Printf("Failed to delete original message, skipping fallback to prevent duplicates: %v", delErr)
+		return
+	}
+	cleanupCancel()
+
+	fallbackJob := &queue.JobMessage{
+		JobID:         job.JobID,
+		RunID:         job.RunID,
+		Repo:          job.Repo,
+		InstanceType:  job.InstanceType,
+		InstanceTypes: job.InstanceTypes,
+		Pool:          job.Pool,
+		Spot:          false,
+		OriginalLabel: job.OriginalLabel,
+		RetryCount:    job.RetryCount + 1,
+		ForceOnDemand: true,
+		Region:        job.Region,
+		Environment:   job.Environment,
+		OS:            job.OS,
+		Arch:          job.Arch,
+		StorageGiB:    job.StorageGiB,
+	}
+	if sendErr := sendMessageWithRetry(ctx, deps.Queue, fallbackJob); sendErr != nil {
+		log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)
+	} else {
+		log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
+		if metricErr := deps.Metrics.PublishJobQueued(ctx); metricErr != nil {
+			log.Printf("Failed to publish job queued metric: %v", metricErr)
 		}
 	}
 }

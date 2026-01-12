@@ -328,6 +328,7 @@ func TestHandleWorkflowJobQueued_MultipleInstanceTypes(t *testing.T) {
 	}
 	if msg == nil {
 		t.Fatal("HandleWorkflowJobQueued() expected message, got nil")
+		return
 	}
 	if len(msg.InstanceTypes) == 0 {
 		t.Error("Expected multiple instance types for flexible spec")
@@ -486,6 +487,7 @@ func TestHandleWorkflowJobQueued_DiskStorage(t *testing.T) {
 	}
 	if msg == nil {
 		t.Fatal("HandleWorkflowJobQueued() expected message, got nil")
+		return
 	}
 	if msg.StorageGiB != 100 {
 		t.Errorf("StorageGiB = %d, want 100", msg.StorageGiB)

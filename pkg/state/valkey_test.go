@@ -54,6 +54,7 @@ func TestValkeyStateStore_SaveAndGetPoolConfig(t *testing.T) {
 
 	if retrieved == nil {
 		t.Fatal("retrieved config is nil")
+		return
 	}
 	if retrieved.PoolName != "default" {
 		t.Errorf("expected pool name 'default', got %q", retrieved.PoolName)

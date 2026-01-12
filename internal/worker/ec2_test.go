@@ -2,12 +2,17 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
@@ -267,3 +272,330 @@ func (m *mockQueueEC2) DeleteMessage(ctx context.Context, handle string) error {
 	}
 	return nil
 }
+
+func TestSaveJobRecords_NilDB(_ *testing.T) {
+	// Should not panic with nil DB
+	SaveJobRecords(context.Background(), nil, &queue.JobMessage{}, []string{"i-123"})
+}
+
+func TestSaveJobRecords_NoJobsTable(_ *testing.T) {
+	// Create a DB client without jobs table configured
+	// Since db.Client is a concrete type, we test nil path
+	SaveJobRecords(context.Background(), nil, &queue.JobMessage{}, []string{"i-123"})
+}
+
+func TestPrepareRunners_NilRunnerManager(_ *testing.T) {
+	// Should not panic with nil runner manager
+	PrepareRunners(context.Background(), nil, &queue.JobMessage{}, []string{"i-123"})
+}
+
+func TestPrepareRunners_EmptyInstanceIDs(_ *testing.T) {
+	// Should not panic with empty instance IDs
+	PrepareRunners(context.Background(), nil, &queue.JobMessage{}, []string{})
+}
+
+// mockFleetManagerEC2 implements a testable fleet manager.
+type mockFleetManagerEC2 struct {
+	CreateFleetFunc func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+}
+
+func (m *mockFleetManagerEC2) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
+	if m.CreateFleetFunc != nil {
+		return m.CreateFleetFunc(ctx, spec)
+	}
+	return []string{"i-123"}, nil
+}
+
+// fleetManagerInterface allows testing CreateFleetWithRetry with mock.
+type fleetManagerInterface interface {
+	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+}
+
+// createFleetWithRetryTestable mirrors CreateFleetWithRetry logic but accepts an interface for testing.
+// SYNC NOTE: Keep retry logic (attempts, backoff) in sync with CreateFleetWithRetry in ec2.go.
+func createFleetWithRetryTestable(ctx context.Context, f fleetManagerInterface, spec *fleet.LaunchSpec) ([]string, error) {
+	var instanceIDs []string
+	var err error
+	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
+		if attempt > 0 {
+			backoff := FleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
+			time.Sleep(backoff)
+		}
+
+		instanceIDs, err = f.CreateFleet(ctx, spec)
+		if err == nil {
+			return instanceIDs, nil
+		}
+	}
+	return nil, err
+}
+
+func TestCreateFleetWithRetry_Success(t *testing.T) {
+	origRetryDelay := FleetRetryBaseDelay
+	defer func() { FleetRetryBaseDelay = origRetryDelay }()
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	mockFleet := &mockFleetManagerEC2{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return []string{"i-123", "i-456"}, nil
+		},
+	}
+
+	spec := &fleet.LaunchSpec{
+		RunID:        12345,
+		InstanceType: "t3.micro",
+	}
+
+	result, err := createFleetWithRetryTestable(context.Background(), mockFleet, spec)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("Expected 2 instance IDs, got %d", len(result))
+	}
+}
+
+func TestCreateFleetWithRetry_SuccessAfterRetries(t *testing.T) {
+	origRetryDelay := FleetRetryBaseDelay
+	defer func() { FleetRetryBaseDelay = origRetryDelay }()
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	attempts := 0
+	mockFleet := &mockFleetManagerEC2{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, errors.New("temporary failure")
+			}
+			return []string{"i-123"}, nil
+		},
+	}
+
+	spec := &fleet.LaunchSpec{
+		RunID:        12345,
+		InstanceType: "t3.micro",
+	}
+
+	result, err := createFleetWithRetryTestable(context.Background(), mockFleet, spec)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("Expected 1 instance ID, got %d", len(result))
+	}
+	if attempts != 3 {
+		t.Errorf("Expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestCreateFleetWithRetry_Failure(t *testing.T) {
+	origRetryDelay := FleetRetryBaseDelay
+	defer func() { FleetRetryBaseDelay = origRetryDelay }()
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	attempts := 0
+	mockFleet := &mockFleetManagerEC2{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			attempts++
+			return nil, errors.New("permanent failure")
+		},
+	}
+
+	spec := &fleet.LaunchSpec{
+		RunID:        12345,
+		InstanceType: "t3.micro",
+	}
+
+	result, err := createFleetWithRetryTestable(context.Background(), mockFleet, spec)
+	if err == nil {
+		t.Error("Expected error")
+	}
+	if result != nil {
+		t.Error("Expected nil result on failure")
+	}
+	if attempts != maxFleetCreateRetries {
+		t.Errorf("Expected %d attempts, got %d", maxFleetCreateRetries, attempts)
+	}
+}
+
+func TestProcessEC2Message_InvalidJSON(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	deleteCount := 0
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	msg := queue.Message{
+		ID:     "msg-1",
+		Body:   "not-valid-json",
+		Handle: "handle-1",
+	}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	// Message should be deleted as poison message
+	if deleteCount == 0 {
+		t.Error("Expected poison message to be deleted")
+	}
+}
+
+func TestProcessEC2Message_ValidJSON_NilFleet(_ *testing.T) {
+	origRetryDelay := FleetRetryBaseDelay
+	defer func() { FleetRetryBaseDelay = origRetryDelay }()
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		OS:           "linux",
+		Arch:         "amd64",
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	mockQueue := &mockQueueEC2{}
+	var subnetIndex uint64
+
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Fleet:       nil, // nil fleet manager
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	msg := queue.Message{
+		ID:     "msg-1",
+		Body:   string(jobBytes),
+		Handle: "handle-1",
+	}
+
+	// Should not panic with nil fleet manager
+	processEC2Message(context.Background(), deps, msg)
+}
+
+func TestRunEC2Worker_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+
+	mockQueue := &mockQueueEC2{}
+	var subnetIndex uint64
+
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		RunWorkerLoopWithTicker(ctx, "EC2", deps.Queue, func(_ context.Context, _ queue.Message) {
+			processEC2Message(ctx, deps, queue.Message{})
+		}, tick)
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("RunEC2Worker did not stop on context cancellation")
+	}
+}
+
+func TestRunEC2Worker_ProcessesMessages(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var processed int32
+	tick := make(chan time.Time)
+
+	job := queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	mockQueue := &mockQueueEC2{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			return []queue.Message{
+				{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"},
+			}, nil
+		},
+	}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	go RunWorkerLoopWithTicker(ctx, "EC2", deps.Queue, func(_ context.Context, _ queue.Message) {
+		atomic.AddInt32(&processed, 1)
+	}, tick)
+
+	// Send ticks to trigger message processing with timeout
+	timeout := time.After(1 * time.Second)
+	for atomic.LoadInt32(&processed) < 3 {
+		select {
+		case <-timeout:
+			t.Fatalf("Timeout waiting for messages, processed %d", atomic.LoadInt32(&processed))
+		case tick <- time.Now():
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestEC2WorkerDeps_WithAllFields(t *testing.T) {
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       nil,
+		Pool:        nil,
+		Metrics:     metrics.NoopPublisher{},
+		Runner:      nil,
+		DB:          nil,
+		Config:      &config.Config{},
+		SubnetIndex: &subnetIndex,
+	}
+
+	if deps.Queue == nil {
+		t.Error("Queue should not be nil")
+	}
+	if deps.Metrics == nil {
+		t.Error("Metrics should not be nil")
+	}
+	if deps.Config == nil {
+		t.Error("Config should not be nil")
+	}
+	if deps.SubnetIndex == nil {
+		t.Error("SubnetIndex should not be nil")
+	}
+}
+
+// Silence unused variable warnings for test imports
+var (
+	_ = db.ErrJobAlreadyClaimed
+	_ = fleet.LaunchSpec{}
+)

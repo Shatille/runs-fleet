@@ -17,6 +17,7 @@ func TestNewFileConfigFetcher(t *testing.T) {
 
 	if fetcher == nil {
 		t.Fatal("NewFileConfigFetcher() returned nil")
+		return
 	}
 	if fetcher.logger == nil {
 		t.Error("NewFileConfigFetcher() did not set logger")

@@ -267,6 +267,7 @@ func TestNewHTTPMiddleware(t *testing.T) {
 
 	if middleware == nil {
 		t.Fatal("NewHTTPMiddleware() returned nil")
+		return
 	}
 	if middleware.tracer == nil {
 		t.Error("NewHTTPMiddleware() did not set tracer")
@@ -278,6 +279,7 @@ func TestNewJobTracer(t *testing.T) {
 
 	if tracer == nil {
 		t.Fatal("NewJobTracer() returned nil")
+		return
 	}
 	if tracer.tracer == nil {
 		t.Error("NewJobTracer() did not set tracer")
@@ -840,6 +842,7 @@ func TestHTTPMiddleware_Structure(t *testing.T) {
 
 	if middleware == nil {
 		t.Fatal("NewHTTPMiddleware() returned nil")
+		return
 	}
 
 	// Verify internal tracer is initialized
@@ -894,6 +897,7 @@ func TestInit_WithNilConfig_ReturnsDisabledProvider(t *testing.T) {
 
 	if provider == nil {
 		t.Fatal("Init() returned nil provider")
+		return
 	}
 
 	if provider.IsEnabled() {
@@ -1175,6 +1179,7 @@ func TestHTTPMiddleware_Fields(t *testing.T) {
 
 	if middleware == nil {
 		t.Fatal("NewHTTPMiddleware() returned nil")
+		return
 	}
 
 	// Verify the tracer field is set

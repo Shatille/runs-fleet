@@ -18,6 +18,7 @@ func TestNewExecutor(t *testing.T) {
 
 	if executor == nil {
 		t.Fatal("NewExecutor() returned nil")
+		return
 	}
 	if executor.logger == nil {
 		t.Error("NewExecutor() did not set logger")
@@ -34,6 +35,7 @@ func TestNewExecutor_NoSafetyMonitor(t *testing.T) {
 
 	if executor == nil {
 		t.Fatal("NewExecutor() returned nil")
+		return
 	}
 	if executor.safetyMonitor != nil {
 		t.Error("NewExecutor() should allow nil safetyMonitor")

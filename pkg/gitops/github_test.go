@@ -405,6 +405,7 @@ func TestNewGitHubClient_WithMockClient(t *testing.T) {
 
 	if ghClient == nil {
 		t.Fatal("NewGitHubClient() should not return nil")
+		return
 	}
 
 	// The client field should be nil

@@ -710,6 +710,7 @@ func TestGetPoolInstances(t *testing.T) {
 
 	if running == nil {
 		t.Fatal("running instance not found")
+		return
 	}
 	if running.State != testStateRunning {
 		t.Errorf("expected running state, got %s", running.State)
@@ -720,6 +721,7 @@ func TestGetPoolInstances(t *testing.T) {
 
 	if stopped == nil {
 		t.Fatal("stopped instance not found")
+		return
 	}
 	if stopped.State != testStateStopped {
 		t.Errorf("expected stopped state, got %s", stopped.State)
@@ -1362,6 +1364,7 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 	// Existing instance should retain its idle time
 	if existing == nil {
 		t.Fatal("existing instance not found")
+		return
 	}
 	if !existing.IdleSince.Equal(existingIdleTime) {
 		t.Errorf("existing instance should retain idle time, got %v, want %v", existing.IdleSince, existingIdleTime)
@@ -1370,6 +1373,7 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 	// New running instance should have idle time initialized
 	if newInst == nil {
 		t.Fatal("new instance not found")
+		return
 	}
 	if newInst.IdleSince.IsZero() {
 		t.Error("new running instance should have idle time initialized")
@@ -1378,6 +1382,7 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 	// Stopped instance should not have idle time set
 	if stopped == nil {
 		t.Fatal("stopped instance not found")
+		return
 	}
 	if !stopped.IdleSince.IsZero() {
 		t.Error("stopped instance should not have idle time")

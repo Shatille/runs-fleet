@@ -136,6 +136,7 @@ func TestK8sManager_CreatePool(t *testing.T) {
 	poolConfig, _ := stateStore.GetK8sPoolConfig(ctx, DefaultPoolName)
 	if poolConfig == nil {
 		t.Fatal("pool config should exist")
+		return
 	}
 	if poolConfig.Arm64Replicas != 5 {
 		t.Errorf("expected arm64 replicas 5, got %d", poolConfig.Arm64Replicas)
@@ -571,6 +572,7 @@ func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
 
 	if arm64 == nil {
 		t.Fatal("expected arm64 deployment")
+		return
 	}
 	if *arm64.Spec.Replicas != 3 {
 		t.Errorf("expected arm64 replicas 3, got %d", *arm64.Spec.Replicas)
@@ -741,6 +743,7 @@ func TestK8sManager_ScalePoolCreateNew(t *testing.T) {
 	poolConfig, _ := stateStore.GetK8sPoolConfig(ctx, DefaultPoolName)
 	if poolConfig == nil {
 		t.Fatal("expected pool config to be created")
+		return
 	}
 	if poolConfig.Arm64Replicas != 2 {
 		t.Errorf("expected arm64 replicas 2, got %d", poolConfig.Arm64Replicas)

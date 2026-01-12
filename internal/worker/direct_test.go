@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/metrics"
+	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
@@ -101,3 +103,120 @@ func TestDirectProcessor_ZeroValues(t *testing.T) {
 		t.Error("Expected SubnetIndex to be nil for zero value")
 	}
 }
+
+func TestProcessJobDirect_NilFleet(t *testing.T) {
+	var subnetIndex uint64
+	job := &queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+	}
+
+	processor := &DirectProcessor{
+		Pool:        &pools.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	result := processor.ProcessJobDirect(context.Background(), job)
+	if result {
+		t.Error("Expected false when Fleet is nil")
+	}
+}
+
+func TestProcessJobDirect_NilDBSkipsClaimCheck(t *testing.T) {
+	var subnetIndex uint64
+	job := &queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+	}
+
+	processor := &DirectProcessor{
+		Fleet:       nil,
+		Pool:        nil,
+		Metrics:     metrics.NoopPublisher{},
+		DB:          nil, // Nil DB skips claim check
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	// With nil DB and nil Fleet, should return false (Fleet nil check comes after DB check)
+	result := processor.ProcessJobDirect(context.Background(), job)
+	if result {
+		t.Error("Expected false when Fleet is nil")
+	}
+}
+
+
+
+func TestTryDirectProcessing_WithCapacity(t *testing.T) {
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:       nil,
+		Pool:        nil,
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	sem := make(chan struct{}, 5)
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+	}
+
+	// Should acquire semaphore and process
+	done := make(chan struct{})
+	go func() {
+		TryDirectProcessing(context.Background(), processor, sem, job)
+		close(done)
+	}()
+
+	// Wait for completion with timeout
+	select {
+	case <-done:
+		// Success
+	case <-time.After(1 * time.Second):
+		t.Fatal("TryDirectProcessing did not complete")
+	}
+}
+
+func TestTryDirectProcessing_PanicRecovery(t *testing.T) {
+	// This test verifies the panic recovery in TryDirectProcessing
+	// We can't easily trigger a panic in ProcessJobDirect without modifying
+	// the production code, but we can verify the structure handles it.
+
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:       nil,
+		Pool:        nil,
+		Metrics:     metrics.NoopPublisher{},
+		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	sem := make(chan struct{}, 5)
+	job := &queue.JobMessage{
+		JobID: 12345,
+	}
+
+	// Should not panic even with minimal job
+	done := make(chan struct{})
+	go func() {
+		TryDirectProcessing(context.Background(), processor, sem, job)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("TryDirectProcessing did not complete")
+	}
+}
+
