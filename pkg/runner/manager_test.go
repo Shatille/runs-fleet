@@ -401,6 +401,7 @@ func TestManager_PrepareRunnerWithMock_Success(t *testing.T) {
 	storedConfig := mockStore.lastPutCfg
 	if storedConfig == nil {
 		t.Fatal("stored config is nil")
+		return
 	}
 
 	if storedConfig.Org != "testorg" {

@@ -961,6 +961,7 @@ func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
 	}
 	if dindContainer == nil {
 		t.Fatal("DinD container not found")
+		return
 	}
 
 	envFound := false

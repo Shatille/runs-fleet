@@ -1349,6 +1349,7 @@ func TestNewHandler(t *testing.T) {
 
 	if handler == nil {
 		t.Fatal("NewHandler() returned nil")
+		return
 	}
 	if handler.queueClient != mockQueue {
 		t.Error("NewHandler() did not set queueClient")
@@ -1392,6 +1393,7 @@ func TestNewHandler_WithNilValues(t *testing.T) {
 
 	if handler == nil {
 		t.Fatal("NewHandler() returned nil with nil parameters")
+		return
 	}
 	if handler.queueClient != nil {
 		t.Error("queueClient should be nil")

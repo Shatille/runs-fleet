@@ -654,6 +654,7 @@ runners:
 	savedConfig := db.savedConfigs["default"]
 	if savedConfig == nil {
 		t.Fatal("expected pool config to be saved")
+		return
 	}
 
 	if savedConfig.InstanceType != "m5.large" {

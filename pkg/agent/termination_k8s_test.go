@@ -74,6 +74,7 @@ func TestNewK8sTerminator(t *testing.T) {
 
 	if terminator == nil {
 		t.Fatal("NewK8sTerminator() returned nil")
+		return
 	}
 	if terminator.telemetry == nil {
 		t.Error("NewK8sTerminator() did not set telemetry")
@@ -96,6 +97,7 @@ func TestNewK8sTerminator_NilTelemetry(t *testing.T) {
 
 	if terminator == nil {
 		t.Fatal("NewK8sTerminator() returned nil")
+		return
 	}
 	if terminator.telemetry != nil {
 		t.Error("NewK8sTerminator() should allow nil telemetry")
