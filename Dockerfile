@@ -14,7 +14,7 @@ RUN npm run build
 
 # Stage 2: Build server binary
 # Use BUILDPLATFORM to run Go compiler natively (not under QEMU)
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
 ARG VERSION=dev
