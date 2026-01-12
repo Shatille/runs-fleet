@@ -33,7 +33,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	log.Printf("Direct processing job for run %d", job.RunID)
 
 	if p.Fleet == nil {
-		log.Printf("Direct processing: Fleet manager is nil for job %d", job.JobID)
+		log.Printf("ERROR: Direct processing: Fleet manager is nil for job %d - this indicates a configuration error", job.JobID)
 		return false
 	}
 
