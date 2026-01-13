@@ -103,6 +103,7 @@ jobs:
           file: docker/runner/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          pull: true
           tags: ${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
