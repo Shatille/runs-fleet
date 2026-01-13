@@ -55,6 +55,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: pkg/admin/ui/package-lock.json
+
+      - name: Build admin UI
+        run: make build-admin-ui
+
       - name: Restore Go build cache from CI
         uses: actions/cache/restore@v4
         with:

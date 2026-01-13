@@ -130,6 +130,7 @@ jobs:
           file: Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          pull: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.version.outputs.version }}-${{ matrix.arch }}
           build-args: |
             VERSION=${{ needs.version.outputs.version }}
