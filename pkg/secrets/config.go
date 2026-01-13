@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
@@ -107,6 +109,9 @@ func (c *Config) validateVaultAuth() error {
 		if c.Vault.K8sRole == "" {
 			return fmt.Errorf("VAULT_K8S_ROLE is required for Kubernetes auth")
 		}
+		if err := validateK8sJWTPath(c.Vault.K8sJWTPath); err != nil {
+			return err
+		}
 	case AuthMethodAppRole:
 		if c.Vault.AppRoleID == "" {
 			return fmt.Errorf("VAULT_APP_ROLE_ID is required for AppRole auth")
@@ -121,7 +126,22 @@ func (c *Config) validateVaultAuth() error {
 	case AuthMethodAWS, "":
 		// AWS auth uses IAM credentials automatically
 	default:
-		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'approle', or 'token', got %q", c.Vault.AuthMethod)
+		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'approle', or 'token', got %q", c.Vault.AuthMethod)
+	}
+	return nil
+}
+
+// validateK8sJWTPath validates the Kubernetes JWT token path for security.
+func validateK8sJWTPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("VAULT_K8S_JWT_PATH cannot be empty for Kubernetes auth")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("VAULT_K8S_JWT_PATH must be an absolute path, got %q", path)
+	}
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath, "/var/run/secrets/") {
+		return fmt.Errorf("VAULT_K8S_JWT_PATH must be under /var/run/secrets/, got %q", path)
 	}
 	return nil
 }
