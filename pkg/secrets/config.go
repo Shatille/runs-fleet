@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/Shavakan/runs-fleet/internal/validation"
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
@@ -107,6 +108,12 @@ func (c *Config) validateVaultAuth() error {
 		if c.Vault.K8sRole == "" {
 			return fmt.Errorf("VAULT_K8S_ROLE is required for Kubernetes auth")
 		}
+		if c.Vault.K8sJWTPath == "" {
+			c.Vault.K8sJWTPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		}
+		if err := validation.ValidateK8sJWTPath(c.Vault.K8sJWTPath); err != nil {
+			return err
+		}
 	case AuthMethodAppRole:
 		if c.Vault.AppRoleID == "" {
 			return fmt.Errorf("VAULT_APP_ROLE_ID is required for AppRole auth")
@@ -121,7 +128,7 @@ func (c *Config) validateVaultAuth() error {
 	case AuthMethodAWS, "":
 		// AWS auth uses IAM credentials automatically
 	default:
-		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'approle', or 'token', got %q", c.Vault.AuthMethod)
+		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'approle', or 'token', got %q", c.Vault.AuthMethod)
 	}
 	return nil
 }

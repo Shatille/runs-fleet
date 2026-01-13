@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Shavakan/runs-fleet/internal/validation"
 )
 
 func TestLoad(t *testing.T) {
@@ -866,6 +868,293 @@ func TestValidateMetricsConfig(t *testing.T) {
 			err := tt.cfg.validateMetricsConfig()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateMetricsConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestVaultAuthConfigLoading(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	tests := []struct {
+		name                string
+		env                 map[string]string
+		wantVaultAuthMethod string
+		wantVaultK8sRole    string
+		wantVaultK8sJWTPath string
+	}{
+		{
+			name: "defaults when not set",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                   "k8s",
+				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
+			},
+			wantVaultAuthMethod: "aws",
+			wantVaultK8sRole:    "",
+			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+		},
+		{
+			name: "kubernetes auth method",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                   "k8s",
+				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
+				"VAULT_AUTH_METHOD":                 "kubernetes",
+				"VAULT_K8S_ROLE":                    "runs-fleet",
+				"VAULT_K8S_JWT_PATH":                "/var/run/secrets/custom/token",
+			},
+			wantVaultAuthMethod: "kubernetes",
+			wantVaultK8sRole:    "runs-fleet",
+			wantVaultK8sJWTPath: "/var/run/secrets/custom/token",
+		},
+		{
+			name: "k8s auth method alias",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                   "k8s",
+				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
+				"VAULT_AUTH_METHOD":                 "k8s",
+				"VAULT_K8S_ROLE":                    "my-role",
+			},
+			wantVaultAuthMethod: "k8s",
+			wantVaultK8sRole:    "my-role",
+			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+		},
+		{
+			name: "token auth method",
+			env: map[string]string{
+				"RUNS_FLEET_MODE":                   "k8s",
+				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
+				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
+				"VAULT_AUTH_METHOD":                 "token",
+			},
+			wantVaultAuthMethod: "token",
+			wantVaultK8sRole:    "",
+			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			for k, v := range tt.env {
+				_ = os.Setenv(k, v)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+
+			if cfg.VaultAuthMethod != tt.wantVaultAuthMethod {
+				t.Errorf("VaultAuthMethod = %q, want %q", cfg.VaultAuthMethod, tt.wantVaultAuthMethod)
+			}
+			if cfg.VaultK8sRole != tt.wantVaultK8sRole {
+				t.Errorf("VaultK8sRole = %q, want %q", cfg.VaultK8sRole, tt.wantVaultK8sRole)
+			}
+			if cfg.VaultK8sJWTPath != tt.wantVaultK8sJWTPath {
+				t.Errorf("VaultK8sJWTPath = %q, want %q", cfg.VaultK8sJWTPath, tt.wantVaultK8sJWTPath)
+			}
+		})
+	}
+}
+
+func TestValidateVaultAuthConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid aws auth",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "aws",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid kubernetes auth",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "kubernetes",
+				VaultK8sRole:    "my-role",
+				VaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+			wantErr: false,
+		},
+		{
+			name: "kubernetes auth missing role",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "kubernetes",
+				VaultK8sRole:    "",
+				VaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			},
+			wantErr: true,
+			errMsg:  "VAULT_K8S_ROLE is required",
+		},
+		{
+			name: "kubernetes auth path traversal attempt",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "kubernetes",
+				VaultK8sRole:    "my-role",
+				VaultK8sJWTPath: "/etc/passwd",
+			},
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
+		},
+		{
+			name: "kubernetes auth relative path",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "kubernetes",
+				VaultK8sRole:    "my-role",
+				VaultK8sJWTPath: "relative/path/token",
+			},
+			wantErr: true,
+			errMsg:  "must be an absolute path",
+		},
+		{
+			name: "kubernetes auth path with traversal in allowed dir",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "kubernetes",
+				VaultK8sRole:    "my-role",
+				VaultK8sJWTPath: "/var/run/secrets/../../../etc/passwd",
+			},
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
+		},
+		{
+			name: "invalid auth method",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "invalid-method",
+			},
+			wantErr: true,
+			errMsg:  "VAULT_AUTH_METHOD must be",
+		},
+		{
+			name: "valid token auth",
+			cfg: &Config{
+				SecretsBackend:  "vault",
+				VaultAddr:       "https://vault.example.com",
+				VaultAuthMethod: "token",
+			},
+			wantErr: false,
+		},
+		{
+			name: "ssm backend skips vault validation",
+			cfg: &Config{
+				SecretsBackend:  "ssm",
+				VaultAuthMethod: "invalid-method", // Should not be validated
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.validateSecretsConfig()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateSecretsConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("validateSecretsConfig() error = %v, want error containing %q", err, tt.errMsg)
+			}
+		})
+	}
+}
+
+func TestValidateVaultK8sJWTPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid default path",
+			path:    "/var/run/secrets/kubernetes.io/serviceaccount/token",
+			wantErr: false,
+		},
+		{
+			name:    "valid custom path under secrets",
+			path:    "/var/run/secrets/custom/token",
+			wantErr: false,
+		},
+		{
+			name:    "empty path",
+			path:    "",
+			wantErr: true,
+			errMsg:  "cannot be empty",
+		},
+		{
+			name:    "relative path",
+			path:    "var/run/secrets/token",
+			wantErr: true,
+			errMsg:  "must be an absolute path",
+		},
+		{
+			name:    "path outside allowed directory",
+			path:    "/etc/passwd",
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
+		},
+		{
+			name:    "path traversal attack",
+			path:    "/var/run/secrets/../../../etc/shadow",
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
+		},
+		{
+			name:    "path to home directory",
+			path:    "/home/user/.ssh/id_rsa",
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validation.ValidateK8sJWTPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateK8sJWTPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("ValidateK8sJWTPath(%q) error = %v, want error containing %q", tt.path, err, tt.errMsg)
 			}
 		})
 	}

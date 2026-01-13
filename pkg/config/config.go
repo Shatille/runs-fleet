@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Shavakan/runs-fleet/internal/validation"
 )
 
 // Backend constants for compute provider selection.
@@ -103,10 +105,13 @@ type Config struct {
 	// Secrets backend configuration (EC2 mode only)
 	SecretsBackend    string // "ssm" or "vault" (default: "ssm")
 	SecretsPathPrefix string // Path prefix for secrets (default: "/runs-fleet/runners")
-	VaultAddr         string // Vault server address (required if vault backend)
-	VaultKVMount      string // Vault KV mount path (default: "secret")
-	VaultKVPath       string // Vault KV path prefix (default: "runs-fleet/runners")
-	VaultAWSRole      string // Vault AWS auth role (default: "runs-fleet")
+	VaultAddr     string // Vault server address (required if vault backend)
+	VaultKVMount  string // Vault KV mount path (default: "secret")
+	VaultBasePath string // Vault KV path prefix (default: "runs-fleet/runners")
+	VaultAuthMethod string // Vault auth method: "aws", "kubernetes", "approle", "token" (default: "aws")
+	VaultAWSRole    string // Vault AWS auth role (default: "runs-fleet")
+	VaultK8sRole    string // Vault Kubernetes auth role
+	VaultK8sJWTPath string // Path to Kubernetes service account token (default: "/var/run/secrets/kubernetes.io/serviceaccount/token")
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -207,10 +212,13 @@ func Load() (*Config, error) {
 		// Secrets backend (EC2 mode)
 		SecretsBackend:    getEnv("RUNS_FLEET_SECRETS_BACKEND", "ssm"),
 		SecretsPathPrefix: getEnv("RUNS_FLEET_SECRETS_PATH_PREFIX", "/runs-fleet/runners"),
-		VaultAddr:         getEnv("VAULT_ADDR", ""),
-		VaultKVMount:      getEnv("VAULT_KV_MOUNT", "secret"),
-		VaultKVPath:       getEnv("VAULT_KV_PATH", "runs-fleet/runners"),
-		VaultAWSRole:      getEnv("VAULT_AWS_ROLE", "runs-fleet"),
+		VaultAddr:     getEnv("VAULT_ADDR", ""),
+		VaultKVMount:  getEnv("VAULT_KV_MOUNT", "secret"),
+		VaultBasePath: getEnv("VAULT_BASE_PATH", "runs-fleet/runners"),
+		VaultAuthMethod: getEnv("VAULT_AUTH_METHOD", "aws"),
+		VaultAWSRole:    getEnv("VAULT_AWS_ROLE", "runs-fleet"),
+		VaultK8sRole:    getEnv("VAULT_K8S_ROLE", ""),
+		VaultK8sJWTPath: getEnv("VAULT_K8S_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 	}
 
 	// Parse node selector with validation (only for K8s backend)
@@ -367,8 +375,36 @@ func (c *Config) validateSecretsConfig() error {
 		if c.VaultAddr == "" {
 			return fmt.Errorf("VAULT_ADDR is required when RUNS_FLEET_SECRETS_BACKEND=vault")
 		}
+		if err := c.validateVaultAuthConfig(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("RUNS_FLEET_SECRETS_BACKEND must be 'ssm' or 'vault', got %q", c.SecretsBackend)
+	}
+	return nil
+}
+
+// validateVaultAuthConfig validates Vault authentication configuration.
+func (c *Config) validateVaultAuthConfig() error {
+	switch c.VaultAuthMethod {
+	case "aws", "":
+		// AWS auth uses IAM credentials automatically
+	case "kubernetes", "k8s":
+		if c.VaultK8sRole == "" {
+			return fmt.Errorf("VAULT_K8S_ROLE is required when VAULT_AUTH_METHOD is 'kubernetes' or 'k8s'")
+		}
+		if c.VaultK8sJWTPath == "" {
+			c.VaultK8sJWTPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		}
+		if err := validation.ValidateK8sJWTPath(c.VaultK8sJWTPath); err != nil {
+			return err
+		}
+	case "approle":
+		// AppRole validation would require additional fields not yet implemented
+	case "token":
+		// Token can come from VAULT_TOKEN env var at runtime
+	default:
+		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'approle', or 'token', got %q", c.VaultAuthMethod)
 	}
 	return nil
 }

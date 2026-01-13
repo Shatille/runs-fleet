@@ -150,7 +150,7 @@ func TestConfig_ValidateVaultAuth(t *testing.T) {
 			name: "Kubernetes auth with role is valid",
 			cfg: Config{
 				Backend: BackendVault,
-				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role"},
+				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role", K8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"},
 			},
 			wantErr: false,
 		},
@@ -158,7 +158,7 @@ func TestConfig_ValidateVaultAuth(t *testing.T) {
 			name: "K8s alias works like kubernetes",
 			cfg: Config{
 				Backend: BackendVault,
-				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "k8s", K8sRole: "my-role"},
+				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "k8s", K8sRole: "my-role", K8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"},
 			},
 			wantErr: false,
 		},
@@ -213,6 +213,41 @@ func TestConfig_ValidateVaultAuth(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "VAULT_AUTH_METHOD",
+		},
+		{
+			name: "K8s auth empty JWT path uses default",
+			cfg: Config{
+				Backend: BackendVault,
+				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role", K8sJWTPath: ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "K8s auth relative JWT path",
+			cfg: Config{
+				Backend: BackendVault,
+				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role", K8sJWTPath: "relative/path"},
+			},
+			wantErr: true,
+			errMsg:  "must be an absolute path",
+		},
+		{
+			name: "K8s auth JWT path traversal attack",
+			cfg: Config{
+				Backend: BackendVault,
+				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role", K8sJWTPath: "/var/run/secrets/../../../etc/passwd"},
+			},
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
+		},
+		{
+			name: "K8s auth JWT path outside allowed directory",
+			cfg: Config{
+				Backend: BackendVault,
+				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role", K8sJWTPath: "/etc/passwd"},
+			},
+			wantErr: true,
+			errMsg:  "must be under /var/run/secrets/",
 		},
 	}
 
