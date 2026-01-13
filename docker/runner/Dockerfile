@@ -25,7 +25,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -o /bin/runs-fleet-agent ./cmd/agent
 
 # Stage 2: Runner image
-# Unpinned to allow apt-get upgrade to fetch security patches (CVE-2025-68973)
+# TODO(security): Re-pin digest once ubuntu:24.04 includes CVE-2025-68973 fix
+# Unpinned to allow apt-get upgrade to fetch security patches
 FROM ubuntu:24.04
 
 ARG TARGETARCH
