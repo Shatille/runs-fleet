@@ -25,8 +25,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -o /bin/runs-fleet-agent ./cmd/agent
 
 # Stage 2: Runner image
-# Pin to specific digest for reproducible builds (ubuntu:24.04 as of 2025-12)
-FROM ubuntu:24.04@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
+# TODO(security): Re-pin digest once ubuntu:24.04 includes CVE-2025-68973 fix
+# Unpinned to allow apt-get upgrade to fetch security patches
+FROM ubuntu:24.04
 
 ARG TARGETARCH
 
