@@ -10,6 +10,11 @@ import (
 // ValidateK8sJWTPath validates the Kubernetes JWT token path for security.
 // It ensures the path is absolute and under /var/run/secrets/ to prevent
 // path traversal attacks.
+//
+// Note: This is configuration-time validation, not runtime security.
+// It does not resolve symlinks or verify file existence since the file
+// may not exist at configuration time. In Kubernetes environments,
+// /var/run/secrets is mounted by the kubelet with appropriate permissions.
 func ValidateK8sJWTPath(path string) error {
 	if path == "" {
 		return fmt.Errorf("VAULT_K8S_JWT_PATH cannot be empty for Kubernetes auth")
