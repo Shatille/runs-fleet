@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Shavakan/runs-fleet/internal/validation"
 )
 
 // Backend constants for compute provider selection.
@@ -392,7 +393,10 @@ func (c *Config) validateVaultAuthConfig() error {
 		if c.VaultK8sRole == "" {
 			return fmt.Errorf("VAULT_K8S_ROLE is required when VAULT_AUTH_METHOD is 'kubernetes' or 'k8s'")
 		}
-		if err := validateVaultK8sJWTPath(c.VaultK8sJWTPath); err != nil {
+		if c.VaultK8sJWTPath == "" {
+			c.VaultK8sJWTPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		}
+		if err := validation.ValidateK8sJWTPath(c.VaultK8sJWTPath); err != nil {
 			return err
 		}
 	case "approle":
@@ -401,21 +405,6 @@ func (c *Config) validateVaultAuthConfig() error {
 		// Token can come from VAULT_TOKEN env var at runtime
 	default:
 		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'approle', or 'token', got %q", c.VaultAuthMethod)
-	}
-	return nil
-}
-
-// validateVaultK8sJWTPath validates the Kubernetes JWT token path for security.
-func validateVaultK8sJWTPath(path string) error {
-	if path == "" {
-		return fmt.Errorf("VAULT_K8S_JWT_PATH cannot be empty for Kubernetes auth")
-	}
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("VAULT_K8S_JWT_PATH must be an absolute path, got %q", path)
-	}
-	cleanPath := filepath.Clean(path)
-	if !strings.HasPrefix(cleanPath, "/var/run/secrets/") {
-		return fmt.Errorf("VAULT_K8S_JWT_PATH must be under /var/run/secrets/, got %q", path)
 	}
 	return nil
 }

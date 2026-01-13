@@ -215,13 +215,12 @@ func TestConfig_ValidateVaultAuth(t *testing.T) {
 			errMsg:  "VAULT_AUTH_METHOD",
 		},
 		{
-			name: "K8s auth empty JWT path",
+			name: "K8s auth empty JWT path uses default",
 			cfg: Config{
 				Backend: BackendVault,
 				Vault:   VaultConfig{Address: "https://vault.example.com", AuthMethod: "kubernetes", K8sRole: "my-role", K8sJWTPath: ""},
 			},
-			wantErr: true,
-			errMsg:  "cannot be empty",
+			wantErr: false,
 		},
 		{
 			name: "K8s auth relative JWT path",

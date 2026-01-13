@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Shavakan/runs-fleet/internal/validation"
 )
 
 func TestLoad(t *testing.T) {
@@ -1146,13 +1148,13 @@ func TestValidateVaultK8sJWTPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateVaultK8sJWTPath(tt.path)
+			err := validation.ValidateK8sJWTPath(tt.path)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("validateVaultK8sJWTPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+				t.Errorf("ValidateK8sJWTPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
 				return
 			}
 			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-				t.Errorf("validateVaultK8sJWTPath(%q) error = %v, want error containing %q", tt.path, err, tt.errMsg)
+				t.Errorf("ValidateK8sJWTPath(%q) error = %v, want error containing %q", tt.path, err, tt.errMsg)
 			}
 		})
 	}
