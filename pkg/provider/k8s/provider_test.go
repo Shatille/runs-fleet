@@ -980,5 +980,151 @@ func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
 	}
 }
 
+func TestMergeLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		defaults map[string]string
+		custom   map[string]string
+		want     map[string]string
+	}{
+		{
+			name:     "empty both",
+			defaults: map[string]string{},
+			custom:   map[string]string{},
+			want:     map[string]string{},
+		},
+		{
+			name:     "defaults only",
+			defaults: map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
+			custom:   map[string]string{},
+			want:     map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
+		},
+		{
+			name:     "custom only",
+			defaults: map[string]string{},
+			custom:   map[string]string{"team": "platform", "env": "prod"},
+			want:     map[string]string{"team": "platform", "env": "prod"},
+		},
+		{
+			name:     "merge without overlap",
+			defaults: map[string]string{"app": "runner"},
+			custom:   map[string]string{"team": "platform"},
+			want:     map[string]string{"app": "runner", "team": "platform"},
+		},
+		{
+			name:     "defaults override custom",
+			defaults: map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
+			custom:   map[string]string{"app": "custom-app", "team": "platform"},
+			want:     map[string]string{"app": "runner", "runs-fleet.io/run-id": "123", "team": "platform"},
+		},
+		{
+			name:     "nil custom treated as empty",
+			defaults: map[string]string{"app": "runner"},
+			custom:   nil,
+			want:     map[string]string{"app": "runner"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeLabels(tt.defaults, tt.custom)
+			if len(got) != len(tt.want) {
+				t.Errorf("mergeLabels() length = %d, want %d", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("mergeLabels()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateRunner_CustomLabels(t *testing.T) {
+	clientset := fake.NewClientset()
+	customLabels := map[string]string{
+		"team":        "platform",
+		"environment": "production",
+		"cost-center": "engineering",
+	}
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+		KubeResourceLabels: customLabels,
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:      60001,
+		JobID:      60002,
+		Repo:       "org/repo",
+		Arch:       "arm64",
+		OS:         "linux",
+		Pool:       "default",
+		StorageGiB: 30,
+		JITToken:   "test-jit-token",
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	runnerID := result.RunnerIDs[0]
+
+	// Verify Pod has custom labels
+	pod, err := clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), runnerID, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get pod: %v", err)
+	}
+	for k, v := range customLabels {
+		if pod.Labels[k] != v {
+			t.Errorf("Pod label %q = %q, want %q", k, pod.Labels[k], v)
+		}
+	}
+	// Verify default labels still present
+	if pod.Labels["app"] != "runs-fleet-runner" {
+		t.Errorf("Pod missing default 'app' label")
+	}
+	if pod.Labels["runs-fleet.io/run-id"] != "60001" {
+		t.Errorf("Pod missing default 'runs-fleet.io/run-id' label")
+	}
+
+	// Verify ConfigMap has custom labels
+	cm, err := clientset.CoreV1().ConfigMaps("runs-fleet").Get(context.Background(), configMapName(runnerID), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get ConfigMap: %v", err)
+	}
+	for k, v := range customLabels {
+		if cm.Labels[k] != v {
+			t.Errorf("ConfigMap label %q = %q, want %q", k, cm.Labels[k], v)
+		}
+	}
+
+	// Verify Secret has custom labels
+	secret, err := clientset.CoreV1().Secrets("runs-fleet").Get(context.Background(), secretName(runnerID), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get Secret: %v", err)
+	}
+	for k, v := range customLabels {
+		if secret.Labels[k] != v {
+			t.Errorf("Secret label %q = %q, want %q", k, secret.Labels[k], v)
+		}
+	}
+
+	// Verify PVC has custom labels
+	pvc, err := clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(runnerID), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get PVC: %v", err)
+	}
+	for k, v := range customLabels {
+		if pvc.Labels[k] != v {
+			t.Errorf("PVC label %q = %q, want %q", k, pvc.Labels[k], v)
+		}
+	}
+}
+
 // Ensure Provider implements provider.Provider.
 var _ provider.Provider = (*Provider)(nil)

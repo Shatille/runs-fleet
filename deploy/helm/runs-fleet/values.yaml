@@ -112,6 +112,15 @@ runner:
   nodeSelector: {}
   tolerations: []
 
+  # Custom labels applied to runner resources (Pod, ConfigMap, Secret, PVC)
+  # Merged with default system labels; system labels (app, runs-fleet.io/*) take precedence
+  # Reserved prefixes (runs-fleet.io/, kubernetes.io/, k8s.io/) are rejected
+  labels: {}
+  # Example:
+  #   team: platform
+  #   environment: production
+  #   cost-center: engineering
+
 # Docker-in-Docker configuration (mode: k8s only)
 docker:
   image: docker:dind

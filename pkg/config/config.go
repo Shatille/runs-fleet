@@ -88,6 +88,9 @@ type Config struct {
 	KubeDockerGroupGID      int    // Docker socket group GID (default: 123)
 	KubeRegistryMirror      string // Docker registry mirror URL (optional)
 
+	// Custom labels for K8s runner resources (ConfigMap, Secret, PVC, Pod)
+	KubeResourceLabels map[string]string
+
 	// Valkey queue configuration (K8s mode only)
 	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
 	ValkeyPassword string // Optional password
@@ -244,6 +247,18 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("config error: %w", err)
 			}
 			cfg.KubeTolerations = tolerations
+		}
+
+		// Parse resource labels
+		resourceLabelsStr := getEnv("RUNS_FLEET_KUBE_RESOURCE_LABELS", "")
+		if resourceLabelsStr != "" {
+			resourceLabels, err := parseResourceLabels(resourceLabelsStr)
+			if err != nil {
+				return nil, fmt.Errorf("config error: %w", err)
+			}
+			cfg.KubeResourceLabels = resourceLabels
+		} else {
+			cfg.KubeResourceLabels = make(map[string]string)
 		}
 	}
 
@@ -650,6 +665,49 @@ func parseTolerations(s string) ([]Toleration, error) {
 	}
 
 	return tolerations, nil
+}
+
+// parseResourceLabels parses a JSON object of key-value labels for K8s resources.
+// Example: {"team":"platform","environment":"production"}
+// Validates Kubernetes label constraints and rejects reserved prefixes.
+func parseResourceLabels(s string) (map[string]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+
+	var labels map[string]string
+	if err := json.Unmarshal([]byte(s), &labels); err != nil {
+		return nil, fmt.Errorf("invalid resource labels JSON: %w", err)
+	}
+
+	if err := validateResourceLabels(labels); err != nil {
+		return nil, err
+	}
+
+	return labels, nil
+}
+
+func validateResourceLabels(labels map[string]string) error {
+	for key, value := range labels {
+		if err := validateK8sLabelKey(key); err != nil {
+			return fmt.Errorf("invalid resource label key %q: %w", key, err)
+		}
+		if !isValidK8sLabelValue(value) {
+			return fmt.Errorf("invalid resource label value %q for key %q", value, key)
+		}
+		// Reject reserved prefixes to prevent conflicts with system labels
+		lowerKey := strings.ToLower(key)
+		if strings.HasPrefix(lowerKey, "runs-fleet.io/") {
+			return fmt.Errorf("resource label key %q uses reserved 'runs-fleet.io/' prefix", key)
+		}
+		if strings.HasPrefix(lowerKey, "kubernetes.io/") {
+			return fmt.Errorf("resource label key %q uses reserved 'kubernetes.io/' prefix", key)
+		}
+		if strings.HasPrefix(lowerKey, "k8s.io/") {
+			return fmt.Errorf("resource label key %q uses reserved 'k8s.io/' prefix", key)
+		}
+	}
+	return nil
 }
 
 // parseTags parses a JSON object of key-value tags.
