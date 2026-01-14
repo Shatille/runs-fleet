@@ -25,8 +25,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -o /bin/runs-fleet-agent ./cmd/agent
 
 # Stage 2: Runner image
-# TODO(security): Re-pin digest once ubuntu:24.04 includes CVE-2025-68973 fix
-# Unpinned to allow apt-get upgrade to fetch security patches
 FROM ubuntu:24.04
 
 ARG TARGETARCH
@@ -37,7 +35,8 @@ ENV RUNNER_ALLOW_RUNASROOT=1
 WORKDIR /home/runner
 
 # Install dependencies and apply security updates
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# NOTE: upgrade runs AFTER install to patch newly-installed packages (e.g., gnupg CVEs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
@@ -49,6 +48,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     gnupg \
     lsb-release \
     software-properties-common \
+    && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (for docker-in-docker workflows)
