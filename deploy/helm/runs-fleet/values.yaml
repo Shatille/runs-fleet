@@ -159,6 +159,7 @@ secrets:
 
     # Kubernetes auth configuration (authMethod: kubernetes)
     kubernetes:
+      authMount: "kubernetes" # Vault auth backend mount path
       role: "" # Required for kubernetes auth
       jwtPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"
 

@@ -110,8 +110,9 @@ type Config struct {
 	VaultBasePath string // Vault KV path prefix (default: "runs-fleet/runners")
 	VaultAuthMethod string // Vault auth method: "aws", "kubernetes", "approle", "token" (default: "aws")
 	VaultAWSRole    string // Vault AWS auth role (default: "runs-fleet")
-	VaultK8sRole    string // Vault Kubernetes auth role
-	VaultK8sJWTPath string // Path to Kubernetes service account token (default: "/var/run/secrets/kubernetes.io/serviceaccount/token")
+	VaultK8sAuthMount string // Vault Kubernetes auth mount path (default: "kubernetes")
+	VaultK8sRole      string // Vault Kubernetes auth role
+	VaultK8sJWTPath   string // Path to Kubernetes service account token (default: "/var/run/secrets/kubernetes.io/serviceaccount/token")
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -217,8 +218,9 @@ func Load() (*Config, error) {
 		VaultBasePath: getEnv("VAULT_BASE_PATH", "runs-fleet/runners"),
 		VaultAuthMethod: getEnv("VAULT_AUTH_METHOD", "aws"),
 		VaultAWSRole:    getEnv("VAULT_AWS_ROLE", "runs-fleet"),
-		VaultK8sRole:    getEnv("VAULT_K8S_ROLE", ""),
-		VaultK8sJWTPath: getEnv("VAULT_K8S_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+		VaultK8sAuthMount: getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
+		VaultK8sRole:      getEnv("VAULT_K8S_ROLE", ""),
+		VaultK8sJWTPath:   getEnv("VAULT_K8S_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 	}
 
 	// Parse node selector with validation (only for K8s backend)

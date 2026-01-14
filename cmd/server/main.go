@@ -252,13 +252,14 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 			Prefix: cfg.SecretsPathPrefix,
 		},
 		Vault: secrets.VaultConfig{
-			Address:    cfg.VaultAddr,
-			KVMount:    cfg.VaultKVMount,
-			BasePath:   cfg.VaultBasePath,
-			AuthMethod: cfg.VaultAuthMethod,
-			AWSRole:    cfg.VaultAWSRole,
-			K8sRole:    cfg.VaultK8sRole,
-			K8sJWTPath: cfg.VaultK8sJWTPath,
+			Address:      cfg.VaultAddr,
+			KVMount:      cfg.VaultKVMount,
+			BasePath:     cfg.VaultBasePath,
+			AuthMethod:   cfg.VaultAuthMethod,
+			AWSRole:      cfg.VaultAWSRole,
+			K8sAuthMount: cfg.VaultK8sAuthMount,
+			K8sRole:      cfg.VaultK8sRole,
+			K8sJWTPath:   cfg.VaultK8sJWTPath,
 		},
 	}
 	store, err := secrets.NewStore(ctx, secretsCfg, awsCfg)

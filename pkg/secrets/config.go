@@ -60,6 +60,7 @@ func LoadConfig() Config {
 			AuthMethod:      getEnv("VAULT_AUTH_METHOD", AuthMethodAWS),
 			AWSRole:         getEnv("VAULT_AWS_ROLE", "runs-fleet"),
 			AWSRegion:       getEnv("VAULT_AWS_REGION", os.Getenv("AWS_REGION")),
+			K8sAuthMount:    getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
 			K8sRole:         getEnv("VAULT_K8S_ROLE", ""),
 			K8sJWTPath:      getEnv("VAULT_K8S_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 			AppRoleID:       getEnv("VAULT_APP_ROLE_ID", ""),

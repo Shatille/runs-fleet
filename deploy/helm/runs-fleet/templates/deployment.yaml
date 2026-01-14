@@ -213,6 +213,8 @@ spec:
             {{- end }}
             {{- end }}
             {{- if or (eq .Values.secrets.vault.authMethod "kubernetes") (eq .Values.secrets.vault.authMethod "k8s") }}
+            - name: VAULT_K8S_AUTH_MOUNT
+              value: {{ .Values.secrets.vault.kubernetes.authMount | quote }}
             - name: VAULT_K8S_ROLE
               value: {{ .Values.secrets.vault.kubernetes.role | quote }}
             - name: VAULT_K8S_JWT_PATH
