@@ -488,7 +488,7 @@ func TestAuthenticateK8s_DirectCall(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	err = authenticateK8s(context.Background(), client, "my-role", jwtPath)
+	err = authenticateK8s(context.Background(), client, "kubernetes", "my-role", jwtPath)
 	if err != nil {
 		t.Errorf("authenticateK8s() error = %v", err)
 	}
@@ -521,7 +521,7 @@ func TestAuthenticateK8s_LoginFailure(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	err = authenticateK8s(context.Background(), client, "my-role", jwtPath)
+	err = authenticateK8s(context.Background(), client, "kubernetes", "my-role", jwtPath)
 	if err == nil {
 		t.Error("authenticateK8s() expected error for login failure")
 	}

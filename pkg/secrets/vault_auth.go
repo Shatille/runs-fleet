@@ -15,7 +15,7 @@ func authenticate(ctx context.Context, client *api.Client, cfg VaultConfig) erro
 	case AuthMethodAWS:
 		return authenticateAWS(ctx, client, cfg.AWSRole, cfg.AWSRegion)
 	case AuthMethodKubernetes, AuthMethodK8s:
-		return authenticateK8s(ctx, client, cfg.K8sRole, cfg.K8sJWTPath)
+		return authenticateK8s(ctx, client, cfg.K8sAuthMount, cfg.K8sRole, cfg.K8sJWTPath)
 	case AuthMethodAppRole:
 		return authenticateAppRole(ctx, client, cfg.AppRoleID, cfg.AppRoleSecretID)
 	case AuthMethodToken:
@@ -68,7 +68,10 @@ func authenticateAWS(ctx context.Context, client *api.Client, role, region strin
 }
 
 // authenticateK8s authenticates using Kubernetes service account token.
-func authenticateK8s(ctx context.Context, client *api.Client, role, jwtPath string) error {
+func authenticateK8s(ctx context.Context, client *api.Client, authMount, role, jwtPath string) error {
+	if authMount == "" {
+		authMount = "kubernetes"
+	}
 	if jwtPath == "" {
 		jwtPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	}
@@ -83,13 +86,14 @@ func authenticateK8s(ctx context.Context, client *api.Client, role, jwtPath stri
 		"jwt":  string(jwt),
 	}
 
-	secret, err := client.Logical().WriteWithContext(ctx, "auth/kubernetes/login", data)
+	loginPath := fmt.Sprintf("auth/%s/login", authMount)
+	secret, err := client.Logical().WriteWithContext(ctx, loginPath, data)
 	if err != nil {
-		return fmt.Errorf("kubernetes auth login failed (role=%s): %w", role, err)
+		return fmt.Errorf("kubernetes auth login failed (mount=%s, role=%s): %w", authMount, role, err)
 	}
 
 	if secret == nil || secret.Auth == nil {
-		return fmt.Errorf("kubernetes auth returned no auth info (role=%s)", role)
+		return fmt.Errorf("kubernetes auth returned no auth info (mount=%s, role=%s)", authMount, role)
 	}
 
 	client.SetToken(secret.Auth.ClientToken)

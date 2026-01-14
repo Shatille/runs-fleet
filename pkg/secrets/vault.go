@@ -27,8 +27,9 @@ type VaultConfig struct {
 	AWSRegion string // AWS region for STS calls
 
 	// Kubernetes auth
-	K8sRole    string // Vault role for K8s auth
-	K8sJWTPath string // Path to service account token
+	K8sAuthMount string // Vault Kubernetes auth mount path (default: "kubernetes")
+	K8sRole      string // Vault role for K8s auth
+	K8sJWTPath   string // Path to service account token
 
 	// AppRole auth
 	AppRoleID       string
