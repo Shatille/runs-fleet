@@ -212,13 +212,19 @@ spec:
               value: {{ .Values.secrets.vault.aws.region | quote }}
             {{- end }}
             {{- end }}
-            {{- if or (eq .Values.secrets.vault.authMethod "kubernetes") (eq .Values.secrets.vault.authMethod "k8s") }}
+            {{- if or (eq .Values.secrets.vault.authMethod "kubernetes") (eq .Values.secrets.vault.authMethod "k8s") (eq .Values.secrets.vault.authMethod "jwt") }}
             - name: VAULT_K8S_AUTH_MOUNT
               value: {{ .Values.secrets.vault.kubernetes.authMount | quote }}
             - name: VAULT_K8S_ROLE
               value: {{ .Values.secrets.vault.kubernetes.role | quote }}
             - name: VAULT_K8S_JWT_PATH
+              {{- if .Values.secrets.vault.kubernetes.audience }}
+              value: "/var/run/secrets/vault-token/token"
+              {{- else if .Values.secrets.vault.kubernetes.jwtPath }}
               value: {{ .Values.secrets.vault.kubernetes.jwtPath | quote }}
+              {{- else }}
+              value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+              {{- end }}
             {{- end }}
             {{- if eq .Values.secrets.vault.authMethod "approle" }}
             - name: VAULT_APP_ROLE_ID
@@ -278,9 +284,23 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if and (or (eq .Values.secrets.vault.authMethod "kubernetes") (eq .Values.secrets.vault.authMethod "k8s") (eq .Values.secrets.vault.authMethod "jwt")) .Values.secrets.vault.kubernetes.audience }}
+            - name: vault-token
+              mountPath: /var/run/secrets/vault-token
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if and (or (eq .Values.secrets.vault.authMethod "kubernetes") (eq .Values.secrets.vault.authMethod "k8s") (eq .Values.secrets.vault.authMethod "jwt")) .Values.secrets.vault.kubernetes.audience }}
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ .Values.secrets.vault.kubernetes.audience | quote }}
+        {{- end }}
       {{- with .Values.orchestrator.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

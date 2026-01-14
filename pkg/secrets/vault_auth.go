@@ -14,7 +14,7 @@ func authenticate(ctx context.Context, client *api.Client, cfg VaultConfig) erro
 	switch cfg.AuthMethod {
 	case AuthMethodAWS:
 		return authenticateAWS(ctx, client, cfg.AWSRole, cfg.AWSRegion)
-	case AuthMethodKubernetes, AuthMethodK8s:
+	case AuthMethodKubernetes, AuthMethodK8s, AuthMethodJWT:
 		return authenticateK8s(ctx, client, cfg.K8sAuthMount, cfg.K8sRole, cfg.K8sJWTPath)
 	case AuthMethodAppRole:
 		return authenticateAppRole(ctx, client, cfg.AppRoleID, cfg.AppRoleSecretID)
