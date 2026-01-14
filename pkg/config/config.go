@@ -88,7 +88,7 @@ type Config struct {
 	KubeDockerGroupGID      int    // Docker socket group GID (default: 123)
 	KubeRegistryMirror      string // Docker registry mirror URL (optional)
 
-	// Custom labels for K8s runner resources (ConfigMap, Secret, PVC, Pod)
+	// Custom labels for dynamically created runner resources (Pod, ConfigMap, Secret, PVC)
 	KubeResourceLabels map[string]string
 
 	// Valkey queue configuration (K8s mode only)
@@ -249,7 +249,7 @@ func Load() (*Config, error) {
 			cfg.KubeTolerations = tolerations
 		}
 
-		// Parse resource labels
+		// Parse resource labels JSON
 		resourceLabelsStr := getEnv("RUNS_FLEET_KUBE_RESOURCE_LABELS", "")
 		if resourceLabelsStr != "" {
 			resourceLabels, err := parseResourceLabels(resourceLabelsStr)
@@ -667,9 +667,8 @@ func parseTolerations(s string) ([]Toleration, error) {
 	return tolerations, nil
 }
 
-// parseResourceLabels parses a JSON object of key-value labels for K8s resources.
+// parseResourceLabels parses a JSON object of key-value labels for K8s runner resources.
 // Example: {"team":"platform","environment":"production"}
-// Validates Kubernetes label constraints and rejects reserved prefixes.
 func parseResourceLabels(s string) (map[string]string, error) {
 	if s == "" {
 		return nil, nil
@@ -695,8 +694,12 @@ func validateResourceLabels(labels map[string]string) error {
 		if !isValidK8sLabelValue(value) {
 			return fmt.Errorf("invalid resource label value %q for key %q", value, key)
 		}
-		// Reject reserved prefixes to prevent conflicts with system labels
 		lowerKey := strings.ToLower(key)
+		// Reject "app" label - reserved for pod selection
+		if lowerKey == "app" {
+			return fmt.Errorf("resource label key %q is reserved for system use", key)
+		}
+		// Reject reserved prefixes to prevent conflicts with system labels
 		if strings.HasPrefix(lowerKey, "runs-fleet.io/") {
 			return fmt.Errorf("resource label key %q uses reserved 'runs-fleet.io/' prefix", key)
 		}

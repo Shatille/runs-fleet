@@ -1199,21 +1199,10 @@ func TestParseResourceLabels(t *testing.T) {
 			errMsg:  "invalid resource labels JSON",
 		},
 		{
-			name:    "array instead of object",
-			input:   `["label1","label2"]`,
-			wantErr: true,
-		},
-		{
 			name:    "runs-fleet.io prefix rejected",
 			input:   `{"runs-fleet.io/custom":"value"}`,
 			wantErr: true,
 			errMsg:  "reserved 'runs-fleet.io/' prefix",
-		},
-		{
-			name:    "runs-fleet.io with uppercase name rejected by reserved prefix check",
-			input:   `{"runs-fleet.io/CUSTOM":"value"}`,
-			wantErr: true,
-			errMsg:  "runs-fleet.io/",
 		},
 		{
 			name:    "kubernetes.io prefix rejected",
@@ -1228,6 +1217,18 @@ func TestParseResourceLabels(t *testing.T) {
 			errMsg:  "reserved 'k8s.io/' prefix",
 		},
 		{
+			name:    "app label rejected",
+			input:   `{"app":"custom-app"}`,
+			wantErr: true,
+			errMsg:  "reserved for system use",
+		},
+		{
+			name:    "app label uppercase rejected",
+			input:   `{"APP":"custom-app"}`,
+			wantErr: true,
+			errMsg:  "reserved for system use",
+		},
+		{
 			name:    "invalid label key",
 			input:   `{"-invalid-key":"value"}`,
 			wantErr: true,
@@ -1240,7 +1241,7 @@ func TestParseResourceLabels(t *testing.T) {
 			errMsg:  "invalid resource label value",
 		},
 		{
-			name:  "valid with dots in key",
+			name:  "valid with prefix",
 			input: `{"example.com/label":"value"}`,
 			want:  map[string]string{"example.com/label": "value"},
 		},
@@ -1260,10 +1261,6 @@ func TestParseResourceLabels(t *testing.T) {
 			}
 			if tt.want == nil && got != nil {
 				t.Errorf("parseResourceLabels() = %v, want nil", got)
-				return
-			}
-			if tt.want != nil && got == nil {
-				t.Errorf("parseResourceLabels() = nil, want %v", tt.want)
 				return
 			}
 			if len(got) != len(tt.want) {

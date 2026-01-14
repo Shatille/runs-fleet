@@ -988,53 +988,68 @@ func TestMergeLabels(t *testing.T) {
 		want     map[string]string
 	}{
 		{
-			name:     "empty both",
-			defaults: map[string]string{},
-			custom:   map[string]string{},
-			want:     map[string]string{},
-		},
-		{
-			name:     "defaults only",
+			name:     "empty custom labels",
 			defaults: map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
-			custom:   map[string]string{},
+			custom:   nil,
 			want:     map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
 		},
 		{
-			name:     "custom only",
-			defaults: map[string]string{},
-			custom:   map[string]string{"team": "platform", "env": "prod"},
-			want:     map[string]string{"team": "platform", "env": "prod"},
-		},
-		{
-			name:     "merge without overlap",
-			defaults: map[string]string{"app": "runner"},
+			name:     "empty defaults",
+			defaults: nil,
 			custom:   map[string]string{"team": "platform"},
-			want:     map[string]string{"app": "runner", "team": "platform"},
+			want:     map[string]string{"team": "platform"},
 		},
 		{
-			name:     "defaults override custom",
+			name:     "both empty",
+			defaults: nil,
+			custom:   nil,
+			want:     map[string]string{},
+		},
+		{
+			name:     "custom labels added without conflict",
+			defaults: map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
+			custom:   map[string]string{"team": "platform", "cost-center": "engineering"},
+			want: map[string]string{
+				"app":                  "runner",
+				"runs-fleet.io/run-id": "123",
+				"team":                 "platform",
+				"cost-center":          "engineering",
+			},
+		},
+		{
+			name:     "defaults take precedence over custom",
 			defaults: map[string]string{"app": "runner", "runs-fleet.io/run-id": "123"},
 			custom:   map[string]string{"app": "custom-app", "team": "platform"},
-			want:     map[string]string{"app": "runner", "runs-fleet.io/run-id": "123", "team": "platform"},
+			want: map[string]string{
+				"app":                  "runner", // default wins
+				"runs-fleet.io/run-id": "123",
+				"team":                 "platform",
+			},
 		},
 		{
-			name:     "nil custom treated as empty",
-			defaults: map[string]string{"app": "runner"},
-			custom:   nil,
-			want:     map[string]string{"app": "runner"},
+			name:     "system label override attempted",
+			defaults: map[string]string{"runs-fleet.io/job-id": "456"},
+			custom:   map[string]string{"runs-fleet.io/job-id": "999", "env": "prod"},
+			want: map[string]string{
+				"runs-fleet.io/job-id": "456", // default wins
+				"env":                  "prod",
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := mergeLabels(tt.defaults, tt.custom)
+
 			if len(got) != len(tt.want) {
-				t.Errorf("mergeLabels() length = %d, want %d", len(got), len(tt.want))
-				return
+				t.Errorf("mergeLabels() returned %d labels, want %d", len(got), len(tt.want))
 			}
-			for k, v := range tt.want {
-				if got[k] != v {
-					t.Errorf("mergeLabels()[%q] = %q, want %q", k, got[k], v)
+
+			for k, wantV := range tt.want {
+				if gotV, ok := got[k]; !ok {
+					t.Errorf("mergeLabels() missing key %q", k)
+				} else if gotV != wantV {
+					t.Errorf("mergeLabels()[%q] = %q, want %q", k, gotV, wantV)
 				}
 			}
 		})
@@ -1043,16 +1058,15 @@ func TestMergeLabels(t *testing.T) {
 
 func TestCreateRunner_CustomLabels(t *testing.T) {
 	clientset := fake.NewClientset()
-	customLabels := map[string]string{
-		"team":        "platform",
-		"environment": "production",
-		"cost-center": "engineering",
-	}
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
 		KubeServiceAccount: "runner-sa",
 		KubeRunnerImage:    "runner:latest",
-		KubeResourceLabels: customLabels,
+		KubeResourceLabels: map[string]string{
+			"team":        "platform",
+			"cost-center": "engineering",
+			"environment": "production",
+		},
 	}
 	p := NewProviderWithClient(clientset, cfg)
 
@@ -1062,7 +1076,6 @@ func TestCreateRunner_CustomLabels(t *testing.T) {
 		Repo:       "org/repo",
 		Arch:       "arm64",
 		OS:         "linux",
-		Pool:       "default",
 		StorageGiB: 30,
 		JITToken:   "test-jit-token",
 	}
@@ -1079,50 +1092,97 @@ func TestCreateRunner_CustomLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get pod: %v", err)
 	}
-	for k, v := range customLabels {
-		if pod.Labels[k] != v {
-			t.Errorf("Pod label %q = %q, want %q", k, pod.Labels[k], v)
-		}
-	}
-	// Verify default labels still present
-	if pod.Labels["app"] != "runs-fleet-runner" {
-		t.Errorf("Pod missing default 'app' label")
-	}
-	if pod.Labels["runs-fleet.io/run-id"] != "60001" {
-		t.Errorf("Pod missing default 'runs-fleet.io/run-id' label")
-	}
+	verifyCustomLabels(t, "Pod", pod.Labels)
 
 	// Verify ConfigMap has custom labels
-	cm, err := clientset.CoreV1().ConfigMaps("runs-fleet").Get(context.Background(), configMapName(runnerID), metav1.GetOptions{})
+	cm, err := clientset.CoreV1().ConfigMaps("runs-fleet").Get(context.Background(), runnerID+"-config", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("Failed to get ConfigMap: %v", err)
 	}
-	for k, v := range customLabels {
-		if cm.Labels[k] != v {
-			t.Errorf("ConfigMap label %q = %q, want %q", k, cm.Labels[k], v)
-		}
-	}
+	verifyCustomLabels(t, "ConfigMap", cm.Labels)
 
 	// Verify Secret has custom labels
-	secret, err := clientset.CoreV1().Secrets("runs-fleet").Get(context.Background(), secretName(runnerID), metav1.GetOptions{})
+	secret, err := clientset.CoreV1().Secrets("runs-fleet").Get(context.Background(), runnerID+"-secrets", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("Failed to get Secret: %v", err)
 	}
-	for k, v := range customLabels {
-		if secret.Labels[k] != v {
-			t.Errorf("Secret label %q = %q, want %q", k, secret.Labels[k], v)
-		}
-	}
+	verifyCustomLabels(t, "Secret", secret.Labels)
 
 	// Verify PVC has custom labels
 	pvc, err := clientset.CoreV1().PersistentVolumeClaims("runs-fleet").Get(context.Background(), pvcName(runnerID), metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("Failed to get PVC: %v", err)
 	}
+	verifyCustomLabels(t, "PVC", pvc.Labels)
+}
+
+func verifyCustomLabels(t *testing.T, resourceType string, labels map[string]string) {
+	t.Helper()
+
+	customLabels := map[string]string{
+		"team":        "platform",
+		"cost-center": "engineering",
+		"environment": "production",
+	}
+
 	for k, v := range customLabels {
-		if pvc.Labels[k] != v {
-			t.Errorf("PVC label %q = %q, want %q", k, pvc.Labels[k], v)
+		if labels[k] != v {
+			t.Errorf("%s label %q = %q, want %q", resourceType, k, labels[k], v)
 		}
+	}
+
+	// Verify system labels are preserved
+	if labels["app"] != "runs-fleet-runner" {
+		t.Errorf("%s app label = %q, want runs-fleet-runner", resourceType, labels["app"])
+	}
+	if labels["runs-fleet.io/run-id"] != "60001" {
+		t.Errorf("%s run-id label = %q, want 60001", resourceType, labels["runs-fleet.io/run-id"])
+	}
+}
+
+func TestCreateRunner_CustomLabelsCannotOverrideDefaults(t *testing.T) {
+	clientset := fake.NewClientset()
+	cfg := &config.Config{
+		KubeNamespace:      "runs-fleet",
+		KubeServiceAccount: "runner-sa",
+		KubeRunnerImage:    "runner:latest",
+		KubeResourceLabels: map[string]string{
+			"app":                  "malicious-app",         // tries to override default
+			"runs-fleet.io/run-id": "999999",                // tries to override system label
+			"team":                 "platform",              // legitimate custom label
+		},
+	}
+	p := NewProviderWithClient(clientset, cfg)
+
+	spec := &provider.RunnerSpec{
+		RunID:    70001,
+		JobID:    70002,
+		Repo:     "org/repo",
+		Arch:     "arm64",
+		JITToken: "test-jit-token",
+	}
+
+	result, err := p.CreateRunner(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("CreateRunner() error = %v", err)
+	}
+
+	pod, err := clientset.CoreV1().Pods("runs-fleet").Get(context.Background(), result.RunnerIDs[0], metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get pod: %v", err)
+	}
+
+	// Default labels should NOT be overridden
+	if pod.Labels["app"] != "runs-fleet-runner" {
+		t.Errorf("app label = %q, want runs-fleet-runner (should not be overridden)", pod.Labels["app"])
+	}
+	if pod.Labels["runs-fleet.io/run-id"] != "70001" {
+		t.Errorf("run-id label = %q, want 70001 (should not be overridden)", pod.Labels["runs-fleet.io/run-id"])
+	}
+
+	// Custom label should be present
+	if pod.Labels["team"] != "platform" {
+		t.Errorf("team label = %q, want platform", pod.Labels["team"])
 	}
 }
 
