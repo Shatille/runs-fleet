@@ -1,5 +1,11 @@
 # runs-fleet Helm chart values
 
+# Common labels applied to all Helm-managed resources (Deployment, Service, RBAC, etc.)
+commonLabels: {}
+# Example:
+#   team: platform
+#   environment: production
+
 # Mode selection: ec2 (direct EC2 Fleet) or k8s (Karpenter pods)
 mode: ec2
 
@@ -111,6 +117,13 @@ runner:
 
   nodeSelector: {}
   tolerations: []
+
+  # Custom labels for dynamically created runner resources (Pod, ConfigMap, Secret, PVC)
+  # System labels (app, runs-fleet.io/*) take precedence over custom labels
+  labels: {}
+  # Example:
+  #   team: platform
+  #   cost-center: engineering
 
 # Docker-in-Docker configuration (mode: k8s only)
 docker:

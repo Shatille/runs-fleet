@@ -34,6 +34,19 @@ const (
 // dns1123LabelRegex validates DNS-1123 label compliance.
 var dns1123LabelRegex = regexp.MustCompile(`[^a-z0-9-]+`)
 
+// mergeLabels merges custom labels with default labels.
+// Default labels take precedence to ensure system labels are never overwritten.
+func mergeLabels(defaults, custom map[string]string) map[string]string {
+	result := make(map[string]string, len(defaults)+len(custom))
+	for k, v := range custom {
+		result[k] = v
+	}
+	for k, v := range defaults {
+		result[k] = v
+	}
+	return result
+}
+
 // sanitizePodName ensures pod name is DNS-1123 compliant.
 // Converts to lowercase, replaces invalid chars with dashes, truncates to 63 chars.
 func sanitizePodName(jobID string) string {
@@ -194,14 +207,16 @@ func (p *Provider) createRunnerConfigMap(ctx context.Context, podName string, sp
 		}
 	}
 
+	defaultLabels := map[string]string{
+		"app":                  "runs-fleet-runner",
+		"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
+	}
+
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName(podName),
 			Namespace: p.config.KubeNamespace,
-			Labels: map[string]string{
-				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
-			},
+			Labels:    mergeLabels(defaultLabels, p.config.KubeResourceLabels),
 		},
 		Data: map[string]string{
 			"repo":         spec.Repo,
@@ -225,14 +240,16 @@ func (p *Provider) createRunnerSecret(ctx context.Context, podName string, spec 
 		return fmt.Errorf("JITToken is required for runner registration")
 	}
 
+	defaultLabels := map[string]string{
+		"app":                  "runs-fleet-runner",
+		"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName(podName),
 			Namespace: p.config.KubeNamespace,
-			Labels: map[string]string{
-				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
-			},
+			Labels:    mergeLabels(defaultLabels, p.config.KubeResourceLabels),
 		},
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
@@ -274,15 +291,17 @@ func (p *Provider) createRunnerPVC(ctx context.Context, podName string, spec *pr
 
 	storageQuantity := resource.MustParse(fmt.Sprintf("%dGi", storageGiB))
 
+	defaultLabels := map[string]string{
+		"app":                  "runs-fleet-runner",
+		"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
+		"runs-fleet.io/pool":   spec.Pool,
+	}
+
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName(podName),
 			Namespace: p.config.KubeNamespace,
-			Labels: map[string]string{
-				"app":                  "runs-fleet-runner",
-				"runs-fleet.io/run-id": fmt.Sprintf("%d", spec.RunID),
-				"runs-fleet.io/pool":   spec.Pool,
-			},
+			Labels:    mergeLabels(defaultLabels, p.config.KubeResourceLabels),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -389,7 +408,7 @@ func (p *Provider) DescribeRunner(ctx context.Context, runnerID string) (*provid
 
 // buildPodSpec creates a Pod specification for a runner with DinD sidecar.
 func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.Pod {
-	labels := map[string]string{
+	defaultLabels := map[string]string{
 		"app":                         "runs-fleet-runner",
 		"runs-fleet.io/run-id":        fmt.Sprintf("%d", spec.RunID),
 		"runs-fleet.io/job-id":        fmt.Sprintf("%d", spec.JobID),
@@ -401,8 +420,10 @@ func (p *Provider) buildPodSpec(name string, spec *provider.RunnerSpec) *corev1.
 
 	// Add spot label for scheduling
 	if spec.Spot {
-		labels["runs-fleet.io/spot"] = "true"
+		defaultLabels["runs-fleet.io/spot"] = "true"
 	}
+
+	labels := mergeLabels(defaultLabels, p.config.KubeResourceLabels)
 
 	// Karpenter annotations to prevent disruption during job execution
 	annotations := map[string]string{

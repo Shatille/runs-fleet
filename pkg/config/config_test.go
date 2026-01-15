@@ -1160,6 +1160,122 @@ func TestValidateVaultK8sJWTPath(t *testing.T) {
 	}
 }
 
+func TestParseResourceLabels(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    map[string]string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "single label",
+			input: `{"team":"platform"}`,
+			want:  map[string]string{"team": "platform"},
+		},
+		{
+			name:  "multiple labels",
+			input: `{"team":"platform","environment":"production","cost-center":"engineering"}`,
+			want: map[string]string{
+				"team":        "platform",
+				"environment": "production",
+				"cost-center": "engineering",
+			},
+		},
+		{
+			name:  "empty object",
+			input: `{}`,
+			want:  map[string]string{},
+		},
+		{
+			name:    "invalid JSON",
+			input:   "not-valid-json",
+			wantErr: true,
+			errMsg:  "invalid resource labels JSON",
+		},
+		{
+			name:    "runs-fleet.io prefix rejected",
+			input:   `{"runs-fleet.io/custom":"value"}`,
+			wantErr: true,
+			errMsg:  "reserved 'runs-fleet.io/' prefix",
+		},
+		{
+			name:    "kubernetes.io prefix rejected",
+			input:   `{"kubernetes.io/arch":"arm64"}`,
+			wantErr: true,
+			errMsg:  "reserved 'kubernetes.io/' prefix",
+		},
+		{
+			name:    "k8s.io prefix rejected",
+			input:   `{"k8s.io/component":"runner"}`,
+			wantErr: true,
+			errMsg:  "reserved 'k8s.io/' prefix",
+		},
+		{
+			name:    "app label rejected",
+			input:   `{"app":"custom-app"}`,
+			wantErr: true,
+			errMsg:  "reserved for system use",
+		},
+		{
+			name:    "app label uppercase rejected",
+			input:   `{"APP":"custom-app"}`,
+			wantErr: true,
+			errMsg:  "reserved for system use",
+		},
+		{
+			name:    "invalid label key",
+			input:   `{"-invalid-key":"value"}`,
+			wantErr: true,
+			errMsg:  "invalid resource label key",
+		},
+		{
+			name:    "invalid label value",
+			input:   `{"key":"-invalid-value"}`,
+			wantErr: true,
+			errMsg:  "invalid resource label value",
+		},
+		{
+			name:  "valid with prefix",
+			input: `{"example.com/label":"value"}`,
+			want:  map[string]string{"example.com/label": "value"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseResourceLabels(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseResourceLabels() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("parseResourceLabels() error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+			if tt.want == nil && got != nil {
+				t.Errorf("parseResourceLabels() = %v, want nil", got)
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("parseResourceLabels() length = %v, want %v", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("parseResourceLabels()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateECRImageURL(t *testing.T) {
 	tests := []struct {
 		name    string
