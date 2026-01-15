@@ -188,7 +188,7 @@ func NewVaultStore(cfg *VaultConfig) (*VaultStore, error) {
     // Authenticate based on method
     switch cfg.AuthMethod {
     case "kubernetes":
-        if err := authenticateK8s(client, cfg); err != nil {
+        if err := authenticateWithJWT(client, cfg); err != nil {
             return nil, err
         }
     case "approle":

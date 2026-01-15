@@ -21,6 +21,7 @@ const (
 	AuthMethodAWS        = "aws"
 	AuthMethodKubernetes = "kubernetes"
 	AuthMethodK8s        = "k8s"
+	AuthMethodJWT        = "jwt"
 	AuthMethodAppRole    = "approle"
 	AuthMethodToken      = "token"
 )
@@ -105,9 +106,9 @@ func (c *Config) Validate() error {
 // validateVaultAuth checks that required auth parameters are configured.
 func (c *Config) validateVaultAuth() error {
 	switch c.Vault.AuthMethod {
-	case AuthMethodKubernetes, AuthMethodK8s:
+	case AuthMethodKubernetes, AuthMethodK8s, AuthMethodJWT:
 		if c.Vault.K8sRole == "" {
-			return fmt.Errorf("VAULT_K8S_ROLE is required for Kubernetes auth")
+			return fmt.Errorf("VAULT_K8S_ROLE is required for Kubernetes/JWT auth")
 		}
 		if c.Vault.K8sJWTPath == "" {
 			c.Vault.K8sJWTPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -129,7 +130,7 @@ func (c *Config) validateVaultAuth() error {
 	case AuthMethodAWS, "":
 		// AWS auth uses IAM credentials automatically
 	default:
-		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'approle', or 'token', got %q", c.Vault.AuthMethod)
+		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'jwt', 'approle', or 'token', got %q", c.Vault.AuthMethod)
 	}
 	return nil
 }

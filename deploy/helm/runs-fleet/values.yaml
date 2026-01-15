@@ -162,7 +162,7 @@ secrets:
     # Base path for secrets within KV mount
     basePath: "runs-fleet/runners"
 
-    # Authentication method: "aws", "kubernetes", "approle", or "token"
+    # Authentication method: "aws", "kubernetes", "jwt", "approle", or "token"
     authMethod: "aws"
 
     # AWS IAM auth configuration (authMethod: aws)
@@ -170,11 +170,13 @@ secrets:
       role: "runs-fleet"
       region: "" # Defaults to AWS_REGION if empty
 
-    # Kubernetes auth configuration (authMethod: kubernetes)
+    # Kubernetes/JWT auth configuration (authMethod: kubernetes, k8s, or jwt)
     kubernetes:
       authMount: "kubernetes" # Vault auth backend mount path
       role: "" # Required for kubernetes auth
-      jwtPath: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      audience: "" # Token audience for JWT auth (creates projected volume if set)
+      jwtPath: "" # Override JWT path (auto-set when audience is configured)
+      tokenExpirationSeconds: 3600 # Projected token expiration (only used when audience is set)
 
     # AppRole auth configuration (authMethod: approle)
     appRole:

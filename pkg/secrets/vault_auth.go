@@ -14,8 +14,8 @@ func authenticate(ctx context.Context, client *api.Client, cfg VaultConfig) erro
 	switch cfg.AuthMethod {
 	case AuthMethodAWS:
 		return authenticateAWS(ctx, client, cfg.AWSRole, cfg.AWSRegion)
-	case AuthMethodKubernetes, AuthMethodK8s:
-		return authenticateK8s(ctx, client, cfg.K8sAuthMount, cfg.K8sRole, cfg.K8sJWTPath)
+	case AuthMethodKubernetes, AuthMethodK8s, AuthMethodJWT:
+		return authenticateWithJWT(ctx, client, cfg.K8sAuthMount, cfg.K8sRole, cfg.K8sJWTPath)
 	case AuthMethodAppRole:
 		return authenticateAppRole(ctx, client, cfg.AppRoleID, cfg.AppRoleSecretID)
 	case AuthMethodToken:
@@ -67,8 +67,9 @@ func authenticateAWS(ctx context.Context, client *api.Client, role, region strin
 	return nil
 }
 
-// authenticateK8s authenticates using Kubernetes service account token.
-func authenticateK8s(ctx context.Context, client *api.Client, authMount, role, jwtPath string) error {
+// authenticateWithJWT authenticates using a JWT token.
+// This works for both Vault's Kubernetes and JWT auth methods as they share the same API format.
+func authenticateWithJWT(ctx context.Context, client *api.Client, authMount, role, jwtPath string) error {
 	if authMount == "" {
 		authMount = "kubernetes"
 	}
