@@ -163,6 +163,7 @@ secrets:
       role: "" # Required for kubernetes auth
       audience: "" # Token audience for JWT auth (creates projected volume if set)
       jwtPath: "" # Override JWT path (auto-set when audience is configured)
+      tokenExpirationSeconds: 3600 # Projected token expiration (only used when audience is set)
 
     # AppRole auth configuration (authMethod: approle)
     appRole:

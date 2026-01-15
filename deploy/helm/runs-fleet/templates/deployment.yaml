@@ -298,7 +298,7 @@ spec:
             sources:
               - serviceAccountToken:
                   path: token
-                  expirationSeconds: 3600
+                  expirationSeconds: {{ .Values.secrets.vault.kubernetes.tokenExpirationSeconds | default 3600 }}
                   audience: {{ .Values.secrets.vault.kubernetes.audience | quote }}
         {{- end }}
       {{- with .Values.orchestrator.nodeSelector }}
