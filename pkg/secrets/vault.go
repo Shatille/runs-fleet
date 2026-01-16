@@ -157,8 +157,7 @@ func (v *VaultStore) detectKVVersion(ctx context.Context) (int, error) {
 		}
 	}
 
-	// Default to v2 as it's more common in modern Vault deployments
-	return 2, nil
+	return 0, fmt.Errorf("failed to detect KV version: %w", err)
 }
 
 // Put stores runner configuration in Vault.

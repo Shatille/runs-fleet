@@ -561,6 +561,7 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 		name        string
 		statusCode  int
 		wantVersion int
+		wantErr     bool
 	}{
 		{
 			name:        "config endpoint accessible - KV v2",
@@ -578,9 +579,9 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 			wantVersion: 1,
 		},
 		{
-			name:        "unknown error - default to v2",
-			statusCode:  http.StatusInternalServerError,
-			wantVersion: 2,
+			name:       "server error propagates",
+			statusCode: http.StatusInternalServerError,
+			wantErr:    true,
 		},
 	}
 
@@ -610,6 +611,12 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 			}
 
 			version, err := store.detectKVVersion(t.Context())
+			if tt.wantErr {
+				if err == nil {
+					t.Error("detectKVVersion() expected error, got nil")
+				}
+				return
+			}
 			if err != nil {
 				t.Errorf("detectKVVersion() unexpected error: %v", err)
 			}
