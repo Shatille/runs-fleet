@@ -128,27 +128,36 @@ func NewVaultStoreWithClient(client *api.Client, kvMount, basePath string, kvVer
 	}
 }
 
-// detectKVVersion determines whether the KV engine is v1 or v2.
+// detectKVVersion determines whether the KV engine is v1 or v2 by probing the mount.
+// This avoids requiring sys/mounts read permission.
 func (v *VaultStore) detectKVVersion(ctx context.Context) (int, error) {
-	mounts, err := v.client.Sys().ListMountsWithContext(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to list mounts for KV version detection: %w", err)
+	// KV v2 has a config endpoint at {mount}/config
+	// If this returns successfully or with 403, it's v2
+	// If it returns 404/nil, it's likely v1
+	configPath := fmt.Sprintf("%s/config", v.kvMount)
+	secret, err := v.client.Logical().ReadWithContext(ctx, configPath)
+
+	// Vault SDK returns (nil, nil) for 404 responses
+	if err == nil && secret == nil {
+		return 1, nil
+	}
+	if err == nil {
+		return 2, nil
 	}
 
-	mountPath := v.kvMount + "/"
-	mount, ok := mounts[mountPath]
-	if !ok {
-		return 0, fmt.Errorf("KV mount %q not found", v.kvMount)
-	}
-
-	if mount.Options != nil {
-		if version, exists := mount.Options["version"]; exists {
-			if version == "1" {
-				return 1, nil
-			}
+	var respErr *api.ResponseError
+	if errors.As(err, &respErr) {
+		switch respErr.StatusCode {
+		case 403:
+			// Permission denied on v2 config endpoint - still v2
+			return 2, nil
+		case 404:
+			// Config endpoint doesn't exist - likely v1
+			return 1, nil
 		}
 	}
 
+	// Default to v2 as it's more common in modern Vault deployments
 	return 2, nil
 }
 

@@ -555,3 +555,67 @@ func TestVaultStore_Delete_OtherError(t *testing.T) {
 		t.Error("Delete() expected error for 403")
 	}
 }
+
+func TestVaultStore_detectKVVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		statusCode  int
+		wantVersion int
+	}{
+		{
+			name:        "config endpoint accessible - KV v2",
+			statusCode:  http.StatusOK,
+			wantVersion: 2,
+		},
+		{
+			name:        "config endpoint forbidden - KV v2",
+			statusCode:  http.StatusForbidden,
+			wantVersion: 2,
+		},
+		{
+			name:        "config endpoint not found - KV v1",
+			statusCode:  http.StatusNotFound,
+			wantVersion: 1,
+		},
+		{
+			name:        "unknown error - default to v2",
+			statusCode:  http.StatusInternalServerError,
+			wantVersion: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := mockVaultServer(map[string]http.HandlerFunc{
+				"/v1/secret/config": func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tt.statusCode)
+					if tt.statusCode == http.StatusOK {
+						_, _ = w.Write([]byte(`{"data": {"max_versions": 10}}`))
+					} else {
+						_, _ = w.Write([]byte(`{"errors": ["test error"]}`))
+					}
+				},
+			})
+			defer server.Close()
+
+			client, err := api.NewClient(&api.Config{Address: server.URL})
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			client.SetToken("test-token")
+
+			store := &VaultStore{
+				client:  client,
+				kvMount: "secret",
+			}
+
+			version, err := store.detectKVVersion(t.Context())
+			if err != nil {
+				t.Errorf("detectKVVersion() unexpected error: %v", err)
+			}
+			if version != tt.wantVersion {
+				t.Errorf("detectKVVersion() = %d, want %d", version, tt.wantVersion)
+			}
+		})
+	}
+}
