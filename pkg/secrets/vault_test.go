@@ -686,7 +686,10 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 			server := mockVaultServer(handlers)
 			defer server.Close()
 
-			client, _ := api.NewClient(&api.Config{Address: server.URL})
+			client, err := api.NewClient(&api.Config{Address: server.URL})
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
 			client.SetToken("test-token")
 			store := &VaultStore{client: client, kvMount: "secret", basePath: "runs-fleet/runners"}
 
@@ -716,14 +719,17 @@ func TestVaultStore_detectKVVersion_ProbeNetworkError(t *testing.T) {
 		},
 	})
 
-	client, _ := api.NewClient(&api.Config{Address: server.URL})
+	client, err := api.NewClient(&api.Config{Address: server.URL})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
 	client.SetToken("test-token")
 	store := &VaultStore{client: client, kvMount: "secret", basePath: "runs-fleet/runners"}
 
 	// Close server before probing to simulate network error
 	server.Close()
 
-	_, err := store.detectKVVersion(t.Context())
+	_, err = store.detectKVVersion(t.Context())
 	if err == nil {
 		t.Error("expected error for network failure during probe, got nil")
 	}
