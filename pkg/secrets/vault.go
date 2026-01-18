@@ -131,33 +131,111 @@ func NewVaultStoreWithClient(client *api.Client, kvMount, basePath string, kvVer
 // detectKVVersion determines whether the KV engine is v1 or v2 by probing the mount.
 // This avoids requiring sys/mounts read permission.
 func (v *VaultStore) detectKVVersion(ctx context.Context) (int, error) {
-	// KV v2 has a config endpoint at {mount}/config
-	// If this returns successfully or with 403, it's v2
-	// If it returns 404/nil, it's likely v1
+	// First try the config endpoint - KV v2 has a special config API
 	configPath := fmt.Sprintf("%s/config", v.kvMount)
 	secret, err := v.client.Logical().ReadWithContext(ctx, configPath)
+
+	// Success - check if response has v2 config fields
+	if err == nil && secret != nil && secret.Data != nil {
+		// KV v2 config returns specific fields like max_versions, cas_required
+		if _, has := secret.Data["max_versions"]; has {
+			return 2, nil
+		}
+		if _, has := secret.Data["cas_required"]; has {
+			return 2, nil
+		}
+		if _, has := secret.Data["delete_version_after"]; has {
+			return 2, nil
+		}
+		// Has data but no v2 config fields - it's a v1 secret named "config"
+		return 1, nil
+	}
 
 	// Vault SDK returns (nil, nil) for 404 responses
 	if err == nil && secret == nil {
 		return 1, nil
 	}
-	if err == nil {
-		return 2, nil
-	}
 
 	var respErr *api.ResponseError
 	if errors.As(err, &respErr) {
 		switch respErr.StatusCode {
-		case 403:
-			// Permission denied on v2 config endpoint - still v2
-			return 2, nil
 		case 404:
-			// Config endpoint doesn't exist - likely v1
 			return 1, nil
+		case 403:
+			// Permission denied - can't tell from config alone, probe further
+			return v.detectKVVersionByProbing(ctx)
 		}
 	}
 
 	return 0, fmt.Errorf("failed to detect KV version: %w", err)
+}
+
+// detectKVVersionByProbing compares responses from v1 and v2 path styles to determine version.
+// On v1, the metadata prefix path doesn't exist as a concept.
+// On v2, the direct path without data/metadata prefix isn't valid for operations.
+func (v *VaultStore) detectKVVersionByProbing(ctx context.Context) (int, error) {
+	v1Path := fmt.Sprintf("%s/%s", v.kvMount, v.basePath)
+	v2Path := fmt.Sprintf("%s/metadata/%s", v.kvMount, v.basePath)
+
+	v1Status := v.probePathStatus(ctx, v1Path)
+	v2Status := v.probePathStatus(ctx, v2Path)
+
+	// Probe failure (network error, timeout) → propagate error
+	if v1Status < 0 || v2Status < 0 {
+		return 0, fmt.Errorf("failed to probe KV paths: v1=%d v2=%d", v1Status, v2Status)
+	}
+
+	// Unexpected status codes (401, 5xx) → propagate error
+	validStatus := func(s int) bool { return s == 200 || s == 403 || s == 404 }
+	if !validStatus(v1Status) || !validStatus(v2Status) {
+		return 0, fmt.Errorf("unexpected probe status codes: v1=%d v2=%d", v1Status, v2Status)
+	}
+
+	// v1 path works, v2 metadata denied → v1 (metadata path not in v1 policy)
+	if v1Status == 200 && v2Status == 403 {
+		return 1, nil
+	}
+
+	// v2 metadata path recognized (200 or 403), v1 not found → v2
+	if (v2Status == 200 || v2Status == 403) && v1Status == 404 {
+		return 2, nil
+	}
+
+	// v1 path denied, v2 metadata not found → v1 (v1 path exists, no metadata concept)
+	if v1Status == 403 && v2Status == 404 {
+		return 1, nil
+	}
+
+	// Both succeed → check v2 first (more common in modern setups)
+	if v2Status == 200 {
+		return 2, nil
+	}
+	if v1Status == 200 {
+		return 1, nil
+	}
+
+	// Ambiguous (both 403 or both 404) → default to v1 (safer path construction)
+	return 1, nil
+}
+
+// probePathStatus returns HTTP status code for a LIST operation on the given path.
+// Returns -1 for network errors or non-HTTP failures.
+func (v *VaultStore) probePathStatus(ctx context.Context, path string) int {
+	secret, err := v.client.Logical().ListWithContext(ctx, path)
+
+	if err == nil && secret != nil {
+		return 200
+	}
+	if err == nil && secret == nil {
+		return 404 // Vault SDK returns (nil, nil) for 404
+	}
+
+	var respErr *api.ResponseError
+	if errors.As(err, &respErr) {
+		return respErr.StatusCode
+	}
+
+	return -1 // Network error or other non-response failure
 }
 
 // Put stores runner configuration in Vault.

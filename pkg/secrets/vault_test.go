@@ -557,46 +557,133 @@ func TestVaultStore_Delete_OtherError(t *testing.T) {
 }
 
 func TestVaultStore_detectKVVersion(t *testing.T) {
+	type pathResponse struct {
+		status int
+		body   string
+	}
+
 	tests := []struct {
 		name        string
-		statusCode  int
+		responses   map[string]pathResponse
 		wantVersion int
 		wantErr     bool
 	}{
 		{
-			name:        "config endpoint accessible - KV v2",
-			statusCode:  http.StatusOK,
+			name: "config endpoint returns v2 config fields",
+			responses: map[string]pathResponse{
+				"/v1/secret/config": {http.StatusOK, `{"data": {"max_versions": 10}}`},
+			},
 			wantVersion: 2,
 		},
 		{
-			name:        "config endpoint forbidden - KV v2",
-			statusCode:  http.StatusForbidden,
-			wantVersion: 2,
-		},
-		{
-			name:        "config endpoint not found - KV v1",
-			statusCode:  http.StatusNotFound,
+			name: "config endpoint returns v1 secret data",
+			responses: map[string]pathResponse{
+				"/v1/secret/config": {http.StatusOK, `{"data": {"some_user_key": "value"}}`},
+			},
 			wantVersion: 1,
 		},
 		{
-			name:       "server error propagates",
-			statusCode: http.StatusInternalServerError,
-			wantErr:    true,
+			name: "config endpoint 404 - KV v1",
+			responses: map[string]pathResponse{
+				"/v1/secret/config": {http.StatusNotFound, ""},
+			},
+			wantVersion: 1,
+		},
+		{
+			name: "config 403, probe v1 accessible v2 denied - KV v1",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusOK, `{"data": {"keys": ["runner-1"]}}`},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+			},
+			wantVersion: 1,
+		},
+		{
+			name: "config 403, probe v2 200 v1 404 - KV v2",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusNotFound, ""},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusOK, `{"data": {"keys": ["runner-1"]}}`},
+			},
+			wantVersion: 2,
+		},
+		{
+			name: "config 403, probe v2 403 v1 404 - KV v2",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusNotFound, ""},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+			},
+			wantVersion: 2,
+		},
+		{
+			name: "config 403, probe v1 403 v2 404 - KV v1",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusNotFound, ""},
+			},
+			wantVersion: 1,
+		},
+		{
+			name: "config 403, both probes 403 - defaults to v1",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+			},
+			wantVersion: 1,
+		},
+		{
+			name: "config 403, both probes 404 - defaults to v1",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusNotFound, ""},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusNotFound, ""},
+			},
+			wantVersion: 1,
+		},
+		{
+			name: "config 403, probe returns 401 - error",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusUnauthorized, `{"errors": ["missing token"]}`},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusOK, `{"data": {"keys": []}}`},
+			},
+			wantErr: true,
+		},
+		{
+			name: "config 403, probe returns 500 - error",
+			responses: map[string]pathResponse{
+				"/v1/secret/config":                      {http.StatusForbidden, `{"errors": ["permission denied"]}`},
+				"/v1/secret/runs-fleet/runners":          {http.StatusOK, `{"data": {"keys": []}}`},
+				"/v1/secret/metadata/runs-fleet/runners": {http.StatusInternalServerError, `{"errors": ["server error"]}`},
+			},
+			wantErr: true,
+		},
+		{
+			name: "server error propagates",
+			responses: map[string]pathResponse{
+				"/v1/secret/config": {http.StatusInternalServerError, `{"errors": ["internal error"]}`},
+			},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := mockVaultServer(map[string]http.HandlerFunc{
-				"/v1/secret/config": func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(tt.statusCode)
-					if tt.statusCode == http.StatusOK {
-						_, _ = w.Write([]byte(`{"data": {"max_versions": 10}}`))
-					} else {
-						_, _ = w.Write([]byte(`{"errors": ["test error"]}`))
+			handlers := make(map[string]http.HandlerFunc)
+			for path, resp := range tt.responses {
+				resp := resp
+				handlers[path] = func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(resp.status)
+					if resp.body != "" {
+						_, _ = w.Write([]byte(resp.body))
 					}
-				},
-			})
+				}
+			}
+
+			server := mockVaultServer(handlers)
 			defer server.Close()
 
 			client, err := api.NewClient(&api.Config{Address: server.URL})
@@ -604,25 +691,46 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 				t.Fatalf("failed to create client: %v", err)
 			}
 			client.SetToken("test-token")
-
-			store := &VaultStore{
-				client:  client,
-				kvMount: "secret",
-			}
+			store := &VaultStore{client: client, kvMount: "secret", basePath: "runs-fleet/runners"}
 
 			version, err := store.detectKVVersion(t.Context())
 			if tt.wantErr {
 				if err == nil {
-					t.Error("detectKVVersion() expected error, got nil")
+					t.Error("expected error, got nil")
 				}
 				return
 			}
 			if err != nil {
-				t.Errorf("detectKVVersion() unexpected error: %v", err)
+				t.Fatalf("unexpected error: %v", err)
 			}
 			if version != tt.wantVersion {
-				t.Errorf("detectKVVersion() = %d, want %d", version, tt.wantVersion)
+				t.Errorf("got version %d, want %d", version, tt.wantVersion)
 			}
 		})
+	}
+}
+
+func TestVaultStore_detectKVVersion_ProbeNetworkError(t *testing.T) {
+	// Test that probe network failure propagates error
+	server := mockVaultServer(map[string]http.HandlerFunc{
+		"/v1/secret/config": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors": ["permission denied"]}`))
+		},
+	})
+
+	client, err := api.NewClient(&api.Config{Address: server.URL})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.SetToken("test-token")
+	store := &VaultStore{client: client, kvMount: "secret", basePath: "runs-fleet/runners"}
+
+	// Close server before probing to simulate network error
+	server.Close()
+
+	_, err = store.detectKVVersion(t.Context())
+	if err == nil {
+		t.Error("expected error for network failure during probe, got nil")
 	}
 }
