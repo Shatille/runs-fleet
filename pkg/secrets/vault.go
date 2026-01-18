@@ -181,7 +181,7 @@ func (v *VaultStore) detectKVVersionByProbing(ctx context.Context) (int, error) 
 	v2Status := v.probePathStatus(ctx, v2Path)
 
 	// Probe failure (network error, timeout) → propagate error
-	if v1Status == 0 || v2Status == 0 {
+	if v1Status < 0 || v2Status < 0 {
 		return 0, fmt.Errorf("failed to probe KV paths: v1=%d v2=%d", v1Status, v2Status)
 	}
 
@@ -219,6 +219,7 @@ func (v *VaultStore) detectKVVersionByProbing(ctx context.Context) (int, error) 
 }
 
 // probePathStatus returns HTTP status code for a LIST operation on the given path.
+// Returns -1 for network errors or non-HTTP failures.
 func (v *VaultStore) probePathStatus(ctx context.Context, path string) int {
 	secret, err := v.client.Logical().ListWithContext(ctx, path)
 
@@ -234,7 +235,7 @@ func (v *VaultStore) probePathStatus(ctx context.Context, path string) int {
 		return respErr.StatusCode
 	}
 
-	return 0
+	return -1 // Network error or other non-response failure
 }
 
 // Put stores runner configuration in Vault.
