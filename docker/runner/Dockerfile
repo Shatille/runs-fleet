@@ -84,18 +84,20 @@ RUN set -ex \
 
 # Patch CVE-2026-23745: Update vulnerable node-tar package in runner's bundled Node.js
 # Note: This patches the JavaScript tar package (node-tar), not GNU tar (system binary)
-# SHA1 from https://registry.npmjs.org/tar/7.5.3 (.dist.shasum)
+# SHA512 from https://registry.npmjs.org/tar/7.5.3 (.dist.integrity)
 RUN set -ex; \
-    TAR_SHASUM="e1a41236e32446f75e63b720222112c4ffe5b3a1"; \
-    curl -fsSL https://registry.npmjs.org/tar/-/tar-7.5.3.tgz -o /tmp/tar-7.5.3.tgz; \
-    echo "${TAR_SHASUM}  /tmp/tar-7.5.3.tgz" | sha1sum -c -; \
+    TAR_INTEGRITY="sha512-ENg5JUHUm2rDD7IvKNFGzyElLXNjachNLp6RaGf4+JOgxXHkqA+gq81ZAMCUmtMtqBsoU62lcp6S27g1LCYGGQ=="; \
+    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/tar/-/tar-7.5.3.tgz -o /tmp/tar-7.5.3.tgz; \
+    ACTUAL=$(sha512sum /tmp/tar-7.5.3.tgz | cut -d' ' -f1 | xxd -r -p | base64 -w0); \
+    EXPECTED=$(echo "$TAR_INTEGRITY" | sed 's/^sha512-//'); \
+    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
     echo 0 > /tmp/patched_count; \
     find /home/runner/externals -type d -name "tar" -path "*/node_modules/*" -exec sh -c '\
         for pkg_dir; do \
             if [ -f "$pkg_dir/package.json" ]; then \
                 rm -rf "$pkg_dir"; \
-                mkdir -p "$pkg_dir"; \
-                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1; \
+                mkdir -p "$pkg_dir" || exit 1; \
+                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1 || exit 1; \
                 COUNT=$(cat /tmp/patched_count); \
                 echo $((COUNT + 1)) > /tmp/patched_count; \
             fi; \
