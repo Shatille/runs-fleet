@@ -150,6 +150,9 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
+	if vaultKVVersion < 0 || vaultKVVersion > 2 {
+		return nil, fmt.Errorf("config error: VAULT_KV_VERSION must be 0 (auto), 1, or 2, got %d", vaultKVVersion)
+	}
 
 	cfg := &Config{
 		AWSRegion:      getEnv("AWS_REGION", "ap-northeast-1"),
