@@ -92,12 +92,12 @@ RUN set -ex; \
     EXPECTED=$(echo "$TAR_INTEGRITY" | sed 's/^sha512-//'); \
     if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
     echo 0 > /tmp/patched_count; \
-    find /home/runner/externals -type d -name "tar" -path "*/node_modules/*" -exec sh -c '\
+    find /home/runner/externals -type d -name "tar" -path "*/node_modules/*" -exec sh -c 'set -e; \
         for pkg_dir; do \
             if [ -f "$pkg_dir/package.json" ]; then \
                 rm -rf "$pkg_dir"; \
-                mkdir -p "$pkg_dir" || exit 1; \
-                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1 || exit 1; \
+                mkdir -p "$pkg_dir"; \
+                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1; \
                 COUNT=$(cat /tmp/patched_count); \
                 echo $((COUNT + 1)) > /tmp/patched_count; \
             fi; \
