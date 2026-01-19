@@ -92,18 +92,20 @@ RUN set -ex; \
     EXPECTED=$(echo "$TAR_INTEGRITY" | sed 's/^sha512-//'); \
     if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
     echo 0 > /tmp/patched_count; \
+    rm -f /tmp/patch_errors; \
     find /home/runner/externals -type d -name "tar" -path "*/node_modules/*" -exec sh -c 'set -e; \
         for pkg_dir; do \
             if [ -f "$pkg_dir/package.json" ]; then \
                 rm -rf "$pkg_dir"; \
                 mkdir -p "$pkg_dir"; \
-                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1; \
+                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
                 COUNT=$(cat /tmp/patched_count); \
                 echo $((COUNT + 1)) > /tmp/patched_count; \
             fi; \
         done' _ {} +; \
-    PATCHED=$(cat /tmp/patched_count); \
-    rm -f /tmp/tar-7.5.3.tgz /tmp/patched_count; \
+    if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
+    PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
+    rm -f /tmp/tar-7.5.3.tgz /tmp/patched_count /tmp/patch_errors; \
     echo "Patched $PATCHED node-tar package(s)"; \
     if [ "$PATCHED" -eq 0 ]; then echo "ERROR: No tar packages found - CVE-2026-23745 unpatched" >&2; exit 1; fi
 
