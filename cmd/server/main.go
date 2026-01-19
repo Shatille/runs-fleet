@@ -254,6 +254,7 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 		Vault: secrets.VaultConfig{
 			Address:      cfg.VaultAddr,
 			KVMount:      cfg.VaultKVMount,
+			KVVersion:    cfg.VaultKVVersion,
 			BasePath:     cfg.VaultBasePath,
 			AuthMethod:   cfg.VaultAuthMethod,
 			AWSRole:      cfg.VaultAWSRole,

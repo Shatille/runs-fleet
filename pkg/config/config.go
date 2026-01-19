@@ -108,9 +108,10 @@ type Config struct {
 	// Secrets backend configuration (EC2 mode only)
 	SecretsBackend    string // "ssm" or "vault" (default: "ssm")
 	SecretsPathPrefix string // Path prefix for secrets (default: "/runs-fleet/runners")
-	VaultAddr     string // Vault server address (required if vault backend)
-	VaultKVMount  string // Vault KV mount path (default: "secret")
-	VaultBasePath string // Vault KV path prefix (default: "runs-fleet/runners")
+	VaultAddr       string // Vault server address (required if vault backend)
+	VaultKVMount    string // Vault KV mount path (default: "secret")
+	VaultKVVersion  int    // Vault KV version: 0=auto-detect, 1, 2 (default: 0)
+	VaultBasePath   string // Vault KV path prefix (default: "runs-fleet/runners")
 	VaultAuthMethod string // Vault auth method: "aws", "kubernetes", "approle", "token" (default: "aws")
 	VaultAWSRole    string // Vault AWS auth role (default: "runs-fleet")
 	VaultK8sAuthMount string // Vault Kubernetes auth mount path (default: "kubernetes")
@@ -141,6 +142,11 @@ func Load() (*Config, error) {
 	}
 
 	valkeyDB, err := getEnvInt("RUNS_FLEET_VALKEY_DB", 0)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
+	vaultKVVersion, err := getEnvInt("VAULT_KV_VERSION", 0)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
@@ -216,9 +222,10 @@ func Load() (*Config, error) {
 		// Secrets backend (EC2 mode)
 		SecretsBackend:    getEnv("RUNS_FLEET_SECRETS_BACKEND", "ssm"),
 		SecretsPathPrefix: getEnv("RUNS_FLEET_SECRETS_PATH_PREFIX", "/runs-fleet/runners"),
-		VaultAddr:     getEnv("VAULT_ADDR", ""),
-		VaultKVMount:  getEnv("VAULT_KV_MOUNT", "secret"),
-		VaultBasePath: getEnv("VAULT_BASE_PATH", "runs-fleet/runners"),
+		VaultAddr:      getEnv("VAULT_ADDR", ""),
+		VaultKVMount:   getEnv("VAULT_KV_MOUNT", "secret"),
+		VaultKVVersion: vaultKVVersion,
+		VaultBasePath:  getEnv("VAULT_BASE_PATH", "runs-fleet/runners"),
 		VaultAuthMethod: getEnv("VAULT_AUTH_METHOD", "aws"),
 		VaultAWSRole:    getEnv("VAULT_AWS_ROLE", "runs-fleet"),
 		VaultK8sAuthMount: getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
