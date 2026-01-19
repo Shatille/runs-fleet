@@ -291,6 +291,15 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 
 	h := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
 
+	// Set up distributed task locking for HA deployments
+	// Use UUID for instance ID (not hostname) to ensure crashed instances
+	// cannot bypass TTL lock expiration by restarting with the same ID
+	if dbClient != nil {
+		instanceID := uuid.NewString()
+		h.SetTaskLocker(dbClient, instanceID)
+		log.Printf("Housekeeping task locking enabled (instance: %s)", instanceID)
+	}
+
 	schedulerCfg := housekeeping.DefaultSchedulerConfig()
 	scheduler := housekeeping.NewSchedulerFromConfig(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
 	scheduler.SetMetrics(metricsPublisher)

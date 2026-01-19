@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/events"
@@ -157,6 +158,10 @@ func (c *Client) ListPools(ctx context.Context) ([]string, error) {
 		if name, ok := item["pool_name"]; ok {
 			var poolName string
 			if err := attributevalue.Unmarshal(name, &poolName); err != nil {
+				continue
+			}
+			// Skip task lock entries stored in the same table
+			if strings.HasPrefix(poolName, taskLockPrefix) {
 				continue
 			}
 			pools = append(pools, poolName)
@@ -487,6 +492,115 @@ func (c *Client) ReleasePoolReconcileLock(ctx context.Context, poolName, owner s
 			return nil
 		}
 		return fmt.Errorf("failed to release pool reconcile lock: %w", err)
+	}
+
+	return nil
+}
+
+// ErrTaskLockHeld is returned when attempting to acquire a task lock
+// that is already held by another instance.
+var ErrTaskLockHeld = errors.New("task lock held by another instance")
+
+// taskLockPrefix is the key prefix for housekeeping task locks stored in the pools table.
+const taskLockPrefix = "__task_lock:"
+
+// taskLockKey returns the DynamoDB key for a housekeeping task lock.
+func taskLockKey(taskType string) string {
+	return taskLockPrefix + taskType
+}
+
+// AcquireTaskLock attempts to acquire an execution lock for the specified housekeeping task.
+// Returns nil if the lock was acquired successfully.
+// Returns ErrTaskLockHeld if another instance holds the lock.
+// The lock expires after the specified TTL to handle crashed instances.
+//
+// Task locks use the pools table with a special key prefix (__task_lock:) to avoid
+// requiring a separate DynamoDB table.
+func (c *Client) AcquireTaskLock(ctx context.Context, taskType, owner string, ttl time.Duration) error {
+	if taskType == "" {
+		return fmt.Errorf("task type cannot be empty")
+	}
+	if owner == "" {
+		return fmt.Errorf("owner cannot be empty")
+	}
+	if ttl <= 0 {
+		return fmt.Errorf("TTL must be positive")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(ttl).Unix()
+	lockKey := taskLockKey(taskType)
+
+	_, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: lockKey},
+		},
+		UpdateExpression: aws.String("SET lock_owner = :owner, lock_expires = :expires"),
+		ConditionExpression: aws.String(
+			"attribute_not_exists(pool_name) OR " +
+				"attribute_not_exists(lock_expires) OR " +
+				"lock_expires < :now OR " +
+				"lock_owner = :owner",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":owner":   &types.AttributeValueMemberS{Value: owner},
+			":expires": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", expiresAt)},
+			":now":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrTaskLockHeld
+		}
+		return fmt.Errorf("failed to acquire task lock: %w", err)
+	}
+
+	return nil
+}
+
+// ReleaseTaskLock releases an execution lock for the specified housekeeping task.
+// Only releases if the current instance is the lock owner.
+// Returns nil even if the lock was already released or owned by another instance.
+func (c *Client) ReleaseTaskLock(ctx context.Context, taskType, owner string) error {
+	if taskType == "" {
+		return fmt.Errorf("task type cannot be empty")
+	}
+	if owner == "" {
+		return fmt.Errorf("owner cannot be empty")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	lockKey := taskLockKey(taskType)
+
+	_, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: lockKey},
+		},
+		UpdateExpression: aws.String("REMOVE lock_owner, lock_expires"),
+		ConditionExpression: aws.String(
+			"attribute_exists(pool_name) AND lock_owner = :owner",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":owner": &types.AttributeValueMemberS{Value: owner},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			// Lock not held by us or already released - this is fine
+			return nil
+		}
+		return fmt.Errorf("failed to release task lock: %w", err)
 	}
 
 	return nil
