@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
@@ -542,5 +543,225 @@ func TestMessage_JSONSerialization(t *testing.T) {
 
 	if decoded.TaskType != msg.TaskType {
 		t.Errorf("expected task_type '%s', got '%s'", msg.TaskType, decoded.TaskType)
+	}
+}
+
+// mockTaskLocker implements TaskLocker for testing.
+type mockTaskLocker struct {
+	acquireErr    error
+	releaseErr    error
+	acquireCalls  int
+	releaseCalls  int
+	lastTaskType  string
+	lastOwner     string
+}
+
+func (m *mockTaskLocker) AcquireTaskLock(_ context.Context, taskType, owner string, _ time.Duration) error {
+	m.acquireCalls++
+	m.lastTaskType = taskType
+	m.lastOwner = owner
+	return m.acquireErr
+}
+
+func (m *mockTaskLocker) ReleaseTaskLock(_ context.Context, taskType, owner string) error {
+	m.releaseCalls++
+	m.lastTaskType = taskType
+	m.lastOwner = owner
+	return m.releaseErr
+}
+
+func TestHandler_SetTaskLocker(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+
+	locker := &mockTaskLocker{}
+	handler.SetTaskLocker(locker, "instance-1")
+
+	if handler.taskLocker != locker {
+		t.Error("expected taskLocker to be set")
+	}
+	if handler.instanceID != "instance-1" {
+		t.Error("expected instanceID to be set")
+	}
+}
+
+func TestHandler_ProcessMessage_WithLocking_Success(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	locker := &mockTaskLocker{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+	handler.SetTaskLocker(locker, "instance-1")
+
+	msg := Message{
+		TaskType:  TaskOrphanedInstances,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if locker.acquireCalls != 1 {
+		t.Errorf("expected 1 acquire call, got %d", locker.acquireCalls)
+	}
+	if locker.releaseCalls != 1 {
+		t.Errorf("expected 1 release call, got %d", locker.releaseCalls)
+	}
+	if executor.orphanedCall != 1 {
+		t.Errorf("expected 1 orphaned call, got %d", executor.orphanedCall)
+	}
+	if locker.lastTaskType != string(TaskOrphanedInstances) {
+		t.Errorf("expected task type '%s', got '%s'", TaskOrphanedInstances, locker.lastTaskType)
+	}
+	if locker.lastOwner != "instance-1" {
+		t.Errorf("expected owner 'instance-1', got '%s'", locker.lastOwner)
+	}
+}
+
+func TestHandler_ProcessMessage_WithLocking_LockHeld(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	locker := &mockTaskLocker{
+		acquireErr: db.ErrTaskLockHeld,
+	}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+	handler.SetTaskLocker(locker, "instance-1")
+
+	msg := Message{
+		TaskType:  TaskOrphanedInstances,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err != nil {
+		t.Fatalf("expected no error when lock is held, got: %v", err)
+	}
+
+	// Task should NOT be executed when lock is held
+	if executor.orphanedCall != 0 {
+		t.Errorf("expected 0 orphaned calls when lock held, got %d", executor.orphanedCall)
+	}
+	// Lock should NOT be released (we didn't acquire it)
+	if locker.releaseCalls != 0 {
+		t.Errorf("expected 0 release calls when lock held, got %d", locker.releaseCalls)
+	}
+	// Message should NOT be deleted - let lock holder delete it
+	// Message will return to queue after visibility timeout
+	if q.deleteCalls != 0 {
+		t.Errorf("expected 0 delete calls when lock held, got %d", q.deleteCalls)
+	}
+}
+
+func TestHandler_ProcessMessage_WithLocking_AcquireError(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	locker := &mockTaskLocker{
+		acquireErr: errors.New("dynamodb error"),
+	}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+	handler.SetTaskLocker(locker, "instance-1")
+
+	msg := Message{
+		TaskType:  TaskOrphanedInstances,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err == nil {
+		t.Fatal("expected error when lock acquisition fails")
+	}
+
+	// Task should NOT be executed on lock error
+	if executor.orphanedCall != 0 {
+		t.Errorf("expected 0 orphaned calls on lock error, got %d", executor.orphanedCall)
+	}
+}
+
+func TestHandler_ProcessMessage_WithLocking_TaskFailure(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{
+		orphanedErr: errors.New("task failed"),
+	}
+	locker := &mockTaskLocker{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+	handler.SetTaskLocker(locker, "instance-1")
+
+	msg := Message{
+		TaskType:  TaskOrphanedInstances,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err == nil {
+		t.Fatal("expected error from task execution")
+	}
+
+	// Lock should still be released on task failure
+	if locker.releaseCalls != 1 {
+		t.Errorf("expected 1 release call on task failure, got %d", locker.releaseCalls)
+	}
+	// Message should NOT be deleted on failure (allow retry)
+	if q.deleteCalls != 0 {
+		t.Errorf("expected 0 delete calls on failure, got %d", q.deleteCalls)
+	}
+}
+
+func TestHandler_ProcessMessage_WithoutLocking(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+	// Note: NOT setting task locker
+
+	msg := Message{
+		TaskType:  TaskOrphanedInstances,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Task should execute without locking
+	if executor.orphanedCall != 1 {
+		t.Errorf("expected 1 orphaned call, got %d", executor.orphanedCall)
 	}
 }

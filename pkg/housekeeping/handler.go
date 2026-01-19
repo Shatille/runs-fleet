@@ -4,11 +4,13 @@ package housekeeping
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
@@ -16,6 +18,12 @@ import (
 type QueueAPI interface {
 	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
 	DeleteMessage(ctx context.Context, handle string) error
+}
+
+// TaskLocker provides distributed locking for housekeeping tasks.
+type TaskLocker interface {
+	AcquireTaskLock(ctx context.Context, taskType, owner string, ttl time.Duration) error
+	ReleaseTaskLock(ctx context.Context, taskType, owner string) error
 }
 
 // TaskType represents the type of housekeeping task.
@@ -60,6 +68,8 @@ type TaskExecutor interface {
 type Handler struct {
 	queueClient  QueueAPI
 	taskExecutor TaskExecutor
+	taskLocker   TaskLocker
+	instanceID   string
 	config       *config.Config
 }
 
@@ -70,6 +80,14 @@ func NewHandler(q QueueAPI, executor TaskExecutor, cfg *config.Config) *Handler 
 		taskExecutor: executor,
 		config:       cfg,
 	}
+}
+
+// SetTaskLocker sets the distributed task locker for HA deployments.
+// When set, the handler will acquire a lock before executing each task
+// to prevent concurrent execution across multiple instances.
+func (h *Handler) SetTaskLocker(locker TaskLocker, instanceID string) {
+	h.taskLocker = locker
+	h.instanceID = instanceID
 }
 
 // Run starts the housekeeping handler loop.
@@ -102,6 +120,9 @@ func (h *Handler) Run(ctx context.Context) {
 	}
 }
 
+// taskLockTTL is the TTL for task locks (task timeout + buffer).
+const taskLockTTL = 6 * time.Minute
+
 // processMessage processes a single housekeeping message.
 func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	if msg.Body == "" {
@@ -114,6 +135,25 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	}
 
 	log.Printf("Processing housekeeping task: %s", hkMsg.TaskType)
+
+	// Acquire distributed lock if configured
+	if h.taskLocker != nil {
+		if err := h.taskLocker.AcquireTaskLock(ctx, string(hkMsg.TaskType), h.instanceID, taskLockTTL); err != nil {
+			if errors.Is(err, db.ErrTaskLockHeld) {
+				log.Printf("Task %s is being executed by another instance, skipping", hkMsg.TaskType)
+				// Don't delete message - let lock holder delete it on success.
+				// Message will return to queue after visibility timeout.
+				// This prevents task loss if lock holder crashes.
+				return nil
+			}
+			return fmt.Errorf("failed to acquire task lock: %w", err)
+		}
+		defer func() {
+			if releaseErr := h.taskLocker.ReleaseTaskLock(ctx, string(hkMsg.TaskType), h.instanceID); releaseErr != nil {
+				log.Printf("Failed to release task lock for %s: %v", hkMsg.TaskType, releaseErr)
+			}
+		}()
+	}
 
 	taskCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()

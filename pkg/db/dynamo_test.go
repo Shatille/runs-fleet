@@ -14,6 +14,9 @@ import (
 // Test constants for table names.
 const testPoolsTable = "pools-table"
 
+// Test constant for error messages.
+const errPoolsTableNotConfigured = "pools table not configured"
+
 // MockDynamoDBAPI implements DynamoDBAPI interface.
 //
 //nolint:dupl // Mock mirrors interface - intentional pattern
@@ -1878,8 +1881,8 @@ func TestAcquirePoolReconcileLock_NoPoolsTable(t *testing.T) {
 	if err == nil {
 		t.Error("AcquirePoolReconcileLock() should fail when pools table not configured")
 	}
-	if err.Error() != "pools table not configured" {
-		t.Errorf("AcquirePoolReconcileLock() error = %v, want 'pools table not configured'", err)
+	if err.Error() != errPoolsTableNotConfigured {
+		t.Errorf("AcquirePoolReconcileLock() error = %v, want '%s'", err, errPoolsTableNotConfigured)
 	}
 }
 
@@ -2002,8 +2005,8 @@ func TestReleasePoolReconcileLock_NoPoolsTable(t *testing.T) {
 	if err == nil {
 		t.Error("ReleasePoolReconcileLock() should fail when pools table not configured")
 	}
-	if err.Error() != "pools table not configured" {
-		t.Errorf("ReleasePoolReconcileLock() error = %v, want 'pools table not configured'", err)
+	if err.Error() != errPoolsTableNotConfigured {
+		t.Errorf("ReleasePoolReconcileLock() error = %v, want '%s'", err, errPoolsTableNotConfigured)
 	}
 }
 
@@ -2022,5 +2025,292 @@ func TestReleasePoolReconcileLock_DynamoDBError(t *testing.T) {
 	err := client.ReleasePoolReconcileLock(context.Background(), "test-pool", "instance-1")
 	if err == nil {
 		t.Error("ReleasePoolReconcileLock() should fail on DynamoDB error")
+	}
+}
+
+func TestAcquireTaskLock(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType string
+		owner    string
+		ttl      time.Duration
+		mockDB   *MockDynamoDBAPI
+		wantErr  error
+	}{
+		{
+			name:     "Success",
+			taskType: "orphaned_instances",
+			owner:    "instance-1",
+			ttl:      6 * time.Minute,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					if *params.TableName != testPoolsTable {
+						t.Errorf("TableName = %s, want %s", *params.TableName, testPoolsTable)
+					}
+					// Verify the key uses the task lock prefix
+					if key, ok := params.Key["pool_name"].(*types.AttributeValueMemberS); ok {
+						if key.Value != "__task_lock:orphaned_instances" {
+							t.Errorf("Key = %s, want __task_lock:orphaned_instances", key.Value)
+						}
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name:     "Lock Already Held",
+			taskType: "orphaned_instances",
+			owner:    "instance-1",
+			ttl:      6 * time.Minute,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr: ErrTaskLockHeld,
+		},
+		{
+			name:     "Empty Task Type",
+			taskType: "",
+			owner:    "instance-1",
+			ttl:      6 * time.Minute,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("task type cannot be empty"),
+		},
+		{
+			name:     "Empty Owner",
+			taskType: "orphaned_instances",
+			owner:    "",
+			ttl:      6 * time.Minute,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("owner cannot be empty"),
+		},
+		{
+			name:     "Invalid TTL",
+			taskType: "orphaned_instances",
+			owner:    "instance-1",
+			ttl:      0,
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  errors.New("TTL must be positive"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   testPoolsTable,
+			}
+			err := client.AcquireTaskLock(context.Background(), tt.taskType, tt.owner, tt.ttl)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Errorf("AcquireTaskLock() error = nil, wantErr %v", tt.wantErr)
+					return
+				}
+				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
+					t.Errorf("AcquireTaskLock() error = %v, wantErr %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Errorf("AcquireTaskLock() error = %v, wantErr nil", err)
+			}
+		})
+	}
+}
+
+func TestAcquireTaskLock_ReentrantByOwner(t *testing.T) {
+	updateCalls := 0
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			updateCalls++
+			// Verify condition allows re-entry by same owner
+			condition := *params.ConditionExpression
+			if condition == "" {
+				t.Error("ConditionExpression should not be empty")
+			}
+			if params.ExpressionAttributeValues[":owner"] == nil {
+				t.Error("Owner should be in expression values")
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	// First acquisition
+	err := client.AcquireTaskLock(context.Background(), "orphaned_instances", "owner-1", 6*time.Minute)
+	if err != nil {
+		t.Errorf("First AcquireTaskLock() error = %v", err)
+	}
+
+	// Second acquisition by same owner (re-entrant)
+	err = client.AcquireTaskLock(context.Background(), "orphaned_instances", "owner-1", 6*time.Minute)
+	if err != nil {
+		t.Errorf("Second AcquireTaskLock() error = %v", err)
+	}
+
+	if updateCalls != 2 {
+		t.Errorf("UpdateItem called %d times, want 2", updateCalls)
+	}
+}
+
+func TestAcquireTaskLock_NoPoolsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		poolsTable:   "",
+	}
+
+	err := client.AcquireTaskLock(context.Background(), "orphaned_instances", "instance-1", 6*time.Minute)
+	if err == nil {
+		t.Error("AcquireTaskLock() should fail when pools table not configured")
+	}
+	if err.Error() != errPoolsTableNotConfigured {
+		t.Errorf("AcquireTaskLock() error = %v, want '%s'", err, errPoolsTableNotConfigured)
+	}
+}
+
+func TestAcquireTaskLock_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("network error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.AcquireTaskLock(context.Background(), "orphaned_instances", "instance-1", 6*time.Minute)
+	if err == nil {
+		t.Error("AcquireTaskLock() should fail on DynamoDB error")
+	}
+	if err.Error() != "failed to acquire task lock: network error" {
+		t.Errorf("AcquireTaskLock() error = %v, want 'failed to acquire task lock: network error'", err)
+	}
+}
+
+func TestReleaseTaskLock(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType string
+		owner    string
+		mockDB   *MockDynamoDBAPI
+		wantErr  bool
+	}{
+		{
+			name:     "Success",
+			taskType: "orphaned_instances",
+			owner:    "instance-1",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					if *params.TableName != testPoolsTable {
+						t.Errorf("TableName = %s, want %s", *params.TableName, testPoolsTable)
+					}
+					// Verify the key uses the task lock prefix
+					if key, ok := params.Key["pool_name"].(*types.AttributeValueMemberS); ok {
+						if key.Value != "__task_lock:orphaned_instances" {
+							t.Errorf("Key = %s, want __task_lock:orphaned_instances", key.Value)
+						}
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:     "Lock Not Held By Us",
+			taskType: "orphaned_instances",
+			owner:    "instance-1",
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr: false, // Should NOT error - silently succeed
+		},
+		{
+			name:     "Empty Task Type",
+			taskType: "",
+			owner:    "instance-1",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+		{
+			name:     "Empty Owner",
+			taskType: "orphaned_instances",
+			owner:    "",
+			mockDB:   &MockDynamoDBAPI{},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   testPoolsTable,
+			}
+			err := client.ReleaseTaskLock(context.Background(), tt.taskType, tt.owner)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ReleaseTaskLock() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReleaseTaskLock_NoPoolsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		poolsTable:   "",
+	}
+
+	err := client.ReleaseTaskLock(context.Background(), "orphaned_instances", "instance-1")
+	if err == nil {
+		t.Error("ReleaseTaskLock() should fail when pools table not configured")
+	}
+	if err.Error() != errPoolsTableNotConfigured {
+		t.Errorf("ReleaseTaskLock() error = %v, want '%s'", err, errPoolsTableNotConfigured)
+	}
+}
+
+func TestReleaseTaskLock_DynamoDBError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("network error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.ReleaseTaskLock(context.Background(), "orphaned_instances", "instance-1")
+	if err == nil {
+		t.Error("ReleaseTaskLock() should fail on DynamoDB error")
+	}
+}
+
+func TestTaskLockKey(t *testing.T) {
+	tests := []struct {
+		taskType string
+		want     string
+	}{
+		{"orphaned_instances", "__task_lock:orphaned_instances"},
+		{"dlq_redrive", "__task_lock:dlq_redrive"},
+		{"cost_report", "__task_lock:cost_report"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.taskType, func(t *testing.T) {
+			got := taskLockKey(tt.taskType)
+			if got != tt.want {
+				t.Errorf("taskLockKey(%q) = %q, want %q", tt.taskType, got, tt.want)
+			}
+		})
 	}
 }
