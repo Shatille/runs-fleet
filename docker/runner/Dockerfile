@@ -88,7 +88,7 @@ RUN set -ex \
 RUN set -ex; \
     TAR_INTEGRITY="sha512-ENg5JUHUm2rDD7IvKNFGzyElLXNjachNLp6RaGf4+JOgxXHkqA+gq81ZAMCUmtMtqBsoU62lcp6S27g1LCYGGQ=="; \
     curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/tar/-/tar-7.5.3.tgz -o /tmp/tar-7.5.3.tgz; \
-    ACTUAL=$(sha512sum /tmp/tar-7.5.3.tgz | cut -d' ' -f1 | xxd -r -p | base64 -w0); \
+    ACTUAL=$(openssl dgst -sha512 -binary /tmp/tar-7.5.3.tgz | base64 -w0); \
     EXPECTED=$(echo "$TAR_INTEGRITY" | sed 's/^sha512-//'); \
     if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
     echo 0 > /tmp/patched_count; \
