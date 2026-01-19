@@ -149,7 +149,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 			return fmt.Errorf("failed to acquire task lock: %w", err)
 		}
 		defer func() {
-			if releaseErr := h.taskLocker.ReleaseTaskLock(ctx, string(hkMsg.TaskType), h.instanceID); releaseErr != nil {
+			// Use context.Background() to ensure lock release even if parent context is cancelled
+			if releaseErr := h.taskLocker.ReleaseTaskLock(context.Background(), string(hkMsg.TaskType), h.instanceID); releaseErr != nil {
 				log.Printf("Failed to release task lock for %s: %v", hkMsg.TaskType, releaseErr)
 			}
 		}()
