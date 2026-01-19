@@ -156,7 +156,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		}()
 	}
 
-	taskCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Task timeout must be less than lock TTL (6 min) to prevent lock expiration during execution
+	taskCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
 	var err error
