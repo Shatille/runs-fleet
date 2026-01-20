@@ -295,7 +295,7 @@ ENV_ARGS=(
 
 # Secrets backend configuration
 [[ -n "${SECRETS_BACKEND:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_SECRETS_BACKEND=$SECRETS_BACKEND")
-[[ -n "${VAULT_ADDR:-}" ]] && [[ "$VAULT_ADDR" =~ ^https:// ]] && ENV_ARGS+=(-e "VAULT_ADDR=$VAULT_ADDR")
+[[ -n "${VAULT_ADDR:-}" ]] && [[ "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.:/-]+$ ]] && ENV_ARGS+=(-e "VAULT_ADDR=$VAULT_ADDR")
 [[ -n "${VAULT_KV_MOUNT:-}" ]] && ENV_ARGS+=(-e "VAULT_KV_MOUNT=$VAULT_KV_MOUNT")
 [[ -n "${VAULT_KV_VERSION:-}" ]] && [[ "$VAULT_KV_VERSION" =~ ^[12]$ ]] && ENV_ARGS+=(-e "VAULT_KV_VERSION=$VAULT_KV_VERSION")
 [[ -n "${VAULT_BASE_PATH:-}" ]] && ENV_ARGS+=(-e "VAULT_BASE_PATH=$VAULT_BASE_PATH")
