@@ -194,6 +194,15 @@ RUN_ID=$(get_instance_tag_with_retry "runs-fleet:run-id" 10) || fail "Run ID not
 RUNNER_IMAGE=$(get_instance_tag_with_retry "runs-fleet:runner-image" 10) || fail "Runner image not found in instance tags after retries"
 CACHE_URL=$(get_instance_tag_with_retry "runs-fleet:cache-url" 3) || true
 
+# Secrets backend configuration (for Vault support)
+SECRETS_BACKEND=$(get_instance_tag_with_retry "runs-fleet:secrets-backend" 3) || true
+VAULT_ADDR=$(get_instance_tag_with_retry "runs-fleet:vault-addr" 3) || true
+VAULT_KV_MOUNT=$(get_instance_tag_with_retry "runs-fleet:vault-kv-mount" 3) || true
+VAULT_KV_VERSION=$(get_instance_tag_with_retry "runs-fleet:vault-kv-version" 3) || true
+VAULT_BASE_PATH=$(get_instance_tag_with_retry "runs-fleet:vault-base-path" 3) || true
+VAULT_AUTH_METHOD=$(get_instance_tag_with_retry "runs-fleet:vault-auth-method" 3) || true
+VAULT_AWS_ROLE=$(get_instance_tag_with_retry "runs-fleet:vault-aws-role" 3) || true
+
 if [[ -z "$RUN_ID" ]]; then
     fail "Run ID not found in instance tags"
 fi
@@ -219,6 +228,11 @@ log "Configuration:"
 log "  RUN_ID: $RUN_ID"
 log "  RUNNER_IMAGE: $RUNNER_IMAGE"
 log "  TERMINATION_QUEUE_URL: ${TERMINATION_QUEUE_URL:-not set}"
+log "  SECRETS_BACKEND: ${SECRETS_BACKEND:-ssm}"
+if [[ "${SECRETS_BACKEND:-}" == "vault" ]]; then
+    log "  VAULT_ADDR: ${VAULT_ADDR:-not set}"
+    log "  VAULT_AUTH_METHOD: ${VAULT_AUTH_METHOD:-aws}"
+fi
 
 # Start Docker with exponential backoff
 start_docker() {
@@ -278,6 +292,15 @@ ENV_ARGS=(
 
 [[ -n "${TERMINATION_QUEUE_URL:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_TERMINATION_QUEUE_URL=$TERMINATION_QUEUE_URL")
 [[ -n "${CACHE_URL:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_CACHE_URL=$CACHE_URL")
+
+# Secrets backend configuration
+[[ -n "${SECRETS_BACKEND:-}" ]] && ENV_ARGS+=(-e "RUNS_FLEET_SECRETS_BACKEND=$SECRETS_BACKEND")
+[[ -n "${VAULT_ADDR:-}" ]] && ENV_ARGS+=(-e "VAULT_ADDR=$VAULT_ADDR")
+[[ -n "${VAULT_KV_MOUNT:-}" ]] && ENV_ARGS+=(-e "VAULT_KV_MOUNT=$VAULT_KV_MOUNT")
+[[ -n "${VAULT_KV_VERSION:-}" ]] && ENV_ARGS+=(-e "VAULT_KV_VERSION=$VAULT_KV_VERSION")
+[[ -n "${VAULT_BASE_PATH:-}" ]] && ENV_ARGS+=(-e "VAULT_BASE_PATH=$VAULT_BASE_PATH")
+[[ -n "${VAULT_AUTH_METHOD:-}" ]] && ENV_ARGS+=(-e "VAULT_AUTH_METHOD=$VAULT_AUTH_METHOD")
+[[ -n "${VAULT_AWS_ROLE:-}" ]] && ENV_ARGS+=(-e "VAULT_AWS_ROLE=$VAULT_AWS_ROLE")
 
 # Run container
 # Note: --privileged and docker.sock mount are required for GitHub Actions workflows
