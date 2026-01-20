@@ -397,6 +397,53 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 			Value: aws.String(m.config.CacheURL),
 		})
 	}
+
+	// Add secrets backend configuration for runner agent
+	if m.config.SecretsBackend != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:secrets-backend"),
+			Value: aws.String(m.config.SecretsBackend),
+		})
+	}
+	if m.config.SecretsBackend == "vault" {
+		if m.config.VaultAddr != "" {
+			tags = append(tags, types.Tag{
+				Key:   aws.String("runs-fleet:vault-addr"),
+				Value: aws.String(m.config.VaultAddr),
+			})
+		}
+		if m.config.VaultKVMount != "" {
+			tags = append(tags, types.Tag{
+				Key:   aws.String("runs-fleet:vault-kv-mount"),
+				Value: aws.String(m.config.VaultKVMount),
+			})
+		}
+		if m.config.VaultKVVersion != 0 {
+			tags = append(tags, types.Tag{
+				Key:   aws.String("runs-fleet:vault-kv-version"),
+				Value: aws.String(fmt.Sprintf("%d", m.config.VaultKVVersion)),
+			})
+		}
+		if m.config.VaultBasePath != "" {
+			tags = append(tags, types.Tag{
+				Key:   aws.String("runs-fleet:vault-base-path"),
+				Value: aws.String(m.config.VaultBasePath),
+			})
+		}
+		if m.config.VaultAuthMethod != "" {
+			tags = append(tags, types.Tag{
+				Key:   aws.String("runs-fleet:vault-auth-method"),
+				Value: aws.String(m.config.VaultAuthMethod),
+			})
+		}
+		if m.config.VaultAWSRole != "" {
+			tags = append(tags, types.Tag{
+				Key:   aws.String("runs-fleet:vault-aws-role"),
+				Value: aws.String(m.config.VaultAWSRole),
+			})
+		}
+	}
+
 	// Add custom tags from configuration
 	for key, value := range m.config.Tags {
 		tags = append(tags, types.Tag{
