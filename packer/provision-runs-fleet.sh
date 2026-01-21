@@ -157,21 +157,16 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
     VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/data/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
   fi
 
-  echo "Fetching config from Vault: ${VAULT_PATH}"
-
-  # Read token into variable to avoid command substitution in curl args
-  VAULT_TOKEN=$(cat "${VAULT_TOKEN_FILE}")
-  rm -f "${VAULT_TOKEN_FILE}"
+  echo "Fetching config from Vault: ${VAULT_API_PATH}"
 
   for i in {1..10}; do
-    RESPONSE=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    RESPONSE=$(curl -sf -H "X-Vault-Token: $(cat "${VAULT_TOKEN_FILE}")" \
       "${VAULT_ADDR}/${VAULT_API_PATH}" 2>/dev/null) && break
     echo "Attempt $i: Waiting for Vault config..."
     sleep 3
   done
 
-  # Clear token from memory
-  unset VAULT_TOKEN
+  rm -f "${VAULT_TOKEN_FILE}"
 
   if [ -z "$RESPONSE" ]; then
     echo "ERROR: Failed to fetch config from Vault"
