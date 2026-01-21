@@ -144,7 +144,7 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
     -token-only 2>/dev/null > "${VAULT_TOKEN_FILE}"
 
   if [ ! -s "${VAULT_TOKEN_FILE}" ]; then
-    rm -f "${VAULT_TOKEN_FILE}"
+    rm "${VAULT_TOKEN_FILE}" 2>/dev/null || echo "WARNING: Failed to remove Vault token file"
     echo "ERROR: Failed to authenticate with Vault"
     exit 1
   fi
@@ -166,7 +166,7 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
     sleep 3
   done
 
-  rm -f "${VAULT_TOKEN_FILE}"
+  rm "${VAULT_TOKEN_FILE}" 2>/dev/null || echo "WARNING: Failed to remove Vault token file"
 
   if [ -z "$RESPONSE" ]; then
     echo "ERROR: Failed to fetch config from Vault"
