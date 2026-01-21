@@ -160,8 +160,8 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   echo "Fetching config from Vault: ${VAULT_API_PATH}"
 
   for i in {1..10}; do
-    RESPONSE=$(curl -sf -H "X-Vault-Token: $(cat "${VAULT_TOKEN_FILE}")" \
-      "${VAULT_ADDR}/${VAULT_API_PATH}" 2>/dev/null) && break
+    RESPONSE=$(curl -sf -H @- "${VAULT_ADDR}/${VAULT_API_PATH}" 2>/dev/null \
+      <<< "X-Vault-Token: $(cat "${VAULT_TOKEN_FILE}")") && break
     echo "Attempt $i: Waiting for Vault config..."
     sleep 3
   done
