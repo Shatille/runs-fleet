@@ -136,11 +136,12 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   # Authenticate with Vault using AWS IAM (write token to secure file)
   echo "Authenticating with Vault..."
   VAULT_TOKEN_FILE="/tmp/.vault-token-$$"
+  touch "${VAULT_TOKEN_FILE}"
+  chmod 600 "${VAULT_TOKEN_FILE}"
   vault login -method=aws \
     -address="${VAULT_ADDR}" \
     role="${VAULT_AWS_ROLE}" \
     -token-only 2>/dev/null > "${VAULT_TOKEN_FILE}"
-  chmod 600 "${VAULT_TOKEN_FILE}"
 
   if [ ! -s "${VAULT_TOKEN_FILE}" ]; then
     rm -f "${VAULT_TOKEN_FILE}"
@@ -179,9 +180,9 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
 
   # Extract config (KV v1 vs v2 have different response structures)
   if [ "$VAULT_KV_VERSION" = "1" ]; then
-    CONFIG=$(echo "$RESPONSE" | jq -r '.data')
+    CONFIG=$(echo "$RESPONSE" | jq -re '.data') || { echo "ERROR: Failed to extract config from Vault response"; exit 1; }
   else
-    CONFIG=$(echo "$RESPONSE" | jq -r '.data.data')
+    CONFIG=$(echo "$RESPONSE" | jq -re '.data.data') || { echo "ERROR: Failed to extract config from Vault response"; exit 1; }
   fi
 else
   # Default: Fetch configuration from SSM parameter
