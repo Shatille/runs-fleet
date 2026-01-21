@@ -82,13 +82,13 @@ RUN set -ex \
     && ./bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 
-# Patch CVE-2026-23745: Update vulnerable node-tar package in runner's bundled Node.js
+# Patch CVE-2026-23950: Update vulnerable node-tar package in runner's bundled Node.js
 # Note: This patches the JavaScript tar package (node-tar), not GNU tar (system binary)
-# SHA512 from https://registry.npmjs.org/tar/7.5.3 (.dist.integrity)
+# SHA512 from https://registry.npmjs.org/tar/7.5.4 (.dist.integrity)
 RUN set -ex; \
-    TAR_INTEGRITY="sha512-ENg5JUHUm2rDD7IvKNFGzyElLXNjachNLp6RaGf4+JOgxXHkqA+gq81ZAMCUmtMtqBsoU62lcp6S27g1LCYGGQ=="; \
-    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/tar/-/tar-7.5.3.tgz -o /tmp/tar-7.5.3.tgz; \
-    ACTUAL=$(openssl dgst -sha512 -binary /tmp/tar-7.5.3.tgz | base64 -w0); \
+    TAR_INTEGRITY="sha512-AN04xbWGrSTDmVwlI4/GTlIIwMFk/XEv7uL8aa57zuvRy6s4hdBed+lVq2fAZ89XDa7Us3ANXcE3Tvqvja1kTA=="; \
+    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/tar/-/tar-7.5.4.tgz -o /tmp/tar-7.5.4.tgz; \
+    ACTUAL=$(openssl dgst -sha512 -binary /tmp/tar-7.5.4.tgz | base64 -w0); \
     EXPECTED=$(echo "$TAR_INTEGRITY" | sed 's/^sha512-//'); \
     if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
     echo 0 > /tmp/patched_count; \
@@ -98,16 +98,16 @@ RUN set -ex; \
             if [ -f "$pkg_dir/package.json" ]; then \
                 rm -rf "$pkg_dir"; \
                 mkdir -p "$pkg_dir"; \
-                tar -xzf /tmp/tar-7.5.3.tgz -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
+                tar -xzf /tmp/tar-7.5.4.tgz -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
                 COUNT=$(cat /tmp/patched_count); \
                 echo $((COUNT + 1)) > /tmp/patched_count; \
             fi; \
         done' _ {} +; \
     if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
     PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
-    rm -f /tmp/tar-7.5.3.tgz /tmp/patched_count /tmp/patch_errors; \
+    rm -f /tmp/tar-7.5.4.tgz /tmp/patched_count /tmp/patch_errors; \
     echo "Patched $PATCHED node-tar package(s)"; \
-    if [ "$PATCHED" -eq 0 ]; then echo "ERROR: No tar packages found - CVE-2026-23745 unpatched" >&2; exit 1; fi
+    if [ "$PATCHED" -eq 0 ]; then echo "ERROR: No tar packages found - CVE-2026-23950 unpatched" >&2; exit 1; fi
 
 # Copy agent binary
 COPY --from=builder /bin/runs-fleet-agent /usr/local/bin/runs-fleet-agent
