@@ -124,19 +124,26 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role")
 
   # Validate required Vault config
-  if [ -z "$VAULT_ADDR" ] || [[ ! "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.:/-]+$ ]]; then
+  if [ -z "$VAULT_ADDR" ] || [[ ! "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?(/[a-zA-Z0-9._-]*)*$ ]] || [[ "$VAULT_ADDR" == *".."* ]]; then
     echo "ERROR: Invalid or missing VAULT_ADDR"
     exit 1
   fi
+  if [ -z "$VAULT_AWS_ROLE" ] || [ -z "$VAULT_KV_MOUNT" ] || [ -z "$VAULT_BASE_PATH" ]; then
+    echo "ERROR: Missing required Vault configuration (VAULT_AWS_ROLE, VAULT_KV_MOUNT, or VAULT_BASE_PATH)"
+    exit 1
+  fi
 
-  # Authenticate with Vault using AWS IAM
+  # Authenticate with Vault using AWS IAM (write token to secure file)
   echo "Authenticating with Vault..."
-  VAULT_TOKEN=$(vault login -method=aws \
+  VAULT_TOKEN_FILE="/tmp/.vault-token-$$"
+  vault login -method=aws \
     -address="${VAULT_ADDR}" \
     role="${VAULT_AWS_ROLE}" \
-    -token-only 2>/dev/null)
+    -token-only 2>/dev/null > "${VAULT_TOKEN_FILE}"
+  chmod 600 "${VAULT_TOKEN_FILE}"
 
-  if [ -z "$VAULT_TOKEN" ]; then
+  if [ ! -s "${VAULT_TOKEN_FILE}" ]; then
+    rm -f "${VAULT_TOKEN_FILE}"
     echo "ERROR: Failed to authenticate with Vault"
     exit 1
   fi
@@ -152,11 +159,14 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   echo "Fetching config from Vault: ${VAULT_PATH}"
 
   for i in {1..10}; do
-    RESPONSE=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    RESPONSE=$(curl -sf -H "X-Vault-Token: $(cat ${VAULT_TOKEN_FILE})" \
       "${VAULT_ADDR}/${VAULT_API_PATH}" 2>/dev/null) && break
     echo "Attempt $i: Waiting for Vault config..."
     sleep 3
   done
+
+  # Clean up token file
+  rm -f "${VAULT_TOKEN_FILE}"
 
   if [ -z "$RESPONSE" ]; then
     echo "ERROR: Failed to fetch config from Vault"

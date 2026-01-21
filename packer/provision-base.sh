@@ -75,10 +75,13 @@ if [ "$ARCH" = "x86_64" ]; then
 else
   VAULT_ARCH="arm64"
 fi
-sudo curl -sL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" \
+curl -sL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" \
   -o /tmp/vault.zip
+curl -sL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" \
+  -o /tmp/vault_checksums.txt
+cd /tmp && sha256sum -c <(grep "vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" vault_checksums.txt)
 sudo unzip -o /tmp/vault.zip -d /usr/local/bin
-sudo rm /tmp/vault.zip
+rm /tmp/vault.zip /tmp/vault_checksums.txt
 sudo chmod +x /usr/local/bin/vault
 
 echo "==> Configuring CloudWatch agent"
