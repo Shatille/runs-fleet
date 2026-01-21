@@ -75,10 +75,10 @@ if [ "$ARCH" = "x86_64" ]; then
 else
   VAULT_ARCH="arm64"
 fi
-curl -sL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" \
-  -o /tmp/vault.zip
-curl -sL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" \
-  -o /tmp/vault_checksums.txt
+curl -sfL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" \
+  -o /tmp/vault.zip || { echo "Failed to download Vault"; exit 1; }
+curl -sfL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" \
+  -o /tmp/vault_checksums.txt || { echo "Failed to download checksums"; exit 1; }
 cd /tmp && sha256sum -c <(grep "vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" vault_checksums.txt)
 sudo unzip -o /tmp/vault.zip -d /usr/local/bin
 rm /tmp/vault.zip /tmp/vault_checksums.txt

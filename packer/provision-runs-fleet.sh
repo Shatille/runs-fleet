@@ -123,9 +123,9 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   VAULT_AUTH_METHOD=$(get_tag "runs-fleet:vault-auth-method")
   VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role")
 
-  # Validate required Vault config
-  if [ -z "$VAULT_ADDR" ] || [[ ! "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?(/[a-zA-Z0-9._-]*)*$ ]] || [[ "$VAULT_ADDR" == *".."* ]]; then
-    echo "ERROR: Invalid or missing VAULT_ADDR"
+  # Validate required Vault config (must be https://hostname or https://hostname:port, no path)
+  if [ -z "$VAULT_ADDR" ] || [[ ! "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: Invalid or missing VAULT_ADDR (must be https://hostname or https://hostname:port)"
     exit 1
   fi
   if [ -z "$VAULT_AWS_ROLE" ] || [ -z "$VAULT_KV_MOUNT" ] || [ -z "$VAULT_BASE_PATH" ]; then
@@ -158,15 +158,19 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
 
   echo "Fetching config from Vault: ${VAULT_PATH}"
 
+  # Read token into variable to avoid command substitution in curl args
+  VAULT_TOKEN=$(cat "${VAULT_TOKEN_FILE}")
+  rm -f "${VAULT_TOKEN_FILE}"
+
   for i in {1..10}; do
-    RESPONSE=$(curl -sf -H "X-Vault-Token: $(cat ${VAULT_TOKEN_FILE})" \
+    RESPONSE=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
       "${VAULT_ADDR}/${VAULT_API_PATH}" 2>/dev/null) && break
     echo "Attempt $i: Waiting for Vault config..."
     sleep 3
   done
 
-  # Clean up token file
-  rm -f "${VAULT_TOKEN_FILE}"
+  # Clear token from memory
+  unset VAULT_TOKEN
 
   if [ -z "$RESPONSE" ]; then
     echo "ERROR: Failed to fetch config from Vault"
@@ -199,6 +203,12 @@ else
     echo "ERROR: Failed to fetch config from SSM parameter ${SSM_PARAM}"
     exit 1
   fi
+fi
+
+# Validate CONFIG contains valid JSON
+if ! echo "$CONFIG" | jq empty 2>/dev/null; then
+  echo "ERROR: Configuration is not valid JSON"
+  exit 1
 fi
 
 # Parse config JSON and write environment file
