@@ -430,18 +430,15 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 				Value: aws.String(m.config.VaultBasePath),
 			})
 		}
-		if m.config.VaultAuthMethod != "" {
-			tags = append(tags, types.Tag{
-				Key:   aws.String("runs-fleet:vault-auth-method"),
-				Value: aws.String(m.config.VaultAuthMethod),
-			})
-		}
-		if m.config.VaultAWSRole != "" {
-			tags = append(tags, types.Tag{
-				Key:   aws.String("runs-fleet:vault-aws-role"),
-				Value: aws.String(m.config.VaultAWSRole),
-			})
-		}
+		// EC2 runners always use AWS IAM auth, not the orchestrator's auth method
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:vault-auth-method"),
+			Value: aws.String("aws"),
+		})
+		tags = append(tags, types.Tag{
+			Key:   aws.String("runs-fleet:vault-aws-role"),
+			Value: aws.String("runs-fleet-runner"),
+		})
 	}
 
 	// Add custom tags from configuration
