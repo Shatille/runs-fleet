@@ -19,6 +19,7 @@ sudo dnf install -y \
   jq \
   make \
   libicu \
+  unzip \
   awscli \
   docker \
   amazon-ssm-agent \
@@ -66,6 +67,19 @@ DOCKER_COMPOSE_VERSION="2.24.5"
 sudo curl -sL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
   -o /usr/local/bin/docker-compose
 sudo chmod +x /usr/local/bin/docker-compose
+
+echo "==> Installing Vault CLI"
+VAULT_VERSION="1.18.3"
+if [ "$ARCH" = "x86_64" ]; then
+  VAULT_ARCH="amd64"
+else
+  VAULT_ARCH="arm64"
+fi
+sudo curl -sL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip" \
+  -o /tmp/vault.zip
+sudo unzip -o /tmp/vault.zip -d /usr/local/bin
+sudo rm /tmp/vault.zip
+sudo chmod +x /usr/local/bin/vault
 
 echo "==> Configuring CloudWatch agent"
 sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json > /dev/null <<'CWCONFIG'

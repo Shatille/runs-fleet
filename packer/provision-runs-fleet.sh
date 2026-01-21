@@ -99,24 +99,96 @@ TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-met
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 
-# Fetch configuration from SSM parameter (set by orchestrator)
-SSM_PARAM="/runs-fleet/runners/${INSTANCE_ID}/config"
-echo "Fetching config from SSM: ${SSM_PARAM}"
-
-for i in {1..10}; do
-  CONFIG=$(aws ssm get-parameter \
-    --name "${SSM_PARAM}" \
-    --with-decryption \
+# Helper to get instance tag value
+get_tag() {
+  local tag_name="$1"
+  aws ec2 describe-tags \
     --region "${REGION}" \
-    --query 'Parameter.Value' \
-    --output text 2>/dev/null) && break
-  echo "Attempt $i: Waiting for SSM parameter..."
-  sleep 3
-done
+    --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=${tag_name}" \
+    --query 'Tags[0].Value' \
+    --output text 2>/dev/null | grep -v "^None$" || true
+}
 
-if [ -z "$CONFIG" ] || [ "$CONFIG" == "null" ]; then
-  echo "ERROR: Failed to fetch config from SSM parameter ${SSM_PARAM}"
-  exit 1
+# Check secrets backend from instance tags
+SECRETS_BACKEND=$(get_tag "runs-fleet:secrets-backend")
+
+if [ "$SECRETS_BACKEND" = "vault" ]; then
+  echo "Using Vault secrets backend"
+
+  # Read Vault configuration from instance tags
+  VAULT_ADDR=$(get_tag "runs-fleet:vault-addr")
+  VAULT_KV_MOUNT=$(get_tag "runs-fleet:vault-kv-mount")
+  VAULT_KV_VERSION=$(get_tag "runs-fleet:vault-kv-version")
+  VAULT_BASE_PATH=$(get_tag "runs-fleet:vault-base-path")
+  VAULT_AUTH_METHOD=$(get_tag "runs-fleet:vault-auth-method")
+  VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role")
+
+  # Validate required Vault config
+  if [ -z "$VAULT_ADDR" ] || [[ ! "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.:/-]+$ ]]; then
+    echo "ERROR: Invalid or missing VAULT_ADDR"
+    exit 1
+  fi
+
+  # Authenticate with Vault using AWS IAM
+  echo "Authenticating with Vault..."
+  VAULT_TOKEN=$(vault login -method=aws \
+    -address="${VAULT_ADDR}" \
+    role="${VAULT_AWS_ROLE}" \
+    -token-only 2>/dev/null)
+
+  if [ -z "$VAULT_TOKEN" ]; then
+    echo "ERROR: Failed to authenticate with Vault"
+    exit 1
+  fi
+
+  # Fetch config from Vault
+  VAULT_PATH="${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
+  if [ "$VAULT_KV_VERSION" = "1" ]; then
+    VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
+  else
+    VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/data/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
+  fi
+
+  echo "Fetching config from Vault: ${VAULT_PATH}"
+
+  for i in {1..10}; do
+    RESPONSE=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+      "${VAULT_ADDR}/${VAULT_API_PATH}" 2>/dev/null) && break
+    echo "Attempt $i: Waiting for Vault config..."
+    sleep 3
+  done
+
+  if [ -z "$RESPONSE" ]; then
+    echo "ERROR: Failed to fetch config from Vault"
+    exit 1
+  fi
+
+  # Extract config (KV v1 vs v2 have different response structures)
+  if [ "$VAULT_KV_VERSION" = "1" ]; then
+    CONFIG=$(echo "$RESPONSE" | jq -r '.data')
+  else
+    CONFIG=$(echo "$RESPONSE" | jq -r '.data.data')
+  fi
+else
+  # Default: Fetch configuration from SSM parameter
+  SSM_PARAM="/runs-fleet/runners/${INSTANCE_ID}/config"
+  echo "Fetching config from SSM: ${SSM_PARAM}"
+
+  for i in {1..10}; do
+    CONFIG=$(aws ssm get-parameter \
+      --name "${SSM_PARAM}" \
+      --with-decryption \
+      --region "${REGION}" \
+      --query 'Parameter.Value' \
+      --output text 2>/dev/null) && break
+    echo "Attempt $i: Waiting for SSM parameter..."
+    sleep 3
+  done
+
+  if [ -z "$CONFIG" ] || [ "$CONFIG" == "null" ]; then
+    echo "ERROR: Failed to fetch config from SSM parameter ${SSM_PARAM}"
+    exit 1
+  fi
 fi
 
 # Parse config JSON and write environment file
@@ -125,7 +197,6 @@ RUNS_FLEET_RUN_ID=$(echo "$CONFIG" | jq -r '.run_id')
 RUNS_FLEET_JOB_ID=$(echo "$CONFIG" | jq -r '.job_id // empty')
 RUNS_FLEET_INSTANCE_ID=${INSTANCE_ID}
 AWS_REGION=${REGION}
-RUNS_FLEET_SSM_PARAMETER=${SSM_PARAM}
 RUNS_FLEET_CACHE_URL=$(echo "$CONFIG" | jq -r '.cache_url // empty')
 RUNS_FLEET_CACHE_TOKEN=$(echo "$CONFIG" | jq -r '.cache_token // empty')
 RUNS_FLEET_JIT_TOKEN=$(echo "$CONFIG" | jq -r '.jit_token')
