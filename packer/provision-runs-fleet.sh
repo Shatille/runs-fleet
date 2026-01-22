@@ -93,6 +93,7 @@ echo "==> Creating agent bootstrap script"
 sudo tee /opt/runs-fleet/bootstrap.sh > /dev/null <<'BOOTSTRAP'
 #!/bin/bash
 set -e
+export PATH="/usr/local/bin:$PATH"
 
 # Fetch instance metadata (IMDSv2)
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
