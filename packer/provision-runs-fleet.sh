@@ -210,6 +210,7 @@ fi
 
 # Parse config JSON and write environment file
 cat > /opt/runs-fleet/env <<EOF
+RUNS_FLEET_SECRETS_BACKEND=env
 RUNS_FLEET_RUN_ID=$(echo "$CONFIG" | jq -r '.run_id')
 RUNS_FLEET_JOB_ID=$(echo "$CONFIG" | jq -r '.job_id // empty')
 RUNS_FLEET_INSTANCE_ID=${INSTANCE_ID}

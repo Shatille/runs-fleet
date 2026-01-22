@@ -14,6 +14,7 @@ import (
 const (
 	BackendSSM   = "ssm"
 	BackendVault = "vault"
+	BackendEnv   = "env" // Read config from environment variables (bootstrap already fetched)
 )
 
 // Auth method constants for Vault.
@@ -75,6 +76,8 @@ func LoadConfig() Config {
 // NewStore creates a secrets store based on configuration.
 func NewStore(ctx context.Context, cfg Config, awsCfg aws.Config) (Store, error) {
 	switch cfg.Backend {
+	case BackendEnv:
+		return NewEnvStore(), nil
 	case BackendVault:
 		return NewVaultStore(ctx, cfg.Vault)
 	case BackendSSM, "":
@@ -87,6 +90,8 @@ func NewStore(ctx context.Context, cfg Config, awsCfg aws.Config) (Store, error)
 // Validate checks that the configuration is valid for the selected backend.
 func (c *Config) Validate() error {
 	switch c.Backend {
+	case BackendEnv:
+		// Env backend has no required configuration; uses env vars directly
 	case BackendVault:
 		if c.Vault.Address == "" {
 			return fmt.Errorf("VAULT_ADDR is required when using Vault backend")
@@ -98,7 +103,7 @@ func (c *Config) Validate() error {
 	case BackendSSM, "":
 		// SSM has no required configuration
 	default:
-		return fmt.Errorf("RUNS_FLEET_SECRETS_BACKEND must be 'ssm' or 'vault', got %q", c.Backend)
+		return fmt.Errorf("RUNS_FLEET_SECRETS_BACKEND must be 'ssm', 'vault', or 'env', got %q", c.Backend)
 	}
 	return nil
 }
