@@ -81,7 +81,8 @@ curl -sfL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/${VAULT_ZIP}" \
 curl -sfL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" \
   -o /tmp/vault_checksums.txt || { echo "Failed to download checksums"; exit 1; }
 CHECKSUM_LINE=$(grep "${VAULT_ZIP}" /tmp/vault_checksums.txt) || { echo "Checksum not found"; exit 1; }
-cd /tmp && echo "$CHECKSUM_LINE" | sha256sum -c || { echo "Checksum verification failed"; exit 1; }
+[[ "$CHECKSUM_LINE" =~ ^[a-f0-9]{64}[[:space:]]+vault_ ]] || { echo "Invalid checksum format"; exit 1; }
+cd /tmp && echo "$CHECKSUM_LINE" | sha256sum -c || { echo "Checksum verification failed"; rm -f "/tmp/${VAULT_ZIP}"; exit 1; }
 sudo unzip -o "/tmp/${VAULT_ZIP}" -d /usr/local/bin || { echo "Vault extraction failed"; exit 1; }
 rm "/tmp/${VAULT_ZIP}" /tmp/vault_checksums.txt
 sudo chmod +x /usr/local/bin/vault
