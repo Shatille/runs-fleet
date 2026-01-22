@@ -1,3 +1,6 @@
+# Enable parallel builds by default (arm64 and amd64 simultaneously)
+MAKEFLAGS += -j2
+
 .PHONY: base base-arm64 base-amd64 runs-fleet runs-fleet-arm64 runs-fleet-amd64 \
 	base-arm64-init base-arm64-validate base-arm64-build \
 	base-amd64-init base-amd64-validate base-amd64-build \
