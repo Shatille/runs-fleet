@@ -130,6 +130,7 @@
             docker-compose
 
             awscli2
+            ssm-session-manager-plugin
             packer
 
             gnumake
