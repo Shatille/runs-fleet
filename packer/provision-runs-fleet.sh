@@ -139,10 +139,10 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   VAULT_TOKEN_FILE="/tmp/.vault-token-$$"
   touch "${VAULT_TOKEN_FILE}"
   chmod 600 "${VAULT_TOKEN_FILE}"
-  vault login -method=aws \
+  vault login -token-only -method=aws \
     -address="${VAULT_ADDR}" \
     role="${VAULT_AWS_ROLE}" \
-    -token-only 2>/dev/null > "${VAULT_TOKEN_FILE}"
+    2>/dev/null > "${VAULT_TOKEN_FILE}"
 
   if [ ! -s "${VAULT_TOKEN_FILE}" ]; then
     rm "${VAULT_TOKEN_FILE}" 2>/dev/null || echo "WARNING: Failed to remove Vault token file"
