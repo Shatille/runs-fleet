@@ -127,7 +127,8 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 }
 
 // TryDirectProcessing attempts to process a job directly if capacity is available.
-func TryDirectProcessing(ctx context.Context, processor *DirectProcessor, sem chan struct{}, jobMsg *queue.JobMessage) {
+// Note: ctx is ignored - we use context.Background() since the goroutine must outlive the HTTP request.
+func TryDirectProcessing(_ context.Context, processor *DirectProcessor, sem chan struct{}, jobMsg *queue.JobMessage) {
 	if processor == nil || sem == nil {
 		return
 	}
@@ -140,7 +141,8 @@ func TryDirectProcessing(ctx context.Context, processor *DirectProcessor, sem ch
 				}
 			}()
 			defer func() { <-sem }()
-			directCtx, cancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
+			// Use Background context - parent ctx may be canceled when HTTP handler returns
+			directCtx, cancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 			defer cancel()
 			processor.ProcessJobDirect(directCtx, jobMsg)
 		}()
