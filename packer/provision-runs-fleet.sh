@@ -150,11 +150,11 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   fi
 
   # Fetch config from Vault
-  VAULT_PATH="${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
+  VAULT_PATH="${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}"
   if [ "$VAULT_KV_VERSION" = "1" ]; then
-    VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
+    VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}"
   else
-    VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/data/${VAULT_BASE_PATH}/${INSTANCE_ID}/config"
+    VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/data/${VAULT_BASE_PATH}/${INSTANCE_ID}"
   fi
 
   echo "Fetching config from Vault: ${VAULT_PATH}"
