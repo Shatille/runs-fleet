@@ -65,12 +65,21 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		log.Printf("Failed to prepare runner config for warm pool instance %s: %v", instance.InstanceID, err)
 		// Instance already started - stop it since it has no valid config
 		// Retry stop to ensure instance doesn't run with stale SSM config
+		stopped := false
 		for attempt := 0; attempt < 3; attempt++ {
+			if ctx.Err() != nil {
+				log.Printf("Context canceled during stop retry for instance %s", instance.InstanceID)
+				break
+			}
 			if stopErr := w.Pool.StopPoolInstance(ctx, instance.InstanceID); stopErr != nil {
 				log.Printf("Failed to stop instance after SSM prep failure (attempt %d/3): %v", attempt+1, stopErr)
 				continue
 			}
+			stopped = true
 			break
+		}
+		if !stopped {
+			log.Printf("CRITICAL: Instance %s may be running with invalid config - manual cleanup required", instance.InstanceID)
 		}
 		return &WarmPoolResult{Assigned: false}, nil
 	}

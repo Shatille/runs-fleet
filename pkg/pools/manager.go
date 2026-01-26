@@ -558,16 +558,22 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID stri
 }
 
 // ClaimAndStartPoolInstance atomically finds, claims, and starts a stopped pool instance.
-// This prevents in-process race conditions where multiple goroutines could claim the same instance.
 // Returns the claimed instance on success, ErrNoAvailableInstance if no instance available.
 //
-// NOTE: This method uses a local mutex which prevents races within a single orchestrator instance.
-// For multi-instance deployments, there's a small race window due to EC2 API eventual consistency:
-// two orchestrators may both see the same stopped instance via DescribeInstances before either's
-// StartInstances is reflected. The second StartInstances succeeds (idempotent), but both workers
-// may write different SSM configs. This is mitigated by: (1) job claiming via DynamoDB prevents
-// duplicate job processing, and (2) the race window is very small (~100ms between API calls).
-// For stricter guarantees, per-instance distributed locking via DynamoDB could be added.
+// IMPORTANT: Race condition in multi-orchestrator deployments
+//
+// This method uses a local mutex which only prevents races within a single orchestrator.
+// In multi-orchestrator deployments, there's a race window due to EC2 API eventual consistency:
+//   - Orchestrator A and B both call DescribeInstances, see same stopped instance
+//   - Both call StartInstances (idempotent, both succeed)
+//   - Both write different SSM configs for different jobs
+//   - Instance boots with whichever config was written last
+//
+// Mitigations in place:
+//   - DynamoDB job claiming prevents duplicate job processing (different jobs, not same instance)
+//   - Race window is very small (~100ms between API calls)
+//
+// For stricter guarantees, per-instance distributed locking via DynamoDB is recommended.
 func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string) (*AvailableInstance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
