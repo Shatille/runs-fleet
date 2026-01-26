@@ -171,7 +171,7 @@ func ScopeFromContext(ctx context.Context) string {
 
 // WrapFunc is a convenience method for wrapping http.HandlerFunc.
 func (m *AuthMiddleware) WrapFunc(next http.HandlerFunc) http.Handler {
-	return m.Wrap(http.HandlerFunc(next))
+	return m.Wrap(next)
 }
 
 // IsEnabled returns whether authentication is enabled.
