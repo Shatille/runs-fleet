@@ -64,6 +64,7 @@ type jobRecord struct {
 	Pool         string `dynamodbav:"pool"`
 	Spot         bool   `dynamodbav:"spot"`
 	RetryCount   int    `dynamodbav:"retry_count"`
+	WarmPoolHit  bool   `dynamodbav:"warm_pool_hit"`
 	Status       string `dynamodbav:"status"`
 	CreatedAt    string `dynamodbav:"created_at"`
 }
@@ -848,6 +849,7 @@ type JobRecord struct {
 	Pool         string
 	Spot         bool
 	RetryCount   int
+	WarmPoolHit  bool
 }
 
 // SaveJob creates or updates a job record in DynamoDB.
@@ -876,6 +878,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		Pool:         job.Pool,
 		Spot:         job.Spot,
 		RetryCount:   job.RetryCount,
+		WarmPoolHit:  job.WarmPoolHit,
 		Status:       "running",
 		CreatedAt:    time.Now().Format(time.RFC3339),
 	}

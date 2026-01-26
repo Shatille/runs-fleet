@@ -133,3 +133,7 @@ func (p *DatadogPublisher) PublishCircuitBreakerTriggered(_ context.Context, ins
 func (p *DatadogPublisher) PublishJobClaimFailure(_ context.Context) error { //nolint:revive
 	return p.client.Incr("job_claim_failures", nil, 1)
 }
+
+func (p *DatadogPublisher) PublishWarmPoolHit(_ context.Context) error { //nolint:revive
+	return p.client.Incr("warm_pool_hits", nil, 1)
+}

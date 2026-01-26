@@ -480,6 +480,135 @@ func (m *Manager) MarkInstanceIdle(instanceID string) {
 	m.instanceIdle[instanceID] = time.Now()
 }
 
+// ErrNoAvailableInstance is returned when no instance is available in the pool.
+var ErrNoAvailableInstance = errors.New("no available instance in pool")
+
+// AvailableInstance represents an instance that can be assigned to a job.
+type AvailableInstance struct {
+	InstanceID   string
+	InstanceType string
+	State        string // "stopped" or "running"
+}
+
+// GetAvailableInstance finds a stopped instance in the pool that can be started for a job.
+// Returns ErrNoAvailableInstance if no stopped instances are available.
+// Running idle instances are not returned - they require agent changes for reuse.
+// Note: This method only finds an instance. Use ClaimAndStartPoolInstance for atomic claim+start.
+func (m *Manager) GetAvailableInstance(ctx context.Context, poolName string) (*AvailableInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.getAvailableInstanceLocked(ctx, poolName)
+}
+
+// getAvailableInstanceLocked finds an available instance while already holding the lock.
+func (m *Manager) getAvailableInstanceLocked(ctx context.Context, poolName string) (*AvailableInstance, error) {
+	if m.ec2Client == nil {
+		return nil, fmt.Errorf("EC2 client not configured")
+	}
+
+	instances, err := m.getPoolInstances(ctx, poolName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pool instances: %w", err)
+	}
+
+	// Find stopped instances (can be started with new config)
+	for _, inst := range instances {
+		if inst.State == "stopped" {
+			return &AvailableInstance{
+				InstanceID:   inst.InstanceID,
+				InstanceType: inst.InstanceType,
+				State:        inst.State,
+			}, nil
+		}
+	}
+
+	return nil, ErrNoAvailableInstance
+}
+
+// StartInstanceForJob starts a stopped pool instance for a job.
+// The caller must have already updated the instance's runner config in SSM.
+// Returns the instance ID on success.
+// Note: Prefer ClaimAndStartPoolInstance for atomic claim+start to avoid race conditions.
+func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.startInstanceForJobLocked(ctx, instanceID)
+}
+
+// startInstanceForJobLocked starts an instance while already holding the lock.
+func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID string) error {
+	if m.ec2Client == nil {
+		return fmt.Errorf("EC2 client not configured")
+	}
+
+	_, err := m.ec2Client.StartInstances(ctx, &ec2.StartInstancesInput{
+		InstanceIds: []string{instanceID},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start instance %s: %w", instanceID, err)
+	}
+
+	// Mark as busy immediately to prevent reconciler from touching it
+	delete(m.instanceIdle, instanceID)
+
+	log.Printf("Started pool instance %s for job assignment", instanceID)
+	return nil
+}
+
+// ClaimAndStartPoolInstance atomically finds, claims, and starts a stopped pool instance.
+// This prevents in-process race conditions where multiple goroutines could claim the same instance.
+// Returns the claimed instance on success, ErrNoAvailableInstance if no instance available.
+//
+// NOTE: This method uses a local mutex which prevents races within a single orchestrator instance.
+// For multi-instance deployments, there's a small race window due to EC2 API eventual consistency:
+// two orchestrators may both see the same stopped instance via DescribeInstances before either's
+// StartInstances is reflected. The second StartInstances succeeds (idempotent), but both workers
+// may write different SSM configs. This is mitigated by: (1) job claiming via DynamoDB prevents
+// duplicate job processing, and (2) the race window is very small (~100ms between API calls).
+// For stricter guarantees, per-instance distributed locking via DynamoDB could be added.
+func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string) (*AvailableInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find available instance
+	instance, err := m.getAvailableInstanceLocked(ctx, poolName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Start it immediately while still holding the lock
+	if err := m.startInstanceForJobLocked(ctx, instance.InstanceID); err != nil {
+		return nil, fmt.Errorf("failed to start claimed instance: %w", err)
+	}
+
+	return instance, nil
+}
+
+// StopPoolInstance stops a pool instance (e.g., after failed SSM config).
+func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.ec2Client == nil {
+		return fmt.Errorf("EC2 client not configured")
+	}
+
+	_, err := m.ec2Client.StopInstances(ctx, &ec2.StopInstancesInput{
+		InstanceIds: []string{instanceID},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to stop instance %s: %w", instanceID, err)
+	}
+
+	// Remove from busy tracking
+	delete(m.instanceIdle, instanceID)
+
+	log.Printf("Stopped pool instance %s", instanceID)
+	return nil
+}
+
 // resolvePoolInstanceTypes resolves instance types for a pool configuration.
 // For ephemeral pools with flexible specs, uses GitHub's resolution logic.
 // For legacy pools with a single InstanceType, returns that type.
