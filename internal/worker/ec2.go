@@ -56,6 +56,7 @@ func RunEC2Worker(ctx context.Context, deps EC2WorkerDeps) {
 func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Message) {
 	startTime := time.Now()
 	jobProcessed := false
+	fleetCreated := false
 	poisonMessage := false
 	alreadyClaimed := false
 
@@ -71,8 +72,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
 					log.Printf("Failed to publish queue depth metric: %v", err)
 				}
-				if metricErr := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
-					log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+				// Only publish fleet size increment for cold starts, not warm pool hits
+				if fleetCreated {
+					if metricErr := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
+						log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+					}
 				}
 			}
 		}
@@ -202,6 +206,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	}
 
 	jobProcessed = true
+	fleetCreated = true
 
 	SaveJobRecords(ctx, deps.DB, &job, instanceIDs)
 	PrepareRunners(ctx, deps.Runner, &job, instanceIDs)

@@ -3,8 +3,10 @@ package worker
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -93,6 +95,50 @@ func (m *mockEC2API) TerminateInstances(ctx context.Context, params *ec2.Termina
 	return &ec2.TerminateInstancesOutput{}, nil
 }
 
+// mockDBClient implements pools.DBClient interface for testing
+type mockDBClient struct {
+	claimInstanceForJobFunc  func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
+	releaseInstanceClaimFunc func(ctx context.Context, instanceID string, jobID int64) error
+}
+
+func (m *mockDBClient) GetPoolConfig(_ context.Context, _ string) (*db.PoolConfig, error) {
+	return nil, nil
+}
+
+func (m *mockDBClient) UpdatePoolState(_ context.Context, _ string, _, _ int) error {
+	return nil
+}
+
+func (m *mockDBClient) ListPools(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockDBClient) GetPoolPeakConcurrency(_ context.Context, _ string, _ int) (int, error) {
+	return 0, nil
+}
+
+func (m *mockDBClient) AcquirePoolReconcileLock(_ context.Context, _, _ string, _ time.Duration) error {
+	return nil
+}
+
+func (m *mockDBClient) ReleasePoolReconcileLock(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockDBClient) ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error {
+	if m.claimInstanceForJobFunc != nil {
+		return m.claimInstanceForJobFunc(ctx, instanceID, jobID, ttl)
+	}
+	return nil
+}
+
+func (m *mockDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error {
+	if m.releaseInstanceClaimFunc != nil {
+		return m.releaseInstanceClaimFunc(ctx, instanceID, jobID)
+	}
+	return nil
+}
+
 // createTestAssigner creates a WarmPoolAssigner with mock EC2 for testing
 func createTestAssigner(instances []ec2types.Instance) *WarmPoolAssigner {
 	mockEC2 := &mockEC2API{
@@ -103,7 +149,8 @@ func createTestAssigner(instances []ec2types.Instance) *WarmPoolAssigner {
 		},
 	}
 
-	poolManager := pools.NewManager(nil, nil, &config.Config{})
+	mockDB := &mockDBClient{}
+	poolManager := pools.NewManager(mockDB, nil, &config.Config{})
 	poolManager.SetEC2Client(mockEC2)
 
 	return &WarmPoolAssigner{

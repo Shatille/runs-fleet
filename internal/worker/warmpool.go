@@ -39,7 +39,8 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 	}
 
 	// Atomically claim and start a stopped instance to prevent race conditions
-	instance, err := w.Pool.ClaimAndStartPoolInstance(ctx, job.Pool)
+	// Uses DynamoDB distributed locking to prevent multiple orchestrators from claiming the same instance
+	instance, err := w.Pool.ClaimAndStartPoolInstance(ctx, job.Pool, job.JobID)
 	if err != nil {
 		if errors.Is(err, pools.ErrNoAvailableInstance) {
 			log.Printf("No warm pool instance available for pool %s, falling back to cold start", job.Pool)
@@ -81,10 +82,16 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		if !stopped {
 			log.Printf("CRITICAL: Instance %s may be running with invalid config - manual cleanup required", instance.InstanceID)
 		}
+		// Release the distributed claim since assignment failed
+		if w.DB != nil {
+			if releaseErr := w.DB.ReleaseInstanceClaim(ctx, instance.InstanceID, job.JobID); releaseErr != nil {
+				log.Printf("Failed to release instance claim after SSM prep failure: %v", releaseErr)
+			}
+		}
 		return &WarmPoolResult{Assigned: false}, nil
 	}
 
-	// Save job record if DB available
+	// Save job record - required for job tracking and spot interruption handling
 	if w.DB != nil && w.DB.HasJobsTable() {
 		jobRecord := &db.JobRecord{
 			JobID:        job.JobID,
@@ -99,6 +106,27 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		}
 		if err := w.DB.SaveJob(ctx, jobRecord); err != nil {
 			log.Printf("Failed to save job record for warm pool assignment: %v", err)
+			// Release claim first to allow another orchestrator to retry with this instance
+			if releaseErr := w.DB.ReleaseInstanceClaim(ctx, instance.InstanceID, job.JobID); releaseErr != nil {
+				log.Printf("Failed to release instance claim after DB save failure: %v", releaseErr)
+			}
+			// Job record is required for tracking - stop instance and fall back to cold start
+			stopped := false
+			for attempt := 0; attempt < 3; attempt++ {
+				if ctx.Err() != nil {
+					break
+				}
+				if stopErr := w.Pool.StopPoolInstance(ctx, instance.InstanceID); stopErr != nil {
+					log.Printf("Failed to stop instance after DB save failure (attempt %d/3): %v", attempt+1, stopErr)
+					continue
+				}
+				stopped = true
+				break
+			}
+			if !stopped {
+				log.Printf("CRITICAL: Instance %s may be running without job record - manual cleanup required", instance.InstanceID)
+			}
+			return &WarmPoolResult{Assigned: false}, nil
 		}
 	}
 
