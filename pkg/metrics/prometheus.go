@@ -34,6 +34,7 @@ type PrometheusPublisher struct {
 	circuitBreakerTriggered     *prometheus.CounterVec
 	jobClaimFailures            prometheus.Counter
 	warmPoolHits                prometheus.Counter
+	fleetSize                   prometheus.Gauge
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -151,6 +152,11 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 			Name:      "warm_pool_hits_total",
 			Help:      "Total number of jobs assigned to warm pool instances",
 		}),
+		fleetSize: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: cfg.Namespace,
+			Name:      "fleet_size",
+			Help:      "Current absolute fleet size",
+		}),
 	}
 
 	registry.MustRegister(
@@ -173,6 +179,7 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 		p.circuitBreakerTriggered,
 		p.jobClaimFailures,
 		p.warmPoolHits,
+		p.fleetSize,
 	)
 
 	return p
@@ -288,5 +295,20 @@ func (p *PrometheusPublisher) PublishJobClaimFailure(_ context.Context) error { 
 
 func (p *PrometheusPublisher) PublishWarmPoolHit(_ context.Context) error { //nolint:revive
 	p.warmPoolHits.Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishFleetSize(_ context.Context, size int) error { //nolint:revive
+	p.fleetSize.Set(float64(size))
+	return nil
+}
+
+// PublishServiceCheck is a no-op for Prometheus (Datadog-specific feature).
+func (p *PrometheusPublisher) PublishServiceCheck(_ context.Context, _ string, _ int, _ string) error { //nolint:revive
+	return nil
+}
+
+// PublishEvent is a no-op for Prometheus (Datadog-specific feature).
+func (p *PrometheusPublisher) PublishEvent(_ context.Context, _, _, _ string, _ []string) error { //nolint:revive
 	return nil
 }

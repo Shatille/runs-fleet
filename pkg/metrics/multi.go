@@ -195,3 +195,21 @@ func (m *MultiPublisher) PublishWarmPoolHit(ctx context.Context) error { //nolin
 		return p.PublishWarmPoolHit(ctx)
 	})
 }
+
+func (m *MultiPublisher) PublishFleetSize(ctx context.Context, size int) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishFleetSize(ctx, size)
+	})
+}
+
+func (m *MultiPublisher) PublishServiceCheck(ctx context.Context, name string, status int, message string) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishServiceCheck(ctx, name, status, message)
+	})
+}
+
+func (m *MultiPublisher) PublishEvent(ctx context.Context, title, text, alertType string, tags []string) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishEvent(ctx, title, text, alertType, tags)
+	})
+}
