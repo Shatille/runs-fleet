@@ -33,14 +33,14 @@ sudo dnf groupinstall -y "Development Tools"
 # Gold linker is built from source in base image for Go race detector support
 
 echo "==> Installing Java (required for sbt)"
-sudo dnf install -y java-21-amazon-corretto-headless
+sudo dnf install -y java-21-amazon-corretto-headless || { echo "Java installation failed"; exit 1; }
 
 echo "==> Installing sbt"
 SBT_VERSION="1.10.7"
 SBT_SHA256="32c15233c636c233ee25a2c31879049db7021cfef70807c187515c39b96b0fe6"
 curl -fsSL -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz"
 echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c || { echo "sbt checksum verification failed"; rm /tmp/sbt.tgz; exit 1; }
-sudo tar xzf /tmp/sbt.tgz -C /usr/local
+sudo tar xzf /tmp/sbt.tgz -C /usr/local || { echo "sbt extraction failed"; rm /tmp/sbt.tgz; exit 1; }
 sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt
 rm /tmp/sbt.tgz
 
