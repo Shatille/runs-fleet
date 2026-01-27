@@ -204,7 +204,9 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		slog.String(logging.KeyInstanceID, instanceID),
 		slog.Int("retry_count", requeueMsg.RetryCount))
 
-	_ = m.PublishJobQueued(ctx)
+	if err := m.PublishJobQueued(ctx); err != nil {
+		webhookLog.Error("job queued metric failed", slog.String("error", err.Error()))
+	}
 
 	return true, nil
 }

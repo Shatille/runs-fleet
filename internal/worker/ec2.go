@@ -68,24 +68,36 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		defer cleanupCancel()
 
 		if jobProcessed {
-			_ = deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle)
+			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
+				ec2Log.Error("message delete failed", slog.String("error", err.Error()))
+			}
 			if deps.Metrics != nil {
-				_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+					ec2Log.Error("queue depth metric failed", slog.String("error", err.Error()))
+				}
 				if fleetCreated {
-					_ = deps.Metrics.PublishFleetSizeIncrement(cleanupCtx)
+					if err := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); err != nil {
+						ec2Log.Error("fleet size increment metric failed", slog.String("error", err.Error()))
+					}
 				}
 			}
 		}
 
 		if alreadyClaimed {
-			_ = deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle)
+			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
+				ec2Log.Error("already claimed message delete failed", slog.String("error", err.Error()))
+			}
 			if deps.Metrics != nil {
-				_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+					ec2Log.Error("queue depth metric failed", slog.String("error", err.Error()))
+				}
 			}
 		}
 
 		if poisonMessage && deps.Metrics != nil {
-			_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
+			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				ec2Log.Error("queue depth metric failed", slog.String("error", err.Error()))
+			}
 		}
 
 		if deps.Metrics != nil {

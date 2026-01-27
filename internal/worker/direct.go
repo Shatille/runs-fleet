@@ -102,7 +102,11 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 			slog.Int64(logging.KeyJobID, job.JobID),
 			slog.String("error", err.Error()))
 		if p.DB != nil && p.DB.HasJobsTable() {
-			_ = p.DB.DeleteJobClaim(ctx, job.JobID)
+			if err := p.DB.DeleteJobClaim(ctx, job.JobID); err != nil {
+				directLog.Error("job claim delete failed",
+					slog.Int64(logging.KeyJobID, job.JobID),
+					slog.String("error", err.Error()))
+			}
 		}
 		return false
 	}
