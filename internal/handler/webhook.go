@@ -71,8 +71,12 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
-	_ = m.PublishJobQueued(ctx)
-	_ = m.PublishQueueDepth(ctx, 1)
+	if err := m.PublishJobQueued(ctx); err != nil {
+		webhookLog.Error("job queued metric failed", slog.String("error", err.Error()))
+	}
+	if err := m.PublishQueueDepth(ctx, 1); err != nil {
+		webhookLog.Error("queue depth metric failed", slog.String("error", err.Error()))
+	}
 
 	webhookLog.Info("job enqueued",
 		slog.Int64(logging.KeyJobID, msg.JobID),

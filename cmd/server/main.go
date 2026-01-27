@@ -38,6 +38,8 @@ import (
 	"github.com/google/uuid"
 )
 
+var serverLog = logging.WithComponent(logging.LogTypeServer, "health")
+
 func main() {
 	logging.Init()
 	log := logging.WithComponent(logging.LogTypeServer, "main")
@@ -407,7 +409,7 @@ func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
 			pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
 			if err := pinger.Ping(pingCtx); err != nil {
-				slog.Warn("readiness check failed", slog.String("error", err.Error()))
+				serverLog.Warn("readiness check failed", slog.String("error", err.Error()))
 				http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
 				return
 			}

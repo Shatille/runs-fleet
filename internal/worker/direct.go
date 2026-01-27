@@ -47,7 +47,9 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				slog.Int64(logging.KeyJobID, job.JobID),
 				slog.String("error", err.Error()))
 			if p.Metrics != nil {
-				_ = p.Metrics.PublishJobClaimFailure(ctx)
+				if err := p.Metrics.PublishJobClaimFailure(ctx); err != nil {
+					directLog.Error("job claim failure metric failed", slog.String("error", err.Error()))
+				}
 			}
 			return false
 		}
@@ -148,7 +150,9 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	}
 
 	if p.Metrics != nil {
-		_ = p.Metrics.PublishFleetSizeIncrement(ctx)
+		if err := p.Metrics.PublishFleetSizeIncrement(ctx); err != nil {
+			directLog.Error("fleet size increment metric failed", slog.String("error", err.Error()))
+		}
 	}
 
 	directLog.Info("instances launched",

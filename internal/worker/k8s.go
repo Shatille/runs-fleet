@@ -49,14 +49,20 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 
 		if podCreated {
 			_ = deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle)
-			_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
+			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				k8sLog.Error("queue depth metric failed", slog.String("error", err.Error()))
+			}
 		}
 
 		if poisonMessage {
-			_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
+			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				k8sLog.Error("queue depth metric failed", slog.String("error", err.Error()))
+			}
 		}
 
-		_ = deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds()))
+		if err := deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
+			k8sLog.Error("job duration metric failed", slog.String("error", err.Error()))
+		}
 	}()
 
 	if msg.Body == "" {
