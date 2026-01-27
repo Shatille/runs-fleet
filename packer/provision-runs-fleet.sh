@@ -32,6 +32,19 @@ echo "==> Installing development tools for CI workflows"
 sudo dnf groupinstall -y "Development Tools"
 # Gold linker is built from source in base image for Go race detector support
 
+echo "==> Installing Java (required for sbt)"
+sudo dnf install -y java-21-amazon-corretto-headless || { echo "Java installation failed"; exit 1; }
+
+echo "==> Installing sbt"
+SBT_VERSION="1.10.7"
+SBT_SHA256="32c15233c636c233ee25a2c31879049db7021cfef70807c187515c39b96b0fe6"
+curl -fsSL --max-time 300 -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
+  || { echo "sbt download failed"; exit 1; }
+echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c || { echo "sbt checksum verification failed"; rm /tmp/sbt.tgz; exit 1; }
+sudo tar xzf /tmp/sbt.tgz -C /usr/local || { echo "sbt extraction failed"; rm /tmp/sbt.tgz; exit 1; }
+sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt || { echo "sbt symlink creation failed"; exit 1; }
+rm /tmp/sbt.tgz
+
 echo "==> Creating runs-fleet agent directory"
 sudo mkdir -p /opt/runs-fleet
 sudo chown ec2-user:ec2-user /opt/runs-fleet
@@ -299,3 +312,4 @@ echo "==> runs-fleet runner AMI provisioning complete"
 echo "    - GitHub Runner: v${RUNNER_VERSION}"
 echo "    - Agent binary: extracted from ECR"
 echo "    - Systemd service: runs-fleet-agent.service"
+echo "    - sbt: v${SBT_VERSION}"
