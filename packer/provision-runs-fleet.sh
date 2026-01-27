@@ -37,7 +37,9 @@ sudo dnf install -y java-21-amazon-corretto-headless
 
 echo "==> Installing sbt"
 SBT_VERSION="1.10.7"
+SBT_SHA256="e0dc06f33eab4cb69acb87bad46991a7340c17d5e05e72cfb6ddb5dacd9a3d3e"
 curl -fsSL -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz"
+echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum --check || { echo "sbt checksum verification failed"; exit 1; }
 sudo tar xzf /tmp/sbt.tgz -C /usr/local
 sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt
 rm /tmp/sbt.tgz
