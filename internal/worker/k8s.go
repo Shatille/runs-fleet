@@ -48,7 +48,9 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 		defer cleanupCancel()
 
 		if podCreated {
-			_ = deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle)
+			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
+				k8sLog.Error("message delete failed", slog.String("error", err.Error()))
+			}
 			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
 				k8sLog.Error("queue depth metric failed", slog.String("error", err.Error()))
 			}
@@ -75,10 +77,14 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
 		k8sLog.Warn("poison message", slog.String("error", err.Error()))
 		poisonMessage = true
-		_ = deleteMessageWithRetry(ctx, deps.Queue, msg.Handle)
+		if err := deleteMessageWithRetry(ctx, deps.Queue, msg.Handle); err != nil {
+			k8sLog.Error("poison message delete failed", slog.String("error", err.Error()))
+		}
 		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 		defer metricCancel()
-		_ = deps.Metrics.PublishMessageDeletionFailure(metricCtx)
+		if err := deps.Metrics.PublishMessageDeletionFailure(metricCtx); err != nil {
+			k8sLog.Error("message deletion failure metric failed", slog.String("error", err.Error()))
+		}
 		return
 	}
 
