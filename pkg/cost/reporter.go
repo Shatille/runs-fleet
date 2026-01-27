@@ -6,16 +6,19 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 )
+
+var costLog = logging.WithComponent(logging.LogTypeCost, "reporter")
 
 // Pricing constants (approximate AWS pricing in USD)
 //
@@ -136,7 +139,7 @@ func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SN
 // It attempts to fetch current prices from AWS Pricing API and falls back to
 // hard-coded estimates if the API is unavailable.
 func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
-	log.Println("Generating daily cost report...")
+	costLog.Info("generating daily cost report")
 
 	// Calculate time range (previous 24 hours)
 	endTime := time.Now().Truncate(time.Hour)
@@ -167,9 +170,9 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 			ContentType: aws.String("text/markdown"),
 		})
 		if err != nil {
-			log.Printf("Warning: failed to store report in S3: %v", err)
+			costLog.Warn("s3 report upload failed", slog.String("error", err.Error()))
 		} else {
-			log.Printf("Report stored in S3: s3://%s/%s", r.reportsBucket, key)
+			costLog.Info("report stored in s3", slog.String("bucket", r.reportsBucket), slog.String("key", key))
 		}
 	}
 
@@ -181,13 +184,13 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 			Message:  aws.String(report),
 		})
 		if err != nil {
-			log.Printf("Warning: failed to send SNS notification: %v", err)
+			costLog.Warn("sns notification failed", slog.String("error", err.Error()))
 		} else {
-			log.Println("Report sent via SNS")
+			costLog.Info("report sent via sns")
 		}
 	}
 
-	log.Printf("Daily cost report generated: $%.2f total", breakdown.TotalCost)
+	costLog.Info("daily cost report generated", slog.Float64("total_cost", breakdown.TotalCost))
 	return nil
 }
 

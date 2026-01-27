@@ -3,12 +3,13 @@ package housekeeping
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -75,6 +76,15 @@ type Tasks struct {
 	metrics      MetricsAPI
 	costReporter CostReporter
 	config       *config.Config
+	log          *logging.Logger
+}
+
+// logger returns the logger, using a default if not initialized.
+func (t *Tasks) logger() *logging.Logger {
+	if t.log == nil {
+		return logging.WithComponent(logging.LogTypeHousekeep, "tasks")
+	}
+	return t.log
 }
 
 // NewTasks creates a new Tasks executor.
@@ -87,18 +97,15 @@ func NewTasks(cfg aws.Config, appConfig *config.Config, secretsStore secrets.Sto
 		metrics:      metrics,
 		costReporter: costReporter,
 		config:       appConfig,
+		log:          logging.WithComponent(logging.LogTypeHousekeep, "tasks"),
 	}
 }
 
 // ExecuteOrphanedInstances detects and terminates orphaned instances.
 func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
-	log.Println("Executing orphaned instances cleanup...")
-
-	// Calculate the cutoff time (max_runtime + 10 minute buffer)
 	maxRuntime := time.Duration(t.config.MaxRuntimeMinutes+10) * time.Minute
 	cutoffTime := time.Now().Add(-maxRuntime)
 
-	// Query for managed instances
 	input := &ec2.DescribeInstancesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -123,19 +130,15 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 			if instance.LaunchTime != nil && instance.LaunchTime.Before(cutoffTime) {
 				if instance.InstanceId != nil {
 					orphanedIDs = append(orphanedIDs, *instance.InstanceId)
-					log.Printf("Found orphaned instance: %s (launched at %s)", *instance.InstanceId, instance.LaunchTime)
 				}
 			}
 		}
 	}
 
 	if len(orphanedIDs) == 0 {
-		log.Println("No orphaned instances found")
 		return nil
 	}
 
-	// Terminate orphaned instances
-	log.Printf("Terminating %d orphaned instances", len(orphanedIDs))
 	_, err = t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: orphanedIDs,
 	})
@@ -143,23 +146,19 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 		return fmt.Errorf("failed to terminate orphaned instances: %w", err)
 	}
 
-	// Publish metrics
 	if t.metrics != nil {
-		if err := t.metrics.PublishOrphanedInstancesTerminated(ctx, len(orphanedIDs)); err != nil {
-			log.Printf("Warning: failed to publish metric: %v", err)
-		}
+		_ = t.metrics.PublishOrphanedInstancesTerminated(ctx, len(orphanedIDs))
 	}
 
-	log.Printf("Terminated %d orphaned instances", len(orphanedIDs))
+	t.logger().Info("orphaned instances terminated",
+		slog.Int(logging.KeyCount, len(orphanedIDs)),
+		slog.Any("instance_ids", orphanedIDs))
 	return nil
 }
 
 // ExecuteStaleSecrets cleans up stale runner secrets.
 func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
-	log.Println("Executing stale secrets cleanup...")
-
 	if t.secretsStore == nil {
-		log.Println("Secrets store not configured, skipping")
 		return nil
 	}
 
@@ -172,28 +171,23 @@ func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
 	for _, runnerID := range runnerIDs {
 		exists, err := t.instanceExists(ctx, runnerID)
 		if err != nil {
-			log.Printf("Warning: failed to check instance %s: %v", runnerID, err)
 			continue
 		}
 
 		if !exists {
-			if err := t.secretsStore.Delete(ctx, runnerID); err != nil {
-				log.Printf("Warning: failed to delete config for %s: %v", runnerID, err)
-			} else {
+			if err := t.secretsStore.Delete(ctx, runnerID); err == nil {
 				deletedCount++
-				log.Printf("Deleted stale config for runner: %s", runnerID)
 			}
 		}
 	}
 
-	// Publish metrics
 	if t.metrics != nil && deletedCount > 0 {
-		if err := t.metrics.PublishSSMParametersDeleted(ctx, deletedCount); err != nil {
-			log.Printf("Warning: failed to publish metric: %v", err)
-		}
+		_ = t.metrics.PublishSSMParametersDeleted(ctx, deletedCount)
 	}
 
-	log.Printf("Deleted %d stale runner configs", deletedCount)
+	if deletedCount > 0 {
+		t.logger().Info("stale secrets deleted", slog.Int(logging.KeyCount, deletedCount))
+	}
 	return nil
 }
 
@@ -221,21 +215,13 @@ func (t *Tasks) instanceExists(ctx context.Context, instanceID string) (bool, er
 		for _, instance := range reservation.Instances {
 			if instance.State != nil {
 				state := instance.State.Name
-				// Consider instance as existing if it's not terminated
 				if state != ec2types.InstanceStateNameTerminated {
 					return true, nil
 				}
 
-				// For terminated instances, check if enough time has passed
-				// StateTransitionReason contains the termination time for terminated instances
-				// If we can't determine when it was terminated, be conservative and consider it existing
 				if instance.StateTransitionReason != nil {
-					// StateTransitionReason format: "User initiated (YYYY-MM-DD HH:MM:SS GMT)"
-					// We'll use a simpler approach: if the instance was launched recently, wait
 					if instance.LaunchTime != nil {
-						// If launched within grace period, consider it still "existing" to be safe
 						if time.Since(*instance.LaunchTime) < instanceTerminationGracePeriod {
-							log.Printf("Instance %s terminated recently, waiting before cleanup", instanceID)
 							return true, nil
 						}
 					}
@@ -249,17 +235,12 @@ func (t *Tasks) instanceExists(ctx context.Context, instanceID string) (bool, er
 
 // ExecuteOldJobs archives or deletes old job records.
 func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
-	log.Println("Executing old job records cleanup...")
-
 	if t.config.JobsTableName == "" {
-		log.Println("Jobs table not configured, skipping")
 		return nil
 	}
 
-	// Calculate cutoff time (7 days ago)
 	cutoffTime := time.Now().AddDate(0, 0, -7).Format(time.RFC3339)
 
-	// Scan for old job records
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(t.config.JobsTableName),
 		FilterExpression: aws.String("completed_at < :cutoff"),
@@ -289,11 +270,9 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 	}
 
 	if len(jobsToDelete) == 0 {
-		log.Println("No old job records to delete")
 		return nil
 	}
 
-	// Delete in batches of 25
 	deletedCount := 0
 	for i := 0; i < len(jobsToDelete); i += 25 {
 		end := i + 25
@@ -318,34 +297,28 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 			},
 		})
 		if err != nil {
-			log.Printf("Warning: failed to delete batch: %v", err)
 			continue
 		}
 
 		deletedCount += len(batch)
 	}
 
-	// Publish metrics
 	if t.metrics != nil && deletedCount > 0 {
-		if err := t.metrics.PublishJobRecordsArchived(ctx, deletedCount); err != nil {
-			log.Printf("Warning: failed to publish metric: %v", err)
-		}
+		_ = t.metrics.PublishJobRecordsArchived(ctx, deletedCount)
 	}
 
-	log.Printf("Deleted %d old job records", deletedCount)
+	if deletedCount > 0 {
+		t.logger().Info("old job records deleted", slog.Int(logging.KeyCount, deletedCount))
+	}
 	return nil
 }
 
 // ExecutePoolAudit generates pool utilization reports.
 func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
-	log.Println("Executing pool audit...")
-
 	if t.config.PoolsTableName == "" {
-		log.Println("Pools table not configured, skipping")
 		return nil
 	}
 
-	// Scan pools table
 	output, err := t.dynamoClient.Scan(ctx, &dynamodb.ScanInput{
 		TableName: aws.String(t.config.PoolsTableName),
 	})
@@ -374,14 +347,8 @@ func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
 
 		utilization := float64(currentRunning) / float64(desiredRunning) * 100
 
-		log.Printf("Pool %s: %d/%d instances (%.1f%% utilization)",
-			poolName, currentRunning, desiredRunning, utilization)
-
-		// Publish metrics
 		if t.metrics != nil {
-			if err := t.metrics.PublishPoolUtilization(ctx, poolName, utilization); err != nil {
-				log.Printf("Warning: failed to publish metric: %v", err)
-			}
+			_ = t.metrics.PublishPoolUtilization(ctx, poolName, utilization)
 		}
 	}
 
@@ -390,10 +357,7 @@ func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
 
 // ExecuteCostReport generates the daily cost report.
 func (t *Tasks) ExecuteCostReport(ctx context.Context) error {
-	log.Println("Executing cost report generation...")
-
 	if isNilInterface(t.costReporter) {
-		log.Println("Cost reporter not configured, skipping")
 		return nil
 	}
 
@@ -410,19 +374,10 @@ func isNilInterface(i interface{}) bool {
 
 // ExecuteDLQRedrive moves messages from the DLQ back to the main queue.
 func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
-	log.Println("Executing DLQ redrive...")
-
-	if t.config.QueueDLQURL == "" {
-		log.Println("DLQ URL not configured, skipping")
+	if t.config.QueueDLQURL == "" || t.config.QueueURL == "" {
 		return nil
 	}
 
-	if t.config.QueueURL == "" {
-		log.Println("Main queue URL not configured, skipping")
-		return nil
-	}
-
-	// Check if DLQ has messages
 	attrs, err := t.sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
 		QueueUrl: aws.String(t.config.QueueDLQURL),
 		AttributeNames: []sqstypes.QueueAttributeName{
@@ -436,7 +391,6 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 
 	msgCount := attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]
 	if msgCount == "0" {
-		log.Println("DLQ is empty, nothing to redrive")
 		return nil
 	}
 
@@ -445,7 +399,6 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		return fmt.Errorf("failed to get DLQ ARN")
 	}
 
-	// Get main queue ARN
 	mainAttrs, err := t.sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
 		QueueUrl: aws.String(t.config.QueueURL),
 		AttributeNames: []sqstypes.QueueAttributeName{
@@ -461,9 +414,6 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		return fmt.Errorf("failed to get main queue ARN")
 	}
 
-	log.Printf("Starting DLQ redrive: %s messages from DLQ to main queue", msgCount)
-
-	// Start the message move task
 	output, err := t.sqsClient.StartMessageMoveTask(ctx, &sqs.StartMessageMoveTaskInput{
 		SourceArn:      aws.String(dlqArn),
 		DestinationArn: aws.String(mainQueueArn),
@@ -472,7 +422,9 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		return fmt.Errorf("failed to start message move task: %w", err)
 	}
 
-	log.Printf("DLQ redrive started: task handle %s", aws.ToString(output.TaskHandle))
+	t.logger().Info("dlq redrive started",
+		slog.String("message_count", msgCount),
+		slog.String("task_handle", aws.ToString(output.TaskHandle)))
 	return nil
 }
 
@@ -488,11 +440,8 @@ const EphemeralPoolTTL = 4 * time.Hour
 // It first terminates any running/stopped instances belonging to the pool before deleting the config.
 func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 	if t.poolDB == nil {
-		log.Println("Skipping ephemeral pool cleanup: pool database not configured")
 		return nil
 	}
-
-	log.Println("Executing ephemeral pool cleanup...")
 
 	pools, err := t.poolDB.ListPools(ctx)
 	if err != nil {
@@ -501,53 +450,40 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 
 	var cleaned int
 	for _, poolName := range pools {
-		config, err := t.poolDB.GetPoolConfig(ctx, poolName)
-		if err != nil {
-			log.Printf("Failed to get pool config for %s: %v", poolName, err)
-			continue
-		}
-		if config == nil {
+		poolCfg, err := t.poolDB.GetPoolConfig(ctx, poolName)
+		if err != nil || poolCfg == nil {
 			continue
 		}
 
-		// Only clean up ephemeral pools
-		if !config.Ephemeral {
+		if !poolCfg.Ephemeral {
 			continue
 		}
 
-		// Check if pool is inactive beyond TTL
-		if time.Since(config.LastJobTime) <= EphemeralPoolTTL {
+		if time.Since(poolCfg.LastJobTime) <= EphemeralPoolTTL {
 			continue
 		}
 
-		// Terminate pool instances before deleting config
-		if err := t.terminatePoolInstances(ctx, poolName); err != nil {
-			log.Printf("Failed to terminate instances for pool %s: %v", poolName, err)
-			// Continue to try deleting config anyway - orphaned instances will be cleaned up separately
-		}
+		_ = t.terminatePoolInstances(ctx, poolName)
 
-		// Delete the ephemeral pool
 		if err := t.poolDB.DeletePoolConfig(ctx, poolName); err != nil {
-			log.Printf("Failed to delete ephemeral pool %s: %v", poolName, err)
 			continue
 		}
 
-		log.Printf("Deleted ephemeral pool %s (inactive for %v)", poolName, time.Since(config.LastJobTime).Round(time.Minute))
+		t.logger().Info("ephemeral pool deleted",
+			slog.String(logging.KeyPoolName, poolName),
+			slog.Duration("inactive_duration", time.Since(poolCfg.LastJobTime).Round(time.Minute)))
 		cleaned++
 	}
 
-	log.Printf("Ephemeral pool cleanup completed: %d pools deleted", cleaned)
 	return nil
 }
 
 // terminatePoolInstances terminates all EC2 instances belonging to a pool.
 func (t *Tasks) terminatePoolInstances(ctx context.Context, poolName string) error {
 	if t.ec2Client == nil {
-		log.Printf("EC2 client not configured, skipping instance termination for pool %s", poolName)
 		return nil
 	}
 
-	// Query for pool instances
 	input := &ec2.DescribeInstancesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -580,11 +516,9 @@ func (t *Tasks) terminatePoolInstances(ctx context.Context, poolName string) err
 	}
 
 	if len(instanceIDs) == 0 {
-		log.Printf("No instances to terminate for pool %s", poolName)
 		return nil
 	}
 
-	log.Printf("Terminating %d instances for pool %s: %v", len(instanceIDs), poolName, instanceIDs)
 	_, err = t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: instanceIDs,
 	})
@@ -592,5 +526,8 @@ func (t *Tasks) terminatePoolInstances(ctx context.Context, poolName string) err
 		return fmt.Errorf("failed to terminate instances: %w", err)
 	}
 
+	t.logger().Info("pool instances terminated",
+		slog.String(logging.KeyPoolName, poolName),
+		slog.Int(logging.KeyCount, len(instanceIDs)))
 	return nil
 }

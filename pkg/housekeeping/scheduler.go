@@ -3,9 +3,10 @@ package housekeeping
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
@@ -70,6 +71,15 @@ type Scheduler struct {
 	queueURL  string
 	config    SchedulerConfig
 	metrics   SchedulerMetrics
+	log       *logging.Logger
+}
+
+// logger returns the logger, using a default if not initialized.
+func (s *Scheduler) logger() *logging.Logger {
+	if s.log == nil {
+		return logging.WithComponent(logging.LogTypeHousekeep, "scheduler")
+	}
+	return s.log
 }
 
 // NewScheduler creates a new housekeeping scheduler with an SQS client interface.
@@ -79,6 +89,7 @@ func NewScheduler(sqsClient SchedulerSQSAPI, queueURL string, schedulerCfg Sched
 		sqsClient: sqsClient,
 		queueURL:  queueURL,
 		config:    schedulerCfg,
+		log:       logging.WithComponent(logging.LogTypeHousekeep, "scheduler"),
 	}
 }
 
@@ -95,9 +106,6 @@ func (s *Scheduler) SetMetrics(m SchedulerMetrics) {
 
 // Run starts the scheduler loop.
 func (s *Scheduler) Run(ctx context.Context) {
-	log.Println("Starting housekeeping scheduler...")
-
-	// Create tickers for each task type
 	orphanedTicker := time.NewTicker(s.config.OrphanedInstancesInterval)
 	ssmTicker := time.NewTicker(s.config.StaleSSMInterval)
 	jobsTicker := time.NewTicker(s.config.OldJobsInterval)
@@ -114,14 +122,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer dlqTicker.Stop()
 	defer ephemeralPoolTicker.Stop()
 
-	// Run critical tasks immediately on startup
 	s.scheduleTask(ctx, TaskOrphanedInstances)
 	s.scheduleTask(ctx, TaskDLQRedrive)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Housekeeping scheduler shutting down...")
 			return
 
 		case <-orphanedTicker.C:
@@ -166,22 +172,18 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 
 	body, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("Failed to marshal housekeeping message for task %s: %v", taskType, err)
 		return
 	}
 
-	// Retry with exponential backoff
 	var lastErr error
 	for attempt := 0; attempt < maxScheduleRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 1s, 2s, 4s...
 			backoff := schedulerBaseRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
 				return
 			}
-			log.Printf("Retrying to schedule housekeeping task %s (attempt %d/%d)", taskType, attempt+1, maxScheduleRetries)
 		}
 
 		_, err = s.sqsClient.SendMessage(ctx, &sqs.SendMessageInput{
@@ -189,19 +191,17 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 			MessageBody: aws.String(string(body)),
 		})
 		if err == nil {
-			log.Printf("Scheduled housekeeping task: %s", taskType)
 			return
 		}
 		lastErr = err
-		log.Printf("Failed to schedule housekeeping task %s (attempt %d/%d): %v", taskType, attempt+1, maxScheduleRetries, err)
 	}
 
-	log.Printf("ALERT: Failed to schedule housekeeping task %s after %d attempts: %v", taskType, maxScheduleRetries, lastErr)
+	s.logger().Error("task scheduling failed",
+		slog.String(logging.KeyTask, string(taskType)),
+		slog.Int("attempts", maxScheduleRetries),
+		slog.String("error", lastErr.Error()))
 
-	// Publish metric for alerting if context wasn't cancelled
 	if ctx.Err() == nil && s.metrics != nil {
-		if metricErr := s.metrics.PublishSchedulingFailure(ctx, string(taskType)); metricErr != nil {
-			log.Printf("Failed to publish scheduling failure metric: %v", metricErr)
-		}
+		_ = s.metrics.PublishSchedulingFailure(ctx, string(taskType))
 	}
 }

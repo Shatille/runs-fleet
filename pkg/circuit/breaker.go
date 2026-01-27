@@ -4,14 +4,17 @@ package circuit
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
+
+var circuitLog = logging.WithComponent(logging.LogTypeCircuit, "breaker")
 
 const (
 	// InterruptionThreshold is the number of interruptions before circuit opens
@@ -121,7 +124,7 @@ func (b *Breaker) cleanupExpiredCache() {
 	}
 
 	if len(expiredKeys) > 0 {
-		log.Printf("Circuit breaker: cleaned up %d expired cache entries", len(expiredKeys))
+		circuitLog.Debug("cache cleanup completed", slog.Int(logging.KeyCount, len(expiredKeys)))
 	}
 }
 
@@ -165,7 +168,9 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 		record.State = string(StateOpen)
 		record.OpenedAt = now.Format(time.RFC3339)
 		record.AutoResetAt = now.Add(CooldownPeriod).Format(time.RFC3339)
-		log.Printf("Circuit breaker OPENED for instance type %s after %d interruptions", instanceType, record.InterruptionCount)
+		circuitLog.Warn("circuit breaker opened",
+			slog.String(logging.KeyInstanceType, instanceType),
+			slog.Int(logging.KeyCount, record.InterruptionCount))
 	}
 
 	// NOTE: Set TTL for DynamoDB cleanup (1 hour after auto-reset)
@@ -222,9 +227,12 @@ func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (State,
 			record.AutoResetAt = ""
 
 			if err := b.putRecord(ctx, record); err != nil {
-				log.Printf("Failed to reset circuit: %v", err)
+				circuitLog.Error("circuit reset failed",
+					slog.String(logging.KeyInstanceType, instanceType),
+					slog.String("error", err.Error()))
 			} else {
-				log.Printf("Circuit breaker auto-RESET for instance type %s", instanceType)
+				circuitLog.Info("circuit breaker auto-reset",
+					slog.String(logging.KeyInstanceType, instanceType))
 			}
 		}
 	}
@@ -260,7 +268,8 @@ func (b *Breaker) ResetCircuit(ctx context.Context, instanceType string) error {
 	delete(b.cache, instanceType)
 	b.mu.Unlock()
 
-	log.Printf("Circuit breaker manually RESET for instance type %s", instanceType)
+	circuitLog.Info("circuit breaker manually reset",
+		slog.String(logging.KeyInstanceType, instanceType))
 	return nil
 }
 

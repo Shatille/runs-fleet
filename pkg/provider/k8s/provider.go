@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/provider"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +22,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
 )
+
+var k8sProviderLog = logging.WithComponent(logging.LogTypeK8s, "provider")
 
 // Runner state constants.
 const (
@@ -132,17 +135,17 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 	cleanup := func(includePod bool) {
 		if includePod {
 			if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
-				log.Printf("Failed to cleanup Pod %s: %v", podName, podErr)
+				k8sProviderLog.Error("pod cleanup failed", slog.String("pod", podName), slog.String("error", podErr.Error()))
 			}
 		}
 		if pvcErr := p.deleteRunnerPVC(ctx, podName); pvcErr != nil && !errors.IsNotFound(pvcErr) {
-			log.Printf("Failed to cleanup PVC %s: %v", pvcName(podName), pvcErr)
+			k8sProviderLog.Error("pvc cleanup failed", slog.String("pvc", pvcName(podName)), slog.String("error", pvcErr.Error()))
 		}
 		if secErr := p.deleteRunnerSecret(ctx, podName); secErr != nil && !errors.IsNotFound(secErr) {
-			log.Printf("Failed to cleanup Secret %s: %v", secretName(podName), secErr)
+			k8sProviderLog.Error("secret cleanup failed", slog.String("secret", secretName(podName)), slog.String("error", secErr.Error()))
 		}
 		if cmErr := p.deleteRunnerConfigMap(ctx, podName); cmErr != nil && !errors.IsNotFound(cmErr) {
-			log.Printf("Failed to cleanup ConfigMap %s: %v", configMapName(podName), cmErr)
+			k8sProviderLog.Error("configmap cleanup failed", slog.String("configmap", configMapName(podName)), slog.String("error", cmErr.Error()))
 		}
 	}
 
@@ -343,25 +346,25 @@ func (p *Provider) TerminateRunner(ctx context.Context, runnerID string) error {
 	// Delete Pod first (releases PVC mount, allows CSI driver to detach volume)
 	// Continue with cleanup even if Pod deletion fails to avoid resource leaks
 	if podErr := p.clientset.CoreV1().Pods(namespace).Delete(ctx, runnerID, metav1.DeleteOptions{}); podErr != nil && !errors.IsNotFound(podErr) {
-		log.Printf("Failed to delete Pod %s: %v", runnerID, podErr)
+		k8sProviderLog.Error("pod delete failed", slog.String("pod", runnerID), slog.String("error", podErr.Error()))
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Pod: %v", podErr))
 	}
 
 	// Delete PVC after pod (CSI driver will detach and delete EBS volume)
 	if pvcErr := p.deleteRunnerPVC(ctx, runnerID); pvcErr != nil && !errors.IsNotFound(pvcErr) {
-		log.Printf("Failed to delete PVC for %s: %v", runnerID, pvcErr)
+		k8sProviderLog.Error("pvc delete failed", slog.String("runner_id", runnerID), slog.String("error", pvcErr.Error()))
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("PVC: %v", pvcErr))
 	}
 
 	// Delete ConfigMap
 	if cmErr := p.deleteRunnerConfigMap(ctx, runnerID); cmErr != nil && !errors.IsNotFound(cmErr) {
-		log.Printf("Failed to delete ConfigMap for %s: %v", runnerID, cmErr)
+		k8sProviderLog.Error("configmap delete failed", slog.String("runner_id", runnerID), slog.String("error", cmErr.Error()))
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("ConfigMap: %v", cmErr))
 	}
 
 	// Delete Secret
 	if secErr := p.deleteRunnerSecret(ctx, runnerID); secErr != nil && !errors.IsNotFound(secErr) {
-		log.Printf("Failed to delete Secret for %s: %v", runnerID, secErr)
+		k8sProviderLog.Error("secret delete failed", slog.String("runner_id", runnerID), slog.String("error", secErr.Error()))
 		cleanupErrors = append(cleanupErrors, fmt.Sprintf("Secret: %v", secErr))
 	}
 

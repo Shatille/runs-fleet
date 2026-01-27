@@ -5,17 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/events"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
+
+var dbLog = logging.WithComponent(logging.LogTypeDB, "dynamo")
 
 // ErrJobAlreadyClaimed is returned when attempting to claim a job that is already being processed.
 var ErrJobAlreadyClaimed = errors.New("job already claimed")
@@ -1145,8 +1148,10 @@ func (c *Client) ReleaseInstanceClaim(ctx context.Context, instanceID string, jo
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			// Claim not held by us or already released - log for debugging
-			log.Printf("Instance %s claim not held by job %d, may have expired or been released", instanceID, jobID)
+			// Claim not held by us or already released
+			dbLog.Debug("instance claim not held",
+				slog.String(logging.KeyInstanceID, instanceID),
+				slog.Int64(logging.KeyJobID, jobID))
 			return nil
 		}
 		return fmt.Errorf("failed to release instance claim: %w", err)

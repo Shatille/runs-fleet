@@ -6,10 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
+
+var authLog = logging.WithComponent(logging.LogTypeCache, "auth")
 
 // contextKey is a custom type for context keys to avoid collisions.
 type contextKey string
@@ -138,13 +142,13 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		if token == "" {
-			log.Printf("Cache auth failed: missing token from %s", r.RemoteAddr)
+			authLog.Warn("cache auth failed: missing token", slog.String("remote_addr", r.RemoteAddr))
 			http.Error(w, "Unauthorized: missing cache token", http.StatusUnauthorized)
 			return
 		}
 
 		if !ValidateCacheToken(m.secret, token) {
-			log.Printf("Cache auth failed: invalid token from %s", r.RemoteAddr)
+			authLog.Warn("cache auth failed: invalid token", slog.String("remote_addr", r.RemoteAddr))
 			http.Error(w, "Unauthorized: invalid cache token", http.StatusUnauthorized)
 			return
 		}

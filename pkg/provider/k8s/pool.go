@@ -3,17 +3,20 @@ package k8s
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/provider"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+var k8sPoolLog = logging.WithComponent(logging.LogTypeK8s, "pool")
 
 // defaultIdleTimeoutMinutes is used when config value is zero.
 const defaultIdleTimeoutMinutes = 10
@@ -198,7 +201,7 @@ func (p *PoolProvider) reconcile(ctx context.Context) {
 		LabelSelector: "app=runs-fleet-runner",
 	})
 	if err != nil {
-		log.Printf("K8s reconcile: failed to list pods: %v", err)
+		k8sPoolLog.Error("pod list failed", slog.String("error", err.Error()))
 		return
 	}
 
@@ -244,13 +247,13 @@ func (p *PoolProvider) reconcile(ctx context.Context) {
 		return
 	}
 
-	log.Printf("K8s reconcile: terminating %d idle pod(s)", len(toTerminate))
+	k8sPoolLog.Info("terminating idle pods", slog.Int(logging.KeyCount, len(toTerminate)))
 
 	// Terminate pods and clean up tracking (under same lock to prevent race)
 	for _, podName := range toTerminate {
 		err := p.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 		if err != nil && !errors.IsNotFound(err) {
-			log.Printf("K8s reconcile: failed to delete pod %s: %v", podName, err)
+			k8sPoolLog.Error("pod delete failed", slog.String("pod", podName), slog.String("error", err.Error()))
 		} else {
 			delete(p.podIdle, podName)
 		}
