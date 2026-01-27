@@ -186,6 +186,11 @@ func CreateK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provid
 	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
 		if attempt > 0 {
 			backoff := FleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
+			k8sLog.Warn("k8s pod creation retrying",
+				slog.Int("attempt", attempt+1),
+				slog.Int("max_attempts", maxFleetCreateRetries),
+				slog.Duration("backoff", backoff),
+				slog.String("error", err.Error()))
 			time.Sleep(backoff)
 		}
 
