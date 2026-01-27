@@ -3,18 +3,28 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/DataDog/datadog-go/v5/statsd"
 )
 
 const defaultDatadogNamespace = "runs_fleet"
 
+// ServiceCheckStatus represents Datadog service check status values.
+const (
+	ServiceCheckOK       = 0
+	ServiceCheckWarning  = 1
+	ServiceCheckCritical = 2
+	ServiceCheckUnknown  = 3
+)
+
 // DatadogPublisher publishes metrics to Datadog via DogStatsD.
 // All Publisher interface methods are documented on the Publisher interface.
 type DatadogPublisher struct {
-	client    *statsd.Client
-	namespace string
-	tags      []string
+	client     *statsd.Client
+	namespace  string
+	tags       []string
+	sampleRate float64
 }
 
 // Ensure DatadogPublisher implements Publisher.
@@ -28,6 +38,19 @@ type DatadogConfig struct {
 	Namespace string
 	// Tags are global tags applied to all metrics
 	Tags []string
+	// SampleRate for high-frequency metrics (default: 1.0 = 100%)
+	// Values < 1.0 enable sampling to reduce network traffic
+	SampleRate float64
+
+	// Client tuning options (0 = use library default)
+	// BufferPoolSize configures buffer pool size (0 = library default of 2048)
+	BufferPoolSize int
+	// BufferFlushInterval configures flush interval (0 = library default of 100ms)
+	BufferFlushInterval time.Duration
+	// WorkersCount configures parallel workers (0 = library default of 1)
+	WorkersCount int
+	// MaxMessagesPerPayload limits messages per UDP payload (0 = unlimited)
+	MaxMessagesPerPayload int
 }
 
 // NewDatadogPublisher creates a Datadog metrics publisher using DogStatsD.
@@ -38,19 +61,38 @@ func NewDatadogPublisher(cfg DatadogConfig) (*DatadogPublisher, error) {
 	if cfg.Namespace == "" {
 		cfg.Namespace = defaultDatadogNamespace
 	}
+	if cfg.SampleRate <= 0 || cfg.SampleRate > 1 {
+		cfg.SampleRate = 1.0
+	}
 
-	client, err := statsd.New(cfg.Address,
-		statsd.WithNamespace(cfg.Namespace+"."),
+	opts := []statsd.Option{
+		statsd.WithNamespace(cfg.Namespace + "."),
 		statsd.WithTags(cfg.Tags),
-	)
+	}
+
+	if cfg.BufferPoolSize > 0 {
+		opts = append(opts, statsd.WithBufferPoolSize(cfg.BufferPoolSize))
+	}
+	if cfg.BufferFlushInterval > 0 {
+		opts = append(opts, statsd.WithBufferFlushInterval(cfg.BufferFlushInterval))
+	}
+	if cfg.WorkersCount > 0 {
+		opts = append(opts, statsd.WithWorkersCount(cfg.WorkersCount))
+	}
+	if cfg.MaxMessagesPerPayload > 0 {
+		opts = append(opts, statsd.WithMaxMessagesPerPayload(cfg.MaxMessagesPerPayload))
+	}
+
+	client, err := statsd.New(cfg.Address, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DogStatsD client: %w", err)
 	}
 
 	return &DatadogPublisher{
-		client:    client,
-		namespace: cfg.Namespace,
-		tags:      cfg.Tags,
+		client:     client,
+		namespace:  cfg.Namespace,
+		tags:       cfg.Tags,
+		sampleRate: cfg.SampleRate,
 	}, nil
 }
 
@@ -74,8 +116,13 @@ func (p *DatadogPublisher) PublishFleetSizeDecrement(_ context.Context) error { 
 	return p.client.Incr("fleet_size_decrement", nil, 1)
 }
 
+func (p *DatadogPublisher) PublishFleetSize(_ context.Context, size int) error { //nolint:revive
+	return p.client.Gauge("fleet_size", float64(size), nil, 1)
+}
+
 func (p *DatadogPublisher) PublishJobDuration(_ context.Context, durationSeconds int) error { //nolint:revive
-	return p.client.Histogram("job_duration_seconds", float64(durationSeconds), nil, 1)
+	// Use Distribution for global percentile aggregation across all hosts
+	return p.client.Distribution("job_duration_seconds", float64(durationSeconds), nil, 1)
 }
 
 func (p *DatadogPublisher) PublishJobSuccess(_ context.Context) error { //nolint:revive
@@ -98,12 +145,14 @@ func (p *DatadogPublisher) PublishMessageDeletionFailure(_ context.Context) erro
 	return p.client.Incr("message_deletion_failures", nil, 1)
 }
 
+// PublishCacheHit uses sample rate for high-frequency metrics.
 func (p *DatadogPublisher) PublishCacheHit(_ context.Context) error { //nolint:revive
-	return p.client.Incr("cache_hits", nil, 1)
+	return p.client.Incr("cache_hits", nil, p.sampleRate)
 }
 
+// PublishCacheMiss uses sample rate for high-frequency metrics.
 func (p *DatadogPublisher) PublishCacheMiss(_ context.Context) error { //nolint:revive
-	return p.client.Incr("cache_misses", nil, 1)
+	return p.client.Incr("cache_misses", nil, p.sampleRate)
 }
 
 func (p *DatadogPublisher) PublishOrphanedInstancesTerminated(_ context.Context, count int) error { //nolint:revive
@@ -136,4 +185,52 @@ func (p *DatadogPublisher) PublishJobClaimFailure(_ context.Context) error { //n
 
 func (p *DatadogPublisher) PublishWarmPoolHit(_ context.Context) error { //nolint:revive
 	return p.client.Incr("warm_pool_hits", nil, 1)
+}
+
+// PublishServiceCheck publishes a Datadog service check.
+func (p *DatadogPublisher) PublishServiceCheck(_ context.Context, name string, status int, message string) error { //nolint:revive
+	var ddStatus statsd.ServiceCheckStatus
+	switch status {
+	case ServiceCheckOK:
+		ddStatus = statsd.Ok
+	case ServiceCheckWarning:
+		ddStatus = statsd.Warn
+	case ServiceCheckCritical:
+		ddStatus = statsd.Critical
+	default:
+		ddStatus = statsd.Unknown
+	}
+
+	return p.client.ServiceCheck(&statsd.ServiceCheck{
+		Name:    p.namespace + "." + name,
+		Status:  ddStatus,
+		Message: message,
+		Tags:    p.tags,
+	})
+}
+
+// PublishEvent publishes a Datadog event.
+func (p *DatadogPublisher) PublishEvent(_ context.Context, title, text, alertType string, tags []string) error { //nolint:revive
+	var ddAlertType statsd.EventAlertType
+	switch alertType {
+	case "warning":
+		ddAlertType = statsd.Warning
+	case "error":
+		ddAlertType = statsd.Error
+	case "success":
+		ddAlertType = statsd.Success
+	default:
+		ddAlertType = statsd.Info
+	}
+
+	allTags := make([]string, 0, len(p.tags)+len(tags))
+	allTags = append(allTags, p.tags...)
+	allTags = append(allTags, tags...)
+
+	return p.client.Event(&statsd.Event{
+		Title:     title,
+		Text:      text,
+		AlertType: ddAlertType,
+		Tags:      allTags,
+	})
 }
