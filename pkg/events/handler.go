@@ -196,7 +196,9 @@ func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 			eventsLog.Error("message delete failed", slog.String("error", err.Error()))
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
-			_ = h.metrics.PublishMessageDeletionFailure(metricCtx)
+			if err := h.metrics.PublishMessageDeletionFailure(metricCtx); err != nil {
+				eventsLog.Error("message deletion metric failed", slog.String("error", err.Error()))
+			}
 		}
 	}()
 

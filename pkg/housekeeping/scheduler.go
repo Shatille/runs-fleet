@@ -202,6 +202,8 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 		slog.String("error", lastErr.Error()))
 
 	if ctx.Err() == nil && s.metrics != nil {
-		_ = s.metrics.PublishSchedulingFailure(ctx, string(taskType))
+		if err := s.metrics.PublishSchedulingFailure(ctx, string(taskType)); err != nil {
+			s.logger().Error("scheduling failure metric failed", slog.String("error", err.Error()))
+		}
 	}
 }
