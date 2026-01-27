@@ -5,16 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
+
+var termLog = logging.WithComponent(logging.LogTypeTermination, "handler")
 
 // QueueAPI provides queue operations for termination event processing.
 type QueueAPI interface {
@@ -74,7 +77,7 @@ func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, secretsStore secrets.Store, 
 
 // Run starts the termination handler loop.
 func (h *Handler) Run(ctx context.Context) {
-	log.Println("Starting termination handler loop...")
+	termLog.Info("termination handler starting")
 
 	const maxConcurrency = 5
 	sem := make(chan struct{}, maxConcurrency)
@@ -86,15 +89,14 @@ func (h *Handler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Termination handler shutting down...")
 			wg.Wait()
-			log.Println("Termination handler stopped")
+			termLog.Info("termination handler shutdown complete")
 			return
 
 		case <-ticker.C:
 			messages, err := h.queueClient.ReceiveMessages(ctx, 10, 20)
 			if err != nil {
-				log.Printf("Failed to receive messages: %v", err)
+				termLog.Error("receive messages failed", slog.String("error", err.Error()))
 				continue
 			}
 
@@ -111,7 +113,7 @@ func (h *Handler) Run(ctx context.Context) {
 					defer cancel()
 
 					if err := h.processMessage(msgCtx, m); err != nil {
-						log.Printf("Failed to process message: %v", err)
+						termLog.Error("message processing failed", slog.String("error", err.Error()))
 					}
 				}(msg)
 			}
@@ -130,8 +132,11 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
-	log.Printf("Processing termination: instance_id=%s, job_id=%s, status=%s, exit_code=%d",
-		termMsg.InstanceID, termMsg.JobID, termMsg.Status, termMsg.ExitCode)
+	termLog.Info("processing termination",
+		slog.String(logging.KeyInstanceID, termMsg.InstanceID),
+		slog.String(logging.KeyJobID, termMsg.JobID),
+		slog.String("status", termMsg.Status),
+		slog.Int("exit_code", termMsg.ExitCode))
 
 	if err := h.validateMessage(&termMsg); err != nil {
 		return fmt.Errorf("invalid message: %w", err)
@@ -147,7 +152,6 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		}
 	}
 
-	log.Printf("Termination processed successfully: job_id=%s", termMsg.JobID)
 	return nil
 }
 
@@ -169,7 +173,6 @@ func (h *Handler) validateMessage(msg *Message) error {
 func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	// Only process completion messages (not "started" messages)
 	if msg.Status == "started" {
-		log.Printf("Ignoring job started message: job_id=%s", msg.JobID)
 		return nil
 	}
 
@@ -187,30 +190,34 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	// Update job metrics (timestamps)
 	if !msg.StartedAt.IsZero() && !msg.CompletedAt.IsZero() {
 		if err := h.dbClient.UpdateJobMetrics(ctx, jobID, msg.StartedAt, msg.CompletedAt); err != nil {
-			log.Printf("Warning: failed to update job metrics: %v", err)
+			termLog.Warn("job metrics update failed",
+				slog.Int64(logging.KeyJobID, jobID),
+				slog.String("error", err.Error()))
 		}
 	}
 
 	// Publish CloudWatch metrics
 	if msg.DurationSeconds > 0 {
 		if err := h.metrics.PublishJobDuration(ctx, msg.DurationSeconds); err != nil {
-			log.Printf("Warning: failed to publish job duration metric: %v", err)
+			termLog.Warn("job duration metric publish failed", slog.String("error", err.Error()))
 		}
 	}
 
 	if msg.Status == "success" {
 		if err := h.metrics.PublishJobSuccess(ctx); err != nil {
-			log.Printf("Warning: failed to publish job success metric: %v", err)
+			termLog.Warn("job success metric publish failed", slog.String("error", err.Error()))
 		}
 	} else {
 		if err := h.metrics.PublishJobFailure(ctx); err != nil {
-			log.Printf("Warning: failed to publish job failure metric: %v", err)
+			termLog.Warn("job failure metric publish failed", slog.String("error", err.Error()))
 		}
 	}
 
 	// Clean up runner config from secrets store
 	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {
-		log.Printf("Warning: failed to delete runner config: %v", err)
+		termLog.Warn("runner config delete failed",
+			slog.String(logging.KeyInstanceID, msg.InstanceID),
+			slog.String("error", err.Error()))
 	}
 
 	return nil
@@ -226,12 +233,12 @@ func (h *Handler) deleteRunnerConfig(ctx context.Context, instanceID string) err
 	if err != nil {
 		// Check if config was already deleted
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound") {
-			log.Printf("Runner config already deleted: %s", instanceID)
 			return nil
 		}
 		return fmt.Errorf("failed to delete runner config for %s: %w", instanceID, err)
 	}
 
-	log.Printf("Deleted runner config: %s", instanceID)
+	termLog.Info("runner config deleted",
+		slog.String(logging.KeyInstanceID, instanceID))
 	return nil
 }

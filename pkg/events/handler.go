@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
+
+var eventsLog = logging.WithComponent(logging.LogTypeEvents, "handler")
 
 // eventsTickInterval is the interval for the events handler loop.
 // Exposed as a variable to allow testing with shorter durations.
@@ -110,7 +113,7 @@ type StateChangeDetail struct {
 
 // Run starts the event handler loop.
 func (h *Handler) Run(ctx context.Context) {
-	log.Println("Starting event handler loop...")
+	eventsLog.Info("event handler starting")
 	ticker := time.NewTicker(eventsTickInterval)
 	defer ticker.Stop()
 
@@ -133,7 +136,7 @@ func (h *Handler) Run(ctx context.Context) {
 			messages, err := h.queueClient.ReceiveMessages(recvCtx, 10, 20)
 			cancel()
 			if err != nil {
-				log.Printf("failed to receive event messages: %v", err)
+				eventsLog.Error("receive messages failed", slog.String("error", err.Error()))
 				continue
 			}
 
@@ -154,7 +157,7 @@ func (h *Handler) Run(ctx context.Context) {
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("panic in processEvent: %v", r)
+							eventsLog.Error("panic in event processor", slog.Any("panic", r))
 						}
 					}()
 					defer wg.Done()
@@ -184,29 +187,27 @@ func (h *Handler) Run(ctx context.Context) {
 
 func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 	if msg.Handle == "" {
-		log.Printf("received message with empty handle")
+		eventsLog.Warn("message with empty handle")
 		return
 	}
 
 	defer func() {
 		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
-			log.Printf("failed to delete event message: %v", err)
+			eventsLog.Error("message delete failed", slog.String("error", err.Error()))
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
-			if metricErr := h.metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-				log.Printf("failed to publish deletion failure metric: %v", metricErr)
-			}
+			_ = h.metrics.PublishMessageDeletionFailure(metricCtx)
 		}
 	}()
 
 	if msg.Body == "" {
-		log.Printf("received message with empty body")
+		eventsLog.Warn("message with empty body")
 		return
 	}
 
 	var event EventBridgeEvent
 	if err := json.Unmarshal([]byte(msg.Body), &event); err != nil {
-		log.Printf("failed to unmarshal event: %v", err)
+		eventsLog.Error("event unmarshal failed", slog.String("error", err.Error()))
 		return
 	}
 
@@ -217,12 +218,12 @@ func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 	case "EC2 Instance State-change Notification":
 		processErr = h.handleStateChange(ctx, event.Detail)
 	default:
-		log.Printf("unknown event type: %s", event.DetailType)
+		eventsLog.Warn("unknown event type", slog.String("detail_type", event.DetailType))
 		return
 	}
 
 	if processErr != nil {
-		log.Printf("failed to process event: %v", processErr)
+		eventsLog.Error("event processing failed", slog.String("error", processErr.Error()))
 	}
 }
 
@@ -260,7 +261,8 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to unmarshal spot interruption detail: %w", err)
 	}
 
-	log.Printf("Spot interruption received for instance %s", detail.InstanceID)
+	eventsLog.Info("spot interruption received",
+		slog.String(logging.KeyInstanceID, detail.InstanceID))
 
 	if err := h.retryWithBackoff(ctx, h.metrics.PublishSpotInterruption); err != nil {
 		return fmt.Errorf("failed to publish spot interruption metric: %w", err)
@@ -275,19 +277,19 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to get job for instance: %w", err)
 	}
 	if job == nil {
-		log.Printf("No job found for instance %s, skipping re-queue", detail.InstanceID)
 		return nil
 	}
 
 	if job.JobID == 0 || job.RunID == 0 {
-		log.Printf("Invalid job data for instance %s (JobID=%d, RunID=%d), skipping re-queue", detail.InstanceID, job.JobID, job.RunID)
 		return nil
 	}
 
 	// Record interruption in circuit breaker
 	if h.circuitBreaker != nil && job.InstanceType != "" {
 		if err := h.circuitBreaker.RecordInterruption(ctx, job.InstanceType); err != nil {
-			log.Printf("Warning: failed to record interruption in circuit breaker: %v", err)
+			eventsLog.Warn("circuit breaker record failed",
+				slog.String("instance_type", job.InstanceType),
+				slog.String("error", err.Error()))
 		}
 	}
 
@@ -309,7 +311,10 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to re-queue job %d: %w", job.JobID, err)
 	}
 
-	log.Printf("Successfully re-queued job %d from interrupted instance %s (RetryCount=%d, ForceOnDemand=true)", job.JobID, detail.InstanceID, requeueMsg.RetryCount)
+	eventsLog.Info("job requeued after spot interruption",
+		slog.Int64(logging.KeyJobID, job.JobID),
+		slog.String(logging.KeyInstanceID, detail.InstanceID),
+		slog.Int("retry_count", requeueMsg.RetryCount))
 	return nil
 }
 
@@ -319,7 +324,9 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 		return fmt.Errorf("failed to unmarshal state change detail: %w", err)
 	}
 
-	log.Printf("Instance %s changed state to %s", detail.InstanceID, detail.State)
+	eventsLog.Info("instance state change",
+		slog.String(logging.KeyInstanceID, detail.InstanceID),
+		slog.String("state", detail.State))
 
 	switch detail.State {
 	case "running":
@@ -331,9 +338,11 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 			return fmt.Errorf("failed to publish fleet size decrement metric: %w", err)
 		}
 	case "pending", "stopping", "shutting-down":
-		log.Printf("Ignoring intermediate state %s for instance %s", detail.State, detail.InstanceID)
+		// Intermediate states, no action needed
 	default:
-		log.Printf("Unknown state %s for instance %s", detail.State, detail.InstanceID)
+		eventsLog.Warn("unknown instance state",
+			slog.String(logging.KeyInstanceID, detail.InstanceID),
+			slog.String("state", detail.State))
 	}
 	return nil
 }

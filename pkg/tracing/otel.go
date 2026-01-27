@@ -4,10 +4,11 @@ package tracing
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -18,6 +19,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var tracingLog = logging.WithComponent(logging.LogTypeTracing, "otel")
 
 const (
 	serviceName    = "runs-fleet"
@@ -63,11 +66,11 @@ type Provider struct {
 // Returns a no-op provider if tracing is disabled.
 func Init(ctx context.Context, cfg *Config) (*Provider, error) {
 	if cfg == nil || !cfg.Enabled {
-		log.Println("OpenTelemetry tracing disabled")
+		tracingLog.Info("opentelemetry tracing disabled")
 		return &Provider{enabled: false}, nil
 	}
 
-	log.Printf("Initializing OpenTelemetry tracing with endpoint: %s", cfg.Endpoint)
+	tracingLog.Info("initializing opentelemetry tracing", slog.String("endpoint", cfg.Endpoint))
 
 	client := otlptracegrpc.NewClient(
 		otlptracegrpc.WithEndpoint(cfg.Endpoint),
@@ -110,7 +113,7 @@ func Init(ctx context.Context, cfg *Config) (*Provider, error) {
 		propagation.Baggage{},
 	))
 
-	log.Println("OpenTelemetry tracing initialized successfully")
+	tracingLog.Info("opentelemetry tracing initialized")
 	return &Provider{provider: provider, enabled: true}, nil
 }
 

@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/Shavakan/runs-fleet/internal/handler"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 )
+
+var directLog = logging.WithComponent(logging.LogTypeQueue, "direct")
 
 // DirectProcessor handles immediate job processing from webhooks.
 type DirectProcessor struct {
@@ -30,24 +33,21 @@ type DirectProcessor struct {
 // ProcessJobDirect processes a job immediately without SQS.
 // Returns true if instance was assigned (warm pool or new fleet), false if job was already claimed or processing failed.
 func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMessage) bool {
-	log.Printf("Direct processing job for run %d", job.RunID)
-
 	if p.Fleet == nil {
-		log.Printf("ERROR: Direct processing: Fleet manager is nil for job %d - this indicates a configuration error", job.JobID)
+		directLog.Error("fleet manager nil", slog.Int64(logging.KeyJobID, job.JobID))
 		return false
 	}
 
 	if p.DB != nil && p.DB.HasJobsTable() {
 		if err := p.DB.ClaimJob(ctx, job.JobID); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
-				log.Printf("Job %d already claimed (direct path)", job.JobID)
 				return false
 			}
-			log.Printf("Job %d claim failed (direct path): %v, deferring to queue", job.JobID, err)
+			directLog.Warn("job claim failed, deferring to queue",
+				slog.Int64(logging.KeyJobID, job.JobID),
+				slog.String("error", err.Error()))
 			if p.Metrics != nil {
-				if metricErr := p.Metrics.PublishJobClaimFailure(ctx); metricErr != nil {
-					log.Printf("Failed to publish job claim failure metric: %v", metricErr)
-				}
+				_ = p.Metrics.PublishJobClaimFailure(ctx)
 			}
 			return false
 		}
@@ -62,14 +62,16 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, job)
 		if err != nil {
-			log.Printf("Direct processing: warm pool assignment error for job %d: %v", job.JobID, err)
+			directLog.Error("warm pool assignment failed",
+				slog.Int64(logging.KeyJobID, job.JobID),
+				slog.String("error", err.Error()))
 		} else if result.Assigned {
 			if p.Metrics != nil {
-				if metricErr := p.Metrics.PublishWarmPoolHit(ctx); metricErr != nil {
-					log.Printf("Direct processing: failed to publish warm pool hit metric: %v", metricErr)
-				}
+				_ = p.Metrics.PublishWarmPoolHit(ctx)
 			}
-			log.Printf("Direct processing: assigned job %d to warm pool instance %s", job.JobID, result.InstanceID)
+			directLog.Info("job assigned to warm pool",
+				slog.Int64(logging.KeyJobID, job.JobID),
+				slog.String(logging.KeyInstanceID, result.InstanceID))
 			return true
 		}
 	}
@@ -94,11 +96,11 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 
 	instanceIDs, err := CreateFleetWithRetry(ctx, p.Fleet, spec)
 	if err != nil {
-		log.Printf("Direct processing: failed to create fleet for job %d: %v", job.JobID, err)
+		directLog.Error("fleet creation failed",
+			slog.Int64(logging.KeyJobID, job.JobID),
+			slog.String("error", err.Error()))
 		if p.DB != nil && p.DB.HasJobsTable() {
-			if claimErr := p.DB.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
-				log.Printf("Direct processing: failed to delete job claim for %d: %v", job.JobID, claimErr)
-			}
+			_ = p.DB.DeleteJobClaim(ctx, job.JobID)
 		}
 		return false
 	}
@@ -116,7 +118,9 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				RetryCount:   job.RetryCount,
 			}
 			if err := p.DB.SaveJob(ctx, jobRecord); err != nil {
-				log.Printf("Direct processing: failed to save job record: %v", err)
+				directLog.Error("job record save failed",
+					slog.String(logging.KeyInstanceID, instanceID),
+					slog.String("error", err.Error()))
 			}
 		}
 	}
@@ -132,7 +136,9 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				Labels:     []string{label},
 			}
 			if err := p.Runner.PrepareRunner(ctx, prepareReq); err != nil {
-				log.Printf("Direct processing: failed to prepare runner: %v", err)
+				directLog.Error("runner config preparation failed",
+					slog.String(logging.KeyInstanceID, instanceID),
+					slog.String("error", err.Error()))
 			}
 		}
 	}
@@ -142,12 +148,12 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	}
 
 	if p.Metrics != nil {
-		if err := p.Metrics.PublishFleetSizeIncrement(ctx); err != nil {
-			log.Printf("Direct processing: failed to publish metric: %v", err)
-		}
+		_ = p.Metrics.PublishFleetSizeIncrement(ctx)
 	}
 
-	log.Printf("Direct processing: launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
+	directLog.Info("instances launched",
+		slog.Int64(logging.KeyRunID, job.RunID),
+		slog.Int(logging.KeyCount, len(instanceIDs)))
 	return true
 }
 
@@ -162,7 +168,9 @@ func TryDirectProcessing(_ context.Context, processor *DirectProcessor, sem chan
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("Panic in direct processing for job %d: %v", jobMsg.JobID, r)
+					directLog.Error("panic in direct processing",
+						slog.Int64(logging.KeyJobID, jobMsg.JobID),
+						slog.Any("panic", r))
 				}
 			}()
 			defer func() { <-sem }()
@@ -172,6 +180,6 @@ func TryDirectProcessing(_ context.Context, processor *DirectProcessor, sem chan
 			processor.ProcessJobDirect(directCtx, jobMsg)
 		}()
 	default:
-		log.Printf("Direct processing at capacity, job %d will be processed via queue", jobMsg.JobID)
+		// At capacity, job will be processed via queue
 	}
 }

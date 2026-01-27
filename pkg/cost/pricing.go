@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/pricing"
 	"github.com/aws/aws-sdk-go-v2/service/pricing/types"
 )
+
+var pricingLog = logging.WithComponent(logging.LogTypeCost, "pricing")
 
 // PricingAPI defines the AWS Pricing API operations.
 type PricingAPI interface {
@@ -79,7 +82,9 @@ func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float
 	// Try to fetch from AWS Pricing API
 	price, err := p.fetchPriceFromAPI(ctx, instanceType)
 	if err != nil {
-		log.Printf("Warning: failed to fetch price from AWS Pricing API for %s: %v (using fallback)", instanceType, err)
+		pricingLog.Warn("pricing api fetch failed, using fallback",
+			slog.String(logging.KeyInstanceType, instanceType),
+			slog.String("error", err.Error()))
 		p.useFallback = true
 		return p.getFallbackPrice(instanceType), nil
 	}
@@ -117,7 +122,9 @@ func (p *PriceFetcher) RefreshCache(ctx context.Context) error {
 	for _, instanceType := range knownTypes {
 		_, err := p.GetPrice(ctx, instanceType)
 		if err != nil {
-			log.Printf("Warning: failed to refresh price for %s: %v", instanceType, err)
+			pricingLog.Warn("price refresh failed",
+				slog.String(logging.KeyInstanceType, instanceType),
+				slog.String("error", err.Error()))
 		}
 	}
 

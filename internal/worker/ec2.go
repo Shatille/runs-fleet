@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -14,11 +14,14 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 )
+
+var ec2Log = logging.WithComponent(logging.LogTypeQueue, "ec2-worker")
 
 const (
 	maxDeleteRetries      = 3
@@ -65,93 +68,62 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		defer cleanupCancel()
 
 		if jobProcessed {
-			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
-				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
-			}
+			_ = deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle)
 			if deps.Metrics != nil {
-				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-					log.Printf("Failed to publish queue depth metric: %v", err)
-				}
-				// Only publish fleet size increment for cold starts, not warm pool hits
+				_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
 				if fleetCreated {
-					if metricErr := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
-						log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
-					}
+					_ = deps.Metrics.PublishFleetSizeIncrement(cleanupCtx)
 				}
 			}
 		}
 
 		if alreadyClaimed {
-			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
-				log.Printf("Failed to delete already-claimed message: %v", err)
-			}
+			_ = deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle)
 			if deps.Metrics != nil {
-				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-					log.Printf("Failed to publish queue depth metric: %v", err)
-				}
+				_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
 			}
 		}
 
-		if poisonMessage {
-			if deps.Metrics != nil {
-				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-					log.Printf("Failed to publish queue depth metric: %v", err)
-				}
-			}
+		if poisonMessage && deps.Metrics != nil {
+			_ = deps.Metrics.PublishQueueDepth(cleanupCtx, -1)
 		}
 
 		if deps.Metrics != nil {
-			if err := deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
-				log.Printf("Failed to publish job duration metric: %v", err)
-			}
+			_ = deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds()))
 		}
 	}()
 
 	var job queue.JobMessage
 	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
-		log.Printf("Failed to unmarshal message: %v", err)
+		ec2Log.Warn("poison message", slog.String("error", err.Error()))
 		poisonMessage = true
-
-		if err := deleteMessageWithRetry(ctx, deps.Queue, msg.Handle); err != nil {
-			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
-		}
-
+		_ = deleteMessageWithRetry(ctx, deps.Queue, msg.Handle)
 		if deps.Metrics != nil {
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
-			if metricErr := deps.Metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-				log.Printf("Failed to publish poison message metric: %v", metricErr)
-			}
+			_ = deps.Metrics.PublishMessageDeletionFailure(metricCtx)
 		}
 		return
 	}
 
-	log.Printf("Processing job for run %d (retry=%d, forceOnDemand=%v, os=%s, region=%s, env=%s)",
-		job.RunID, job.RetryCount, job.ForceOnDemand, job.OS, job.Region, job.Environment)
-
 	if deps.DB != nil && deps.DB.HasJobsTable() {
 		if err := deps.DB.ClaimJob(ctx, job.JobID); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
-				log.Printf("Job %d already claimed, skipping (duplicate from queue)", job.JobID)
 				alreadyClaimed = true
 				return
 			}
-			log.Printf("Job %d claim failed: %v, will retry via visibility timeout", job.JobID, err)
 			if deps.Metrics != nil {
-				if metricErr := deps.Metrics.PublishJobClaimFailure(ctx); metricErr != nil {
-					log.Printf("Failed to publish job claim failure metric: %v", metricErr)
-				}
+				_ = deps.Metrics.PublishJobClaimFailure(ctx)
 			}
 			return
 		}
 	}
 
 	if deps.Fleet == nil {
-		log.Printf("ERROR: Fleet manager is nil, cannot process job %d - this indicates a configuration error", job.JobID)
+		ec2Log.Error("fleet manager nil", slog.Int64(logging.KeyJobID, job.JobID))
 		return
 	}
 
-	// Try warm pool assignment first
 	if job.Pool != "" {
 		assigner := &WarmPoolAssigner{
 			Pool:   deps.Pool,
@@ -159,21 +131,18 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			DB:     deps.DB,
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, &job)
-		if err != nil {
-			log.Printf("Warm pool assignment error for job %d: %v", job.JobID, err)
-		} else if result.Assigned {
-			jobProcessed = true // Reuse flag for message deletion
+		if err == nil && result.Assigned {
+			jobProcessed = true
 			if deps.Metrics != nil {
-				if metricErr := deps.Metrics.PublishWarmPoolHit(ctx); metricErr != nil {
-					log.Printf("Failed to publish warm pool hit metric: %v", metricErr)
-				}
+				_ = deps.Metrics.PublishWarmPoolHit(ctx)
 			}
-			log.Printf("Assigned job %d to warm pool instance %s", job.JobID, result.InstanceID)
+			ec2Log.Info("job assigned to warm pool",
+				slog.Int64(logging.KeyJobID, job.JobID),
+				slog.String(logging.KeyInstanceID, result.InstanceID))
 			return
 		}
 	}
 
-	// Cold start: create new fleet
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
@@ -193,11 +162,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 
 	instanceIDs, err := CreateFleetWithRetry(ctx, deps.Fleet, spec)
 	if err != nil {
-		log.Printf("Failed to create fleet: %v", err)
+		ec2Log.Error("fleet creation failed",
+			slog.Int64(logging.KeyRunID, job.RunID),
+			slog.String("error", err.Error()))
 		if deps.DB != nil && deps.DB.HasJobsTable() {
-			if claimErr := deps.DB.DeleteJobClaim(ctx, job.JobID); claimErr != nil {
-				log.Printf("Failed to delete job claim for %d: %v", job.JobID, claimErr)
-			}
+			_ = deps.DB.DeleteJobClaim(ctx, job.JobID)
 		}
 
 		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {
@@ -218,7 +187,9 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 	}
 
-	log.Printf("Successfully launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
+	ec2Log.Info("instances launched",
+		slog.Int64(logging.KeyRunID, job.RunID),
+		slog.Int(logging.KeyCount, len(instanceIDs)))
 }
 
 // SelectSubnet returns the next subnet ID in round-robin fashion.
@@ -256,7 +227,6 @@ func CreateFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.Lau
 	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
 		if attempt > 0 {
 			backoff := FleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-			log.Printf("Retrying fleet creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
 			time.Sleep(backoff)
 		}
 
@@ -264,8 +234,6 @@ func CreateFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.Lau
 		if err == nil {
 			return instanceIDs, nil
 		}
-
-		log.Printf("Fleet creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
 	}
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }
@@ -296,7 +264,9 @@ func SaveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 			}
 		}
 		if saveErr != nil {
-			log.Printf("ERROR: Failed to save job record after retries for instance %s: %v (spot interruption tracking disabled)", instanceID, saveErr)
+			ec2Log.Error("job record save failed",
+				slog.String(logging.KeyInstanceID, instanceID),
+				slog.String("error", saveErr.Error()))
 		}
 	}
 }
@@ -316,7 +286,9 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 			Labels:     []string{label},
 		}
 		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
-			log.Printf("Failed to prepare runner config for instance %s: %v", instanceID, err)
+			ec2Log.Error("runner config preparation failed",
+				slog.String(logging.KeyInstanceID, instanceID),
+				slog.String("error", err.Error()))
 		}
 	}
 }
@@ -325,7 +297,9 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 	if delErr := deleteMessageWithRetry(cleanupCtx, deps.Queue, msgHandle); delErr != nil {
 		cleanupCancel()
-		log.Printf("Failed to delete original message, skipping fallback to prevent duplicates: %v", delErr)
+		ec2Log.Error("message delete failed, skipping fallback",
+			slog.Int64(logging.KeyJobID, job.JobID),
+			slog.String("error", delErr.Error()))
 		return
 	}
 	cleanupCancel()
@@ -349,13 +323,15 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 		PublicIP:      job.PublicIP,
 	}
 	if sendErr := sendMessageWithRetry(ctx, deps.Queue, fallbackJob); sendErr != nil {
-		log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)
+		ec2Log.Error("job lost - fallback requeue failed",
+			slog.Int64(logging.KeyJobID, job.JobID),
+			slog.String("error", sendErr.Error()))
 	} else {
-		log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
+		ec2Log.Info("job requeued with on-demand fallback",
+			slog.Int64(logging.KeyJobID, job.JobID),
+			slog.Int("retry_count", fallbackJob.RetryCount))
 		if deps.Metrics != nil {
-			if metricErr := deps.Metrics.PublishJobQueued(ctx); metricErr != nil {
-				log.Printf("Failed to publish job queued metric: %v", metricErr)
-			}
+			_ = deps.Metrics.PublishJobQueued(ctx)
 		}
 	}
 }

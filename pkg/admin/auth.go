@@ -4,10 +4,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
+
+var adminAuthLog = logging.WithComponent(logging.LogTypeAdmin, "auth")
 
 // AuthMiddleware provides authentication for admin API endpoints.
 type AuthMiddleware struct {
@@ -34,13 +38,13 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 
 		token := m.extractToken(r)
 		if token == "" {
-			log.Printf("Admin auth failed: missing token from %s", r.RemoteAddr)
+			adminAuthLog.Warn("admin auth failed: missing token", slog.String("remote_addr", r.RemoteAddr))
 			http.Error(w, "Unauthorized: missing admin token", http.StatusUnauthorized)
 			return
 		}
 
 		if !m.validateToken(token) {
-			log.Printf("Admin auth failed: invalid token from %s", r.RemoteAddr)
+			adminAuthLog.Warn("admin auth failed: invalid token", slog.String("remote_addr", r.RemoteAddr))
 			http.Error(w, "Unauthorized: invalid admin token", http.StatusUnauthorized)
 			return
 		}

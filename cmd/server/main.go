@@ -4,7 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,6 +23,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
@@ -38,19 +39,24 @@ import (
 )
 
 func main() {
+	logging.Init()
+	log := logging.WithComponent(logging.LogTypeServer, "main")
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	log.Println("Starting runs-fleet server...")
+	log.Info("server starting")
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Error("config load failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
 	if err != nil {
-		log.Fatalf("Failed to load AWS config: %v", err)
+		log.Error("aws config load failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	jobQueue := initJobQueue(awsCfg, cfg)
@@ -65,15 +71,15 @@ func main() {
 	var k8sPoolProvider *k8s.PoolProvider
 
 	if cfg.IsK8sBackend() {
-		log.Printf("Initializing K8s backend (namespace: %s)", cfg.KubeNamespace)
+		log.Info("initializing backend", slog.String(logging.KeyBackend, "k8s"), slog.String(logging.KeyNamespace, cfg.KubeNamespace))
 		k8sProvider, err = k8s.NewProvider(cfg)
 		if err != nil {
-			log.Fatalf("Failed to create K8s provider: %v", err)
+			log.Error("k8s provider creation failed", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 		k8sPoolProvider = k8s.NewPoolProvider(k8sProvider.Clientset(), cfg)
-		log.Println("K8s provider and pool provider initialized")
 	} else {
-		log.Println("Initializing EC2 backend")
+		log.Info("initializing backend", slog.String(logging.KeyBackend, "ec2"))
 		eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
 		fleetManager = fleet.NewManager(awsCfg, cfg)
 		poolManager = pools.NewManager(dbClient, fleetManager, cfg)
@@ -83,7 +89,6 @@ func main() {
 	if poolManager != nil {
 		ec2Client := ec2.NewFromConfig(awsCfg)
 		poolManager.SetEC2Client(ec2Client)
-		log.Println("Pool manager initialized with EC2 client for reconciliation")
 	}
 
 	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
@@ -166,30 +171,33 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Server listening on %s", server.Addr)
+		log.Info("http server listening", slog.String("addr", server.Addr))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+			log.Error("http server failed", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("Shutdown signal received, gracefully stopping...")
+	log.Info("shutdown signal received")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server shutdown failed: %v", err)
+		log.Error("server shutdown failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	if err := metricsPublisher.Close(); err != nil {
-		log.Printf("Metrics publisher close failed: %v", err)
+		log.Warn("metrics publisher close failed", slog.String("error", err.Error()))
 	}
 
-	log.Println("Server stopped")
+	log.Info("server stopped")
 }
 
 func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
+	log := logging.WithComponent(logging.LogTypeQueue, "init")
 	if cfg.IsK8sBackend() {
 		consumerID := os.Getenv("HOSTNAME")
 		if consumerID == "" {
@@ -204,31 +212,32 @@ func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
 			ConsumerID: consumerID,
 		})
 		if err != nil {
-			log.Fatalf("Failed to create Valkey client: %v", err)
+			log.Error("valkey client creation failed", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
-		log.Printf("Using Valkey queue at %s", cfg.ValkeyAddr)
+		log.Info("queue initialized", slog.String("type", "valkey"), slog.String("addr", cfg.ValkeyAddr))
 		return valkeyClient
 	}
-	log.Printf("Using SQS queue at %s", cfg.QueueURL)
+	log.Info("queue initialized", slog.String("type", "sqs"), slog.String(logging.KeyQueueURL, cfg.QueueURL))
 	return queue.NewSQSClient(awsCfg, cfg.QueueURL)
 }
 
 func initRunnerManager(secretsStore secrets.Store, cfg *config.Config) *runner.Manager {
+	log := logging.WithComponent(logging.LogTypeServer, "runner")
 	if cfg.GitHubAppID == "" || cfg.GitHubAppPrivateKey == "" {
-		log.Println("WARNING: Runner manager not initialized - GitHub App credentials not configured")
+		log.Warn("runner manager not initialized", slog.String(logging.KeyReason, "github app credentials not configured"))
 		return nil
 	}
 	githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 	if err != nil {
-		log.Fatalf("Failed to create GitHub client: %v", err)
+		log.Error("github client creation failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
-	rm := runner.NewManager(githubClient, secretsStore, runner.ManagerConfig{
+	return runner.NewManager(githubClient, secretsStore, runner.ManagerConfig{
 		CacheSecret:         cfg.CacheSecret,
 		CacheURL:            cfg.CacheURL,
 		TerminationQueueURL: cfg.TerminationQueueURL,
 	})
-	log.Println("Runner manager initialized for secrets store")
-	return rm
 }
 
 func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Config, fm *fleet.Manager, eh *events.Handler) *circuit.Breaker {
@@ -241,11 +250,11 @@ func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Conf
 	if eh != nil {
 		eh.SetCircuitBreaker(cb)
 	}
-	log.Printf("Circuit breaker initialized with table: %s", cfg.CircuitBreakerTable)
 	return cb
 }
 
 func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config) secrets.Store {
+	log := logging.WithComponent(logging.LogTypeServer, "secrets")
 	secretsCfg := secrets.Config{
 		Backend: cfg.SecretsBackend,
 		SSM: secrets.SSMConfig{
@@ -265,9 +274,10 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	}
 	store, err := secrets.NewStore(ctx, secretsCfg, awsCfg)
 	if err != nil {
-		log.Fatalf("Failed to create secrets store: %v", err)
+		log.Error("secrets store creation failed", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
-	log.Printf("Secrets store initialized (backend: %s)", cfg.SecretsBackend)
+	log.Info("secrets store initialized", slog.String(logging.KeyBackend, cfg.SecretsBackend))
 	return store
 }
 
@@ -292,26 +302,23 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 
 	h := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
 
-	// Set up distributed task locking for HA deployments
-	// Use UUID for instance ID (not hostname) to ensure crashed instances
-	// cannot bypass TTL lock expiration by restarting with the same ID
 	if dbClient != nil {
 		instanceID := uuid.NewString()
 		h.SetTaskLocker(dbClient, instanceID)
-		log.Printf("Housekeeping task locking enabled (instance: %s)", instanceID)
 	}
 
 	schedulerCfg := housekeeping.DefaultSchedulerConfig()
 	scheduler := housekeeping.NewSchedulerFromConfig(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
 	scheduler.SetMetrics(metricsPublisher)
 
-	log.Printf("Housekeeping handler and scheduler initialized with queue: %s", cfg.HousekeepingQueueURL)
 	return h, scheduler
 }
 
 func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http.Handler) {
+	log := logging.WithComponent(logging.LogTypeServer, "metrics")
 	var publishers []metrics.Publisher
 	var prometheusHandler http.Handler
+	var backends []string
 
 	if cfg.MetricsCloudWatchEnabled {
 		namespace := cfg.MetricsNamespace
@@ -319,7 +326,7 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 			namespace = "RunsFleet"
 		}
 		publishers = append(publishers, metrics.NewCloudWatchPublisherWithNamespace(awsCfg, namespace))
-		log.Println("CloudWatch metrics enabled")
+		backends = append(backends, "cloudwatch")
 	}
 
 	if cfg.MetricsPrometheusEnabled {
@@ -330,7 +337,7 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 		prom := metrics.NewPrometheusPublisher(metrics.PrometheusConfig{Namespace: namespace})
 		publishers = append(publishers, prom)
 		prometheusHandler = prom.Handler()
-		log.Println("Prometheus metrics enabled")
+		backends = append(backends, "prometheus")
 	}
 
 	if cfg.MetricsDatadogEnabled {
@@ -348,17 +355,18 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 			MaxMessagesPerPayload: cfg.MetricsDatadogMaxMsgsPerPayload,
 		})
 		if err != nil {
-			log.Printf("WARNING: Failed to create Datadog metrics publisher: %v (continuing without Datadog)", err)
+			log.Warn("datadog metrics init failed", slog.String("error", err.Error()))
 		} else {
 			publishers = append(publishers, dd)
-			log.Printf("Datadog metrics enabled (addr: %s)", cfg.MetricsDatadogAddr)
+			backends = append(backends, "datadog")
 		}
 	}
 
 	if len(publishers) == 0 {
-		log.Println("No metrics backends enabled")
 		return metrics.NoopPublisher{}, nil
 	}
+
+	log.Info("metrics initialized", slog.Any("backends", backends))
 
 	if len(publishers) == 1 {
 		return publishers[0], prometheusHandler
@@ -379,7 +387,6 @@ func setupHTTPRoutes(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Clie
 
 	if prometheusHandler != nil {
 		mux.Handle(cfg.MetricsPrometheusPath, prometheusHandler)
-		log.Printf("Prometheus metrics enabled at %s", cfg.MetricsPrometheusPath)
 	}
 
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
@@ -388,11 +395,6 @@ func setupHTTPRoutes(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Clie
 	adminHandler := admin.NewHandler(dbClient, cfg.AdminSecret)
 	adminHandler.RegisterRoutes(mux)
 	mux.Handle("/admin/", admin.UIHandler())
-	if cfg.AdminSecret != "" {
-		log.Println("Admin API enabled at /api/pools with authentication, UI at /admin/")
-	} else {
-		log.Println("Admin API enabled at /api/pools (no authentication), UI at /admin/")
-	}
 
 	mux.HandleFunc("/webhook", makeWebhookHandler(cfg, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem))
 
@@ -405,7 +407,7 @@ func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
 			pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
 			if err := pinger.Ping(pingCtx); err != nil {
-				log.Printf("Readiness check failed: %v", err)
+				slog.Warn("readiness check failed", slog.String("error", err.Error()))
 				http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
 				return
 			}
@@ -416,6 +418,7 @@ func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
 }
 
 func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) http.HandlerFunc {
+	log := logging.WithComponent(logging.LogTypeWebhook, "handler")
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -424,7 +427,7 @@ func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.C
 
 		payload, err := gh.ParseWebhook(r, cfg.GitHubWebhookSecret)
 		if err != nil {
-			log.Printf("Webhook parsing failed: %v", err)
+			log.Warn("webhook parse failed", slog.String("error", err.Error()))
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
@@ -461,7 +464,10 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 		}
 		requeued, err := handler.HandleJobFailure(ctx, event, jobQueue, dbClient, metricsPublisher)
 		if err != nil {
-			log.Printf("Failed to handle job failure: %v", err)
+			slog.Error("job failure handling failed",
+				slog.String(logging.KeyLogType, logging.LogTypeWebhook),
+				slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
+				slog.String("error", err.Error()))
 		}
 		if requeued {
 			return true, "Job requeued"
