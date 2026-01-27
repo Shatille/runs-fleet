@@ -4,7 +4,7 @@ Self-hosted ephemeral GitHub Actions runners on AWS. Orchestrates spot EC2 insta
 
 ## Stack
 
-- Go 1.22+ (AWS SDK v2, go-github)
+- Go 1.25+ (AWS SDK v2, go-github)
 - AWS: EC2 Fleet API, SQS FIFO, DynamoDB, S3, SSM, ECS Fargate
 - Infra: Terraform (separate repo: `shavakan-terraform/terraform/runs-fleet/`)
 - Nix: Dev tooling (flake.nix)
@@ -29,18 +29,27 @@ GitHub Webhook → API Gateway → SQS FIFO
 
 - `cmd/server/` - Fargate orchestrator (webhooks, queue processing, fleet management)
 - `cmd/agent/` - EC2 instance bootstrap binary (registers runner, executes job)
-- `pkg/github/` - GitHub API client (webhooks, JIT tokens, GraphQL)
-- `pkg/fleet/` - EC2 fleet orchestration (spot strategy, launch templates)
-- `pkg/pools/` - Warm pool reconciliation (hot/stopped instances)
+- `pkg/admin/` - Admin API and web UI for fleet management
+- `pkg/agent/` - Agent runtime logic (job execution, telemetry)
 - `pkg/cache/` - S3-backed GitHub Actions cache protocol
-- `pkg/queue/` - SQS message processing (FIFO, batch, DLQ)
+- `pkg/circuit/` - Circuit breaker for instance type failures
 - `pkg/config/` - Config from env vars, AWS client initialization
-- `pkg/db/` - DynamoDB state management
-- `pkg/metrics/` - CloudWatch metrics publishing
-- `pkg/housekeeping/` - Cleanup tasks (orphaned instances, stale SSM, old jobs)
-- `pkg/termination/` - Instance termination notifications
-- `pkg/events/` - EventBridge event processing (spot interruptions)
 - `pkg/cost/` - Cost reporting and pricing calculations
+- `pkg/db/` - DynamoDB state management (jobs, pools, locks)
+- `pkg/events/` - EventBridge event processing (spot interruptions)
+- `pkg/fleet/` - EC2 fleet orchestration (spot strategy, launch templates)
+- `pkg/github/` - GitHub API client (webhooks, JIT tokens, GraphQL)
+- `pkg/gitops/` - GitOps integration for pool configuration
+- `pkg/housekeeping/` - Cleanup tasks (orphaned instances, stale SSM, old jobs)
+- `pkg/metrics/` - Multi-backend metrics (CloudWatch, Prometheus, Datadog)
+- `pkg/pools/` - Warm pool reconciliation (hot/stopped instances)
+- `pkg/provider/` - Compute provider abstraction (ec2/, k8s/ backends)
+- `pkg/queue/` - Queue abstraction (SQS for EC2, Valkey for K8s)
+- `pkg/runner/` - Runner lifecycle management
+- `pkg/secrets/` - Secrets backend abstraction (SSM, Vault)
+- `pkg/state/` - State machine for job lifecycle
+- `pkg/termination/` - Instance termination notifications
+- `pkg/tracing/` - OpenTelemetry distributed tracing
 
 ## Distributed Locking
 
@@ -86,6 +95,9 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 - `runs-fleet=<run-id>` - Workflow run identifier (required)
 - `pool=<name>` - Warm pool name (routes to pool queue)
 - `spot=false` - Force on-demand (skip spot)
+- `backend=<ec2|k8s>` - Override default compute backend
+- `region=<region>` - Target AWS region (multi-region support)
+- `env=<dev|staging|prod>` - Environment isolation
 
 ## Key Flows
 
@@ -106,8 +118,9 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 ## Data Stores
 
 **DynamoDB:**
-- `runs-fleet-jobs` - Job state (GSI: next-check-time)
-- `runs-fleet-pools` - Pool configuration and per-pool reconciliation locks
+- `runs-fleet-jobs` - Job state (primary key: job_id or instance_id)
+- `runs-fleet-pools` - Pool configuration, reconciliation locks, and task locks
+- `runs-fleet-circuit-state` - Circuit breaker state for instance types
 
 **S3:**
 - `runs-fleet-cache` - GitHub Actions cache artifacts (30-day lifecycle)
@@ -122,16 +135,44 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 
 ## Environment Config
 
-Critical env vars:
-- `AWS_REGION` - ap-northeast-1
+### Core
+- `AWS_REGION` - AWS region (default: ap-northeast-1)
+- `RUNS_FLEET_MODE` - Compute backend: `ec2` or `k8s` (default: ec2)
 - `RUNS_FLEET_GITHUB_APP_ID`, `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` - GitHub App auth
 - `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` - HMAC signature validation
-- `RUNS_FLEET_QUEUE_URL` - Main SQS queue
+
+### EC2 Backend
+- `RUNS_FLEET_QUEUE_URL` - Main SQS queue (required for EC2)
 - `RUNS_FLEET_POOL_QUEUE_URL` - Pool queue
-- `RUNS_FLEET_*_TABLE` - DynamoDB tables
-- `RUNS_FLEET_*_BUCKET` - S3 buckets
+- `RUNS_FLEET_EVENTS_QUEUE_URL` - EventBridge events queue
+- `RUNS_FLEET_TERMINATION_QUEUE_URL` - Termination notifications queue
+- `RUNS_FLEET_HOUSEKEEPING_QUEUE_URL` - Housekeeping tasks queue
+- `RUNS_FLEET_JOBS_TABLE`, `RUNS_FLEET_POOLS_TABLE` - DynamoDB tables
+- `RUNS_FLEET_CACHE_BUCKET` - S3 cache bucket
 - `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_*_SUBNET_IDS` - Network config
+- `RUNS_FLEET_SECURITY_GROUP_ID`, `RUNS_FLEET_INSTANCE_PROFILE_ARN` - EC2 config
+- `RUNS_FLEET_RUNNER_IMAGE` - ECR image URL for runners
 - `RUNS_FLEET_SPOT_ENABLED` - Enable spot instances (default: true)
+
+### K8s Backend
+- `RUNS_FLEET_VALKEY_ADDR` - Valkey/Redis address (required for K8s)
+- `RUNS_FLEET_VALKEY_PASSWORD` - Valkey password (optional)
+- `RUNS_FLEET_KUBE_NAMESPACE` - Runner namespace
+- `RUNS_FLEET_KUBE_RUNNER_IMAGE` - Runner container image
+
+### Secrets Backend
+- `RUNS_FLEET_SECRETS_BACKEND` - `ssm` or `vault` (default: ssm)
+- `VAULT_ADDR` - Vault server address (required if vault backend)
+- `VAULT_AUTH_METHOD` - `aws`, `kubernetes`, `approle`, `token` (default: aws)
+
+### Metrics
+- `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` - CloudWatch metrics (default: true)
+- `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` - Prometheus /metrics endpoint
+- `RUNS_FLEET_METRICS_DATADOG_ENABLED` - Datadog DogStatsD metrics
+
+### Cache & Admin
+- `RUNS_FLEET_CACHE_SECRET` - HMAC secret for cache auth
+- `RUNS_FLEET_ADMIN_SECRET` - Admin API authentication
 
 ## Development Commands
 
@@ -175,9 +216,9 @@ terraform apply
 - DLQ after 3 receive attempts
 
 **Metrics:**
-- Publish to CloudWatch via pkg/metrics
-- Namespace: `RunsFleet`
-- Dimensions: `Environment=production`, `Service=orchestrator`
+- Publish to CloudWatch, Prometheus, or Datadog via pkg/metrics
+- Namespace: `RunsFleet` (CloudWatch) or `runs_fleet` (Prometheus/Datadog)
+- Dimensions: `PoolName`, `TaskType`, `InstanceType` (metric-specific)
 
 **Pool reconciliation:**
 - Loop interval: 60 seconds

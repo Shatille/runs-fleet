@@ -31,7 +31,7 @@ Required AWS resources:
 | VPC + Subnets | Network isolation |
 | Security Group | Runner traffic rules |
 | SQS FIFO Queues | Job queuing (main, pool, events, termination, housekeeping) |
-| DynamoDB Tables | State storage (jobs, locks, pools) |
+| DynamoDB Tables | State storage (jobs, pools with locks, circuit-breaker) |
 | S3 Buckets | Cache artifacts |
 | IAM Roles | ECS task role, EC2 instance profile |
 | ECS Cluster + Service | Orchestrator runtime |

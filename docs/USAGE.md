@@ -24,6 +24,9 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
 | `disk=<size>` | Disk size in GiB (1-16384) |
 | `pool=<name>` | Warm pool for fast start (~10s vs ~60s) |
 | `spot=false` | Force on-demand (skip spot instances) |
+| `backend=<ec2\|k8s>` | Override default compute backend |
+| `region=<region>` | Target AWS region (multi-region deployments) |
+| `env=<env>` | Environment isolation: `dev`, `staging`, or `prod` |
 
 ## Instance Selection
 
