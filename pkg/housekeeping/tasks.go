@@ -470,6 +470,9 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 		}
 
 		if err := t.poolDB.DeletePoolConfig(ctx, poolName); err != nil {
+			t.logger().Error("ephemeral pool delete failed",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.String("error", err.Error()))
 			continue
 		}
 
