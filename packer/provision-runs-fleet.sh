@@ -32,6 +32,16 @@ echo "==> Installing development tools for CI workflows"
 sudo dnf groupinstall -y "Development Tools"
 # Gold linker is built from source in base image for Go race detector support
 
+echo "==> Installing Java (required for sbt)"
+sudo dnf install -y java-21-amazon-corretto-headless
+
+echo "==> Installing sbt"
+SBT_VERSION="1.10.7"
+curl -fsSL -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz"
+sudo tar xzf /tmp/sbt.tgz -C /usr/local
+sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt
+rm /tmp/sbt.tgz
+
 echo "==> Creating runs-fleet agent directory"
 sudo mkdir -p /opt/runs-fleet
 sudo chown ec2-user:ec2-user /opt/runs-fleet
@@ -299,3 +309,4 @@ echo "==> runs-fleet runner AMI provisioning complete"
 echo "    - GitHub Runner: v${RUNNER_VERSION}"
 echo "    - Agent binary: extracted from ECR"
 echo "    - Systemd service: runs-fleet-agent.service"
+echo "    - sbt: v${SBT_VERSION}"
