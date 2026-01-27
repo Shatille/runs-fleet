@@ -279,6 +279,8 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to get job for instance: %w", err)
 	}
 	if job == nil {
+		eventsLog.Warn("no job for spot interruption requeue",
+			slog.String(logging.KeyInstanceID, detail.InstanceID))
 		return nil
 	}
 
