@@ -63,6 +63,9 @@ type Publisher interface {
 	// PublishJobClaimFailure publishes a job claim failure event that proceeded anyway.
 	// This tracks cases where DB claim failed but job processing continued for availability.
 	PublishJobClaimFailure(ctx context.Context) error
+
+	// PublishWarmPoolHit publishes a warm pool hit event (job assigned to existing instance).
+	PublishWarmPoolHit(ctx context.Context) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -125,6 +128,9 @@ func (NoopPublisher) PublishCircuitBreakerTriggered(context.Context, string) err
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishJobClaimFailure(context.Context) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishWarmPoolHit(context.Context) error { return nil }
 
 // Ensure NoopPublisher implements Publisher.
 var _ Publisher = NoopPublisher{}

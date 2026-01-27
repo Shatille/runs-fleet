@@ -189,3 +189,9 @@ func (m *MultiPublisher) PublishJobClaimFailure(ctx context.Context) error { //n
 		return p.PublishJobClaimFailure(ctx)
 	})
 }
+
+func (m *MultiPublisher) PublishWarmPoolHit(ctx context.Context) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishWarmPoolHit(ctx)
+	})
+}

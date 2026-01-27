@@ -2314,3 +2314,227 @@ func TestTaskLockKey(t *testing.T) {
 		})
 	}
 }
+
+func TestClaimInstanceForJob(t *testing.T) {
+	tests := []struct {
+		name       string
+		instanceID string
+		jobID      int64
+		ttl        time.Duration
+		mockDB     *MockDynamoDBAPI
+		wantErr    bool
+		errType    error
+	}{
+		{
+			name:       "Success - new claim",
+			instanceID: "i-12345",
+			jobID:      100,
+			ttl:        5 * time.Minute,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					if *params.TableName != testPoolsTable {
+						t.Errorf("wrong table name: %s", *params.TableName)
+					}
+					expectedKey := "__instance_claim:i-12345"
+					if params.Key["pool_name"].(*types.AttributeValueMemberS).Value != expectedKey {
+						t.Errorf("wrong key: %v", params.Key)
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:       "Already claimed",
+			instanceID: "i-12345",
+			jobID:      100,
+			ttl:        5 * time.Minute,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr: true,
+			errType: ErrInstanceAlreadyClaimed,
+		},
+		{
+			name:       "Empty instance ID",
+			instanceID: "",
+			jobID:      100,
+			ttl:        5 * time.Minute,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "Zero job ID",
+			instanceID: "i-12345",
+			jobID:      0,
+			ttl:        5 * time.Minute,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "Invalid TTL",
+			instanceID: "i-12345",
+			jobID:      100,
+			ttl:        0,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "DynamoDB error",
+			instanceID: "i-12345",
+			jobID:      100,
+			ttl:        5 * time.Minute,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, errors.New("network error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   testPoolsTable,
+			}
+			err := client.ClaimInstanceForJob(context.Background(), tt.instanceID, tt.jobID, tt.ttl)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ClaimInstanceForJob() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.errType != nil && !errors.Is(err, tt.errType) {
+				t.Errorf("ClaimInstanceForJob() error = %v, want %v", err, tt.errType)
+			}
+		})
+	}
+}
+
+func TestClaimInstanceForJob_NoPoolsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		poolsTable:   "",
+	}
+
+	err := client.ClaimInstanceForJob(context.Background(), "i-12345", 100, 5*time.Minute)
+	if err == nil {
+		t.Error("ClaimInstanceForJob() should fail when pools table not configured")
+	}
+	if err.Error() != errPoolsTableNotConfigured {
+		t.Errorf("ClaimInstanceForJob() error = %v, want '%s'", err, errPoolsTableNotConfigured)
+	}
+}
+
+func TestReleaseInstanceClaim(t *testing.T) {
+	tests := []struct {
+		name       string
+		instanceID string
+		jobID      int64
+		mockDB     *MockDynamoDBAPI
+		wantErr    bool
+	}{
+		{
+			name:       "Success",
+			instanceID: "i-12345",
+			jobID:      100,
+			mockDB: &MockDynamoDBAPI{
+				DeleteItemFunc: func(_ context.Context, params *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+					if *params.TableName != testPoolsTable {
+						t.Errorf("wrong table name: %s", *params.TableName)
+					}
+					expectedKey := "__instance_claim:i-12345"
+					if params.Key["pool_name"].(*types.AttributeValueMemberS).Value != expectedKey {
+						t.Errorf("wrong key: %v", params.Key)
+					}
+					return &dynamodb.DeleteItemOutput{}, nil
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:       "Claim not held (condition fail)",
+			instanceID: "i-12345",
+			jobID:      100,
+			mockDB: &MockDynamoDBAPI{
+				DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr: false, // Should NOT error - silently succeed
+		},
+		{
+			name:       "Empty instance ID",
+			instanceID: "",
+			jobID:      100,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "Zero job ID",
+			instanceID: "i-12345",
+			jobID:      0,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "DynamoDB error",
+			instanceID: "i-12345",
+			jobID:      100,
+			mockDB: &MockDynamoDBAPI{
+				DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+					return nil, errors.New("network error")
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   testPoolsTable,
+			}
+			err := client.ReleaseInstanceClaim(context.Background(), tt.instanceID, tt.jobID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ReleaseInstanceClaim() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReleaseInstanceClaim_NoPoolsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		poolsTable:   "",
+	}
+
+	err := client.ReleaseInstanceClaim(context.Background(), "i-12345", 100)
+	if err == nil {
+		t.Error("ReleaseInstanceClaim() should fail when pools table not configured")
+	}
+	if err.Error() != errPoolsTableNotConfigured {
+		t.Errorf("ReleaseInstanceClaim() error = %v, want '%s'", err, errPoolsTableNotConfigured)
+	}
+}
+
+func TestInstanceClaimKey(t *testing.T) {
+	tests := []struct {
+		instanceID string
+		want       string
+	}{
+		{"i-12345", "__instance_claim:i-12345"},
+		{"i-abcdef", "__instance_claim:i-abcdef"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.instanceID, func(t *testing.T) {
+			got := instanceClaimKey(tt.instanceID)
+			if got != tt.want {
+				t.Errorf("instanceClaimKey(%q) = %q, want %q", tt.instanceID, got, tt.want)
+			}
+		})
+	}
+}

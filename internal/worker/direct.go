@@ -28,7 +28,7 @@ type DirectProcessor struct {
 }
 
 // ProcessJobDirect processes a job immediately without SQS.
-// Returns true if fleet was created, false if job was already claimed or processing failed.
+// Returns true if instance was assigned (warm pool or new fleet), false if job was already claimed or processing failed.
 func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMessage) bool {
 	log.Printf("Direct processing job for run %d", job.RunID)
 
@@ -53,6 +53,28 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 	}
 
+	// Try warm pool assignment first
+	if job.Pool != "" {
+		assigner := &WarmPoolAssigner{
+			Pool:   p.Pool,
+			Runner: p.Runner,
+			DB:     p.DB,
+		}
+		result, err := assigner.TryAssignToWarmPool(ctx, job)
+		if err != nil {
+			log.Printf("Direct processing: warm pool assignment error for job %d: %v", job.JobID, err)
+		} else if result.Assigned {
+			if p.Metrics != nil {
+				if metricErr := p.Metrics.PublishWarmPoolHit(ctx); metricErr != nil {
+					log.Printf("Direct processing: failed to publish warm pool hit metric: %v", metricErr)
+				}
+			}
+			log.Printf("Direct processing: assigned job %d to warm pool instance %s", job.JobID, result.InstanceID)
+			return true
+		}
+	}
+
+	// Cold start: create new fleet
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
@@ -118,8 +140,10 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		p.Pool.MarkInstanceBusy(instanceID)
 	}
 
-	if err := p.Metrics.PublishFleetSizeIncrement(ctx); err != nil {
-		log.Printf("Direct processing: failed to publish metric: %v", err)
+	if p.Metrics != nil {
+		if err := p.Metrics.PublishFleetSizeIncrement(ctx); err != nil {
+			log.Printf("Direct processing: failed to publish metric: %v", err)
+		}
 	}
 
 	log.Printf("Direct processing: launched %d instance(s) for run %d", len(instanceIDs), job.RunID)

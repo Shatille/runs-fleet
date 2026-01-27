@@ -17,10 +17,12 @@ import (
 
 // Test constants to satisfy goconst
 const (
-	testStateRunning = "running"
-	testStateStopped = "stopped"
+	testStateRunning     = "running"
+	testStateStopped     = "stopped"
+	testInstanceStoppedID = "i-stopped1"
 )
 
+//nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
 // MockDBClient implements DBClient interface
 type MockDBClient struct {
 	GetPoolConfigFunc            func(ctx context.Context, poolName string) (*db.PoolConfig, error)
@@ -29,6 +31,8 @@ type MockDBClient struct {
 	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
+	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
+	ReleaseInstanceClaimFunc     func(ctx context.Context, instanceID string, jobID int64) error
 }
 
 func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -69,6 +73,20 @@ func (m *MockDBClient) AcquirePoolReconcileLock(ctx context.Context, poolName, o
 func (m *MockDBClient) ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error {
 	if m.ReleasePoolReconcileLockFunc != nil {
 		return m.ReleasePoolReconcileLockFunc(ctx, poolName, owner)
+	}
+	return nil
+}
+
+func (m *MockDBClient) ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error {
+	if m.ClaimInstanceForJobFunc != nil {
+		return m.ClaimInstanceForJobFunc(ctx, instanceID, jobID, ttl)
+	}
+	return nil
+}
+
+func (m *MockDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error {
+	if m.ReleaseInstanceClaimFunc != nil {
+		return m.ReleaseInstanceClaimFunc(ctx, instanceID, jobID)
 	}
 	return nil
 }
@@ -281,7 +299,7 @@ func TestFilterByState(t *testing.T) {
 	manager := &Manager{}
 	instances := []PoolInstance{
 		{InstanceID: "i-running1", State: "running"},
-		{InstanceID: "i-stopped1", State: "stopped"},
+		{InstanceID: testInstanceStoppedID, State: testStateStopped},
 		{InstanceID: "i-running2", State: "running"},
 		{InstanceID: "i-stopped2", State: "stopped"},
 		{InstanceID: "i-pending", State: "pending"},
@@ -677,7 +695,7 @@ func TestGetPoolInstances(t *testing.T) {
 								LaunchTime:   &launchTime,
 							},
 							{
-								InstanceId:   aws.String("i-stopped1"),
+								InstanceId:   aws.String(testInstanceStoppedID),
 								InstanceType: ec2types.InstanceTypeT3Large,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
 							},
@@ -703,7 +721,7 @@ func TestGetPoolInstances(t *testing.T) {
 		switch instances[i].InstanceID {
 		case "i-running1":
 			running = &instances[i]
-		case "i-stopped1":
+		case testInstanceStoppedID:
 			stopped = &instances[i]
 		}
 	}
@@ -840,7 +858,7 @@ func TestReconcilePoolStartStoppedInstances(t *testing.T) {
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
 							},
 							{
-								InstanceId:   aws.String("i-stopped1"),
+								InstanceId:   aws.String(testInstanceStoppedID),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
 							},
@@ -864,8 +882,8 @@ func TestReconcilePoolStartStoppedInstances(t *testing.T) {
 	if !startInstancesCalled {
 		t.Error("StartInstances should be called")
 	}
-	if len(startedIDs) != 1 || startedIDs[0] != "i-stopped1" {
-		t.Errorf("expected to start i-stopped1, got %v", startedIDs)
+	if len(startedIDs) != 1 || startedIDs[0] != testInstanceStoppedID {
+		t.Errorf("expected to start %s, got %v", testInstanceStoppedID, startedIDs)
 	}
 }
 
@@ -972,7 +990,7 @@ func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
 							},
 							{
-								InstanceId:   aws.String("i-stopped1"),
+								InstanceId:   aws.String(testInstanceStoppedID),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
 							},
@@ -1144,7 +1162,7 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 					{
 						Instances: []ec2types.Instance{
 							{
-								InstanceId:   aws.String("i-stopped1"),
+								InstanceId:   aws.String(testInstanceStoppedID),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
 							},
@@ -1487,5 +1505,439 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 	// Should fallback to default DesiredRunning of 2 when peak fails
 	if fleetCreateCount != 2 {
 		t.Errorf("expected 2 fleet creates (fallback to default), got %d", fleetCreateCount)
+	}
+}
+
+func TestGetAvailableInstance_StoppedInstance(t *testing.T) {
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-running1"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+							{
+								InstanceId:   aws.String(testInstanceStoppedID),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	instance, err := manager.GetAvailableInstance(context.Background(), "test-pool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instance == nil {
+		t.Fatal("expected instance, got nil")
+	}
+	if instance.InstanceID != testInstanceStoppedID {
+		t.Errorf("expected stopped instance %s, got %s", testInstanceStoppedID, instance.InstanceID)
+	}
+	if instance.State != testStateStopped {
+		t.Errorf("expected state stopped, got %s", instance.State)
+	}
+}
+
+func TestGetAvailableInstance_NoStoppedInstances(t *testing.T) {
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-running1"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	instance, err := manager.GetAvailableInstance(context.Background(), "test-pool")
+	if !errors.Is(err, ErrNoAvailableInstance) {
+		t.Errorf("expected ErrNoAvailableInstance, got %v", err)
+	}
+	if instance != nil {
+		t.Errorf("expected nil instance, got %v", instance)
+	}
+}
+
+func TestGetAvailableInstance_NoEC2Client(t *testing.T) {
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	// Don't set EC2 client
+
+	_, err := manager.GetAvailableInstance(context.Background(), "test-pool")
+	if err == nil {
+		t.Error("expected error when EC2 client not configured")
+	}
+}
+
+func TestStartInstanceForJob(t *testing.T) {
+	startCalled := false
+	var startedInstanceIDs []string
+
+	mockEC2 := &MockEC2API{
+		StartInstancesFunc: func(_ context.Context, params *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			startCalled = true
+			startedInstanceIDs = params.InstanceIds
+			return &ec2.StartInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	// Mark instance as idle first
+	manager.MarkInstanceIdle("i-test123")
+
+	err := manager.StartInstanceForJob(context.Background(), "i-test123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !startCalled {
+		t.Error("StartInstances was not called")
+	}
+	if len(startedInstanceIDs) != 1 || startedInstanceIDs[0] != "i-test123" {
+		t.Errorf("wrong instance IDs: %v", startedInstanceIDs)
+	}
+
+	// Verify instance is no longer tracked as idle
+	manager.mu.RLock()
+	_, isIdle := manager.instanceIdle["i-test123"]
+	manager.mu.RUnlock()
+	if isIdle {
+		t.Error("instance should not be in idle map after StartInstanceForJob")
+	}
+}
+
+func TestStartInstanceForJob_NoEC2Client(t *testing.T) {
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	// Don't set EC2 client
+
+	err := manager.StartInstanceForJob(context.Background(), "i-test123")
+	if err == nil {
+		t.Error("expected error when EC2 client not configured")
+	}
+}
+
+func TestClaimAndStartPoolInstance_Success(t *testing.T) {
+	startCalled := false
+	describeCalled := false
+	claimCalled := false
+
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, jobID int64, _ time.Duration) error {
+			claimCalled = true
+			if instanceID != testInstanceStoppedID {
+				t.Errorf("wrong instance claimed: %s", instanceID)
+			}
+			if jobID != 12345 {
+				t.Errorf("wrong jobID: %d", jobID)
+			}
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			describeCalled = true
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String(testInstanceStoppedID),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StartInstancesFunc: func(_ context.Context, params *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			startCalled = true
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != testInstanceStoppedID {
+				t.Errorf("wrong instance started: %v", params.InstanceIds)
+			}
+			return &ec2.StartInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !describeCalled {
+		t.Error("DescribeInstances was not called")
+	}
+	if !claimCalled {
+		t.Error("ClaimInstanceForJob was not called")
+	}
+	if !startCalled {
+		t.Error("StartInstances was not called")
+	}
+	if instance == nil {
+		t.Fatal("expected instance, got nil")
+	}
+	if instance.InstanceID != testInstanceStoppedID {
+		t.Errorf("expected instance %s, got %s", testInstanceStoppedID, instance.InstanceID)
+	}
+
+	// Verify instance is marked as busy (not in idle map)
+	manager.mu.RLock()
+	_, isIdle := manager.instanceIdle[testInstanceStoppedID]
+	manager.mu.RUnlock()
+	if isIdle {
+		t.Error("instance should not be in idle map after ClaimAndStartPoolInstance")
+	}
+}
+
+func TestClaimAndStartPoolInstance_NoInstance(t *testing.T) {
+	mockDB := &MockDBClient{}
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	if !errors.Is(err, ErrNoAvailableInstance) {
+		t.Errorf("expected ErrNoAvailableInstance, got %v", err)
+	}
+	if instance != nil {
+		t.Errorf("expected nil instance, got %v", instance)
+	}
+}
+
+func TestClaimAndStartPoolInstance_StartError(t *testing.T) {
+	releaseCalled := false
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
+			return nil
+		},
+		ReleaseInstanceClaimFunc: func(_ context.Context, instanceID string, jobID int64) error {
+			releaseCalled = true
+			if instanceID != testInstanceStoppedID {
+				t.Errorf("wrong instance released: %s", instanceID)
+			}
+			if jobID != 12345 {
+				t.Errorf("wrong jobID released: %d", jobID)
+			}
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String(testInstanceStoppedID),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			return nil, errors.New("start failed")
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	if err == nil {
+		t.Error("expected error when start fails")
+	}
+	if instance != nil {
+		t.Errorf("expected nil instance when start fails, got %v", instance)
+	}
+	if !releaseCalled {
+		t.Error("ReleaseInstanceClaim should be called when start fails")
+	}
+}
+
+func TestClaimAndStartPoolInstance_ClaimConflict(t *testing.T) {
+	// Test that when first instance is already claimed, it tries the next one
+	claimAttempts := 0
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, _ int64, _ time.Duration) error {
+			claimAttempts++
+			if instanceID == "i-stopped1" {
+				return db.ErrInstanceAlreadyClaimed
+			}
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-stopped1"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+							{
+								InstanceId:   aws.String("i-stopped2"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StartInstancesFunc: func(_ context.Context, params *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			// Should be starting the second instance
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != "i-stopped2" {
+				t.Errorf("expected i-stopped2 to be started, got %v", params.InstanceIds)
+			}
+			return &ec2.StartInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instance == nil {
+		t.Fatal("expected instance, got nil")
+	}
+	if instance.InstanceID != "i-stopped2" {
+		t.Errorf("expected i-stopped2, got %s", instance.InstanceID)
+	}
+	if claimAttempts != 2 {
+		t.Errorf("expected 2 claim attempts, got %d", claimAttempts)
+	}
+}
+
+func TestClaimAndStartPoolInstance_NilDBClient(t *testing.T) {
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String(testInstanceStoppedID),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := NewManager(nil, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	if err == nil {
+		t.Error("expected error when DB client is nil")
+	}
+}
+
+func TestStopPoolInstance_Success(t *testing.T) {
+	stopCalled := false
+
+	mockEC2 := &MockEC2API{
+		StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stopCalled = true
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != "i-test123" {
+				t.Errorf("wrong instance stopped: %v", params.InstanceIds)
+			}
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	// Mark instance as idle first
+	manager.MarkInstanceIdle("i-test123")
+
+	err := manager.StopPoolInstance(context.Background(), "i-test123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !stopCalled {
+		t.Error("StopInstances was not called")
+	}
+
+	// Verify instance is removed from idle tracking
+	manager.mu.RLock()
+	_, isIdle := manager.instanceIdle["i-test123"]
+	manager.mu.RUnlock()
+	if isIdle {
+		t.Error("instance should be removed from idle map after StopPoolInstance")
+	}
+}
+
+func TestStopPoolInstance_NoEC2Client(t *testing.T) {
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	// Don't set EC2 client
+
+	err := manager.StopPoolInstance(context.Background(), "i-test123")
+	if err == nil {
+		t.Error("expected error when EC2 client not configured")
+	}
+}
+
+func TestStopPoolInstance_Error(t *testing.T) {
+	mockEC2 := &MockEC2API{
+		StopInstancesFunc: func(_ context.Context, _ *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			return nil, errors.New("stop failed")
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	err := manager.StopPoolInstance(context.Background(), "i-test123")
+	if err == nil {
+		t.Error("expected error when stop fails")
 	}
 }

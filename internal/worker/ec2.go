@@ -52,8 +52,10 @@ func RunEC2Worker(ctx context.Context, deps EC2WorkerDeps) {
 	})
 }
 
+//nolint:gocyclo // Core message processing with warm pool + cold start paths
 func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Message) {
 	startTime := time.Now()
+	jobProcessed := false
 	fleetCreated := false
 	poisonMessage := false
 	alreadyClaimed := false
@@ -62,15 +64,20 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 		defer cleanupCancel()
 
-		if fleetCreated {
+		if jobProcessed {
 			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
 				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
 			}
-			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
-			}
-			if metricErr := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
-				log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+			if deps.Metrics != nil {
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+					log.Printf("Failed to publish queue depth metric: %v", err)
+				}
+				// Only publish fleet size increment for cold starts, not warm pool hits
+				if fleetCreated {
+					if metricErr := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); metricErr != nil {
+						log.Printf("Failed to publish fleet size increment metric: %v", metricErr)
+					}
+				}
 			}
 		}
 
@@ -78,19 +85,25 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
 				log.Printf("Failed to delete already-claimed message: %v", err)
 			}
-			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
+			if deps.Metrics != nil {
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+					log.Printf("Failed to publish queue depth metric: %v", err)
+				}
 			}
 		}
 
 		if poisonMessage {
-			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
+			if deps.Metrics != nil {
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+					log.Printf("Failed to publish queue depth metric: %v", err)
+				}
 			}
 		}
 
-		if err := deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
-			log.Printf("Failed to publish job duration metric: %v", err)
+		if deps.Metrics != nil {
+			if err := deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
+				log.Printf("Failed to publish job duration metric: %v", err)
+			}
 		}
 	}()
 
@@ -103,10 +116,12 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
 		}
 
-		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
-		defer metricCancel()
-		if metricErr := deps.Metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-			log.Printf("Failed to publish poison message metric: %v", metricErr)
+		if deps.Metrics != nil {
+			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
+			defer metricCancel()
+			if metricErr := deps.Metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
+				log.Printf("Failed to publish poison message metric: %v", metricErr)
+			}
 		}
 		return
 	}
@@ -122,8 +137,10 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				return
 			}
 			log.Printf("Job %d claim failed: %v, will retry via visibility timeout", job.JobID, err)
-			if metricErr := deps.Metrics.PublishJobClaimFailure(ctx); metricErr != nil {
-				log.Printf("Failed to publish job claim failure metric: %v", metricErr)
+			if deps.Metrics != nil {
+				if metricErr := deps.Metrics.PublishJobClaimFailure(ctx); metricErr != nil {
+					log.Printf("Failed to publish job claim failure metric: %v", metricErr)
+				}
 			}
 			return
 		}
@@ -134,6 +151,29 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		return
 	}
 
+	// Try warm pool assignment first
+	if job.Pool != "" {
+		assigner := &WarmPoolAssigner{
+			Pool:   deps.Pool,
+			Runner: deps.Runner,
+			DB:     deps.DB,
+		}
+		result, err := assigner.TryAssignToWarmPool(ctx, &job)
+		if err != nil {
+			log.Printf("Warm pool assignment error for job %d: %v", job.JobID, err)
+		} else if result.Assigned {
+			jobProcessed = true // Reuse flag for message deletion
+			if deps.Metrics != nil {
+				if metricErr := deps.Metrics.PublishWarmPoolHit(ctx); metricErr != nil {
+					log.Printf("Failed to publish warm pool hit metric: %v", metricErr)
+				}
+			}
+			log.Printf("Assigned job %d to warm pool instance %s", job.JobID, result.InstanceID)
+			return
+		}
+	}
+
+	// Cold start: create new fleet
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
@@ -165,13 +205,16 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		return
 	}
 
+	jobProcessed = true
 	fleetCreated = true
 
 	SaveJobRecords(ctx, deps.DB, &job, instanceIDs)
 	PrepareRunners(ctx, deps.Runner, &job, instanceIDs)
 
-	for _, instanceID := range instanceIDs {
-		deps.Pool.MarkInstanceBusy(instanceID)
+	if deps.Pool != nil {
+		for _, instanceID := range instanceIDs {
+			deps.Pool.MarkInstanceBusy(instanceID)
+		}
 	}
 
 	log.Printf("Successfully launched %d instance(s) for run %d", len(instanceIDs), job.RunID)
@@ -288,8 +331,10 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 		log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)
 	} else {
 		log.Printf("Re-queued job %d with on-demand fallback (RetryCount=%d)", job.JobID, fallbackJob.RetryCount)
-		if metricErr := deps.Metrics.PublishJobQueued(ctx); metricErr != nil {
-			log.Printf("Failed to publish job queued metric: %v", metricErr)
+		if deps.Metrics != nil {
+			if metricErr := deps.Metrics.PublishJobQueued(ctx); metricErr != nil {
+				log.Printf("Failed to publish job queued metric: %v", metricErr)
+			}
 		}
 	}
 }

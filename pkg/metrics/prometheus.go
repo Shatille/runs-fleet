@@ -33,6 +33,7 @@ type PrometheusPublisher struct {
 	schedulingFailure           *prometheus.CounterVec
 	circuitBreakerTriggered     *prometheus.CounterVec
 	jobClaimFailures            prometheus.Counter
+	warmPoolHits                prometheus.Counter
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -145,6 +146,11 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 			Name:      "job_claim_failures_total",
 			Help:      "Total number of job claim failures that proceeded anyway",
 		}),
+		warmPoolHits: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: cfg.Namespace,
+			Name:      "warm_pool_hits_total",
+			Help:      "Total number of jobs assigned to warm pool instances",
+		}),
 	}
 
 	registry.MustRegister(
@@ -166,6 +172,7 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 		p.schedulingFailure,
 		p.circuitBreakerTriggered,
 		p.jobClaimFailures,
+		p.warmPoolHits,
 	)
 
 	return p
@@ -276,5 +283,10 @@ func (p *PrometheusPublisher) PublishCircuitBreakerTriggered(_ context.Context, 
 
 func (p *PrometheusPublisher) PublishJobClaimFailure(_ context.Context) error { //nolint:revive
 	p.jobClaimFailures.Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishWarmPoolHit(_ context.Context) error { //nolint:revive
+	p.warmPoolHits.Inc()
 	return nil
 }

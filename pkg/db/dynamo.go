@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,9 @@ import (
 
 // ErrJobAlreadyClaimed is returned when attempting to claim a job that is already being processed.
 var ErrJobAlreadyClaimed = errors.New("job already claimed")
+
+// ErrInstanceAlreadyClaimed is returned when attempting to claim an instance that is already assigned to a job.
+var ErrInstanceAlreadyClaimed = errors.New("instance already claimed by another job")
 
 // DynamoDBAPI defines DynamoDB operations for pool configuration storage.
 //
@@ -64,6 +68,7 @@ type jobRecord struct {
 	Pool         string `dynamodbav:"pool"`
 	Spot         bool   `dynamodbav:"spot"`
 	RetryCount   int    `dynamodbav:"retry_count"`
+	WarmPoolHit  bool   `dynamodbav:"warm_pool_hit"`
 	Status       string `dynamodbav:"status"`
 	CreatedAt    string `dynamodbav:"created_at"`
 }
@@ -848,6 +853,7 @@ type JobRecord struct {
 	Pool         string
 	Spot         bool
 	RetryCount   int
+	WarmPoolHit  bool
 }
 
 // SaveJob creates or updates a job record in DynamoDB.
@@ -876,6 +882,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		Pool:         job.Pool,
 		Spot:         job.Spot,
 		RetryCount:   job.RetryCount,
+		WarmPoolHit:  job.WarmPoolHit,
 		Status:       "running",
 		CreatedAt:    time.Now().Format(time.RFC3339),
 	}
@@ -1039,6 +1046,110 @@ func (c *Client) UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, c
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update job metrics: %w", err)
+	}
+
+	return nil
+}
+
+// instanceClaimPrefix is the key prefix for instance claims stored in the pools table.
+const instanceClaimPrefix = "__instance_claim:"
+
+// instanceClaimKey returns the DynamoDB key for an instance claim.
+func instanceClaimKey(instanceID string) string {
+	return instanceClaimPrefix + instanceID
+}
+
+// ClaimInstanceForJob atomically claims an instance for a specific job.
+// Returns nil if the claim was acquired successfully.
+// Returns ErrInstanceAlreadyClaimed if another job has already claimed this instance.
+// The claim expires after the specified TTL to handle failed assignments.
+//
+// This provides distributed locking across multiple orchestrator instances to prevent
+// race conditions where multiple orchestrators try to assign the same warm pool instance.
+func (c *Client) ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
+	}
+	if ttl <= 0 {
+		return fmt.Errorf("TTL must be positive")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(ttl).Unix()
+	claimKey := instanceClaimKey(instanceID)
+
+	_, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: claimKey},
+		},
+		UpdateExpression: aws.String("SET job_id = :job_id, claimed_at = :claimed_at, claim_expiry = :expiry"),
+		ConditionExpression: aws.String(
+			"attribute_not_exists(pool_name) OR " +
+				"attribute_not_exists(claim_expiry) OR " +
+				"claim_expiry < :now OR " +
+				"job_id = :job_id",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":job_id":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
+			":claimed_at": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())},
+			":expiry":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", expiresAt)},
+			":now":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrInstanceAlreadyClaimed
+		}
+		return fmt.Errorf("failed to claim instance: %w", err)
+	}
+
+	return nil
+}
+
+// ReleaseInstanceClaim releases an instance claim for a specific job.
+// Only releases if the current job is the claim owner.
+// Returns nil even if the claim was already released or owned by another job.
+func (c *Client) ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
+	}
+
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	claimKey := instanceClaimKey(instanceID)
+
+	_, err := c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: claimKey},
+		},
+		ConditionExpression: aws.String("attribute_exists(pool_name) AND job_id = :job_id"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			// Claim not held by us or already released - log for debugging
+			log.Printf("Instance %s claim not held by job %d, may have expired or been released", instanceID, jobID)
+			return nil
+		}
+		return fmt.Errorf("failed to release instance claim: %w", err)
 	}
 
 	return nil
