@@ -181,6 +181,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		SubnetID:      SelectSubnet(deps.Config, deps.SubnetIndex),
 		Spot:          job.Spot,
 		Pool:          job.Pool,
+		Repo:          job.Repo,
 		ForceOnDemand: job.ForceOnDemand,
 		RetryCount:    job.RetryCount,
 		Region:        job.Region,
