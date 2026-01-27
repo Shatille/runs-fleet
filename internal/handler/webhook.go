@@ -28,6 +28,9 @@ const (
 func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
 	if err != nil {
+		webhookLog.Warn("skipping job no labels",
+			slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
+			slog.String("error", err.Error()))
 		return nil, nil
 	}
 
@@ -37,7 +40,11 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 	}
 
 	if jobConfig.Pool != "" && dbc != nil {
-		_ = EnsureEphemeralPool(ctx, dbc, jobConfig)
+		if err := EnsureEphemeralPool(ctx, dbc, jobConfig); err != nil {
+			webhookLog.Warn("ephemeral pool ensure failed",
+				slog.String(logging.KeyPoolName, jobConfig.Pool),
+				slog.String("error", err.Error()))
+		}
 	}
 
 	msg := &queue.JobMessage{
@@ -150,7 +157,14 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		return false, fmt.Errorf("failed to get job for instance %s: %w", instanceID, err)
 	}
 
-	if jobInfo == nil || jobInfo.RetryCount >= maxJobRetries {
+	if jobInfo == nil {
+		webhookLog.Warn("no job record for requeue", slog.String(logging.KeyInstanceID, instanceID))
+		return false, nil
+	}
+	if jobInfo.RetryCount >= maxJobRetries {
+		webhookLog.Warn("max retries exceeded",
+			slog.Int64(logging.KeyJobID, jobInfo.JobID),
+			slog.Int("max_retries", maxJobRetries))
 		return false, nil
 	}
 
