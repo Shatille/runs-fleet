@@ -91,7 +91,9 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 	if deps.Runner == nil {
 		k8sLog.Error("runner manager nil", slog.Int64(logging.KeyRunID, job.RunID))
 		poisonMessage = true
-		_ = deps.Metrics.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing")
+		if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing"); err != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
+		}
 		return
 	}
 	regResult, err := deps.Runner.GetRegistrationToken(ctx, job.Repo)
@@ -100,7 +102,9 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 			slog.Int64(logging.KeyRunID, job.RunID),
 			slog.String("error", err.Error()))
 		poisonMessage = true
-		_ = deps.Metrics.PublishSchedulingFailure(ctx, "k8s-registration-token")
+		if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-registration-token"); err != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
+		}
 		return
 	}
 	jitToken := regResult.Token
@@ -126,7 +130,9 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 		k8sLog.Error("pod creation failed",
 			slog.Int64(logging.KeyRunID, job.RunID),
 			slog.String("error", err.Error()))
-		_ = deps.Metrics.PublishSchedulingFailure(ctx, "k8s-pod-creation")
+		if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-pod-creation"); err != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
+		}
 		return
 	}
 
@@ -157,7 +163,9 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 				k8sLog.Error("job record save failed",
 					slog.String("pod_id", runnerID),
 					slog.String("error", saveErr.Error()))
-				_ = deps.Metrics.PublishSchedulingFailure(ctx, "k8s-job-record-save")
+				if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-job-record-save"); err != nil {
+					k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
+				}
 			}
 		}
 	}

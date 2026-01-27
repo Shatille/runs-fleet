@@ -213,9 +213,10 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 			slog.Any("keys", keys),
 			slog.String("version", version),
 			slog.String("scope", scope))
-		// Publish cache miss metric
 		if h.metrics != nil {
-			_ = h.metrics.PublishCacheMiss(r.Context())
+			if err := h.metrics.PublishCacheMiss(r.Context()); err != nil {
+				cacheLog.Error("cache miss metric failed", slog.String("error", err.Error()))
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return

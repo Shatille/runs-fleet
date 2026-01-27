@@ -463,7 +463,11 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 			continue
 		}
 
-		_ = t.terminatePoolInstances(ctx, poolName)
+		if err := t.terminatePoolInstances(ctx, poolName); err != nil {
+			t.logger().Error("pool instances terminate failed",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.String("error", err.Error()))
+		}
 
 		if err := t.poolDB.DeletePoolConfig(ctx, poolName); err != nil {
 			continue

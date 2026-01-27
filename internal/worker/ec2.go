@@ -343,7 +343,9 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 			slog.Int64(logging.KeyJobID, job.JobID),
 			slog.Int("retry_count", fallbackJob.RetryCount))
 		if deps.Metrics != nil {
-			_ = deps.Metrics.PublishJobQueued(ctx)
+			if err := deps.Metrics.PublishJobQueued(ctx); err != nil {
+				ec2Log.Error("job queued metric failed", slog.String("error", err.Error()))
+			}
 		}
 	}
 }
