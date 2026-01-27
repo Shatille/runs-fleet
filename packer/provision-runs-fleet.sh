@@ -42,7 +42,7 @@ curl -fsSL --max-time 300 -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/d
   || { echo "sbt download failed"; exit 1; }
 echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c || { echo "sbt checksum verification failed"; rm /tmp/sbt.tgz; exit 1; }
 sudo tar xzf /tmp/sbt.tgz -C /usr/local || { echo "sbt extraction failed"; rm /tmp/sbt.tgz; exit 1; }
-sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt
+sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt || { echo "sbt symlink creation failed"; exit 1; }
 rm /tmp/sbt.tgz
 
 echo "==> Creating runs-fleet agent directory"
