@@ -236,9 +236,10 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		slog.Any("keys", keys),
 		slog.String("version", version),
 		slog.String("scope", scope))
-	// Publish cache hit metric
 	if h.metrics != nil {
-		_ = h.metrics.PublishCacheHit(r.Context())
+		if err := h.metrics.PublishCacheHit(r.Context()); err != nil {
+			cacheLog.Error("cache hit metric failed", slog.String("error", err.Error()))
+		}
 	}
 
 	resp := getCacheResponse{
