@@ -3,16 +3,19 @@ package pools
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/state"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+var k8sPoolLog = logging.WithComponent(logging.LogTypePool, "k8s-manager")
 
 // DefaultPoolName is the single pool name for K8s warm pools.
 // K8s warm pools operate on fixed Helm-created deployments (one arm64, one amd64),
@@ -83,7 +86,9 @@ func (m *K8sManager) reconcile(ctx context.Context) {
 	// Only reconcile the default pool (K8s has fixed deployments from Helm)
 	// Multiple instances may reconcile concurrently - K8s handles this gracefully
 	if err := m.reconcilePool(timeoutCtx, DefaultPoolName); err != nil {
-		log.Printf("K8s pool manager: failed to reconcile pool %s: %v", DefaultPoolName, err)
+		k8sPoolLog.Error("pool reconciliation failed",
+			slog.String(logging.KeyPoolName, DefaultPoolName),
+			slog.String("error", err.Error()))
 	}
 }
 
@@ -106,11 +111,15 @@ func (m *K8sManager) reconcilePool(ctx context.Context, poolName string) error {
 	actualArm64 := m.scaleOrGetCurrent(ctx, arm64DeployName, int32(desiredArm64))
 	actualAmd64 := m.scaleOrGetCurrent(ctx, amd64DeployName, int32(desiredAmd64))
 
-	log.Printf("K8s pool %s: desired arm64=%d amd64=%d, actual arm64=%d amd64=%d",
-		poolName, desiredArm64, desiredAmd64, actualArm64, actualAmd64)
+	k8sPoolLog.Info("pool reconciliation",
+		slog.String(logging.KeyPoolName, poolName),
+		slog.Int("desired_arm64", desiredArm64),
+		slog.Int("desired_amd64", desiredAmd64),
+		slog.Int("actual_arm64", actualArm64),
+		slog.Int("actual_amd64", actualAmd64))
 
 	if err := m.stateStore.UpdateK8sPoolState(ctx, poolName, actualArm64, actualAmd64); err != nil {
-		log.Printf("K8s pool manager: failed to update pool state: %v", err)
+		k8sPoolLog.Error("pool state update failed", slog.String("error", err.Error()))
 	}
 
 	return nil
@@ -120,7 +129,9 @@ func (m *K8sManager) reconcilePool(ctx context.Context, poolName string) error {
 func (m *K8sManager) scaleOrGetCurrent(ctx context.Context, deployName string, replicas int32) int {
 	actual, err := m.scaleDeployment(ctx, deployName, replicas)
 	if err != nil {
-		log.Printf("K8s pool manager: failed to scale %s: %v", deployName, err)
+		k8sPoolLog.Error("deployment scale failed",
+			slog.String("deployment", deployName),
+			slog.String("error", err.Error()))
 		// Query current state to report accurate metrics
 		actual = m.getCurrentReplicas(ctx, deployName)
 	}
@@ -201,7 +212,9 @@ func (m *K8sManager) scaleDeployment(ctx context.Context, deployName string, rep
 		return 0, fmt.Errorf("failed to update deployment %s: %w", deployName, err)
 	}
 
-	log.Printf("K8s pool manager: scaled deployment %s to %d replicas", deployName, replicas)
+	k8sPoolLog.Info("deployment scaled",
+		slog.String("deployment", deployName),
+		slog.Int("replicas", int(replicas)))
 	return int(updated.Status.ReadyReplicas), nil
 }
 
@@ -328,10 +341,12 @@ func (m *K8sManager) DeletePool(ctx context.Context, poolName string) error {
 
 	// Scale down before deleting config
 	if _, err := m.scaleDeployment(ctx, m.placeholderDeploymentName("arm64"), 0); err != nil {
-		log.Printf("K8s pool manager: failed to scale down arm64 on delete: %v", err)
+		k8sPoolLog.Error("arm64 scale down failed on delete",
+			slog.String("error", err.Error()))
 	}
 	if _, err := m.scaleDeployment(ctx, m.placeholderDeploymentName("amd64"), 0); err != nil {
-		log.Printf("K8s pool manager: failed to scale down amd64 on delete: %v", err)
+		k8sPoolLog.Error("amd64 scale down failed on delete",
+			slog.String("error", err.Error()))
 	}
 
 	return m.stateStore.DeleteK8sPoolConfig(ctx, poolName)

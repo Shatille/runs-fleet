@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
@@ -71,6 +72,15 @@ type Handler struct {
 	taskLocker   TaskLocker
 	instanceID   string
 	config       *config.Config
+	log          *logging.Logger
+}
+
+// logger returns the logger, using a default if not initialized.
+func (h *Handler) logger() *logging.Logger {
+	if h.log == nil {
+		return logging.WithComponent(logging.LogTypeHousekeep, "handler")
+	}
+	return h.log
 }
 
 // NewHandler creates a new housekeeping handler.
@@ -79,6 +89,7 @@ func NewHandler(q QueueAPI, executor TaskExecutor, cfg *config.Config) *Handler 
 		queueClient:  q,
 		taskExecutor: executor,
 		config:       cfg,
+		log:          logging.WithComponent(logging.LogTypeHousekeep, "handler"),
 	}
 }
 
@@ -92,28 +103,24 @@ func (h *Handler) SetTaskLocker(locker TaskLocker, instanceID string) {
 
 // Run starts the housekeeping handler loop.
 func (h *Handler) Run(ctx context.Context) {
-	log.Println("Starting housekeeping handler loop...")
-
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Housekeeping handler shutting down...")
 			return
 
 		case <-ticker.C:
 			messages, err := h.queueClient.ReceiveMessages(ctx, 1, 20)
 			if err != nil {
-				log.Printf("Failed to receive housekeeping messages: %v", err)
+				h.logger().Error("receive messages failed", slog.String("error", err.Error()))
 				continue
 			}
 
 			for _, msg := range messages {
-				// Process sequentially - order may matter for some tasks
 				if err := h.processMessage(ctx, msg); err != nil {
-					log.Printf("Failed to process housekeeping message: %v", err)
+					h.logger().Error("process message failed", slog.String("error", err.Error()))
 				}
 			}
 		}
@@ -134,29 +141,22 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
-	log.Printf("Processing housekeeping task: %s", hkMsg.TaskType)
-
-	// Acquire distributed lock if configured
 	if h.taskLocker != nil {
 		if err := h.taskLocker.AcquireTaskLock(ctx, string(hkMsg.TaskType), h.instanceID, taskLockTTL); err != nil {
 			if errors.Is(err, db.ErrTaskLockHeld) {
-				log.Printf("Task %s is being executed by another instance, skipping", hkMsg.TaskType)
-				// Don't delete message - let lock holder delete it on success.
-				// Message will return to queue after visibility timeout.
-				// This prevents task loss if lock holder crashes.
 				return nil
 			}
 			return fmt.Errorf("failed to acquire task lock: %w", err)
 		}
 		defer func() {
-			// Use context.Background() to ensure lock release even if parent context is cancelled
-			if releaseErr := h.taskLocker.ReleaseTaskLock(context.Background(), string(hkMsg.TaskType), h.instanceID); releaseErr != nil {
-				log.Printf("Failed to release task lock for %s: %v", hkMsg.TaskType, releaseErr)
+			if err := h.taskLocker.ReleaseTaskLock(context.Background(), string(hkMsg.TaskType), h.instanceID); err != nil {
+				h.logger().Error("task lock release failed",
+					slog.String(logging.KeyTask, string(hkMsg.TaskType)),
+					slog.String("error", err.Error()))
 			}
 		}()
 	}
 
-	// Task timeout must be less than lock TTL (6 min) to prevent lock expiration during execution
 	taskCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
@@ -177,12 +177,13 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	case TaskEphemeralPoolCleanup:
 		err = h.taskExecutor.ExecuteEphemeralPoolCleanup(taskCtx)
 	default:
-		log.Printf("Unknown task type: %s", hkMsg.TaskType)
+		h.logger().Warn("unknown task type", slog.String(logging.KeyTask, string(hkMsg.TaskType)))
 	}
 
 	if err != nil {
-		log.Printf("Task %s failed: %v", hkMsg.TaskType, err)
-		// NOTE: Don't delete message on failure - let it retry via visibility timeout
+		h.logger().Error("task failed",
+			slog.String(logging.KeyTask, string(hkMsg.TaskType)),
+			slog.String("error", err.Error()))
 		return err
 	}
 
@@ -192,6 +193,5 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		}
 	}
 
-	log.Printf("Housekeeping task %s completed successfully", hkMsg.TaskType)
 	return nil
 }

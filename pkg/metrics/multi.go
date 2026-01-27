@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
 
 const publishTimeout = 5 * time.Second
+
+var metricsLog = logging.WithComponent(logging.LogTypeMetrics, "multi")
 
 // MultiPublisher publishes metrics to multiple backends simultaneously.
 // All Publisher interface methods are documented on the Publisher interface.
@@ -62,13 +66,13 @@ func (m *MultiPublisher) publishAll(fn func(p Publisher) error) error {
 			select {
 			case err := <-done:
 				if err != nil {
-					log.Printf("metrics publish error: %v", err)
+					metricsLog.Warn("metrics publish error", slog.String("error", err.Error()))
 					mu.Lock()
 					errs = append(errs, err)
 					mu.Unlock()
 				}
 			case <-time.After(publishTimeout):
-				log.Printf("metrics publish timeout after %v", publishTimeout)
+				metricsLog.Warn("metrics publish timeout", slog.Duration("timeout", publishTimeout))
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("publish timeout after %v", publishTimeout))
 				mu.Unlock()
