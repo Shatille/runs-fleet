@@ -149,7 +149,11 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 			return fmt.Errorf("failed to acquire task lock: %w", err)
 		}
 		defer func() {
-			_ = h.taskLocker.ReleaseTaskLock(context.Background(), string(hkMsg.TaskType), h.instanceID)
+			if err := h.taskLocker.ReleaseTaskLock(context.Background(), string(hkMsg.TaskType), h.instanceID); err != nil {
+				h.logger().Error("task lock release failed",
+					slog.String(logging.KeyTask, string(hkMsg.TaskType)),
+					slog.String("error", err.Error()))
+			}
 		}()
 	}
 
