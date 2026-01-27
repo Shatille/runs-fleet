@@ -38,7 +38,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var serverLog = logging.WithComponent(logging.LogTypeServer, "health")
+var (
+	serverLog  = logging.WithComponent(logging.LogTypeServer, "health")
+	webhookLog = logging.WithComponent(logging.LogTypeWebhook, "main")
+)
 
 func main() {
 	logging.Init()
@@ -466,8 +469,7 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 		}
 		requeued, err := handler.HandleJobFailure(ctx, event, jobQueue, dbClient, metricsPublisher)
 		if err != nil {
-			slog.Error("job failure handling failed",
-				slog.String(logging.KeyLogType, logging.LogTypeWebhook),
+			webhookLog.Error("job failure handling failed",
 				slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
 				slog.String("error", err.Error()))
 		}

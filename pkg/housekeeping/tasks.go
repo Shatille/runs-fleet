@@ -136,8 +136,11 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	}
 
 	if len(orphanedIDs) == 0 {
+		t.logger().Info("no orphaned instances found")
 		return nil
 	}
+
+	t.logger().Info("terminating orphaned instances", slog.Int(logging.KeyCount, len(orphanedIDs)))
 
 	_, err = t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: orphanedIDs,
