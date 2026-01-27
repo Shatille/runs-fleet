@@ -65,6 +65,7 @@ type LaunchSpec struct {
 	SubnetID      string
 	Spot          bool
 	Pool          string
+	Repo          string // Repository name for cost allocation (Role tag)
 	ForceOnDemand bool   // Force on-demand even if spot is preferred (for retries)
 	RetryCount    int    // Number of times this job has been retried
 	Region        string // Target AWS region (Phase 3: Multi-region)
@@ -375,6 +376,14 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		tags = append(tags, types.Tag{
 			Key:   aws.String("Environment"),
 			Value: aws.String(spec.Environment),
+		})
+	}
+
+	// Add Role tag for cost allocation by repository
+	if spec.Repo != "" {
+		tags = append(tags, types.Tag{
+			Key:   aws.String("Role"),
+			Value: aws.String(spec.Repo),
 		})
 	}
 

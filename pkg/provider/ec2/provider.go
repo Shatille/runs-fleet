@@ -76,6 +76,7 @@ func (p *Provider) CreateRunner(ctx context.Context, spec *provider.RunnerSpec) 
 		SubnetID:      spec.SubnetID,
 		Spot:          spec.Spot,
 		Pool:          spec.Pool,
+		Repo:          spec.Repo,
 		ForceOnDemand: spec.ForceOnDemand,
 		RetryCount:    spec.RetryCount,
 		Region:        spec.Region,
