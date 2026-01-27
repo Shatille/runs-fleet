@@ -121,6 +121,17 @@ func TestDatadogPublisher_PublishMethods(t *testing.T) {
 		{"PublishPoolUtilization", func() error { return pub.PublishPoolUtilization(ctx, "default", 75.5) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "runner-provision") }},
 		{"PublishCircuitBreakerTriggered", func() error { return pub.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
+		{"PublishJobClaimFailure", func() error { return pub.PublishJobClaimFailure(ctx) }},
+		{"PublishWarmPoolHit", func() error { return pub.PublishWarmPoolHit(ctx) }},
+		{"PublishFleetSize", func() error { return pub.PublishFleetSize(ctx, 5) }},
+		{"PublishServiceCheck_OK", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckOK, "all good") }},
+		{"PublishServiceCheck_Warning", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckWarning, "degraded") }},
+		{"PublishServiceCheck_Critical", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckCritical, "down") }},
+		{"PublishServiceCheck_Unknown", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckUnknown, "unknown") }},
+		{"PublishEvent_Info", func() error { return pub.PublishEvent(ctx, "Test Event", "Event body", "info", nil) }},
+		{"PublishEvent_Warning", func() error { return pub.PublishEvent(ctx, "Warning Event", "Body", "warning", []string{"key:value"}) }},
+		{"PublishEvent_Error", func() error { return pub.PublishEvent(ctx, "Error Event", "Body", "error", nil) }},
+		{"PublishEvent_Success", func() error { return pub.PublishEvent(ctx, "Success Event", "Body", "success", nil) }},
 	}
 
 	for _, tt := range tests {
@@ -148,6 +159,61 @@ func TestDatadogPublisher_DefaultNamespace(t *testing.T) {
 
 	if pub.namespace != defaultDatadogNamespace {
 		t.Errorf("namespace = %s, want %s", pub.namespace, defaultDatadogNamespace)
+	}
+}
+
+func TestDatadogPublisher_SampleRate(t *testing.T) {
+	addr, cleanup := startUDPServer(t)
+	defer cleanup()
+
+	tests := []struct {
+		name           string
+		sampleRate     float64
+		wantSampleRate float64
+	}{
+		{"default", 0, 1.0},
+		{"negative", -0.5, 1.0},
+		{"greater than 1", 1.5, 1.0},
+		{"valid 0.5", 0.5, 0.5},
+		{"valid 0.1", 0.1, 0.1},
+		{"valid 1.0", 1.0, 1.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pub, err := NewDatadogPublisher(DatadogConfig{
+				Address:    addr,
+				SampleRate: tt.sampleRate,
+			})
+			if err != nil {
+				t.Fatalf("NewDatadogPublisher() error = %v", err)
+			}
+			defer func() { _ = pub.Close() }()
+
+			if pub.sampleRate != tt.wantSampleRate {
+				t.Errorf("sampleRate = %v, want %v", pub.sampleRate, tt.wantSampleRate)
+			}
+		})
+	}
+}
+
+func TestDatadogPublisher_WithBufferOptions(t *testing.T) {
+	addr, cleanup := startUDPServer(t)
+	defer cleanup()
+
+	pub, err := NewDatadogPublisher(DatadogConfig{
+		Address:               addr,
+		BufferPoolSize:        4096,
+		WorkersCount:          4,
+		MaxMessagesPerPayload: 100,
+	})
+	if err != nil {
+		t.Fatalf("NewDatadogPublisher() error = %v", err)
+	}
+	defer func() { _ = pub.Close() }()
+
+	if pub.client == nil {
+		t.Error("expected non-nil client with buffer options")
 	}
 }
 

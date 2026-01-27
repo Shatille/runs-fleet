@@ -203,6 +203,21 @@ func (p *CloudWatchPublisher) PublishWarmPoolHit(ctx context.Context) error {
 	return p.putMetric(ctx, "WarmPoolHits", 1, types.StandardUnitCount)
 }
 
+// PublishFleetSize publishes current absolute fleet size.
+func (p *CloudWatchPublisher) PublishFleetSize(ctx context.Context, size int) error {
+	return p.putGaugeMetric(ctx, "FleetSize", float64(size), types.StandardUnitCount)
+}
+
+// PublishServiceCheck is a no-op for CloudWatch (Datadog-specific feature).
+func (p *CloudWatchPublisher) PublishServiceCheck(_ context.Context, _ string, _ int, _ string) error { //nolint:revive
+	return nil
+}
+
+// PublishEvent is a no-op for CloudWatch (Datadog-specific feature).
+func (p *CloudWatchPublisher) PublishEvent(_ context.Context, _, _, _ string, _ []string) error { //nolint:revive
+	return nil
+}
+
 func (p *CloudWatchPublisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),

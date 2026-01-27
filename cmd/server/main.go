@@ -339,9 +339,13 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 			namespace = "runs_fleet"
 		}
 		dd, err := metrics.NewDatadogPublisher(metrics.DatadogConfig{
-			Address:   cfg.MetricsDatadogAddr,
-			Namespace: namespace,
-			Tags:      cfg.MetricsDatadogTags,
+			Address:               cfg.MetricsDatadogAddr,
+			Namespace:             namespace,
+			Tags:                  cfg.MetricsDatadogTags,
+			SampleRate:            cfg.MetricsDatadogSampleRate,
+			BufferPoolSize:        cfg.MetricsDatadogBufferPoolSize,
+			WorkersCount:          cfg.MetricsDatadogWorkersCount,
+			MaxMessagesPerPayload: cfg.MetricsDatadogMaxMsgsPerPayload,
 		})
 		if err != nil {
 			log.Printf("WARNING: Failed to create Datadog metrics publisher: %v (continuing without Datadog)", err)

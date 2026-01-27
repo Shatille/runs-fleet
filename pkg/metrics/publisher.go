@@ -66,6 +66,17 @@ type Publisher interface {
 
 	// PublishWarmPoolHit publishes a warm pool hit event (job assigned to existing instance).
 	PublishWarmPoolHit(ctx context.Context) error
+
+	// PublishFleetSize publishes the current absolute fleet size as a gauge metric.
+	PublishFleetSize(ctx context.Context, size int) error
+
+	// PublishServiceCheck publishes a service health check.
+	// status: 0=OK, 1=Warning, 2=Critical, 3=Unknown
+	PublishServiceCheck(ctx context.Context, name string, status int, message string) error
+
+	// PublishEvent publishes a notable event (e.g., spot interruption, circuit breaker triggered).
+	// alertType: "info", "warning", "error", "success"
+	PublishEvent(ctx context.Context, title, text, alertType string, tags []string) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -131,6 +142,17 @@ func (NoopPublisher) PublishJobClaimFailure(context.Context) error { return nil 
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishWarmPoolHit(context.Context) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishFleetSize(context.Context, int) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishServiceCheck(context.Context, string, int, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishEvent(context.Context, string, string, string, []string) error {
+	return nil
+}
 
 // Ensure NoopPublisher implements Publisher.
 var _ Publisher = NoopPublisher{}

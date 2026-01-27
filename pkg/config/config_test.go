@@ -565,6 +565,60 @@ func TestGetEnvBool(t *testing.T) {
 	}
 }
 
+func TestGetEnvFloat(t *testing.T) {
+	tests := []struct {
+		name         string
+		envKey       string
+		envValue     string
+		defaultValue float64
+		want         float64
+	}{
+		{"empty returns default", "TEST_FLOAT_EMPTY", "", 1.0, 1.0},
+		{"valid float", "TEST_FLOAT_VALID", "0.5", 1.0, 0.5},
+		{"valid integer as float", "TEST_FLOAT_INT", "2", 1.0, 2.0},
+		{"zero", "TEST_FLOAT_ZERO", "0", 1.0, 0.0},
+		{"negative", "TEST_FLOAT_NEG", "-0.5", 1.0, -0.5},
+		{"invalid returns default", "TEST_FLOAT_INVALID", "invalid", 0.75, 0.75},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envValue != "" {
+				t.Setenv(tt.envKey, tt.envValue)
+			}
+			if got := getEnvFloat(tt.envKey, tt.defaultValue); got != tt.want {
+				t.Errorf("getEnvFloat(%q, %v) = %v, want %v", tt.envKey, tt.defaultValue, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetEnvIntDefault(t *testing.T) {
+	tests := []struct {
+		name         string
+		envKey       string
+		envValue     string
+		defaultValue int
+		want         int
+	}{
+		{"empty returns default", "TEST_INT_DEF_EMPTY", "", 100, 100},
+		{"valid int", "TEST_INT_DEF_VALID", "50", 100, 50},
+		{"zero", "TEST_INT_DEF_ZERO", "0", 100, 0},
+		{"negative", "TEST_INT_DEF_NEG", "-10", 100, -10},
+		{"invalid returns default", "TEST_INT_DEF_INVALID", "invalid", 200, 200},
+		{"float parses integer part", "TEST_INT_DEF_FLOAT", "1.5", 300, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envValue != "" {
+				t.Setenv(tt.envKey, tt.envValue)
+			}
+			if got := getEnvIntDefault(tt.envKey, tt.defaultValue); got != tt.want {
+				t.Errorf("getEnvIntDefault(%q, %v) = %v, want %v", tt.envKey, tt.defaultValue, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSplitAndFilter(t *testing.T) {
 	tests := []struct {
 		input string
