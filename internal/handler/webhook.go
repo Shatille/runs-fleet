@@ -36,6 +36,9 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 
 	runID, err := strconv.ParseInt(jobConfig.RunID, 10, 64)
 	if err != nil {
+		webhookLog.Warn("invalid run_id in label",
+			slog.String("run_id", jobConfig.RunID),
+			slog.String("error", err.Error()))
 		return nil, nil
 	}
 
