@@ -57,6 +57,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		Arch:          jobConfig.Arch,
 		InstanceTypes: jobConfig.InstanceTypes,
 		StorageGiB:    jobConfig.StorageGiB,
+		PublicIP:      jobConfig.PublicIP,
 	}
 
 	if err := q.SendMessage(ctx, msg); err != nil {

@@ -24,6 +24,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
 | `disk=<size>` | Disk size in GiB (1-16384) |
 | `pool=<name>` | Warm pool for fast start (~10s vs ~60s) |
 | `spot=false` | Force on-demand (skip spot instances) |
+| `public=true` | Request public IP (uses public subnet; default: private) |
 | `backend=<ec2\|k8s>` | Override default compute backend |
 | `region=<region>` | Target AWS region (multi-region deployments) |
 | `env=<env>` | Environment isolation: `dev`, `staging`, or `prod` |
@@ -103,6 +104,16 @@ jobs:
   critical-deploy:
     # Skip spot for critical jobs that can't tolerate interruption
     runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/spot=false"
+```
+
+### Request public IP
+
+```yaml
+jobs:
+  external-access:
+    # Request public IP when job needs direct internet access without NAT
+    # Default behavior uses private subnets (no public IPv4 cost)
+    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/public=true"
 ```
 
 ### Matrix build

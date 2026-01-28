@@ -95,6 +95,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 - `runs-fleet=<run-id>` - Workflow run identifier (required)
 - `pool=<name>` - Warm pool name (routes to pool queue)
 - `spot=false` - Force on-demand (skip spot)
+- `public=true` - Request public IP (uses public subnet; default: private subnet preferred)
 - `backend=<ec2|k8s>` - Override default compute backend
 - `region=<region>` - Target AWS region (multi-region support)
 - `env=<dev|staging|prod>` - Environment isolation

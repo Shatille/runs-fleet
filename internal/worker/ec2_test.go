@@ -51,7 +51,7 @@ func TestSelectSubnet(t *testing.T) {
 			var index uint64
 
 			for i := 0; i < tt.callCount; i++ {
-				result := SelectSubnet(cfg, &index)
+				result := SelectSubnet(cfg, &index, false)
 				if result != tt.expectedOrder[i] {
 					t.Errorf("SelectSubnet() call %d = %q, want %q", i, result, tt.expectedOrder[i])
 				}
@@ -71,7 +71,7 @@ func TestSelectSubnet_Concurrent(t *testing.T) {
 	done := make(chan string, 100)
 	for i := 0; i < 100; i++ {
 		go func() {
-			done <- SelectSubnet(cfg, &index)
+			done <- SelectSubnet(cfg, &index, false)
 		}()
 	}
 
@@ -86,6 +86,78 @@ func TestSelectSubnet_Concurrent(t *testing.T) {
 	// Verify all subnets were used
 	if len(results) != 3 {
 		t.Errorf("Expected 3 different subnets, got %d", len(results))
+	}
+}
+
+func TestSelectSubnet_PrivateSubnetPriority(t *testing.T) {
+	tests := []struct {
+		name           string
+		publicSubnets  []string
+		privateSubnets []string
+		publicIP       bool
+		wantSubnets    []string
+	}{
+		{
+			name:           "private subnets preferred when both configured",
+			publicSubnets:  []string{"pub-a", "pub-b"},
+			privateSubnets: []string{"priv-a", "priv-b"},
+			publicIP:       false,
+			wantSubnets:    []string{"priv-a", "priv-b"},
+		},
+		{
+			name:           "public subnets used when publicIP=true",
+			publicSubnets:  []string{"pub-a", "pub-b"},
+			privateSubnets: []string{"priv-a", "priv-b"},
+			publicIP:       true,
+			wantSubnets:    []string{"pub-a", "pub-b"},
+		},
+		{
+			name:           "fallback to public when no private subnets",
+			publicSubnets:  []string{"pub-a", "pub-b"},
+			privateSubnets: []string{},
+			publicIP:       false,
+			wantSubnets:    []string{"pub-a", "pub-b"},
+		},
+		{
+			name:           "private-only configuration",
+			publicSubnets:  []string{},
+			privateSubnets: []string{"priv-a", "priv-b"},
+			publicIP:       false,
+			wantSubnets:    []string{"priv-a", "priv-b"},
+		},
+		{
+			name:           "publicIP=true returns empty when no public subnets",
+			publicSubnets:  []string{},
+			privateSubnets: []string{"priv-a"},
+			publicIP:       true,
+			wantSubnets:    []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				PublicSubnetIDs:  tt.publicSubnets,
+				PrivateSubnetIDs: tt.privateSubnets,
+			}
+			var index uint64
+
+			result := SelectSubnet(cfg, &index, tt.publicIP)
+
+			found := false
+			for _, want := range tt.wantSubnets {
+				if result == want {
+					found = true
+					break
+				}
+			}
+			if !found && len(tt.wantSubnets) > 0 {
+				t.Errorf("SelectSubnet() = %q, want one of %v", result, tt.wantSubnets)
+			}
+			if len(tt.wantSubnets) == 0 && result != "" {
+				t.Errorf("SelectSubnet() = %q, want empty", result)
+			}
+		})
 	}
 }
 

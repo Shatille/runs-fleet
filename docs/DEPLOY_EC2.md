@@ -107,9 +107,14 @@ RUNS_FLEET_CACHE_BUCKET=runs-fleet-cache
 
 # EC2 Configuration
 RUNS_FLEET_VPC_ID=vpc-xxx
-RUNS_FLEET_PUBLIC_SUBNET_IDS=subnet-xxx,subnet-yyy
 RUNS_FLEET_SECURITY_GROUP_ID=sg-xxx
 RUNS_FLEET_INSTANCE_PROFILE_ARN=arn:aws:iam::<account>:instance-profile/runs-fleet-runner
+
+# Subnet Configuration (at least one required)
+# Private subnets preferred to avoid public IPv4 costs ($0.005/hour per IP)
+RUNS_FLEET_PRIVATE_SUBNET_IDS=subnet-priv-xxx,subnet-priv-yyy
+# Public subnets used only when public=true label specified, or as fallback
+RUNS_FLEET_PUBLIC_SUBNET_IDS=subnet-pub-xxx,subnet-pub-yyy
 
 # Optional
 RUNS_FLEET_SPOT_ENABLED=true
