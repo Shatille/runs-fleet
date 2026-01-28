@@ -675,6 +675,7 @@ func TestParseLabels_PublicIP(t *testing.T) {
 		name         string
 		labels       []string
 		wantPublicIP bool
+		wantErr      bool
 	}{
 		{
 			name:         "public=true requests public subnet",
@@ -696,16 +697,36 @@ func TestParseLabels_PublicIP(t *testing.T) {
 			labels:       []string{"runs-fleet=12345/cpu=4/arch=amd64/public=true/spot=false/pool=ci"},
 			wantPublicIP: true,
 		},
+		{
+			name:         "public=TRUE case insensitive",
+			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=TRUE"},
+			wantPublicIP: true,
+		},
+		{
+			name:         "public=1 numeric true",
+			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=1"},
+			wantPublicIP: true,
+		},
+		{
+			name:         "public=0 numeric false",
+			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=0"},
+			wantPublicIP: false,
+		},
+		{
+			name:    "public=invalid returns error",
+			labels:  []string{"runs-fleet=12345/cpu=2/arch=arm64/public=yes"},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ParseLabels(tt.labels)
-			if err != nil {
-				t.Errorf("ParseLabels() error = %v", err)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if got.PublicIP != tt.wantPublicIP {
+			if !tt.wantErr && got.PublicIP != tt.wantPublicIP {
 				t.Errorf("ParseLabels() PublicIP = %v, want %v", got.PublicIP, tt.wantPublicIP)
 			}
 		})

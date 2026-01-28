@@ -230,7 +230,11 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 			cfg.StorageGiB = diskGiB
 
 		case "public":
-			cfg.PublicIP = value == "true"
+			var err error
+			cfg.PublicIP, err = strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("invalid public value %q: %w", value, err)
+			}
 		}
 	}
 
