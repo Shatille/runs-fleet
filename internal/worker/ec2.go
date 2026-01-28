@@ -225,11 +225,16 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 // Prioritizes private subnets by default (to avoid public IPv4 costs).
 // Uses public subnets only when explicitly requested via publicIP=true label,
 // or when no private subnets are configured.
+// Returns empty string if publicIP is requested but no public subnets are available.
 func SelectSubnet(cfg *config.Config, subnetIndex *uint64, publicIP bool) string {
 	var subnets []string
 
-	if publicIP && len(cfg.PublicSubnetIDs) > 0 {
-		subnets = cfg.PublicSubnetIDs
+	if publicIP {
+		if len(cfg.PublicSubnetIDs) > 0 {
+			subnets = cfg.PublicSubnetIDs
+		} else {
+			return ""
+		}
 	} else if len(cfg.PrivateSubnetIDs) > 0 {
 		subnets = cfg.PrivateSubnetIDs
 	} else {

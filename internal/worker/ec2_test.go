@@ -126,11 +126,11 @@ func TestSelectSubnet_PrivateSubnetPriority(t *testing.T) {
 			wantSubnets:    []string{"priv-a", "priv-b"},
 		},
 		{
-			name:           "publicIP=true falls back to private when no public",
+			name:           "publicIP=true returns empty when no public subnets",
 			publicSubnets:  []string{},
 			privateSubnets: []string{"priv-a"},
 			publicIP:       true,
-			wantSubnets:    []string{"priv-a"},
+			wantSubnets:    []string{},
 		},
 	}
 
