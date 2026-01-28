@@ -122,7 +122,7 @@ func TestSelectSubnet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var subnetIndex uint64
-			got := worker.SelectSubnet(tt.cfg, &subnetIndex)
+			got := worker.SelectSubnet(tt.cfg, &subnetIndex, false)
 			if !tt.wantFunc(got) {
 				t.Errorf("SelectSubnet() = %q, unexpected result", got)
 			}
@@ -139,7 +139,7 @@ func TestSelectSubnet_RoundRobin(t *testing.T) {
 	results := make([]string, 6)
 
 	for i := 0; i < 6; i++ {
-		results[i] = worker.SelectSubnet(cfg, &subnetIndex)
+		results[i] = worker.SelectSubnet(cfg, &subnetIndex, false)
 	}
 
 	expected := []string{"subnet-a", "subnet-b", "subnet-c", "subnet-a", "subnet-b", "subnet-c"}
@@ -160,7 +160,7 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		go func() {
-			result := worker.SelectSubnet(cfg, &subnetIndex)
+			result := worker.SelectSubnet(cfg, &subnetIndex, false)
 			done <- result
 		}()
 	}
@@ -266,7 +266,7 @@ func TestSelectSubnet_AtomicIndex(t *testing.T) {
 
 	atomic.StoreUint64(&subnetIndex, 1000)
 
-	result := worker.SelectSubnet(cfg, &subnetIndex)
+	result := worker.SelectSubnet(cfg, &subnetIndex, false)
 	if result != "subnet-1" {
 		t.Errorf("SelectSubnet() = %q, want %q", result, "subnet-1")
 	}
@@ -330,7 +330,7 @@ func TestSelectSubnet_SingleSubnet(t *testing.T) {
 	var subnetIndex uint64
 
 	for i := 0; i < 5; i++ {
-		result := worker.SelectSubnet(cfg, &subnetIndex)
+		result := worker.SelectSubnet(cfg, &subnetIndex, false)
 		if result != "only-subnet" {
 			t.Errorf("iteration %d: SelectSubnet() = %q, want %q", i, result, "only-subnet")
 		}
@@ -352,7 +352,7 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 
 	var subnetIndex uint64 = 1000000000
 
-	result := worker.SelectSubnet(cfg, &subnetIndex)
+	result := worker.SelectSubnet(cfg, &subnetIndex, false)
 
 	found := false
 	for _, s := range cfg.PublicSubnetIDs {
@@ -400,7 +400,7 @@ func TestSelectSubnet_NilSubnets(t *testing.T) {
 	}
 	var subnetIndex uint64
 
-	result := worker.SelectSubnet(cfg, &subnetIndex)
+	result := worker.SelectSubnet(cfg, &subnetIndex, false)
 	if result != "" {
 		t.Errorf("SelectSubnet() = %q, want empty string", result)
 	}

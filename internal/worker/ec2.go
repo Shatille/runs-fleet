@@ -178,7 +178,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,
 		InstanceTypes: job.InstanceTypes,
-		SubnetID:      SelectSubnet(deps.Config, deps.SubnetIndex),
+		SubnetID:      SelectSubnet(deps.Config, deps.SubnetIndex, job.PublicIP),
 		Spot:          job.Spot,
 		Pool:          job.Pool,
 		Repo:          job.Repo,
@@ -222,12 +222,26 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 }
 
 // SelectSubnet returns the next subnet ID in round-robin fashion.
-func SelectSubnet(cfg *config.Config, subnetIndex *uint64) string {
-	if len(cfg.PublicSubnetIDs) > 0 {
-		idx := atomic.AddUint64(subnetIndex, 1) - 1
-		return cfg.PublicSubnetIDs[idx%uint64(len(cfg.PublicSubnetIDs))]
+// Prioritizes private subnets by default (to avoid public IPv4 costs).
+// Uses public subnets only when explicitly requested via publicIP=true label,
+// or when no private subnets are configured.
+func SelectSubnet(cfg *config.Config, subnetIndex *uint64, publicIP bool) string {
+	var subnets []string
+
+	if publicIP && len(cfg.PublicSubnetIDs) > 0 {
+		subnets = cfg.PublicSubnetIDs
+	} else if len(cfg.PrivateSubnetIDs) > 0 {
+		subnets = cfg.PrivateSubnetIDs
+	} else {
+		subnets = cfg.PublicSubnetIDs
 	}
-	return ""
+
+	if len(subnets) == 0 {
+		return ""
+	}
+
+	idx := atomic.AddUint64(subnetIndex, 1) - 1
+	return subnets[idx%uint64(len(subnets))]
 }
 
 // CreateFleetWithRetry attempts to create a fleet with exponential backoff.
@@ -327,6 +341,7 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 		OS:            job.OS,
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
+		PublicIP:      job.PublicIP,
 	}
 	if sendErr := sendMessageWithRetry(ctx, deps.Queue, fallbackJob); sendErr != nil {
 		log.Printf("CRITICAL: Job %d lost - message deleted but fallback failed after retries: %v", job.JobID, sendErr)

@@ -375,8 +375,8 @@ func (c *Config) validateEC2Config() error {
 	if c.InstanceProfileARN == "" {
 		return fmt.Errorf("RUNS_FLEET_INSTANCE_PROFILE_ARN is required for EC2 backend")
 	}
-	if len(c.PublicSubnetIDs) == 0 {
-		return fmt.Errorf("RUNS_FLEET_PUBLIC_SUBNET_IDS is required for EC2 backend")
+	if len(c.PublicSubnetIDs) == 0 && len(c.PrivateSubnetIDs) == 0 {
+		return fmt.Errorf("at least one of RUNS_FLEET_PUBLIC_SUBNET_IDS or RUNS_FLEET_PRIVATE_SUBNET_IDS is required for EC2 backend")
 	}
 	if c.RunnerImage == "" {
 		return fmt.Errorf("RUNS_FLEET_RUNNER_IMAGE is required for EC2 backend")

@@ -670,6 +670,48 @@ func TestParseLabels_Storage(t *testing.T) {
 	}
 }
 
+func TestParseLabels_PublicIP(t *testing.T) {
+	tests := []struct {
+		name         string
+		labels       []string
+		wantPublicIP bool
+	}{
+		{
+			name:         "public=true requests public subnet",
+			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=true"},
+			wantPublicIP: true,
+		},
+		{
+			name:         "public=false uses private subnet",
+			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=false"},
+			wantPublicIP: false,
+		},
+		{
+			name:         "no public label defaults to false",
+			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64"},
+			wantPublicIP: false,
+		},
+		{
+			name:         "public with other options",
+			labels:       []string{"runs-fleet=12345/cpu=4/arch=amd64/public=true/spot=false/pool=ci"},
+			wantPublicIP: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Errorf("ParseLabels() error = %v", err)
+				return
+			}
+			if got.PublicIP != tt.wantPublicIP {
+				t.Errorf("ParseLabels() PublicIP = %v, want %v", got.PublicIP, tt.wantPublicIP)
+			}
+		})
+	}
+}
+
 func TestParseLabels_OriginalLabel(t *testing.T) {
 	tests := []struct {
 		name              string

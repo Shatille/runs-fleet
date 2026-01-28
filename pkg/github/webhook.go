@@ -100,6 +100,9 @@ type JobConfig struct {
 
 	// Storage configuration
 	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
+
+	// Network configuration
+	PublicIP bool // Request public IP (uses public subnet). Default: false (private subnet preferred)
 }
 
 
@@ -225,6 +228,9 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 				return fmt.Errorf("disk size must be between 1 and 16384 GiB, got %d", diskGiB)
 			}
 			cfg.StorageGiB = diskGiB
+
+		case "public":
+			cfg.PublicIP = value == "true"
 		}
 	}
 
