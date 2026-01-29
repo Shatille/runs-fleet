@@ -43,9 +43,18 @@ spec:
       labels:
         {{- include "runs-fleet.orchestrator.selectorLabels" . | nindent 8 }}
         sidecar.istio.io/inject: {{ .Values.istio.sidecarInjection | quote }}
-      {{- with .Values.orchestrator.podAnnotations }}
+      {{- if or .Values.orchestrator.podAnnotations (and .Values.metrics.datadog.enabled .Values.metrics.datadog.logs.enabled) }}
       annotations:
+        {{- if and .Values.metrics.datadog.enabled .Values.metrics.datadog.logs.enabled }}
+        ad.datadoghq.com/orchestrator.logs: |
+          [{
+            "source": {{ .Values.metrics.datadog.logs.source | default "runs-fleet" | quote }},
+            "service": {{ .Values.metrics.datadog.logs.service | default (include "runs-fleet.fullname" .) | quote }}
+          }]
+        {{- end }}
+        {{- with .Values.orchestrator.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "runs-fleet.orchestrator.serviceAccountName" . }}
