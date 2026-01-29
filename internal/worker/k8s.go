@@ -4,18 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/internal/handler"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/provider"
 	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 )
+
+var k8sLog = logging.WithComponent(logging.LogTypeQueue, "k8s-worker")
 
 // K8sWorkerDeps holds dependencies for the K8s worker.
 type K8sWorkerDeps struct {
@@ -46,69 +49,65 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 
 		if podCreated {
 			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
-				log.Printf("Failed to delete message after %d attempts: %v", maxDeleteRetries, err)
+				k8sLog.Error("message delete failed", slog.String("error", err.Error()))
 			}
 			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
+				k8sLog.Error("queue depth metric failed", slog.String("error", err.Error()))
 			}
 		}
 
 		if poisonMessage {
 			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
-				log.Printf("Failed to publish queue depth metric: %v", err)
+				k8sLog.Error("queue depth metric failed", slog.String("error", err.Error()))
 			}
 		}
 
 		if err := deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds())); err != nil {
-			log.Printf("Failed to publish job duration metric: %v", err)
+			k8sLog.Error("job duration metric failed", slog.String("error", err.Error()))
 		}
 	}()
 
 	if msg.Body == "" {
-		log.Printf("Received message with empty body")
+		k8sLog.Warn("poison message", slog.String("reason", "empty body"))
 		poisonMessage = true
 		return
 	}
 
 	var job queue.JobMessage
 	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
-		log.Printf("Failed to unmarshal message: %v", err)
+		k8sLog.Warn("poison message", slog.String("error", err.Error()))
 		poisonMessage = true
-
 		if err := deleteMessageWithRetry(ctx, deps.Queue, msg.Handle); err != nil {
-			log.Printf("Failed to delete poison message after %d attempts: %v", maxDeleteRetries, err)
+			k8sLog.Error("poison message delete failed", slog.String("error", err.Error()))
 		}
-
 		metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 		defer metricCancel()
-		if metricErr := deps.Metrics.PublishMessageDeletionFailure(metricCtx); metricErr != nil {
-			log.Printf("Failed to publish poison message metric: %v", metricErr)
+		if err := deps.Metrics.PublishMessageDeletionFailure(metricCtx); err != nil {
+			k8sLog.Error("message deletion failure metric failed", slog.String("error", err.Error()))
 		}
 		return
 	}
 
-	log.Printf("Processing K8s job for run %d (os=%s, arch=%s, pool=%s)",
-		job.RunID, job.OS, job.Arch, job.Pool)
-
-	var jitToken string
 	if deps.Runner == nil {
-		log.Printf("Runner manager not initialized for K8s job %d", job.RunID)
+		k8sLog.Error("runner manager nil", slog.Int64(logging.KeyRunID, job.RunID))
 		poisonMessage = true
-		if metricErr := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing"); metricErr != nil {
-			log.Printf("Failed to publish runner manager missing metric: %v", metricErr)
+		if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-runner-manager-missing"); err != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
 		}
 		return
 	}
 	regResult, err := deps.Runner.GetRegistrationToken(ctx, job.Repo)
 	if err != nil {
-		log.Printf("Failed to get registration token for K8s job %d: %v", job.RunID, err)
+		k8sLog.Error("registration token failed",
+			slog.Int64(logging.KeyRunID, job.RunID),
+			slog.String("error", err.Error()))
 		poisonMessage = true
-		if metricErr := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-registration-token"); metricErr != nil {
-			log.Printf("Failed to publish registration token failure metric: %v", metricErr)
+		if mErr := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-registration-token"); mErr != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", mErr.Error()))
 		}
 		return
 	}
-	jitToken = regResult.Token
+	jitToken := regResult.Token
 
 	spec := &provider.RunnerSpec{
 		RunID:        job.RunID,
@@ -128,9 +127,11 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 
 	result, err := CreateK8sRunnerWithRetry(ctx, deps.Provider, spec)
 	if err != nil {
-		log.Printf("Failed to create K8s runner: %v", err)
-		if metricErr := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-pod-creation"); metricErr != nil {
-			log.Printf("Failed to publish pod creation failure metric: %v", metricErr)
+		k8sLog.Error("pod creation failed",
+			slog.Int64(logging.KeyRunID, job.RunID),
+			slog.String("error", err.Error()))
+		if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-pod-creation"); err != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
 		}
 		return
 	}
@@ -159,9 +160,11 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 				}
 			}
 			if saveErr != nil {
-				log.Printf("ERROR: Failed to save job record after retries for pod %s: %v", runnerID, saveErr)
-				if metricErr := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-job-record-save"); metricErr != nil {
-					log.Printf("Failed to publish job record save failure metric: %v", metricErr)
+				k8sLog.Error("job record save failed",
+					slog.String("pod_id", runnerID),
+					slog.String("error", saveErr.Error()))
+				if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-job-record-save"); err != nil {
+					k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
 				}
 			}
 		}
@@ -171,7 +174,9 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 		deps.PoolProvider.MarkRunnerBusy(runnerID)
 	}
 
-	log.Printf("Successfully created %d K8s pod(s) for run %d", len(result.RunnerIDs), job.RunID)
+	k8sLog.Info("pods launched",
+		slog.Int64(logging.KeyRunID, job.RunID),
+		slog.Int(logging.KeyCount, len(result.RunnerIDs)))
 }
 
 // CreateK8sRunnerWithRetry attempts to create a K8s runner with exponential backoff.
@@ -181,7 +186,11 @@ func CreateK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provid
 	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
 		if attempt > 0 {
 			backoff := FleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-			log.Printf("Retrying K8s pod creation (attempt %d/%d) after %v", attempt+1, maxFleetCreateRetries, backoff)
+			k8sLog.Warn("k8s pod creation retrying",
+				slog.Int("attempt", attempt+1),
+				slog.Int("max_attempts", maxFleetCreateRetries),
+				slog.Duration("backoff", backoff),
+				slog.String("error", err.Error()))
 			time.Sleep(backoff)
 		}
 
@@ -189,8 +198,6 @@ func CreateK8sRunnerWithRetry(ctx context.Context, p *k8s.Provider, spec *provid
 		if err == nil {
 			return result, nil
 		}
-
-		log.Printf("K8s pod creation attempt %d/%d failed: %v", attempt+1, maxFleetCreateRetries, err)
 	}
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxFleetCreateRetries, err)
 }

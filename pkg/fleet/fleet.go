@@ -4,17 +4,20 @@ package fleet
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
+
+var fleetLog = logging.WithComponent(logging.LogTypeFleet, "manager")
 
 // EC2API defines EC2 operations for fleet management.
 type EC2API interface {
@@ -117,10 +120,11 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		}
 		state, cbErr := m.circuitBreaker.CheckCircuit(ctx, primaryType)
 		if cbErr != nil {
-			log.Printf("Warning: failed to check circuit breaker: %v", cbErr)
+			fleetLog.Warn("circuit breaker check failed", slog.String("error", cbErr.Error()))
 			// Continue with spot if we can't check
 		} else if state == circuit.StateOpen {
-			log.Printf("Circuit breaker OPEN for %s, forcing on-demand", primaryType)
+			fleetLog.Info("circuit breaker open, forcing on-demand",
+				slog.String("instance_type", primaryType))
 			useSpot = false
 		}
 	}
@@ -128,7 +132,9 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	if !useSpot {
 		req.TargetCapacitySpecification.DefaultTargetCapacityType = types.DefaultTargetCapacityTypeOnDemand
 		if spec.ForceOnDemand && spec.RetryCount > 0 {
-			log.Printf("Using on-demand for retry #%d of run %d", spec.RetryCount, spec.RunID)
+			fleetLog.Info("using on-demand for retry",
+				slog.Int64(logging.KeyRunID, spec.RunID),
+				slog.Int("retry_count", spec.RetryCount))
 		}
 		// For on-demand, use only the primary instance type with appropriate template
 		primaryType := m.getPrimaryInstanceType(spec)
@@ -174,8 +180,9 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 			totalTypes += len(cfg.Overrides)
 		}
 		if totalTypes > 1 {
-			log.Printf("Using %d instance types across %d launch template configs for spot diversification",
-				totalTypes, len(launchTemplateConfigs))
+			fleetLog.Info("spot diversification enabled",
+				slog.Int("instance_types", totalTypes),
+				slog.Int("launch_configs", len(launchTemplateConfigs)))
 		}
 	}
 
@@ -224,7 +231,7 @@ func (m *Manager) getLaunchTemplateForArch(os, arch string) string {
 
 	// Validate OS - only linux (or empty, defaulting to linux) is supported beyond windows
 	if os != "" && os != "linux" {
-		log.Printf("Warning: unsupported OS %q, defaulting to linux", os)
+		fleetLog.Warn("unsupported OS, defaulting to linux", slog.String("os", os))
 	}
 
 	// amd64 Linux instances use a separate launch template (different AMI)
@@ -509,7 +516,7 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 	if len(archPrices) == 0 {
 		// Couldn't get prices, default to arm64 (generally cheaper)
 		if _, ok := groupedTypes["arm64"]; ok {
-			log.Printf("Spot prices unavailable, defaulting to arm64")
+			fleetLog.Info("spot prices unavailable, defaulting to arm64")
 			return "arm64"
 		}
 		for arch := range groupedTypes {
@@ -528,7 +535,9 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 		}
 	}
 
-	log.Printf("Selected %s (avg spot price: $%.4f/hr) over alternatives: %v", cheapestArch, cheapestPrice, archPrices)
+	fleetLog.Info("architecture selected based on spot price",
+		slog.String("arch", cheapestArch),
+		slog.Float64("avg_price", cheapestPrice))
 	return cheapestArch
 }
 
@@ -581,7 +590,7 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 		MaxResults:          aws.Int32(100),
 	})
 	if err != nil {
-		log.Printf("Warning: failed to get spot prices: %v", err)
+		fleetLog.Warn("spot price query failed", slog.String("error", err.Error()))
 		return 0
 	}
 

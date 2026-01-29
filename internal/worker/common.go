@@ -2,13 +2,16 @@ package worker
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
+
+var workerLog = logging.WithComponent(logging.LogTypeQueue, "worker")
 
 // MessageProcessor processes a single queue message.
 type MessageProcessor func(ctx context.Context, msg queue.Message)
@@ -22,16 +25,15 @@ func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor Me
 
 // RunWorkerLoopWithTicker runs the worker loop with an injectable ticker for testing.
 func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, tick <-chan time.Time) {
-	log.Printf("Starting %s worker loop...", name)
+	workerLog.Info("worker starting", slog.String("worker", name))
 
 	const maxConcurrency = 5
 	sem := make(chan struct{}, maxConcurrency)
 	var activeWork sync.WaitGroup
 
 	defer func() {
-		log.Printf("Waiting for in-flight %s work to complete...", name)
 		activeWork.Wait()
-		log.Printf("%s worker shutdown complete", name)
+		workerLog.Info("worker shutdown complete", slog.String("worker", name))
 	}()
 
 	for {
@@ -50,7 +52,9 @@ func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, pr
 			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
 			cancel()
 			if err != nil {
-				log.Printf("Failed to receive messages: %v", err)
+				workerLog.Error("receive messages failed",
+					slog.String("worker", name),
+					slog.String("error", err.Error()))
 				continue
 			}
 
@@ -64,7 +68,9 @@ func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, pr
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("panic in %s processMessage: %v", name, r)
+							workerLog.Error("panic in message processor",
+								slog.String("worker", name),
+								slog.Any("panic", r))
 						}
 					}()
 					defer activeWork.Done()

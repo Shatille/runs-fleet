@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
+
+var adminLog = logging.WithComponent(logging.LogTypeAdmin, "handler")
 
 const maxRequestBodySize = 1 << 20 // 1 MB
 
@@ -129,7 +132,9 @@ func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
 	for _, name := range poolNames {
 		config, err := h.db.GetPoolConfig(ctx, name)
 		if err != nil {
-			log.Printf("Failed to get pool config for %s: %v", name, err)
+			adminLog.Error("pool config fetch failed",
+				slog.String(logging.KeyPoolName, name),
+				slog.String("error", err.Error()))
 			continue
 		}
 		if config == nil {
@@ -416,7 +421,7 @@ func (h *Handler) writeJSON(w http.ResponseWriter, status int, data interface{})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("Failed to encode JSON response: %v", err)
+		adminLog.Error("json encode failed", slog.String("error", err.Error()))
 	}
 }
 

@@ -6,12 +6,15 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"gopkg.in/yaml.v3"
 )
+
+var gitopsLog = logging.WithComponent(logging.LogTypeGitOps, "watcher")
 
 // Config represents the runs-fleet configuration file schema.
 // This maps to .github-private/.github/runs-fleet.yml
@@ -196,7 +199,9 @@ func (w *Watcher) HandlePushEvent(ctx context.Context, owner, repo, ref string, 
 		return nil
 	}
 
-	log.Printf("Configuration file modified in %s/%s, reloading...", owner, repo)
+	gitopsLog.Info("configuration file modified, reloading",
+		slog.String(logging.KeyOwner, owner),
+		slog.String(logging.KeyRepo, repo))
 
 	// Fetch and apply the new configuration
 	return w.ReloadConfig(ctx, ref)
@@ -250,14 +255,14 @@ func (w *Watcher) ApplyConfig(ctx context.Context, config *Config) error {
 		if err := w.dbClient.SavePoolConfig(ctx, dbConfig); err != nil {
 			return fmt.Errorf("failed to save pool config %s: %w", pool.Name, err)
 		}
-		log.Printf("Applied pool configuration: %s", pool.Name)
+		gitopsLog.Info("pool configuration applied", slog.String(logging.KeyPoolName, pool.Name))
 	}
 
 	// Cache runner specs for label parsing
 	for _, runner := range config.Runners {
 		w.runnerSpecs[runner.Name] = runner
 	}
-	log.Printf("Loaded %d runner specs", len(config.Runners))
+	gitopsLog.Info("runner specs loaded", slog.Int(logging.KeyCount, len(config.Runners)))
 
 	return nil
 }

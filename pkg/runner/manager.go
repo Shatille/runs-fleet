@@ -3,12 +3,15 @@ package runner
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
+
+var runnerLog = logging.WithComponent(logging.LogTypeRunner, "manager")
 
 // ManagerConfig holds configuration for the runner manager.
 type ManagerConfig struct {
@@ -59,7 +62,10 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	runnerName := fmt.Sprintf("runs-fleet-%s", req.InstanceID)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
-	log.Printf("Getting registration token for runner %s (org=%s, repo=%s)", runnerName, org, req.Repo)
+	runnerLog.Info("fetching registration token",
+		slog.String("runner_name", runnerName),
+		slog.String(logging.KeyOwner, org),
+		slog.String(logging.KeyRepo, req.Repo))
 	regResult, err := m.github.GetRegistrationToken(ctx, req.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get registration token: %w", err)
@@ -85,12 +91,12 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		IsOrg:               regResult.IsOrg,
 	}
 
-	log.Printf("Storing runner config for instance %s", req.InstanceID)
+	runnerLog.Info("storing runner config", slog.String(logging.KeyInstanceID, req.InstanceID))
 	if err := m.secretsStore.Put(ctx, req.InstanceID, config); err != nil {
 		return fmt.Errorf("failed to store runner config: %w", err)
 	}
 
-	log.Printf("Runner config stored successfully for instance %s", req.InstanceID)
+	runnerLog.Info("runner config stored", slog.String(logging.KeyInstanceID, req.InstanceID))
 	return nil
 }
 

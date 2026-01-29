@@ -1,0 +1,162 @@
+// Package logging provides structured JSON logging using slog.
+package logging
+
+import (
+	"context"
+	"io"
+	golog "log"
+	"log/slog"
+	"os"
+)
+
+// Init configures the default slog logger with JSON output and
+// redirects stdlib log to the structured logger.
+func Init() {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	// Redirect stdlib log.Print* calls to slog
+	golog.SetOutput(&slogWriter{logger: logger})
+	golog.SetFlags(0)
+}
+
+// InitWithLevel configures the default slog logger with JSON output at the specified level.
+func InitWithLevel(level slog.Level) {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	golog.SetOutput(&slogWriter{logger: logger})
+	golog.SetFlags(0)
+}
+
+// slogWriter redirects stdlib log output to slog with logType=stdlib marker.
+type slogWriter struct {
+	logger *slog.Logger
+}
+
+func (w *slogWriter) Write(p []byte) (n int, err error) {
+	msg := string(p)
+	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
+		msg = msg[:len(msg)-1]
+	}
+	w.logger.Warn(msg, KeyLogType, "stdlib")
+	return len(p), nil
+}
+
+// Common attribute keys for consistent field naming.
+const (
+	KeyAction       = "action"
+	KeyBackend      = "backend"
+	KeyComponent    = "component"
+	KeyCount        = "count"
+	KeyDuration     = "duration_ms"
+	KeyError        = "error"
+	KeyInstanceID   = "instance_id"
+	KeyInstanceType = "instance_type"
+	KeyJobID        = "job_id"
+	KeyJobName      = "job_name"
+	KeyLogType      = "log_type"
+	KeyNamespace    = "namespace"
+	KeyOwner        = "owner"
+	KeyPoolName     = "pool_name"
+	KeyQueueURL     = "queue_url"
+	KeyReason       = "reason"
+	KeyRepo         = "repo"
+	KeyRunID        = "run_id"
+	KeyTask         = "task"
+	KeyWorkflowName = "workflow_name"
+)
+
+// Log types for categorization.
+const (
+	LogTypeServer      = "server"
+	LogTypeWebhook     = "webhook"
+	LogTypeQueue       = "queue"
+	LogTypePool        = "pool"
+	LogTypeHousekeep   = "housekeep"
+	LogTypeTermination = "termination"
+	LogTypeEvents      = "events"
+	LogTypeCache       = "cache"
+	LogTypeAdmin       = "admin"
+	LogTypeFleet       = "fleet"
+	LogTypeCircuit     = "circuit"
+	LogTypeRunner      = "runner"
+	LogTypeGitOps      = "gitops"
+	LogTypeCost        = "cost"
+	LogTypeTracing     = "tracing"
+	LogTypeK8s         = "k8s"
+	LogTypeMetrics     = "metrics"
+	LogTypeDB          = "db"
+	LogTypeAgent       = "agent"
+)
+
+// Logger wraps slog.Logger with convenience methods.
+type Logger struct {
+	*slog.Logger
+}
+
+// New creates a new Logger with the given attributes.
+func New(attrs ...any) *Logger {
+	return &Logger{Logger: slog.Default().With(attrs...)}
+}
+
+// With returns a new Logger with additional attributes.
+func (l *Logger) With(attrs ...any) *Logger {
+	return &Logger{Logger: l.Logger.With(attrs...)}
+}
+
+// WithComponent returns a new Logger with the component and log_type attributes set.
+func WithComponent(logType, component string) *Logger {
+	return New(KeyLogType, logType, KeyComponent, component)
+}
+
+// Info logs at info level using the default logger.
+func Info(msg string, attrs ...any) {
+	slog.Info(msg, attrs...)
+}
+
+// Warn logs at warn level using the default logger.
+func Warn(msg string, attrs ...any) {
+	slog.Warn(msg, attrs...)
+}
+
+// Error logs at error level using the default logger.
+func Error(msg string, attrs ...any) {
+	slog.Error(msg, attrs...)
+}
+
+// Debug logs at debug level using the default logger.
+func Debug(msg string, attrs ...any) {
+	slog.Debug(msg, attrs...)
+}
+
+// InfoContext logs at info level with context using the default logger.
+func InfoContext(ctx context.Context, msg string, attrs ...any) {
+	slog.InfoContext(ctx, msg, attrs...)
+}
+
+// WarnContext logs at warn level with context using the default logger.
+func WarnContext(ctx context.Context, msg string, attrs ...any) {
+	slog.WarnContext(ctx, msg, attrs...)
+}
+
+// ErrorContext logs at error level with context using the default logger.
+func ErrorContext(ctx context.Context, msg string, attrs ...any) {
+	slog.ErrorContext(ctx, msg, attrs...)
+}
+
+// DebugContext logs at debug level with context using the default logger.
+func DebugContext(ctx context.Context, msg string, attrs ...any) {
+	slog.DebugContext(ctx, msg, attrs...)
+}
+
+// Discard returns a logger that discards all output.
+func Discard() *Logger {
+	return &Logger{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
