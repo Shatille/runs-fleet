@@ -7,6 +7,7 @@ import (
 	golog "log"
 	"log/slog"
 	"os"
+	"slices"
 )
 
 // Init configures the default slog logger with JSON output and
@@ -97,13 +98,17 @@ const (
 )
 
 // Logger wraps slog.Logger with convenience methods.
+// It uses a lazyHandler so that package-level loggers created before Init()
+// pick up the JSON handler configured later.
 type Logger struct {
 	*slog.Logger
 }
 
 // New creates a new Logger with the given attributes.
+// The returned logger resolves slog.Default() at log time, not at creation time.
 func New(attrs ...any) *Logger {
-	return &Logger{Logger: slog.Default().With(attrs...)}
+	h := &lazyHandler{preAttrs: argsToAttrs(attrs)}
+	return &Logger{Logger: slog.New(h)}
 }
 
 // With returns a new Logger with additional attributes.
@@ -114,6 +119,68 @@ func (l *Logger) With(attrs ...any) *Logger {
 // WithComponent returns a new Logger with the component and log_type attributes set.
 func WithComponent(logType, component string) *Logger {
 	return New(KeyLogType, logType, KeyComponent, component)
+}
+
+// lazyHandler delegates to slog.Default().Handler() at log time,
+// allowing package-level loggers created before Init() to use
+// the JSON handler configured later.
+type lazyHandler struct {
+	preAttrs []slog.Attr
+	groups   []string
+}
+
+func (h *lazyHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return slog.Default().Handler().Enabled(ctx, level)
+}
+
+func (h *lazyHandler) resolve() slog.Handler {
+	handler := slog.Default().Handler()
+	if len(h.preAttrs) > 0 {
+		handler = handler.WithAttrs(h.preAttrs)
+	}
+	for _, g := range h.groups {
+		handler = handler.WithGroup(g)
+	}
+	return handler
+}
+
+func (h *lazyHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.resolve().Handle(ctx, r)
+}
+
+func (h *lazyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &lazyHandler{
+		preAttrs: append(slices.Clone(h.preAttrs), attrs...),
+		groups:   slices.Clone(h.groups),
+	}
+}
+
+func (h *lazyHandler) WithGroup(name string) slog.Handler {
+	return &lazyHandler{
+		preAttrs: slices.Clone(h.preAttrs),
+		groups:   append(slices.Clone(h.groups), name),
+	}
+}
+
+// argsToAttrs converts slog-style key-value args to []slog.Attr.
+func argsToAttrs(args []any) []slog.Attr {
+	var attrs []slog.Attr
+	for i := 0; i < len(args); {
+		if attr, ok := args[i].(slog.Attr); ok {
+			attrs = append(attrs, attr)
+			i++
+			continue
+		}
+		if i+1 < len(args) {
+			if key, ok := args[i].(string); ok {
+				attrs = append(attrs, slog.Any(key, args[i+1]))
+			}
+			i += 2
+		} else {
+			i++
+		}
+	}
+	return attrs
 }
 
 // Info logs at info level using the default logger.
