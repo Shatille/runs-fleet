@@ -102,8 +102,8 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 			slog.Int64(logging.KeyRunID, job.RunID),
 			slog.String("error", err.Error()))
 		poisonMessage = true
-		if err := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-registration-token"); err != nil {
-			k8sLog.Error("scheduling failure metric failed", slog.String("error", err.Error()))
+		if mErr := deps.Metrics.PublishSchedulingFailure(ctx, "k8s-registration-token"); mErr != nil {
+			k8sLog.Error("scheduling failure metric failed", slog.String("error", mErr.Error()))
 		}
 		return
 	}
