@@ -243,6 +243,11 @@ metrics:
     enabled: false
     address: "127.0.0.1:8125"
     tags: [] # Global tags, e.g., ["env:production", "service:runs-fleet"]
+    # Autodiscovery log collection (requires Datadog Agent with log collection enabled)
+    logs:
+      enabled: false
+      source: "runs-fleet"
+      service: "" # Defaults to Release name if empty
 
 # Warm pool configuration (mode: k8s only, placeholder pods for faster job startup)
 warmPool:
