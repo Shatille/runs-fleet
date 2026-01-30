@@ -8,7 +8,7 @@ import (
 func TestLoadConfig_defaults(t *testing.T) {
 	// Clear environment
 	_ = os.Unsetenv("RUNS_FLEET_SECRETS_BACKEND")
-	_ = os.Unsetenv("RUNS_FLEET_SSM_PREFIX")
+	_ = os.Unsetenv("RUNS_FLEET_SECRETS_PATH_PREFIX")
 	_ = os.Unsetenv("VAULT_ADDR")
 
 	cfg := LoadConfig()
@@ -104,8 +104,8 @@ func TestConfig_Validate(t *testing.T) {
 }
 
 func TestLoadConfig_ssmPrefix(t *testing.T) {
-	_ = os.Setenv("RUNS_FLEET_SSM_PREFIX", "/custom/prefix")
-	defer func() { _ = os.Unsetenv("RUNS_FLEET_SSM_PREFIX") }()
+	_ = os.Setenv("RUNS_FLEET_SECRETS_PATH_PREFIX", "/custom/prefix")
+	defer func() { _ = os.Unsetenv("RUNS_FLEET_SECRETS_PATH_PREFIX") }()
 
 	cfg := LoadConfig()
 

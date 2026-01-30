@@ -51,7 +51,7 @@ func LoadConfig() Config {
 	cfg := Config{
 		Backend: getEnv("RUNS_FLEET_SECRETS_BACKEND", BackendSSM),
 		SSM: SSMConfig{
-			Prefix: getEnv("RUNS_FLEET_SSM_PREFIX", DefaultSSMPrefix),
+			Prefix: getEnv("RUNS_FLEET_SECRETS_PATH_PREFIX", DefaultSSMPrefix),
 		},
 		Vault: VaultConfig{
 			Address:         getEnv("VAULT_ADDR", ""),

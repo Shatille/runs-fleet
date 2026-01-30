@@ -73,7 +73,7 @@ pkg/
   queue/          # SQS FIFO processing (batch, DLQ)
   db/             # DynamoDB state management
   housekeeping/   # Cleanup (orphaned instances, stale SSM, ephemeral pools)
-  coordinator/    # Distributed leader election (DynamoDB)
+  logging/        # Structured logging (slog JSON)
   config/         # Env parsing, AWS clients
 ```
 
@@ -172,6 +172,7 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES` | `10` | Pod idle timeout |
 | `RUNS_FLEET_KUBE_RELEASE_NAME` | `runs-fleet` | Helm release name |
 | `RUNS_FLEET_KUBE_STORAGE_CLASS` | | PVC storage class |
+| `RUNS_FLEET_KUBE_RESOURCE_LABELS` | | Additional pod labels (`key=value,...`) |
 
 ### Kubernetes DinD (Docker-in-Docker)
 
@@ -209,6 +210,10 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_METRICS_DATADOG_ENABLED` | `false` | Enable Datadog DogStatsD |
 | `RUNS_FLEET_METRICS_DATADOG_ADDR` | `127.0.0.1:8125` | DogStatsD address |
 | `RUNS_FLEET_METRICS_DATADOG_TAGS` | | Global tags (comma-separated) |
+| `RUNS_FLEET_METRICS_DATADOG_SAMPLE_RATE` | `1.0` | DogStatsD sample rate (0.0-1.0) |
+| `RUNS_FLEET_METRICS_DATADOG_BUFFER_POOL_SIZE` | `0` | DogStatsD buffer pool size |
+| `RUNS_FLEET_METRICS_DATADOG_WORKERS_COUNT` | `0` | DogStatsD worker count |
+| `RUNS_FLEET_METRICS_DATADOG_MAX_MSGS_PER_PAYLOAD` | `0` | DogStatsD max messages per payload |
 
 ### Secrets Backend
 
@@ -217,7 +222,7 @@ Runner configuration secrets can be stored in SSM Parameter Store (default) or H
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNS_FLEET_SECRETS_BACKEND` | `ssm` | Backend: `ssm` or `vault` |
-| `RUNS_FLEET_SSM_PREFIX` | `/runs-fleet/runners` | SSM parameter path prefix |
+| `RUNS_FLEET_SECRETS_PATH_PREFIX` | `/runs-fleet/runners` | SSM parameter path prefix |
 
 **Vault Configuration** (when `RUNS_FLEET_SECRETS_BACKEND=vault`):
 
@@ -235,7 +240,7 @@ Runner configuration secrets can be stored in SSM Parameter Store (default) or H
 | Auth | Variables |
 |------|-----------|
 | `aws` | `VAULT_AWS_ROLE` (default: `runs-fleet`), `VAULT_AWS_REGION` |
-| `kubernetes` | `VAULT_K8S_ROLE` (required), `VAULT_K8S_JWT_PATH` |
+| `kubernetes` | `VAULT_K8S_ROLE` (required), `VAULT_K8S_JWT_PATH`, `VAULT_K8S_AUTH_MOUNT` (default: `kubernetes`) |
 | `approle` | `VAULT_APP_ROLE_ID`, `VAULT_APP_SECRET_ID` (both required) |
 | `token` | `VAULT_TOKEN` (required) |
 
@@ -246,7 +251,6 @@ Runner configuration secrets can be stored in SSM Parameter Store (default) or H
 | `RUNS_FLEET_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `RUNS_FLEET_LOG_FORMAT` | `json` | Log format: `json` or `text` |
 | `RUNS_FLEET_ADMIN_SECRET` | | Admin UI authentication secret |
-| `RUNS_FLEET_POOL_ENABLED` | `false` | Enable warm pool processing |
 
 ## Admin UI
 
