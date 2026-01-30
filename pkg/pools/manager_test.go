@@ -1131,7 +1131,9 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1230,7 +1232,9 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1272,7 +1276,9 @@ func TestReconcilePoolCreateFleetError(_ *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
 	manager.SetEC2Client(mockEC2)
 
 	// Should not panic
@@ -1501,7 +1507,9 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -1551,7 +1559,9 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
