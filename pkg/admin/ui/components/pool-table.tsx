@@ -27,6 +27,12 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
               Arch
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Env
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Region
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Type
             </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -39,6 +45,11 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
             <tr key={pool.pool_name} className="hover:bg-gray-50">
               <td className="px-6 py-4 whitespace-nowrap">
                 <span className="font-medium text-gray-900">{pool.pool_name}</span>
+                {pool.schedules && pool.schedules.length > 0 && (
+                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
+                    {pool.schedules.length} sched
+                  </span>
+                )}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                 {pool.instance_type || '-'}
@@ -51,6 +62,12 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                 {pool.arch || '-'}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                {pool.environment || '-'}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                {pool.region || '-'}
               </td>
               <td className="px-6 py-4 whitespace-nowrap">
                 {pool.ephemeral ? (

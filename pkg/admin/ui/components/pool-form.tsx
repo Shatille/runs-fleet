@@ -1,12 +1,25 @@
 'use client';
 
 import { useState } from 'react';
-import { Pool, PoolFormData } from '@/lib/types';
+import { Pool, PoolFormData, Schedule } from '@/lib/types';
 
 interface PoolFormProps {
   pool?: Pool;
   onSubmit: (data: PoolFormData) => Promise<void>;
   isEdit?: boolean;
+}
+
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function emptySchedule(): Schedule {
+  return {
+    name: '',
+    start_hour: 9,
+    end_hour: 18,
+    days_of_week: [1, 2, 3, 4, 5],
+    desired_running: 0,
+    desired_stopped: 0,
+  };
 }
 
 export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormProps) {
@@ -16,12 +29,15 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
     desired_running: pool?.desired_running || 0,
     desired_stopped: pool?.desired_stopped || 0,
     idle_timeout_minutes: pool?.idle_timeout_minutes || 60,
+    environment: pool?.environment || '',
+    region: pool?.region || '',
     arch: pool?.arch || '',
     cpu_min: pool?.cpu_min || 0,
     cpu_max: pool?.cpu_max || 0,
     ram_min: pool?.ram_min || 0,
     ram_max: pool?.ram_max || 0,
     families: pool?.families || [],
+    schedules: pool?.schedules || [],
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -54,6 +70,41 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
     setFormData((prev) => ({
       ...prev,
       families: value ? value.split(',').map((f) => f.trim()) : [],
+    }));
+  }
+
+  function addSchedule() {
+    setFormData((prev) => ({
+      ...prev,
+      schedules: [...prev.schedules, emptySchedule()],
+    }));
+  }
+
+  function removeSchedule(index: number) {
+    setFormData((prev) => ({
+      ...prev,
+      schedules: prev.schedules.filter((_, i) => i !== index),
+    }));
+  }
+
+  function updateSchedule(index: number, field: keyof Schedule, value: Schedule[keyof Schedule]) {
+    setFormData((prev) => ({
+      ...prev,
+      schedules: prev.schedules.map((s, i) => (i === index ? { ...s, [field]: value } : s)),
+    }));
+  }
+
+  function toggleScheduleDay(index: number, day: number) {
+    setFormData((prev) => ({
+      ...prev,
+      schedules: prev.schedules.map((s, i) => {
+        if (i !== index) return s;
+        const days = s.days_of_week || [];
+        return {
+          ...s,
+          days_of_week: days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort(),
+        };
+      }),
     }));
   }
 
@@ -146,6 +197,41 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             onChange={handleChange}
             min="0"
             className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="environment" className="block text-sm font-medium text-gray-700">
+            Environment
+          </label>
+          <select
+            id="environment"
+            name="environment"
+            value={formData.environment}
+            onChange={handleChange}
+            disabled={isEdit}
+            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100"
+          >
+            <option value="">None</option>
+            <option value="dev">dev</option>
+            <option value="staging">staging</option>
+            <option value="prod">prod</option>
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="region" className="block text-sm font-medium text-gray-700">
+            Region
+          </label>
+          <input
+            type="text"
+            id="region"
+            name="region"
+            value={formData.region}
+            onChange={handleChange}
+            disabled={isEdit}
+            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100"
+            placeholder="ap-northeast-1"
           />
         </div>
 
@@ -246,6 +332,114 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             placeholder="c7g, m7g, r7g"
           />
           <p className="mt-1 text-sm text-gray-500">Comma-separated list of instance families</p>
+        </div>
+      </div>
+
+      <div className="border-t pt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-medium text-gray-900">Schedules</h3>
+          <button
+            type="button"
+            onClick={addSchedule}
+            className="text-sm px-3 py-1.5 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200"
+          >
+            Add Schedule
+          </button>
+        </div>
+
+        {formData.schedules.length === 0 && (
+          <p className="text-sm text-gray-500">
+            No schedules configured. Pool uses default desired counts at all times.
+          </p>
+        )}
+
+        <div className="space-y-4">
+          {formData.schedules.map((schedule, idx) => (
+            <div key={idx} className="border rounded-md p-4 bg-gray-50">
+              <div className="flex items-center justify-between mb-3">
+                <input
+                  type="text"
+                  value={schedule.name}
+                  onChange={(e) => updateSchedule(idx, 'name', e.target.value)}
+                  placeholder="Schedule name"
+                  required
+                  className="text-sm font-medium rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeSchedule(idx)}
+                  className="text-sm text-red-600 hover:text-red-800"
+                >
+                  Remove
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs text-gray-500">Start Hour</label>
+                  <input
+                    type="number"
+                    value={schedule.start_hour}
+                    onChange={(e) => updateSchedule(idx, 'start_hour', Number(e.target.value))}
+                    min="0"
+                    max="23"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500">End Hour</label>
+                  <input
+                    type="number"
+                    value={schedule.end_hour}
+                    onChange={(e) => updateSchedule(idx, 'end_hour', Number(e.target.value))}
+                    min="0"
+                    max="23"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500">Running</label>
+                  <input
+                    type="number"
+                    value={schedule.desired_running}
+                    onChange={(e) => updateSchedule(idx, 'desired_running', Number(e.target.value))}
+                    min="0"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500">Stopped</label>
+                  <input
+                    type="number"
+                    value={schedule.desired_stopped}
+                    onChange={(e) => updateSchedule(idx, 'desired_stopped', Number(e.target.value))}
+                    min="0"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Days of Week</label>
+                <div className="flex gap-1">
+                  {DAY_LABELS.map((label, day) => (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() => toggleScheduleDay(idx, day)}
+                      className={`px-2 py-1 text-xs rounded-md border ${
+                        (schedule.days_of_week || []).includes(day)
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
