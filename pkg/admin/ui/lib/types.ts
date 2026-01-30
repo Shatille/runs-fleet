@@ -31,10 +31,13 @@ export interface PoolFormData {
   desired_running: number;
   desired_stopped: number;
   idle_timeout_minutes: number;
+  environment: string;
+  region: string;
   arch: string;
   cpu_min: number;
   cpu_max: number;
   ram_min: number;
   ram_max: number;
   families: string[];
+  schedules: Schedule[];
 }
