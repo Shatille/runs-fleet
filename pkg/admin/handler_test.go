@@ -607,6 +607,12 @@ func TestPoolDiff(t *testing.T) {
 			want:    "families: [c7g] -> [c7g m7g]",
 		},
 		{
+			name:    "families reorder is not a change",
+			old:     &db.PoolConfig{PoolName: "p", Families: []string{"m7g", "c7g"}},
+			updated: &db.PoolConfig{PoolName: "p", Families: []string{"c7g", "m7g"}},
+			want:    "none",
+		},
+		{
 			name:    "environment change",
 			old:     &db.PoolConfig{PoolName: "p", Environment: "dev"},
 			updated: &db.PoolConfig{PoolName: "p", Environment: "prod"},

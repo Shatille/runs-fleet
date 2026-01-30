@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
@@ -511,8 +512,10 @@ func poolDiff(old, updated *db.PoolConfig) string {
 	if old.Region != updated.Region {
 		diffs = append(diffs, fmt.Sprintf("region: %q -> %q", old.Region, updated.Region))
 	}
-	if fmt.Sprint(old.Families) != fmt.Sprint(updated.Families) {
-		diffs = append(diffs, fmt.Sprintf("families: %v -> %v", old.Families, updated.Families))
+	oldFamilies := slices.Sorted(slices.Values(old.Families))
+	updatedFamilies := slices.Sorted(slices.Values(updated.Families))
+	if fmt.Sprint(oldFamilies) != fmt.Sprint(updatedFamilies) {
+		diffs = append(diffs, fmt.Sprintf("families: %v -> %v", oldFamilies, updatedFamilies))
 	}
 	if !reflect.DeepEqual(old.Schedules, updated.Schedules) {
 		diffs = append(diffs, fmt.Sprintf("schedules: %d -> %d entries", len(old.Schedules), len(updated.Schedules)))
