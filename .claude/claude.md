@@ -41,6 +41,7 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/github/` - GitHub API client (webhooks, JIT tokens, GraphQL)
 - `pkg/gitops/` - GitOps integration for pool configuration
 - `pkg/housekeeping/` - Cleanup tasks (orphaned instances, stale SSM, old jobs)
+- `pkg/logging/` - Structured logging (slog JSON output)
 - `pkg/metrics/` - Multi-backend metrics (CloudWatch, Prometheus, Datadog)
 - `pkg/pools/` - Warm pool reconciliation (hot/stopped instances)
 - `pkg/provider/` - Compute provider abstraction (ec2/, k8s/ backends)
@@ -183,8 +184,9 @@ export AWS_REGION=ap-northeast-1
 export RUNS_FLEET_QUEUE_URL=...
 go run cmd/server/main.go
 
-# Build agent binaries
-make build-agent
+# Build agent binaries (Nix)
+nix build .#agent-arm64
+nix build .#agent-amd64
 
 # Build Docker image
 make docker-build

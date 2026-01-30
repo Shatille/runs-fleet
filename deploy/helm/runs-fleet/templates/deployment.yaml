@@ -197,7 +197,7 @@ spec:
             - name: RUNS_FLEET_SECRETS_BACKEND
               value: {{ .Values.secrets.backend | quote }}
             {{- if eq .Values.secrets.backend "ssm" }}
-            - name: RUNS_FLEET_SSM_PREFIX
+            - name: RUNS_FLEET_SECRETS_PATH_PREFIX
               value: {{ .Values.secrets.ssm.prefix | quote }}
             {{- end }}
             {{- if eq .Values.secrets.backend "vault" }}
@@ -273,8 +273,6 @@ spec:
             - name: RUNS_FLEET_METRICS_DATADOG_TAGS
               value: {{ .Values.metrics.datadog.tags | join "," | quote }}
             {{- end }}
-            - name: RUNS_FLEET_POOL_ENABLED
-              value: {{ .Values.warmPool.enabled | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "runs-fleet.secretName" . }}
