@@ -2,6 +2,7 @@ package admin
 
 import (
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -40,9 +41,8 @@ func UIHandler() http.Handler {
 			}
 		}
 
-		// Try to serve the exact file
+		// Try to serve the exact file (non-directory paths)
 		if path != "/" && !strings.HasSuffix(path, "/") {
-			// Check if file exists
 			if f, err := subFS.Open(strings.TrimPrefix(path, "/")); err == nil {
 				_ = f.Close()
 				r.URL.Path = path
@@ -51,7 +51,8 @@ func UIHandler() http.Handler {
 			}
 		}
 
-		// For directory paths, try index.html
+		// For directory paths, serve index.html directly to avoid
+		// http.FileServer's redirect from /index.html -> ./
 		indexPath := strings.TrimPrefix(path, "/")
 		if indexPath == "" {
 			indexPath = "index.html"
@@ -59,15 +60,23 @@ func UIHandler() http.Handler {
 			indexPath = strings.TrimSuffix(indexPath, "/") + "/index.html"
 		}
 
-		if f, err := subFS.Open(indexPath); err == nil {
-			_ = f.Close()
-			r.URL.Path = "/" + indexPath
-			fileServer.ServeHTTP(w, r)
+		if err := serveFile(w, subFS, indexPath); err == nil {
 			return
 		}
 
 		// Fallback to root index.html for SPA routing
-		r.URL.Path = "/index.html"
-		fileServer.ServeHTTP(w, r)
+		_ = serveFile(w, subFS, "index.html")
 	})
+}
+
+func serveFile(w http.ResponseWriter, fsys fs.FS, name string) error {
+	f, err := fsys.Open(name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.Copy(w, f)
+	return nil
 }
