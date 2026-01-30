@@ -559,6 +559,81 @@ func TestCreatePoolContentType(t *testing.T) {
 	}
 }
 
+func TestPoolDiff(t *testing.T) {
+	tests := []struct {
+		name    string
+		old     *db.PoolConfig
+		updated *db.PoolConfig
+		want    string
+	}{
+		{
+			name:    "no changes",
+			old:     &db.PoolConfig{PoolName: "p", DesiredRunning: 2},
+			updated: &db.PoolConfig{PoolName: "p", DesiredRunning: 2},
+			want:    "none",
+		},
+		{
+			name:    "single field change",
+			old:     &db.PoolConfig{PoolName: "p", DesiredRunning: 2},
+			updated: &db.PoolConfig{PoolName: "p", DesiredRunning: 5},
+			want:    "desired_running: 2 -> 5",
+		},
+		{
+			name: "multiple field changes",
+			old: &db.PoolConfig{
+				PoolName:       "p",
+				DesiredRunning: 1,
+				Arch:           "arm64",
+				CPUMin:         2,
+			},
+			updated: &db.PoolConfig{
+				PoolName:       "p",
+				DesiredRunning: 3,
+				Arch:           "amd64",
+				CPUMin:         4,
+			},
+			want: "desired_running: 1 -> 3; arch: \"arm64\" -> \"amd64\"; cpu_min: 2 -> 4",
+		},
+		{
+			name:    "schedule count change",
+			old:     &db.PoolConfig{PoolName: "p", Schedules: []db.PoolSchedule{{Name: "a"}}},
+			updated: &db.PoolConfig{PoolName: "p", Schedules: []db.PoolSchedule{{Name: "a"}, {Name: "b"}}},
+			want:    "schedules: 1 -> 2 entries",
+		},
+		{
+			name:    "families change",
+			old:     &db.PoolConfig{PoolName: "p", Families: []string{"c7g"}},
+			updated: &db.PoolConfig{PoolName: "p", Families: []string{"c7g", "m7g"}},
+			want:    "families: [c7g] -> [c7g m7g]",
+		},
+		{
+			name:    "environment change",
+			old:     &db.PoolConfig{PoolName: "p", Environment: "dev"},
+			updated: &db.PoolConfig{PoolName: "p", Environment: "prod"},
+			want:    `environment: "dev" -> "prod"`,
+		},
+		{
+			name: "schedule content change same count",
+			old: &db.PoolConfig{PoolName: "p", Schedules: []db.PoolSchedule{
+				{Name: "biz", StartHour: 9, EndHour: 17},
+			}},
+			updated: &db.PoolConfig{PoolName: "p", Schedules: []db.PoolSchedule{
+				{Name: "biz", StartHour: 8, EndHour: 18},
+			}},
+			want: "schedules: 1 -> 1 entries",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := poolDiff(tt.old, tt.updated)
+			if got != tt.want {
+				t.Errorf("poolDiff() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpdatePoolContentType(t *testing.T) {
 	mockDB := newMockDB()
 	mockDB.pools["test-pool"] = &db.PoolConfig{PoolName: "test-pool"}

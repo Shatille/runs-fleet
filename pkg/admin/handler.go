@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 )
 
 var adminLog = logging.WithComponent(logging.LogTypeAdmin, "handler")
+var auditLog = logging.WithComponent(logging.LogTypeAdmin, "audit")
 
 const maxRequestBodySize = 1 << 20 // 1 MB
 
@@ -184,26 +186,31 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.validatePoolRequest(&req, true); err != nil {
+		h.auditLog(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
 
 	existing, err := h.db.GetPoolConfig(r.Context(), req.PoolName)
 	if err != nil {
+		h.auditLog(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to check existing pool", err.Error())
 		return
 	}
 	if existing != nil {
+		h.auditLog(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, "already exists"))
 		h.writeError(w, http.StatusConflict, "Pool already exists", "")
 		return
 	}
 
 	config := h.requestToConfig(&req)
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
+		h.auditLog(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to create pool", err.Error())
 		return
 	}
 
+	h.auditLog(r, "pool.create", req.PoolName, "success")
 	h.writeJSON(w, http.StatusCreated, h.configToResponse(config))
 }
 
@@ -230,16 +237,19 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	req.PoolName = name
 
 	if err := h.validatePoolRequest(&req, false); err != nil {
+		h.auditLog(r, "pool.update", name, "denied", slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
 
 	existing, err := h.db.GetPoolConfig(r.Context(), name)
 	if err != nil {
+		h.auditLog(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
 	}
 	if existing == nil {
+		h.auditLog(r, "pool.update", name, "denied", slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
@@ -249,10 +259,13 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	config.LastJobTime = existing.LastJobTime
 
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
+		h.auditLog(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to update pool", err.Error())
 		return
 	}
 
+	changes := poolDiff(existing, config)
+	h.auditLog(r, "pool.update", name, "success", slog.String("changes", changes))
 	h.writeJSON(w, http.StatusOK, h.configToResponse(config))
 }
 
@@ -266,24 +279,29 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := h.db.GetPoolConfig(r.Context(), name)
 	if err != nil {
+		h.auditLog(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
 	}
 	if existing == nil {
+		h.auditLog(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
 
 	if !existing.Ephemeral {
+		h.auditLog(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "non-ephemeral"))
 		h.writeError(w, http.StatusForbidden, "Cannot delete non-ephemeral pool", "Only ephemeral pools can be deleted via API")
 		return
 	}
 
 	if err := h.db.DeletePoolConfig(r.Context(), name); err != nil {
+		h.auditLog(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to delete pool", err.Error())
 		return
 	}
 
+	h.auditLog(r, "pool.delete", name, "success")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -431,4 +449,77 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message, details
 		resp.Details = details
 	}
 	h.writeJSON(w, status, resp)
+}
+
+func (h *Handler) auditLog(r *http.Request, action, poolName, result string, extra ...any) {
+	remoteAddr := r.Header.Get("X-Forwarded-For")
+	if remoteAddr == "" {
+		remoteAddr = r.RemoteAddr
+	}
+	attrs := []any{
+		slog.Bool(logging.KeyAudit, true),
+		slog.String(logging.KeyAction, action),
+		slog.String(logging.KeyPoolName, poolName),
+		slog.String(logging.KeyResult, result),
+		slog.String(logging.KeyRemoteAddr, remoteAddr),
+	}
+	attrs = append(attrs, extra...)
+
+	switch result {
+	case "denied":
+		auditLog.Warn("admin action denied", attrs...)
+	case "error":
+		auditLog.Error("admin action failed", attrs...)
+	default:
+		auditLog.Info("admin action", attrs...)
+	}
+}
+
+func poolDiff(old, updated *db.PoolConfig) string {
+	var diffs []string
+
+	if old.InstanceType != updated.InstanceType {
+		diffs = append(diffs, fmt.Sprintf("instance_type: %q -> %q", old.InstanceType, updated.InstanceType))
+	}
+	if old.DesiredRunning != updated.DesiredRunning {
+		diffs = append(diffs, fmt.Sprintf("desired_running: %d -> %d", old.DesiredRunning, updated.DesiredRunning))
+	}
+	if old.DesiredStopped != updated.DesiredStopped {
+		diffs = append(diffs, fmt.Sprintf("desired_stopped: %d -> %d", old.DesiredStopped, updated.DesiredStopped))
+	}
+	if old.IdleTimeoutMinutes != updated.IdleTimeoutMinutes {
+		diffs = append(diffs, fmt.Sprintf("idle_timeout_minutes: %d -> %d", old.IdleTimeoutMinutes, updated.IdleTimeoutMinutes))
+	}
+	if old.Arch != updated.Arch {
+		diffs = append(diffs, fmt.Sprintf("arch: %q -> %q", old.Arch, updated.Arch))
+	}
+	if old.CPUMin != updated.CPUMin {
+		diffs = append(diffs, fmt.Sprintf("cpu_min: %d -> %d", old.CPUMin, updated.CPUMin))
+	}
+	if old.CPUMax != updated.CPUMax {
+		diffs = append(diffs, fmt.Sprintf("cpu_max: %d -> %d", old.CPUMax, updated.CPUMax))
+	}
+	if old.RAMMin != updated.RAMMin {
+		diffs = append(diffs, fmt.Sprintf("ram_min: %g -> %g", old.RAMMin, updated.RAMMin))
+	}
+	if old.RAMMax != updated.RAMMax {
+		diffs = append(diffs, fmt.Sprintf("ram_max: %g -> %g", old.RAMMax, updated.RAMMax))
+	}
+	if old.Environment != updated.Environment {
+		diffs = append(diffs, fmt.Sprintf("environment: %q -> %q", old.Environment, updated.Environment))
+	}
+	if old.Region != updated.Region {
+		diffs = append(diffs, fmt.Sprintf("region: %q -> %q", old.Region, updated.Region))
+	}
+	if fmt.Sprint(old.Families) != fmt.Sprint(updated.Families) {
+		diffs = append(diffs, fmt.Sprintf("families: %v -> %v", old.Families, updated.Families))
+	}
+	if !reflect.DeepEqual(old.Schedules, updated.Schedules) {
+		diffs = append(diffs, fmt.Sprintf("schedules: %d -> %d entries", len(old.Schedules), len(updated.Schedules)))
+	}
+
+	if len(diffs) == 0 {
+		return "none"
+	}
+	return strings.Join(diffs, "; ")
 }
