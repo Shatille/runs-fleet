@@ -232,11 +232,15 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 					slog.String(logging.KeyPoolName, poolName))
 			} else {
 				for i := 0; i < deficit; i++ {
+					subnetID := m.selectSubnet()
+					if subnetID == "" {
+						return fmt.Errorf("no subnets configured for pool %s", poolName)
+					}
 					spec := &fleet.LaunchSpec{
 						RunID:         time.Now().UnixNano(),
 						InstanceType:  instanceTypes[0],
 						InstanceTypes: instanceTypes,
-						SubnetID:      m.selectSubnet(),
+						SubnetID:      subnetID,
 						Pool:          poolName,
 						Spot:          true,
 						Arch:          arch,
