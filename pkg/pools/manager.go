@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -73,6 +74,7 @@ type Manager struct {
 	instanceID    string               // Unique identifier for this instance (for distributed locking)
 	instanceIdle  map[string]time.Time // Tracks when instances became idle
 	poolInstances map[string][]string  // Cache of instance IDs per pool
+	subnetIndex   uint64
 }
 
 // NewManager creates pool manager with DB and fleet clients.
@@ -91,6 +93,22 @@ func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *M
 // SetEC2Client sets the EC2 client for instance management.
 func (m *Manager) SetEC2Client(ec2Client EC2API) {
 	m.ec2Client = ec2Client
+}
+
+// selectSubnet returns the next subnet ID in round-robin fashion,
+// prioritizing private subnets to avoid public IPv4 costs.
+func (m *Manager) selectSubnet() string {
+	var subnets []string
+	if len(m.config.PrivateSubnetIDs) > 0 {
+		subnets = m.config.PrivateSubnetIDs
+	} else {
+		subnets = m.config.PublicSubnetIDs
+	}
+	if len(subnets) == 0 {
+		return ""
+	}
+	idx := atomic.AddUint64(&m.subnetIndex, 1) - 1
+	return subnets[idx%uint64(len(subnets))]
 }
 
 // ReconcileLoop runs periodically to maintain pool size.
@@ -218,6 +236,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 						RunID:         time.Now().UnixNano(),
 						InstanceType:  instanceTypes[0],
 						InstanceTypes: instanceTypes,
+						SubnetID:      m.selectSubnet(),
 						Pool:          poolName,
 						Spot:          true,
 						Arch:          arch,

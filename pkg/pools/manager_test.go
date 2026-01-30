@@ -760,9 +760,54 @@ func TestGetPoolInstancesError(t *testing.T) {
 	}
 }
 
+func TestSelectSubnet(t *testing.T) {
+	tests := []struct {
+		name           string
+		privateSubnets []string
+		publicSubnets  []string
+		calls          int
+		wantSubnets    []string
+	}{
+		{
+			name:           "private subnets preferred",
+			privateSubnets: []string{"subnet-priv1", "subnet-priv2"},
+			publicSubnets:  []string{"subnet-pub1"},
+			calls:          3,
+			wantSubnets:    []string{"subnet-priv1", "subnet-priv2", "subnet-priv1"},
+		},
+		{
+			name:          "falls back to public when no private",
+			publicSubnets: []string{"subnet-pub1", "subnet-pub2"},
+			calls:         2,
+			wantSubnets:   []string{"subnet-pub1", "subnet-pub2"},
+		},
+		{
+			name:  "returns empty when no subnets",
+			calls: 1,
+			wantSubnets: []string{""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{
+				PrivateSubnetIDs: tt.privateSubnets,
+				PublicSubnetIDs:  tt.publicSubnets,
+			})
+			for i := 0; i < tt.calls; i++ {
+				got := manager.selectSubnet()
+				if got != tt.wantSubnets[i] {
+					t.Errorf("call %d: selectSubnet() = %q, want %q", i, got, tt.wantSubnets[i])
+				}
+			}
+		})
+	}
+}
+
 func TestReconcilePoolScaleUp(t *testing.T) {
 	fleetCreateCalled := 0
 	startInstancesCalled := false
+	var capturedSpecs []*fleet.LaunchSpec
 
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
@@ -781,8 +826,9 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreateFleetFunc: func(_ context.Context, spec *fleet.LaunchSpec) ([]string, error) {
 			fleetCreateCalled++
+			capturedSpecs = append(capturedSpecs, spec)
 			return []string{"i-new"}, nil
 		},
 	}
@@ -810,7 +856,9 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -822,6 +870,12 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	// No stopped instances to start
 	if startInstancesCalled {
 		t.Error("StartInstances should not be called when no stopped instances")
+	}
+	// Verify SubnetID is set on fleet specs
+	for i, spec := range capturedSpecs {
+		if spec.SubnetID == "" {
+			t.Errorf("fleet create call %d: SubnetID should not be empty", i)
+		}
 	}
 }
 
