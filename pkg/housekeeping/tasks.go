@@ -136,7 +136,7 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	}
 
 	if len(orphanedIDs) == 0 {
-		t.logger().Info("no orphaned instances found")
+		t.logger().Debug("no orphaned instances found")
 		return nil
 	}
 

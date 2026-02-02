@@ -28,7 +28,7 @@ const (
 func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
 	if err != nil {
-		webhookLog.Warn("skipping job no labels",
+		webhookLog.Debug("skipping job no labels",
 			slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
 			slog.String("error", err.Error()))
 		return nil, nil
