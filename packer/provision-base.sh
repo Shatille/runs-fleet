@@ -64,9 +64,34 @@ sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="2.24.5"
+# Install as standalone binary (docker-compose)
 sudo curl -sL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
   -o /usr/local/bin/docker-compose
 sudo chmod +x /usr/local/bin/docker-compose
+# Install as Docker CLI plugin (docker compose)
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -sL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+echo "==> Configuring QEMU binfmt for multi-arch builds"
+# Create systemd service to register binfmt handlers at boot (after docker)
+sudo tee /etc/systemd/system/binfmt-qemu.service > /dev/null <<'BINFMT'
+[Unit]
+Description=Register QEMU binfmt handlers for multi-arch container builds
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --privileged tonistiigi/binfmt:latest --install all
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+BINFMT
+sudo systemctl daemon-reload
+sudo systemctl enable binfmt-qemu.service
 
 echo "==> Installing Vault CLI"
 VAULT_VERSION="1.18.3"
@@ -143,5 +168,7 @@ sudo rm -rf /var/cache/dnf
 echo "==> Base AMI provisioning complete"
 echo "    - Docker: $(docker --version)"
 echo "    - Docker Compose: $(docker-compose --version)"
+echo "    - Docker Compose Plugin: $(docker compose version)"
+echo "    - QEMU binfmt: enabled at boot"
 echo "    - SSM Agent: enabled"
 echo "    - CloudWatch Agent: enabled"
