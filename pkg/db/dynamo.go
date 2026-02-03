@@ -88,10 +88,12 @@ type PoolSchedule struct {
 
 // PoolConfig represents pool configuration from DynamoDB.
 type PoolConfig struct {
-	PoolName           string         `dynamodbav:"pool_name"`
-	InstanceType       string         `dynamodbav:"instance_type"`
-	DesiredRunning     int            `dynamodbav:"desired_running"`
-	DesiredStopped     int            `dynamodbav:"desired_stopped"`
+	PoolName     string `dynamodbav:"pool_name"`
+	InstanceType string `dynamodbav:"instance_type"`
+	// DesiredRunning is the number of ready (idle) instances to maintain.
+	// Busy instances (running jobs) are not counted toward this target.
+	DesiredRunning int            `dynamodbav:"desired_running"`
+	DesiredStopped int            `dynamodbav:"desired_stopped"`
 	IdleTimeoutMinutes int            `dynamodbav:"idle_timeout_minutes,omitempty"`
 	Schedules          []PoolSchedule `dynamodbav:"schedules,omitempty"`
 	// Environment isolation
@@ -640,7 +642,10 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 	// TODO: Add GSI on (pool, created_at) for production efficiency
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
-		FilterExpression: aws.String("pool = :pool AND created_at >= :since"),
+		FilterExpression: aws.String("#pool = :pool AND created_at >= :since"),
+		ExpressionAttributeNames: map[string]string{
+			"#pool": "pool",
+		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pool":  &types.AttributeValueMemberS{Value: poolName},
 			":since": &types.AttributeValueMemberS{Value: sinceStr},
@@ -746,6 +751,40 @@ func (c *Client) GetPoolPeakConcurrency(ctx context.Context, poolName string, wi
 	}
 
 	return peak, nil
+}
+
+// GetPoolRunningJobCount returns the number of jobs currently running in a pool.
+// Uses Scan with filter on pool and status fields.
+// TODO: Add GSI on (pool, status) for efficient Query operation on large tables.
+func (c *Client) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
+	if poolName == "" {
+		return 0, fmt.Errorf("pool name cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return 0, nil // No jobs table configured, return 0
+	}
+
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("#pool = :pool AND #status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#pool":   "pool",
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pool":   &types.AttributeValueMemberS{Value: poolName},
+			":status": &types.AttributeValueMemberS{Value: "running"},
+		},
+		Select: types.SelectCount,
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return 0, fmt.Errorf("failed to scan jobs: %w", err)
+	}
+
+	return int(output.Count), nil
 }
 
 // MarkInstanceTerminating marks jobs on an instance as terminating in DynamoDB.

@@ -36,6 +36,7 @@ type DBClient interface {
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -200,15 +201,33 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 	}
 
+	// Get count of busy instances (running jobs) from DynamoDB
+	// Abort reconciliation on error to avoid terminating busy instances
+	busy, err := m.dbClient.GetPoolRunningJobCount(ctx, poolName)
+	if err != nil {
+		return fmt.Errorf("failed to get running job count: %w", err)
+	}
+
+	// Ready = running instances without jobs
+	// busy should never exceed running, but clamp to be safe
+	if busy > running {
+		busy = running
+	}
+	ready := running - busy
+
+	// desiredRunning represents desired READY instances (idle, available for jobs)
 	poolLog.Info("pool reconciliation",
 		slog.String(logging.KeyPoolName, poolName),
-		slog.Int("desired_running", desiredRunning),
+		slog.Int("desired_ready", desiredRunning),
 		slog.Int("desired_stopped", desiredStopped),
 		slog.Int("actual_running", running),
+		slog.Int("actual_ready", ready),
+		slog.Int("actual_busy", busy),
 		slog.Int("actual_stopped", stopped))
 
-	if running < desiredRunning {
-		deficit := desiredRunning - running
+	// Scale based on ready count, not total running
+	if ready < desiredRunning {
+		deficit := desiredRunning - ready
 
 		stoppedInstances := m.filterByState(instances, stateStopped)
 		toStart := min(deficit, len(stoppedInstances))
@@ -253,12 +272,13 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				}
 			}
 		}
-	} else if running > desiredRunning {
-		// Too many running instances - stop or terminate excess
-		excess := running - desiredRunning
+	} else if ready > desiredRunning {
+		// Too many ready (idle) instances - stop or terminate excess
+		// Only scale down idle instances, never busy ones
+		excess := ready - desiredRunning
 		runningInstances := m.filterByState(instances, stateRunning)
 
-		// First, check idle instances (those without assigned jobs)
+		// Get idle instances (those without assigned jobs that exceeded idle timeout)
 		idleInstances := m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
 
 		toStop := min(excess, len(idleInstances))

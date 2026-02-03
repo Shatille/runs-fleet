@@ -29,6 +29,7 @@ type MockDBClient struct {
 	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolRunningJobCountFunc   func(ctx context.Context, poolName string) (int, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -59,6 +60,13 @@ func (m *MockDBClient) ListPools(ctx context.Context) ([]string, error) {
 func (m *MockDBClient) GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
 	if m.GetPoolPeakConcurrencyFunc != nil {
 		return m.GetPoolPeakConcurrencyFunc(ctx, poolName, windowHours)
+	}
+	return 0, nil
+}
+
+func (m *MockDBClient) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
+	if m.GetPoolRunningJobCountFunc != nil {
+		return m.GetPoolRunningJobCountFunc(ctx, poolName)
 	}
 	return 0, nil
 }
@@ -876,6 +884,226 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 		if spec.SubnetID == "" {
 			t.Errorf("fleet create call %d: SubnetID should not be empty", i)
 		}
+	}
+}
+
+func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
+	// Test that reconciliation creates new instances when running instances are busy
+	// desired_ready=2, running=2, busy=2 -> ready=0 -> need 2 new instances
+	fleetCreateCalled := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"test-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 2, // Desired ready instances
+				DesiredStopped: 0,
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolRunningJobCountFunc: func(_ context.Context, _ string) (int, error) {
+			return 2, nil // Both instances are busy
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCalled++
+			return []string{"i-new"}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 2 running instances, but both busy
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-busy1"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+							{
+								InstanceId:   aws.String("i-busy2"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should create 2 new instances because ready=0 and desired=2
+	if fleetCreateCalled != 2 {
+		t.Errorf("Expected 2 fleet create calls (busy instances don't count as ready), got %d", fleetCreateCalled)
+	}
+}
+
+func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
+	// Test that reconciliation doesn't scale down busy instances
+	// desired_ready=1, running=3, busy=2 -> ready=1 -> no scale-down needed
+	terminateCalled := false
+	stopCalled := false
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"test-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 1, // Desired ready instances
+				DesiredStopped: 0,
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolRunningJobCountFunc: func(_ context.Context, _ string) (int, error) {
+			return 2, nil // 2 instances are busy
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{}
+
+	launchTime := time.Now().Add(-2 * time.Hour) // Old enough to be idle
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 3 running instances: 2 busy + 1 idle
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-busy1"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   &launchTime,
+							},
+							{
+								InstanceId:   aws.String("i-busy2"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   &launchTime,
+							},
+							{
+								InstanceId:   aws.String("i-idle"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   &launchTime,
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		TerminateInstancesFunc: func(_ context.Context, _ *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			terminateCalled = true
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, _ *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stopCalled = true
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// ready=1 (3 running - 2 busy), desired_ready=1 -> no scale-down needed
+	if terminateCalled || stopCalled {
+		t.Error("Should not scale down when ready == desired_ready (busy instances protected)")
+	}
+}
+
+func TestReconcilePoolJobCountError(t *testing.T) {
+	// Test that reconciliation aborts when GetPoolRunningJobCount fails
+	fleetCreateCalled := false
+	terminateCalled := false
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"test-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 0, // Would cause scale-down if busy=0
+				DesiredStopped: 0,
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolRunningJobCountFunc: func(_ context.Context, _ string) (int, error) {
+			return 0, errors.New("DynamoDB error")
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCalled = true
+			return []string{"i-new"}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 2 running instances that would be scaled down if error was ignored
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-running1"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+							{
+								InstanceId:   aws.String("i-running2"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		TerminateInstancesFunc: func(_ context.Context, _ *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			terminateCalled = true
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should NOT scale down or create fleets when job count query fails
+	if fleetCreateCalled {
+		t.Error("Should not create fleet when GetPoolRunningJobCount fails")
+	}
+	if terminateCalled {
+		t.Error("Should not terminate instances when GetPoolRunningJobCount fails - could kill busy instances")
 	}
 }
 
