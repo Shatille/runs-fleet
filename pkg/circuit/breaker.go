@@ -110,7 +110,6 @@ func (b *Breaker) cleanupExpiredCache() {
 	now := time.Now()
 	expiredKeys := make([]string, 0)
 
-	// Find expired entries
 	for key, cached := range b.cache {
 		expiresAt := cached.CachedAt.Add(cached.CacheTTL * 2)
 		if now.After(expiresAt) {
@@ -118,7 +117,6 @@ func (b *Breaker) cleanupExpiredCache() {
 		}
 	}
 
-	// Remove expired entries
 	for _, key := range expiredKeys {
 		delete(b.cache, key)
 	}

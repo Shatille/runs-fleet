@@ -21,7 +21,6 @@ func NewCleanup(logger Logger) *Cleanup {
 
 // CleanupRunner removes the runner directory and its contents.
 func (c *Cleanup) CleanupRunner(ctx context.Context, runnerPath string) error {
-	// Check if context is cancelled
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -30,29 +29,24 @@ func (c *Cleanup) CleanupRunner(ctx context.Context, runnerPath string) error {
 
 	c.logger.Printf("Cleaning up runner directory: %s", runnerPath)
 
-	// Remove work directory first (may contain large files)
 	workDir := filepath.Join(runnerPath, "_work")
 	if err := c.removeDirectory(workDir); err != nil {
 		c.logger.Printf("Warning: failed to remove work directory: %v", err)
 	}
 
-	// Check context before continuing
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	// Remove diag directory (runner diagnostics)
 	diagDir := filepath.Join(runnerPath, "_diag")
 	if err := c.removeDirectory(diagDir); err != nil {
 		c.logger.Printf("Warning: failed to remove diag directory: %v", err)
 	}
 
-	// Check context before final removal
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	// Remove runner directory
 	if err := c.removeDirectory(runnerPath); err != nil {
 		return fmt.Errorf("failed to remove runner directory: %w", err)
 	}
@@ -63,7 +57,6 @@ func (c *Cleanup) CleanupRunner(ctx context.Context, runnerPath string) error {
 
 // removeDirectory removes a directory and all its contents.
 func (c *Cleanup) removeDirectory(path string) error {
-	// Check if path exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	}
@@ -73,14 +66,12 @@ func (c *Cleanup) removeDirectory(path string) error {
 
 // CleanupTempFiles removes temporary files created during agent execution.
 func (c *Cleanup) CleanupTempFiles(ctx context.Context) error {
-	// Check if context is cancelled
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
 
-	// Clean up any temp files we created
 	tempDir := os.TempDir()
 
 	patterns := []string{
@@ -107,7 +98,6 @@ func (c *Cleanup) CleanupTempFiles(ctx context.Context) error {
 
 // CleanupLogs removes old log files.
 func (c *Cleanup) CleanupLogs(ctx context.Context, runnerPath string, _ int) error {
-	// Check if context is cancelled
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -119,7 +109,6 @@ func (c *Cleanup) CleanupLogs(ctx context.Context, runnerPath string, _ int) err
 		return nil
 	}
 
-	// Remove all log files
 	err := filepath.Walk(diagDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err

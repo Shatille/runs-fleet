@@ -170,7 +170,6 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 	}
 
-	// Fleet manager required for cold start
 	if deps.Fleet == nil {
 		ec2Log.Error("fleet manager nil", slog.Int64(logging.KeyJobID, job.JobID))
 		return

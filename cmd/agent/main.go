@@ -86,7 +86,6 @@ func main() {
 		defer ac.cleanup()
 	}
 
-	// Common initialization
 	downloader := agent.NewDownloader()
 	safetyMonitor := agent.NewSafetyMonitor(time.Duration(maxRuntimeMinutes)*time.Minute, logger)
 	executor := agent.NewExecutor(logger, safetyMonitor)
@@ -96,7 +95,6 @@ func main() {
 		executor.SetCloudWatchLogger(ac.cwLogger)
 	}
 
-	// Run agent phases
 	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, runID, isK8s, logger)
 }
 

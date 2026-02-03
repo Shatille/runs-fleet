@@ -66,7 +66,6 @@ func NewPriceFetcherWithClient(client PricingAPI, region string) *PriceFetcher {
 // It first checks the cache, then queries the AWS Pricing API, and falls back
 // to hard-coded prices if the API is unavailable.
 func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float64, error) {
-	// Check cache first
 	p.cacheMu.RLock()
 	if price, ok := p.cache[instanceType]; ok && time.Since(p.cacheTime) < p.cacheTTL {
 		p.cacheMu.RUnlock()
@@ -79,7 +78,6 @@ func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float
 		return p.getFallbackPrice(instanceType), nil
 	}
 
-	// Try to fetch from AWS Pricing API
 	price, err := p.fetchPriceFromAPI(ctx, instanceType)
 	if err != nil {
 		pricingLog.Warn("pricing api fetch failed, using fallback",
@@ -89,7 +87,6 @@ func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float
 		return p.getFallbackPrice(instanceType), nil
 	}
 
-	// Update cache
 	p.cacheMu.Lock()
 	p.cache[instanceType] = price
 	p.cacheTime = time.Now()
