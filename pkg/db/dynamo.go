@@ -854,9 +854,9 @@ func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string)
 		return nil // No running job on this instance
 	}
 
-	// Update job status to terminating using instance_id as primary key
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
+	// Update job status to terminating using job_id as primary key
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": job.JobID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
@@ -881,7 +881,7 @@ func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string)
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
-// Uses direct GetItem on primary key (instance_id) for efficient lookup.
+// Uses Scan with filter since job_id is the primary key, not instance_id.
 func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error) {
 	if instanceID == "" {
 		return nil, fmt.Errorf("instance ID cannot be empty")
@@ -891,34 +891,35 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		return nil, fmt.Errorf("jobs table not configured")
 	}
 
-	// Direct lookup by primary key (instance_id)
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	// Scan for running job with this instance_id (job_id is the primary key).
+	// TODO: Add GSI on instance_id for O(1) lookup instead of O(n) scan.
+	// Current approach is acceptable given small table size (ephemeral jobs, <1000 items)
+	// and low call frequency (spot interruption handling only).
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("instance_id = :instance_id AND #status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
+			":status":      &types.AttributeValueMemberS{Value: "running"},
+		},
+		Limit: aws.Int32(1),
 	}
 
-	output, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(c.jobsTable),
-		Key:       key,
-	})
+	output, err := c.dynamoClient.Scan(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get job by instance: %w", err)
+		return nil, fmt.Errorf("failed to scan for job by instance: %w", err)
 	}
 
-	if output.Item == nil {
-		return nil, nil // No job found for this instance
+	if len(output.Items) == 0 {
+		return nil, nil // No running job found for this instance
 	}
 
 	var record jobRecord
-	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
+	if err := attributevalue.UnmarshalMap(output.Items[0], &record); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
-	}
-
-	// Only return running jobs for spot interruption handling
-	if record.Status != "running" {
-		return nil, nil
 	}
 
 	return &events.JobInfo{

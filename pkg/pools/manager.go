@@ -216,17 +216,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	}
 	ready := running - busy
 
-	// desiredRunning represents desired READY instances (idle, available for jobs)
-	poolLog.Info("pool reconciliation",
-		slog.String(logging.KeyPoolName, poolName),
-		slog.Int("desired_ready", desiredRunning),
-		slog.Int("desired_stopped", desiredStopped),
-		slog.Int("actual_running", running),
-		slog.Int("actual_ready", ready),
-		slog.Int("actual_busy", busy),
-		slog.Int("actual_stopped", stopped))
+	// Track changes for logging
+	var started, stoppedCount, created, terminated int
 
 	// Scale based on ready count, not total running
+	// desiredRunning represents desired READY instances (idle, available for jobs)
 	if ready < desiredRunning {
 		deficit := desiredRunning - ready
 
@@ -240,6 +234,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			if err := m.startInstances(ctx, instanceIDs); err != nil {
 				poolLog.Error("instances start failed", slog.String("error", err.Error()))
 			} else {
+				started += toStart
 				deficit -= toStart
 			}
 		}
@@ -269,6 +264,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 						poolLog.Error("fleet creation failed",
 							slog.String(logging.KeyPoolName, poolName),
 							slog.String("error", err.Error()))
+					} else {
+						created++
 					}
 				}
 			}
@@ -307,6 +304,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			}
 			if err := m.stopInstances(ctx, instanceIDs); err != nil {
 				poolLog.Error("instances stop failed", slog.String("error", err.Error()))
+			} else {
+				stoppedCount += canStop
 			}
 			excess -= canStop
 		}
@@ -321,6 +320,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				}
 				if err := m.terminateInstances(ctx, instanceIDs); err != nil {
 					poolLog.Error("instances terminate failed", slog.String("error", err.Error()))
+				} else {
+					terminated += toTerminate
 				}
 			}
 		}
@@ -337,6 +338,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			}
 			if err := m.terminateInstances(ctx, instanceIDs); err != nil {
 				poolLog.Error("stopped instances terminate failed", slog.String("error", err.Error()))
+			} else {
+				terminated += toTerminate
 			}
 		}
 	} else if stopped < desiredStopped && ready >= desiredRunning {
@@ -370,9 +373,25 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 					poolLog.Error("fleet creation for stopped pool failed",
 						slog.String(logging.KeyPoolName, poolName),
 						slog.String("error", err.Error()))
+				} else {
+					created++
 				}
 			}
 		}
+	}
+
+	// Log reconciliation only when changes occurred
+	if started+stoppedCount+created+terminated > 0 {
+		poolLog.Info("pool reconciled",
+			slog.String(logging.KeyPoolName, poolName),
+			slog.Int("running", running),
+			slog.Int("stopped", stopped),
+			slog.Int("ready", ready),
+			slog.Int("busy", busy),
+			slog.Int("started", started),
+			slog.Int("stopped_count", stoppedCount),
+			slog.Int("created", created),
+			slog.Int("terminated", terminated))
 	}
 
 	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {

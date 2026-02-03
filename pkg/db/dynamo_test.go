@@ -237,23 +237,21 @@ func TestGetJobByInstance(t *testing.T) {
 			name:       "Found",
 			instanceID: "i-1234567890abcdef0",
 			mockDB: &MockDynamoDBAPI{
-				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 					item, err := attributevalue.MarshalMap(map[string]interface{}{
 						"instance_id":   "i-1234567890abcdef0",
 						"job_id":        int64(12345),
 						"run_id":        int64(67890),
 						"instance_type": "t4g.medium",
 						"pool":          "default",
-						"private":       false,
 						"spot":          true,
-						"runner_spec":   "2cpu-linux-arm64",
 						"retry_count":   0,
 						"status":        "running",
 					})
 					if err != nil {
 						t.Fatalf("Failed to marshal item: %v", err)
 					}
-					return &dynamodb.GetItemOutput{Item: item}, nil
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item}}, nil
 				},
 			},
 			wantJob: true,
@@ -263,8 +261,8 @@ func TestGetJobByInstance(t *testing.T) {
 			name:       "Not Found",
 			instanceID: "i-notfound",
 			mockDB: &MockDynamoDBAPI{
-				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-					return &dynamodb.GetItemOutput{Item: nil}, nil
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
 				},
 			},
 			wantJob: false,
@@ -276,22 +274,6 @@ func TestGetJobByInstance(t *testing.T) {
 			mockDB:     &MockDynamoDBAPI{},
 			wantJob:    false,
 			wantErr:    true,
-		},
-		{
-			name:       "Not Running Status",
-			instanceID: "i-completed",
-			mockDB: &MockDynamoDBAPI{
-				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-					item, _ := attributevalue.MarshalMap(map[string]interface{}{
-						"instance_id": "i-completed",
-						"job_id":      int64(99999),
-						"status":      "completed",
-					})
-					return &dynamodb.GetItemOutput{Item: item}, nil
-				},
-			},
-			wantJob: false,
-			wantErr: false,
 		},
 	}
 
@@ -933,7 +915,7 @@ func TestPoolConfig_Structure(t *testing.T) {
 
 func TestGetJobByInstance_DynamoDBError(t *testing.T) {
 	mockDB := &MockDynamoDBAPI{
-		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 			return nil, errors.New("dynamodb error")
 		},
 	}
