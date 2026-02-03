@@ -84,6 +84,32 @@ sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-c
   || { echo "Failed to install Docker Compose plugin"; exit 1; }
 rm -f "/tmp/${COMPOSE_BINARY}.sha256"
 
+echo "==> Installing Node.js ecosystem"
+NODE_VERSION="22.13.1"
+if [ "$ARCH" = "x86_64" ]; then
+  NODE_ARCH="x64"
+else
+  NODE_ARCH="arm64"
+fi
+NODE_DIST="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
+NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}"
+# Download and verify checksum
+curl -sfL "${NODE_URL}/SHASUMS256.txt" -o /tmp/node-shasums.txt \
+  || { echo "Failed to download Node.js checksums"; exit 1; }
+curl -sfL "${NODE_URL}/${NODE_DIST}.tar.xz" -o "/tmp/${NODE_DIST}.tar.xz" \
+  || { echo "Failed to download Node.js"; exit 1; }
+NODE_CHECKSUM=$(grep "${NODE_DIST}.tar.xz" /tmp/node-shasums.txt | cut -d' ' -f1) \
+  || { echo "Node.js checksum not found"; exit 1; }
+echo "${NODE_CHECKSUM}  /tmp/${NODE_DIST}.tar.xz" | sha256sum -c \
+  || { echo "Node.js checksum mismatch"; rm -f "/tmp/${NODE_DIST}.tar.xz" /tmp/node-shasums.txt; exit 1; }
+# Extract and install
+sudo tar -xJf "/tmp/${NODE_DIST}.tar.xz" -C /usr/local --strip-components=1 \
+  || { echo "Failed to extract Node.js"; exit 1; }
+rm -f "/tmp/${NODE_DIST}.tar.xz" /tmp/node-shasums.txt
+# Install yarn and pnpm globally
+sudo /usr/local/bin/npm install -g yarn pnpm \
+  || { echo "Failed to install yarn/pnpm"; exit 1; }
+
 echo "==> Configuring QEMU binfmt for multi-arch builds"
 # Pin to specific version for supply-chain security (--privileged required for /proc/sys/fs/binfmt_misc)
 BINFMT_VERSION="qemu-v9.2.0-51"
@@ -181,6 +207,10 @@ echo "==> Base AMI provisioning complete"
 echo "    - Docker: $(docker --version)"
 echo "    - Docker Compose: $(docker-compose --version)"
 echo "    - Docker Compose Plugin: $(docker compose version)"
+echo "    - Node.js: $(node --version)"
+echo "    - npm: $(npm --version)"
+echo "    - yarn: $(yarn --version)"
+echo "    - pnpm: $(pnpm --version)"
 echo "    - QEMU binfmt: enabled at boot"
 echo "    - SSM Agent: enabled"
 echo "    - CloudWatch Agent: enabled"
