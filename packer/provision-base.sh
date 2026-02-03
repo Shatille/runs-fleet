@@ -133,6 +133,29 @@ BINFMT
 sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
 sudo systemctl enable binfmt-qemu.service || { echo "Failed to enable binfmt-qemu.service"; exit 1; }
 
+echo "==> Configuring Docker buildx for multi-arch builds"
+# Create systemd service to set up buildx builder after binfmt is registered
+sudo tee /etc/systemd/system/buildx-setup.service > /dev/null <<'BUILDX'
+[Unit]
+Description=Configure Docker buildx multi-arch builder
+After=binfmt-qemu.service docker.service
+Requires=docker.service
+Wants=binfmt-qemu.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=docker
+ExecStart=/bin/bash -c 'docker buildx create --name multiarch --driver docker-container --bootstrap --use || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+BUILDX
+[ $? -eq 0 ] || { echo "Failed to create buildx-setup.service"; exit 1; }
+sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
+sudo systemctl enable buildx-setup.service || { echo "Failed to enable buildx-setup.service"; exit 1; }
+
 echo "==> Installing Vault CLI"
 VAULT_VERSION="1.18.3"
 if [ "$ARCH" = "x86_64" ]; then
@@ -214,5 +237,6 @@ echo "    - npm: $(npm --version)"
 echo "    - yarn: $(yarn --version)"
 echo "    - pnpm: $(pnpm --version)"
 echo "    - QEMU binfmt: enabled at boot"
+echo "    - Docker buildx: multi-arch builder configured"
 echo "    - SSM Agent: enabled"
 echo "    - CloudWatch Agent: enabled"
