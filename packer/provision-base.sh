@@ -111,6 +111,13 @@ YARN_VERSION="1.22.22"
 PNPM_VERSION="9.15.4"
 sudo /usr/local/bin/npm install -g "yarn@${YARN_VERSION}" "pnpm@${PNPM_VERSION}" \
   || { echo "Failed to install yarn/pnpm"; exit 1; }
+# Create symlinks in /usr/bin for PATH compatibility with GitHub Actions
+sudo ln -sf /usr/local/bin/node /usr/bin/node
+sudo ln -sf /usr/local/bin/npm /usr/bin/npm
+sudo ln -sf /usr/local/bin/npx /usr/bin/npx
+sudo ln -sf /usr/local/bin/yarn /usr/bin/yarn
+sudo ln -sf /usr/local/bin/pnpm /usr/bin/pnpm
+sudo ln -sf /usr/local/bin/pnpx /usr/bin/pnpx
 
 echo "==> Configuring QEMU binfmt for multi-arch builds"
 # Pin to specific version for supply-chain security (--privileged required for /proc/sys/fs/binfmt_misc)
@@ -132,6 +139,29 @@ BINFMT
 [ $? -eq 0 ] || { echo "Failed to create binfmt-qemu.service"; exit 1; }
 sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
 sudo systemctl enable binfmt-qemu.service || { echo "Failed to enable binfmt-qemu.service"; exit 1; }
+
+echo "==> Configuring Docker buildx for multi-arch builds"
+# Create systemd service to set up buildx builder after binfmt is registered
+sudo tee /etc/systemd/system/buildx-setup.service > /dev/null <<'BUILDX'
+[Unit]
+Description=Configure Docker buildx multi-arch builder
+After=binfmt-qemu.service docker.service
+Requires=docker.service
+Wants=binfmt-qemu.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=docker
+ExecStart=/bin/bash -c 'docker buildx create --name multiarch --driver docker-container --bootstrap --use || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+BUILDX
+[ $? -eq 0 ] || { echo "Failed to create buildx-setup.service"; exit 1; }
+sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
+sudo systemctl enable buildx-setup.service || { echo "Failed to enable buildx-setup.service"; exit 1; }
 
 echo "==> Installing Vault CLI"
 VAULT_VERSION="1.18.3"
@@ -214,5 +244,6 @@ echo "    - npm: $(npm --version)"
 echo "    - yarn: $(yarn --version)"
 echo "    - pnpm: $(pnpm --version)"
 echo "    - QEMU binfmt: enabled at boot"
+echo "    - Docker buildx: multi-arch builder configured"
 echo "    - SSM Agent: enabled"
 echo "    - CloudWatch Agent: enabled"
