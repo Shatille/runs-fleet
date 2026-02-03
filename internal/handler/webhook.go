@@ -107,8 +107,8 @@ func EnsureEphemeralPool(ctx context.Context, dbc *db.Client, jobConfig *gh.JobC
 	config := &db.PoolConfig{
 		PoolName:           jobConfig.Pool,
 		Ephemeral:          true,
-		DesiredRunning:     1,
-		DesiredStopped:     0,
+		DesiredRunning:     0,
+		DesiredStopped:     1,
 		IdleTimeoutMinutes: 30,
 		LastJobTime:        time.Now(),
 		InstanceType:       jobConfig.InstanceType,

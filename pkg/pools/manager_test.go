@@ -1312,6 +1312,60 @@ func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
 	}
 }
 
+func TestReconcilePoolCreateForWarmPool(t *testing.T) {
+	// Test warm pool: desiredRunning=0, desiredStopped=1
+	// Should create fleet instances to eventually become stopped
+	fleetCreateCalled := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"warm-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 0, // No hot standby
+				DesiredStopped: 2, // Warm pool: 2 stopped instances
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, spec *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCalled++
+			if spec.Pool != "warm-pool" {
+				t.Errorf("expected pool warm-pool, got %s", spec.Pool)
+			}
+			return []string{"i-new"}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// No instances initially
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should create 2 fleet instances to fill stopped pool deficit
+	// (ready=0 >= desiredRunning=0, and stopped=0 < desiredStopped=2)
+	if fleetCreateCalled != 2 {
+		t.Errorf("expected 2 fleet create calls for warm pool deficit, got %d", fleetCreateCalled)
+	}
+}
+
 func TestReconcilePoolWithSchedule(t *testing.T) {
 	now := time.Now()
 	currentHour := now.Hour()

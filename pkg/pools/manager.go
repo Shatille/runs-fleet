@@ -322,6 +322,40 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				poolLog.Error("stopped instances terminate failed", slog.String("error", err.Error()))
 			}
 		}
+	} else if stopped < desiredStopped && ready >= desiredRunning {
+		// Need more stopped instances but have enough ready (or desiredRunning is 0)
+		// This handles warm pools (desiredRunning=0, desiredStopped>0)
+		// Create new instances - they will boot as running, then be stopped
+		// in next reconciliation when ready > desiredRunning
+		deficit := desiredStopped - stopped
+		instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
+		if len(instanceTypes) == 0 {
+			poolLog.Warn("no instance types resolved for stopped pool deficit",
+				slog.String(logging.KeyPoolName, poolName))
+		} else {
+			for i := 0; i < deficit; i++ {
+				subnetID := m.selectSubnet()
+				if subnetID == "" {
+					poolLog.Error("no subnets configured for pool",
+						slog.String(logging.KeyPoolName, poolName))
+					break
+				}
+				spec := &fleet.LaunchSpec{
+					RunID:         time.Now().UnixNano(),
+					InstanceType:  instanceTypes[0],
+					InstanceTypes: instanceTypes,
+					SubnetID:      subnetID,
+					Pool:          poolName,
+					Spot:          true,
+					Arch:          arch,
+				}
+				if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
+					poolLog.Error("fleet creation for stopped pool failed",
+						slog.String(logging.KeyPoolName, poolName),
+						slog.String("error", err.Error()))
+				}
+			}
+		}
 	}
 
 	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {
