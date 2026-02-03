@@ -97,6 +97,9 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 	if cfg.OldJobsInterval != 1*time.Hour {
 		t.Errorf("expected OldJobsInterval 1h, got %v", cfg.OldJobsInterval)
 	}
+	if cfg.OrphanedJobsInterval != 15*time.Minute {
+		t.Errorf("expected OrphanedJobsInterval 15m, got %v", cfg.OrphanedJobsInterval)
+	}
 	if cfg.PoolAuditInterval != 10*time.Minute {
 		t.Errorf("expected PoolAuditInterval 10m, got %v", cfg.PoolAuditInterval)
 	}
@@ -297,6 +300,7 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 		OrphanedInstancesInterval:    100 * time.Millisecond,
 		StaleSSMInterval:             100 * time.Millisecond,
 		OldJobsInterval:              100 * time.Millisecond,
+		OrphanedJobsInterval:         100 * time.Millisecond,
 		PoolAuditInterval:            100 * time.Millisecond,
 		CostReportInterval:           100 * time.Millisecond,
 		DLQRedriveInterval:           100 * time.Millisecond,
@@ -334,6 +338,7 @@ func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 		OrphanedInstancesInterval:    1 * time.Hour, // Long interval
 		StaleSSMInterval:             1 * time.Hour,
 		OldJobsInterval:              1 * time.Hour,
+		OrphanedJobsInterval:         1 * time.Hour,
 		PoolAuditInterval:            1 * time.Hour,
 		CostReportInterval:           1 * time.Hour,
 		DLQRedriveInterval:           1 * time.Hour,
@@ -383,6 +388,7 @@ func TestSchedulerConfig_Structure(t *testing.T) {
 		OrphanedInstancesInterval:    5 * time.Minute,
 		StaleSSMInterval:             15 * time.Minute,
 		OldJobsInterval:              1 * time.Hour,
+		OrphanedJobsInterval:         15 * time.Minute,
 		PoolAuditInterval:            10 * time.Minute,
 		CostReportInterval:           24 * time.Hour,
 		DLQRedriveInterval:           15 * time.Minute,
@@ -397,6 +403,9 @@ func TestSchedulerConfig_Structure(t *testing.T) {
 	}
 	if cfg.OldJobsInterval != 1*time.Hour {
 		t.Errorf("expected OldJobsInterval 1h, got %v", cfg.OldJobsInterval)
+	}
+	if cfg.OrphanedJobsInterval != 15*time.Minute {
+		t.Errorf("expected OrphanedJobsInterval 15m, got %v", cfg.OrphanedJobsInterval)
 	}
 	if cfg.PoolAuditInterval != 10*time.Minute {
 		t.Errorf("expected PoolAuditInterval 10m, got %v", cfg.PoolAuditInterval)
@@ -428,6 +437,7 @@ func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
 		OrphanedInstancesInterval:    10 * time.Millisecond,
 		StaleSSMInterval:             10 * time.Millisecond,
 		OldJobsInterval:              10 * time.Millisecond,
+		OrphanedJobsInterval:         10 * time.Millisecond,
 		PoolAuditInterval:            10 * time.Millisecond,
 		CostReportInterval:           10 * time.Millisecond,
 		DLQRedriveInterval:           10 * time.Millisecond,
@@ -504,10 +514,11 @@ func TestScheduler_Structure(t *testing.T) {
 		OrphanedInstancesInterval:    1 * time.Minute,
 		StaleSSMInterval:             2 * time.Minute,
 		OldJobsInterval:              3 * time.Minute,
-		PoolAuditInterval:            4 * time.Minute,
-		CostReportInterval:           5 * time.Minute,
-		DLQRedriveInterval:           6 * time.Minute,
-		EphemeralPoolCleanupInterval: 7 * time.Minute,
+		OrphanedJobsInterval:         4 * time.Minute,
+		PoolAuditInterval:            5 * time.Minute,
+		CostReportInterval:           6 * time.Minute,
+		DLQRedriveInterval:           7 * time.Minute,
+		EphemeralPoolCleanupInterval: 8 * time.Minute,
 	}
 	queueURL := "https://sqs.example.com/test-queue"
 
@@ -525,17 +536,20 @@ func TestScheduler_Structure(t *testing.T) {
 	if scheduler.config.OldJobsInterval != 3*time.Minute {
 		t.Errorf("OldJobsInterval = %v, want 3m", scheduler.config.OldJobsInterval)
 	}
-	if scheduler.config.PoolAuditInterval != 4*time.Minute {
-		t.Errorf("PoolAuditInterval = %v, want 4m", scheduler.config.PoolAuditInterval)
+	if scheduler.config.OrphanedJobsInterval != 4*time.Minute {
+		t.Errorf("OrphanedJobsInterval = %v, want 4m", scheduler.config.OrphanedJobsInterval)
 	}
-	if scheduler.config.CostReportInterval != 5*time.Minute {
-		t.Errorf("CostReportInterval = %v, want 5m", scheduler.config.CostReportInterval)
+	if scheduler.config.PoolAuditInterval != 5*time.Minute {
+		t.Errorf("PoolAuditInterval = %v, want 5m", scheduler.config.PoolAuditInterval)
 	}
-	if scheduler.config.DLQRedriveInterval != 6*time.Minute {
-		t.Errorf("DLQRedriveInterval = %v, want 6m", scheduler.config.DLQRedriveInterval)
+	if scheduler.config.CostReportInterval != 6*time.Minute {
+		t.Errorf("CostReportInterval = %v, want 6m", scheduler.config.CostReportInterval)
 	}
-	if scheduler.config.EphemeralPoolCleanupInterval != 7*time.Minute {
-		t.Errorf("EphemeralPoolCleanupInterval = %v, want 7m", scheduler.config.EphemeralPoolCleanupInterval)
+	if scheduler.config.DLQRedriveInterval != 7*time.Minute {
+		t.Errorf("DLQRedriveInterval = %v, want 7m", scheduler.config.DLQRedriveInterval)
+	}
+	if scheduler.config.EphemeralPoolCleanupInterval != 8*time.Minute {
+		t.Errorf("EphemeralPoolCleanupInterval = %v, want 8m", scheduler.config.EphemeralPoolCleanupInterval)
 	}
 }
 
@@ -587,6 +601,9 @@ func TestSchedulerConfig_ZeroValues(t *testing.T) {
 	}
 	if cfg.OldJobsInterval != 0 {
 		t.Error("OldJobsInterval should be zero by default")
+	}
+	if cfg.OrphanedJobsInterval != 0 {
+		t.Error("OrphanedJobsInterval should be zero by default")
 	}
 	if cfg.PoolAuditInterval != 0 {
 		t.Error("PoolAuditInterval should be zero by default")

@@ -45,6 +45,8 @@ const (
 	TaskDLQRedrive TaskType = "dlq_redrive"
 	// TaskEphemeralPoolCleanup removes stale ephemeral pools.
 	TaskEphemeralPoolCleanup TaskType = "ephemeral_pool_cleanup"
+	// TaskOrphanedJobs cleans up jobs whose instances no longer exist.
+	TaskOrphanedJobs TaskType = "orphaned_jobs"
 )
 
 // Message represents a housekeeping task message.
@@ -59,6 +61,7 @@ type TaskExecutor interface {
 	ExecuteOrphanedInstances(ctx context.Context) error
 	ExecuteStaleSecrets(ctx context.Context) error
 	ExecuteOldJobs(ctx context.Context) error
+	ExecuteOrphanedJobs(ctx context.Context) error
 	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
 	ExecuteDLQRedrive(ctx context.Context) error
@@ -168,6 +171,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		err = h.taskExecutor.ExecuteStaleSecrets(taskCtx)
 	case TaskOldJobs:
 		err = h.taskExecutor.ExecuteOldJobs(taskCtx)
+	case TaskOrphanedJobs:
+		err = h.taskExecutor.ExecuteOrphanedJobs(taskCtx)
 	case TaskPoolAudit:
 		err = h.taskExecutor.ExecutePoolAudit(taskCtx)
 	case TaskCostReport:

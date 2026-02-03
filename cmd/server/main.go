@@ -497,6 +497,10 @@ func (h *housekeepingMetricsAdapter) PublishJobRecordsArchived(ctx context.Conte
 	return h.publisher.PublishJobRecordsArchived(ctx, count)
 }
 
+func (h *housekeepingMetricsAdapter) PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error {
+	return h.publisher.PublishOrphanedJobsCleanedUp(ctx, count)
+}
+
 func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	return h.publisher.PublishPoolUtilization(ctx, poolName, utilization)
 }

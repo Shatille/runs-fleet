@@ -35,6 +35,10 @@ type SchedulerConfig struct {
 	// Default: 1 hour
 	OldJobsInterval time.Duration
 
+	// OrphanedJobsInterval is how often to run orphaned jobs cleanup.
+	// Default: 15 minutes
+	OrphanedJobsInterval time.Duration
+
 	// PoolAuditInterval is how often to run pool utilization audit.
 	// Default: 10 minutes
 	PoolAuditInterval time.Duration
@@ -58,6 +62,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		OrphanedInstancesInterval:    5 * time.Minute,
 		StaleSSMInterval:             15 * time.Minute,
 		OldJobsInterval:              1 * time.Hour,
+		OrphanedJobsInterval:         15 * time.Minute,
 		PoolAuditInterval:            10 * time.Minute,
 		CostReportInterval:           24 * time.Hour,
 		DLQRedriveInterval:           1 * time.Minute,
@@ -109,6 +114,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	orphanedTicker := time.NewTicker(s.config.OrphanedInstancesInterval)
 	ssmTicker := time.NewTicker(s.config.StaleSSMInterval)
 	jobsTicker := time.NewTicker(s.config.OldJobsInterval)
+	orphanedJobsTicker := time.NewTicker(s.config.OrphanedJobsInterval)
 	poolTicker := time.NewTicker(s.config.PoolAuditInterval)
 	costTicker := time.NewTicker(s.config.CostReportInterval)
 	dlqTicker := time.NewTicker(s.config.DLQRedriveInterval)
@@ -117,6 +123,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer orphanedTicker.Stop()
 	defer ssmTicker.Stop()
 	defer jobsTicker.Stop()
+	defer orphanedJobsTicker.Stop()
 	defer poolTicker.Stop()
 	defer costTicker.Stop()
 	defer dlqTicker.Stop()
@@ -138,6 +145,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-jobsTicker.C:
 			s.scheduleTask(ctx, TaskOldJobs)
+
+		case <-orphanedJobsTicker.C:
+			s.scheduleTask(ctx, TaskOrphanedJobs)
 
 		case <-poolTicker.C:
 			s.scheduleTask(ctx, TaskPoolAudit)

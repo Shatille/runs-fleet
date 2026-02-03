@@ -170,6 +170,12 @@ func (m *MultiPublisher) PublishJobRecordsArchived(ctx context.Context, count in
 	})
 }
 
+func (m *MultiPublisher) PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishOrphanedJobsCleanedUp(ctx, count)
+	})
+}
+
 func (m *MultiPublisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error { //nolint:revive
 	return m.publishAll(func(p Publisher) error {
 		return p.PublishPoolUtilization(ctx, poolName, utilization)
