@@ -269,10 +269,10 @@ func DefaultFlexibleFamilies(arch string) []string {
 	case "amd64":
 		return []string{"c6i", "c7i", "m6i", "m7i", "t3"}
 	case "arm64":
-		return []string{"c8g", "m8g", "c7g", "m7g", "t4g"}
+		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "t4g"}
 	default:
 		// No arch preference - include both for diversification
-		return []string{"c8g", "m8g", "c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
+		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
 	}
 }
 
