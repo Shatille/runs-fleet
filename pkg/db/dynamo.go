@@ -787,6 +787,48 @@ func (c *Client) GetPoolRunningJobCount(ctx context.Context, poolName string) (i
 	return int(output.Count), nil
 }
 
+// GetPoolBusyInstanceIDs returns instance IDs that have running jobs in the pool.
+// Used to identify which instances should not be stopped during reconciliation.
+func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error) {
+	if poolName == "" {
+		return nil, fmt.Errorf("pool name cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return nil, nil // No jobs table configured
+	}
+
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("#pool = :pool AND #status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#pool":   "pool",
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pool":   &types.AttributeValueMemberS{Value: poolName},
+			":status": &types.AttributeValueMemberS{Value: "running"},
+		},
+		ProjectionExpression: aws.String("instance_id"),
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan jobs: %w", err)
+	}
+
+	var instanceIDs []string
+	for _, item := range output.Items {
+		if v, ok := item["instance_id"]; ok {
+			if s, ok := v.(*types.AttributeValueMemberS); ok && s.Value != "" {
+				instanceIDs = append(instanceIDs, s.Value)
+			}
+		}
+	}
+
+	return instanceIDs, nil
+}
+
 // MarkInstanceTerminating marks jobs on an instance as terminating in DynamoDB.
 // Updates any running jobs for this instance to status "terminating".
 func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string) error {

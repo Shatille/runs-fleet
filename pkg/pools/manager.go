@@ -37,6 +37,7 @@ type DBClient interface {
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error)
+	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -278,15 +279,31 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		excess := ready - desiredRunning
 		runningInstances := m.filterByState(instances, stateRunning)
 
-		// Get idle instances (those without assigned jobs that exceeded idle timeout)
-		idleInstances := m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+		// For warm pools (desiredRunning=0), stop instances immediately
+		// For hot pools, only stop instances that exceeded idle timeout
+		var candidateInstances []PoolInstance
+		if desiredRunning == 0 && desiredStopped > 0 {
+			// Warm pool: all ready instances are candidates for stopping
+			// Get specific busy instance IDs to exclude them
+			busyIDs, err := m.dbClient.GetPoolBusyInstanceIDs(ctx, poolName)
+			if err != nil {
+				poolLog.Warn("failed to get busy instance IDs, using idle filter instead",
+					slog.String("error", err.Error()))
+				candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+			} else {
+				candidateInstances = m.filterReadyInstances(runningInstances, busyIDs)
+			}
+		} else {
+			// Hot pool: only idle instances that exceeded timeout
+			candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+		}
 
-		toStop := min(excess, len(idleInstances))
+		toStop := min(excess, len(candidateInstances))
 		if toStop > 0 && stopped < desiredStopped {
 			canStop := min(toStop, desiredStopped-stopped)
 			instanceIDs := make([]string, canStop)
 			for i := 0; i < canStop; i++ {
-				instanceIDs[i] = idleInstances[i].InstanceID
+				instanceIDs[i] = candidateInstances[i].InstanceID
 			}
 			if err := m.stopInstances(ctx, instanceIDs); err != nil {
 				poolLog.Error("instances stop failed", slog.String("error", err.Error()))
@@ -296,11 +313,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 
 		if excess > 0 {
 			// Sort by launch time (oldest first)
-			toTerminate := min(excess, len(idleInstances))
+			toTerminate := min(excess, len(candidateInstances))
 			if toTerminate > 0 {
 				instanceIDs := make([]string, toTerminate)
 				for i := 0; i < toTerminate; i++ {
-					instanceIDs[i] = idleInstances[i].InstanceID
+					instanceIDs[i] = candidateInstances[i].InstanceID
 				}
 				if err := m.terminateInstances(ctx, instanceIDs); err != nil {
 					poolLog.Error("instances terminate failed", slog.String("error", err.Error()))
@@ -506,6 +523,23 @@ func (m *Manager) filterIdleInstances(instances []PoolInstance, idleTimeoutMinut
 		}
 	}
 	return idle
+}
+
+// filterReadyInstances returns running instances that are not busy (no running job).
+// Used for warm pools where we want to stop instances immediately without idle timeout.
+func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs []string) []PoolInstance {
+	busySet := make(map[string]struct{}, len(busyInstanceIDs))
+	for _, id := range busyInstanceIDs {
+		busySet[id] = struct{}{}
+	}
+
+	var ready []PoolInstance
+	for _, inst := range instances {
+		if _, isBusy := busySet[inst.InstanceID]; !isBusy {
+			ready = append(ready, inst)
+		}
+	}
+	return ready
 }
 
 func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) error {

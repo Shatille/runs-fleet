@@ -30,6 +30,7 @@ type MockDBClient struct {
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolRunningJobCountFunc   func(ctx context.Context, poolName string) (int, error)
+	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -69,6 +70,13 @@ func (m *MockDBClient) GetPoolRunningJobCount(ctx context.Context, poolName stri
 		return m.GetPoolRunningJobCountFunc(ctx, poolName)
 	}
 	return 0, nil
+}
+
+func (m *MockDBClient) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error) {
+	if m.GetPoolBusyInstanceIDsFunc != nil {
+		return m.GetPoolBusyInstanceIDsFunc(ctx, poolName)
+	}
+	return nil, nil
 }
 
 func (m *MockDBClient) AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error {
@@ -1363,6 +1371,81 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 	// (ready=0 >= desiredRunning=0, and stopped=0 < desiredStopped=2)
 	if fleetCreateCalled != 2 {
 		t.Errorf("expected 2 fleet create calls for warm pool deficit, got %d", fleetCreateCalled)
+	}
+}
+
+func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
+	// Test that warm pool instances are stopped immediately without waiting for idle timeout
+	// This is the key behavior: new instances should be stopped right away to become "warm"
+	var stoppedIDs []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"warm-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning:     0,  // Warm pool: no hot standby
+				DesiredStopped:     1,  // Warm pool: want 1 stopped instance
+				IdleTimeoutMinutes: 30, // 30 min idle timeout (should be bypassed for warm pools)
+				InstanceType:       "t3.medium",
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+		// Return no busy instances - the running instance is ready to be stopped
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			return []string{}, nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{}
+
+	launchTime := time.Now() // Just launched - would NOT pass 30min idle timeout
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-running1"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   aws.Time(launchTime),
+								Tags: []ec2types.Tag{
+									{Key: aws.String("runs-fleet:pool"), Value: aws.String("warm-pool")},
+								},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedIDs = append(stoppedIDs, input.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Instance should be stopped immediately because:
+	// - desiredRunning=0, desiredStopped=1 (warm pool)
+	// - running=1, stopped=0
+	// - ready=1 > desiredRunning=0 triggers scale down
+	// - Warm pools bypass idle timeout check
+	if len(stoppedIDs) != 1 {
+		t.Errorf("expected 1 instance stopped immediately, got %d", len(stoppedIDs))
+	}
+	if len(stoppedIDs) > 0 && stoppedIDs[0] != "i-running1" {
+		t.Errorf("expected i-running1 to be stopped, got %s", stoppedIDs[0])
 	}
 }
 
