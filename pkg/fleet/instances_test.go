@@ -285,6 +285,111 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 	}
 }
 
+func TestResolveInstanceTypes_Generation(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     FlexibleSpec
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "Gen 8 ARM64 only",
+			spec: FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 4,
+				Arch:   "arm64",
+				Gen:    8,
+			},
+			contains: []string{"c8g.xlarge", "m8g.xlarge"},
+			excludes: []string{"c7g.xlarge", "m7g.xlarge", "t4g.xlarge"},
+		},
+		{
+			name: "Gen 7 ARM64 only",
+			spec: FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 4,
+				Arch:   "arm64",
+				Gen:    7,
+			},
+			contains: []string{"c7g.xlarge", "m7g.xlarge", "r7g.xlarge"},
+			excludes: []string{"c8g.xlarge", "m8g.xlarge", "t4g.xlarge"},
+		},
+		{
+			name: "Gen 7 amd64 only",
+			spec: FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 4,
+				Arch:   "amd64",
+				Gen:    7,
+			},
+			contains: []string{"c7i.xlarge", "m7i.xlarge", "r7i.xlarge"},
+			excludes: []string{"c6i.xlarge", "m6i.xlarge", "t3.xlarge"},
+		},
+		{
+			name: "Gen 6 amd64 only",
+			spec: FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 4,
+				Arch:   "amd64",
+				Gen:    6,
+			},
+			contains: []string{"c6i.xlarge", "m6i.xlarge", "r6i.xlarge"},
+			excludes: []string{"c7i.xlarge", "m7i.xlarge", "t3.xlarge"},
+		},
+		{
+			name: "Gen 0 (any) returns all generations",
+			spec: FlexibleSpec{
+				CPUMin:   4,
+				CPUMax:   4,
+				Arch:     "arm64",
+				Families: []string{"c7g", "c8g"},
+				Gen:      0,
+			},
+			contains: []string{"c7g.xlarge", "c8g.xlarge"},
+		},
+		{
+			name: "Gen with family filter",
+			spec: FlexibleSpec{
+				CPUMin:   4,
+				CPUMax:   8,
+				Arch:     "arm64",
+				Families: []string{"c8g", "m8g"},
+				Gen:      8,
+			},
+			contains: []string{"c8g.xlarge", "c8g.2xlarge", "m8g.xlarge", "m8g.2xlarge"},
+			excludes: []string{"c7g.xlarge", "r8g.xlarge"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ResolveInstanceTypes(tt.spec)
+
+			for _, want := range tt.contains {
+				found := false
+				for _, got := range result {
+					if got == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("ResolveInstanceTypes() missing expected type %q, got %v", want, result)
+				}
+			}
+
+			for _, exclude := range tt.excludes {
+				for _, got := range result {
+					if got == exclude {
+						t.Errorf("ResolveInstanceTypes() should not contain %q, got %v", exclude, result)
+						break
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestGetInstanceArch(t *testing.T) {
 	tests := []struct {
 		name         string
