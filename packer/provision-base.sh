@@ -74,11 +74,14 @@ curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}" -o "/tmp/${COMPOSE_BINARY}" \
 cd /tmp && sha256sum -c "${COMPOSE_BINARY}.sha256" \
   || { echo "Docker Compose checksum mismatch"; rm -f "/tmp/${COMPOSE_BINARY}" "/tmp/${COMPOSE_BINARY}.sha256"; exit 1; }
 # Install as standalone binary (docker-compose)
-sudo mv "/tmp/${COMPOSE_BINARY}" /usr/local/bin/docker-compose
+sudo mv "/tmp/${COMPOSE_BINARY}" /usr/local/bin/docker-compose \
+  || { echo "Failed to install Docker Compose binary"; exit 1; }
 sudo chmod +x /usr/local/bin/docker-compose
 # Install as Docker CLI plugin (docker compose)
-sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+sudo mkdir -p /usr/local/lib/docker/cli-plugins \
+  || { echo "Failed to create Docker CLI plugins directory"; exit 1; }
+sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose \
+  || { echo "Failed to install Docker Compose plugin"; exit 1; }
 rm -f "/tmp/${COMPOSE_BINARY}.sha256"
 
 echo "==> Configuring QEMU binfmt for multi-arch builds"
