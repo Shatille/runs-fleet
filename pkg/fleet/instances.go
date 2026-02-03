@@ -56,6 +56,42 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "r7g.12xlarge", CPU: 48, RAM: 384, Arch: "arm64", Family: "r7g"},
 	{Type: "r7g.16xlarge", CPU: 64, RAM: 512, Arch: "arm64", Family: "r7g"},
 
+	// ARM64 (Graviton4) - Compute Optimized (8th gen)
+	{Type: "c8g.medium", CPU: 1, RAM: 2, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.large", CPU: 2, RAM: 4, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.2xlarge", CPU: 8, RAM: 16, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.4xlarge", CPU: 16, RAM: 32, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.8xlarge", CPU: 32, RAM: 64, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.12xlarge", CPU: 48, RAM: 96, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.16xlarge", CPU: 64, RAM: 128, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.24xlarge", CPU: 96, RAM: 192, Arch: "arm64", Family: "c8g"},
+	{Type: "c8g.48xlarge", CPU: 192, RAM: 384, Arch: "arm64", Family: "c8g"},
+
+	// ARM64 (Graviton4) - Memory Optimized (8th gen)
+	{Type: "m8g.medium", CPU: 1, RAM: 4, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.large", CPU: 2, RAM: 8, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.xlarge", CPU: 4, RAM: 16, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.2xlarge", CPU: 8, RAM: 32, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.4xlarge", CPU: 16, RAM: 64, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.8xlarge", CPU: 32, RAM: 128, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.12xlarge", CPU: 48, RAM: 192, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.16xlarge", CPU: 64, RAM: 256, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.24xlarge", CPU: 96, RAM: 384, Arch: "arm64", Family: "m8g"},
+	{Type: "m8g.48xlarge", CPU: 192, RAM: 768, Arch: "arm64", Family: "m8g"},
+
+	// ARM64 (Graviton4) - High Memory (8th gen)
+	{Type: "r8g.medium", CPU: 1, RAM: 8, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.large", CPU: 2, RAM: 16, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.xlarge", CPU: 4, RAM: 32, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.2xlarge", CPU: 8, RAM: 64, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.4xlarge", CPU: 16, RAM: 128, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.8xlarge", CPU: 32, RAM: 256, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.12xlarge", CPU: 48, RAM: 384, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.16xlarge", CPU: 64, RAM: 512, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.24xlarge", CPU: 96, RAM: 768, Arch: "arm64", Family: "r8g"},
+	{Type: "r8g.48xlarge", CPU: 192, RAM: 1536, Arch: "arm64", Family: "r8g"},
+
 	// amd64 - Burstable
 	{Type: "t3.micro", CPU: 2, RAM: 1, Arch: "amd64", Family: "t3"},
 	{Type: "t3.small", CPU: 2, RAM: 2, Arch: "amd64", Family: "t3"},
@@ -220,15 +256,16 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
 // When arch is empty, returns both ARM64 and AMD64 families for maximum spot diversification.
+// Includes 8th gen families (c8g, m8g, r8g) which may not be available in all regions.
 func DefaultFlexibleFamilies(arch string) []string {
 	switch arch {
 	case "amd64":
 		return []string{"c6i", "c7i", "m6i", "m7i", "t3"}
 	case "arm64":
-		return []string{"c7g", "m7g", "t4g"}
+		return []string{"c8g", "m8g", "c7g", "m7g", "t4g"}
 	default:
 		// No arch preference - include both for diversification
-		return []string{"c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
+		return []string{"c8g", "m8g", "c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
 	}
 }
 

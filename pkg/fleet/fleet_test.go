@@ -13,8 +13,9 @@ import (
 )
 
 type mockEC2Client struct {
-	CreateFleetFunc             func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
-	DescribeSpotPriceHistoryFunc func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
+	CreateFleetFunc                    func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	DescribeSpotPriceHistoryFunc       func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
+	DescribeInstanceTypeOfferingsFunc  func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 }
 
 func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
@@ -33,6 +34,24 @@ func (m *mockEC2Client) DescribeSpotPriceHistory(ctx context.Context, params *ec
 		SpotPriceHistory: []types.SpotPrice{
 			{InstanceType: types.InstanceTypeT4gMedium, SpotPrice: aws.String("0.0101")},
 			{InstanceType: types.InstanceTypeC7gXlarge, SpotPrice: aws.String("0.0435")},
+		},
+	}, nil
+}
+
+func (m *mockEC2Client) DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	if m.DescribeInstanceTypeOfferingsFunc != nil {
+		return m.DescribeInstanceTypeOfferingsFunc(ctx, params, optFns...)
+	}
+	// Default: return common instance types as available
+	return &ec2.DescribeInstanceTypeOfferingsOutput{
+		InstanceTypeOfferings: []types.InstanceTypeOffering{
+			{InstanceType: types.InstanceTypeT4gMedium},
+			{InstanceType: types.InstanceTypeT4gLarge},
+			{InstanceType: types.InstanceTypeC7gXlarge},
+			{InstanceType: types.InstanceTypeC7g2xlarge},
+			{InstanceType: types.InstanceTypeM7gXlarge},
+			{InstanceType: types.InstanceTypeT3Medium},
+			{InstanceType: types.InstanceTypeC6iXlarge},
 		},
 	}, nil
 }
@@ -840,7 +859,7 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 				SubnetID:      "subnet-1",
 			},
 			wantErr:         true,
-			wantErrContains: "no valid instance types found",
+			wantErrContains: "no instance types available in region",
 		},
 		{
 			name:   "Arch mismatch returns error",
@@ -890,5 +909,163 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilterAvailableInstanceTypes(t *testing.T) {
+	tests := []struct {
+		name           string
+		inputTypes     []string
+		availableTypes []string
+		wantTypes      []string
+		apiError       error
+	}{
+		{
+			name:           "all types available",
+			inputTypes:     []string{"t4g.medium", "c7g.xlarge"},
+			availableTypes: []string{"t4g.medium", "c7g.xlarge", "m7g.large"},
+			wantTypes:      []string{"t4g.medium", "c7g.xlarge"},
+		},
+		{
+			name:           "some types unavailable",
+			inputTypes:     []string{"t4g.medium", "c8g.xlarge", "m8g.large"},
+			availableTypes: []string{"t4g.medium", "c7g.xlarge"},
+			wantTypes:      []string{"t4g.medium"},
+		},
+		{
+			name:           "all types unavailable",
+			inputTypes:     []string{"c8g.xlarge", "m8g.large"},
+			availableTypes: []string{"t4g.medium", "c7g.xlarge"},
+			wantTypes:      nil,
+		},
+		{
+			name:           "API error returns all types",
+			inputTypes:     []string{"t4g.medium", "c8g.xlarge"},
+			availableTypes: nil,
+			apiError:       errors.New("API error"),
+			wantTypes:      []string{"t4g.medium", "c8g.xlarge"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &mockEC2Client{
+				DescribeInstanceTypeOfferingsFunc: func(_ context.Context, _ *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+					if tt.apiError != nil {
+						return nil, tt.apiError
+					}
+					offerings := make([]types.InstanceTypeOffering, len(tt.availableTypes))
+					for i, t := range tt.availableTypes {
+						offerings[i] = types.InstanceTypeOffering{
+							InstanceType: types.InstanceType(t),
+						}
+					}
+					return &ec2.DescribeInstanceTypeOfferingsOutput{
+						InstanceTypeOfferings: offerings,
+					}, nil
+				},
+			}
+
+			m := &Manager{
+				ec2Client: mockClient,
+				config:    &config.Config{},
+			}
+
+			got := m.filterAvailableInstanceTypes(context.Background(), tt.inputTypes)
+
+			if len(got) != len(tt.wantTypes) {
+				t.Errorf("filterAvailableInstanceTypes() got %d types, want %d", len(got), len(tt.wantTypes))
+				return
+			}
+			for i, wantType := range tt.wantTypes {
+				if got[i] != wantType {
+					t.Errorf("filterAvailableInstanceTypes()[%d] = %q, want %q", i, got[i], wantType)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildLaunchTemplateConfigs_FiltersUnavailableTypes(t *testing.T) {
+	mockClient := &mockEC2Client{
+		DescribeInstanceTypeOfferingsFunc: func(_ context.Context, _ *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+			// Only t4g.medium and c7g.xlarge are available, c8g types are not
+			return &ec2.DescribeInstanceTypeOfferingsOutput{
+				InstanceTypeOfferings: []types.InstanceTypeOffering{
+					{InstanceType: types.InstanceTypeT4gMedium},
+					{InstanceType: types.InstanceTypeC7gXlarge},
+				},
+			}, nil
+		},
+	}
+
+	m := &Manager{
+		ec2Client: mockClient,
+		config: &config.Config{
+			LaunchTemplateName: "test-template",
+		},
+	}
+
+	spec := &LaunchSpec{
+		InstanceTypes: []string{"c8g.xlarge", "t4g.medium", "c7g.xlarge"},
+		SubnetID:      "subnet-123",
+		Arch:          "arm64",
+	}
+
+	configs, err := m.buildLaunchTemplateConfigs(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("buildLaunchTemplateConfigs() error = %v", err)
+	}
+
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+
+	// Should only have t4g.medium and c7g.xlarge (c8g.xlarge filtered out)
+	overrides := configs[0].Overrides
+	if len(overrides) != 2 {
+		t.Errorf("expected 2 overrides (filtered), got %d", len(overrides))
+	}
+
+	hasC8g := false
+	for _, o := range overrides {
+		if strings.HasPrefix(string(o.InstanceType), "c8g") {
+			hasC8g = true
+		}
+	}
+	if hasC8g {
+		t.Error("c8g instance type should have been filtered out")
+	}
+}
+
+func TestBuildLaunchTemplateConfigs_AllTypesUnavailable(t *testing.T) {
+	mockClient := &mockEC2Client{
+		DescribeInstanceTypeOfferingsFunc: func(_ context.Context, _ *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+			// Only t3 types are available
+			return &ec2.DescribeInstanceTypeOfferingsOutput{
+				InstanceTypeOfferings: []types.InstanceTypeOffering{
+					{InstanceType: types.InstanceTypeT3Medium},
+				},
+			}, nil
+		},
+	}
+
+	m := &Manager{
+		ec2Client: mockClient,
+		config:    &config.Config{},
+	}
+
+	spec := &LaunchSpec{
+		InstanceTypes: []string{"c8g.xlarge", "m8g.large"},
+		SubnetID:      "subnet-123",
+		Arch:          "arm64",
+	}
+
+	_, err := m.buildLaunchTemplateConfigs(context.Background(), spec)
+	if err == nil {
+		t.Error("expected error when all instance types are unavailable")
+	}
+	if !strings.Contains(err.Error(), "no instance types available") {
+		t.Errorf("expected 'no instance types available' error, got: %v", err)
 	}
 }
