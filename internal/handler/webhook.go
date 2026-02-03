@@ -24,6 +24,13 @@ const (
 	runnerNamePrefix = "runs-fleet-"
 )
 
+// PoolDBClient defines database operations for pool management.
+type PoolDBClient interface {
+	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
+	CreateEphemeralPool(ctx context.Context, config *db.PoolConfig) error
+	TouchPoolActivity(ctx context.Context, poolName string) error
+}
+
 // HandleWorkflowJobQueued processes queued workflow_job events.
 func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
@@ -91,7 +98,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 }
 
 // EnsureEphemeralPool creates or updates an ephemeral pool for the given job config.
-func EnsureEphemeralPool(ctx context.Context, dbc *db.Client, jobConfig *gh.JobConfig) error {
+func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.JobConfig) error {
 	poolConfig, err := dbc.GetPoolConfig(ctx, jobConfig.Pool)
 	if err != nil {
 		return fmt.Errorf("failed to get pool config: %w", err)

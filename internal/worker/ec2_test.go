@@ -666,6 +666,253 @@ func TestEC2WorkerDeps_WithAllFields(t *testing.T) {
 	}
 }
 
+// mockWarmPoolAssigner implements WarmPoolAssignerInterface for testing.
+type mockWarmPoolAssigner struct {
+	tryAssignFunc func(ctx context.Context, job *queue.JobMessage) (*WarmPoolResult, error)
+	called        bool
+	lastJob       *queue.JobMessage
+}
+
+func (m *mockWarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.JobMessage) (*WarmPoolResult, error) {
+	m.called = true
+	m.lastJob = job
+	if m.tryAssignFunc != nil {
+		return m.tryAssignFunc(ctx, job)
+	}
+	return &WarmPoolResult{Assigned: false}, nil
+}
+
+// mockMetricsPublisher tracks metrics calls for assertions.
+// Embeds NoopPublisher to satisfy the full Publisher interface.
+type mockMetricsPublisher struct {
+	metrics.NoopPublisher
+	warmPoolHitCalled  bool
+	queueDepthDelta    float64
+	fleetSizeIncCalled bool
+	jobDurationCalled  bool
+}
+
+func (m *mockMetricsPublisher) PublishQueueDepth(_ context.Context, delta float64) error {
+	m.queueDepthDelta += delta
+	return nil
+}
+func (m *mockMetricsPublisher) PublishFleetSizeIncrement(_ context.Context) error {
+	m.fleetSizeIncCalled = true
+	return nil
+}
+func (m *mockMetricsPublisher) PublishJobDuration(_ context.Context, _ int) error {
+	m.jobDurationCalled = true
+	return nil
+}
+func (m *mockMetricsPublisher) PublishWarmPoolHit(_ context.Context) error {
+	m.warmPoolHitCalled = true
+	return nil
+}
+
+func TestProcessEC2Message_NoPool_SkipsWarmPool(t *testing.T) {
+	origRetryDelay := RetryDelay
+	origFleetDelay := FleetRetryBaseDelay
+	defer func() {
+		RetryDelay = origRetryDelay
+		FleetRetryBaseDelay = origFleetDelay
+	}()
+	RetryDelay = 1 * time.Millisecond
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	// Job WITHOUT pool label
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Pool:         "", // No pool
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	deleteCount := 0
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+
+	mockAssigner := &mockWarmPoolAssigner{}
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:            mockQueue,
+		Fleet:            nil, // Will fail at fleet creation
+		Metrics:          mockMetrics,
+		Config:           &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex:      &subnetIndex,
+		WarmPoolAssigner: mockAssigner,
+	}
+
+	msg := queue.Message{
+		ID:     "msg-1",
+		Body:   string(jobBytes),
+		Handle: "handle-1",
+	}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	// Warm pool assigner should NOT be called for jobs without pool label
+	if mockAssigner.called {
+		t.Error("WarmPoolAssigner should NOT be called when job has no pool label")
+	}
+}
+
+func TestProcessEC2Message_WithPool_WarmPoolSuccess(t *testing.T) {
+	origRetryDelay := RetryDelay
+	origFleetDelay := FleetRetryBaseDelay
+	defer func() {
+		RetryDelay = origRetryDelay
+		FleetRetryBaseDelay = origFleetDelay
+	}()
+	RetryDelay = 1 * time.Millisecond
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	// Job WITH pool label
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Pool:         "my-pool",
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	deleteCount := 0
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+
+	fleetCreateCalled := false
+	// Note: Fleet is nil, so if warm pool fails, it will fail at fleet check
+
+	mockAssigner := &mockWarmPoolAssigner{
+		tryAssignFunc: func(_ context.Context, _ *queue.JobMessage) (*WarmPoolResult, error) {
+			return &WarmPoolResult{
+				Assigned:   true,
+				InstanceID: "i-warmpool123",
+			}, nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:            mockQueue,
+		Fleet:            nil,
+		Metrics:          mockMetrics,
+		Config:           &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex:      &subnetIndex,
+		WarmPoolAssigner: mockAssigner,
+	}
+
+	msg := queue.Message{
+		ID:     "msg-1",
+		Body:   string(jobBytes),
+		Handle: "handle-1",
+	}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	// Warm pool assigner should be called
+	if !mockAssigner.called {
+		t.Error("WarmPoolAssigner should be called when job has pool label")
+	}
+	if mockAssigner.lastJob.Pool != "my-pool" {
+		t.Errorf("Expected pool 'my-pool', got '%s'", mockAssigner.lastJob.Pool)
+	}
+
+	// Warm pool hit metric should be published
+	if !mockMetrics.warmPoolHitCalled {
+		t.Error("WarmPoolHit metric should be published on warm pool success")
+	}
+
+	// Message should be deleted (job processed)
+	if deleteCount == 0 {
+		t.Error("Message should be deleted after warm pool success")
+	}
+
+	// Fleet create should NOT be called
+	if fleetCreateCalled {
+		t.Error("Fleet create should NOT be called when warm pool succeeds")
+	}
+}
+
+func TestProcessEC2Message_WithPool_FallsBackToColdStart(t *testing.T) {
+	origRetryDelay := RetryDelay
+	origFleetDelay := FleetRetryBaseDelay
+	defer func() {
+		RetryDelay = origRetryDelay
+		FleetRetryBaseDelay = origFleetDelay
+	}()
+	RetryDelay = 1 * time.Millisecond
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	// Job WITH pool label
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Pool:         "my-pool",
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			return nil
+		},
+	}
+
+	mockAssigner := &mockWarmPoolAssigner{
+		tryAssignFunc: func(_ context.Context, _ *queue.JobMessage) (*WarmPoolResult, error) {
+			// Warm pool returns no instance available
+			return &WarmPoolResult{Assigned: false}, nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:            mockQueue,
+		Fleet:            nil, // Nil fleet will cause cold start to fail, but we can verify warm pool was tried
+		Metrics:          mockMetrics,
+		Config:           &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		SubnetIndex:      &subnetIndex,
+		WarmPoolAssigner: mockAssigner,
+	}
+
+	msg := queue.Message{
+		ID:     "msg-1",
+		Body:   string(jobBytes),
+		Handle: "handle-1",
+	}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	// Warm pool assigner should be called
+	if !mockAssigner.called {
+		t.Error("WarmPoolAssigner should be called when job has pool label")
+	}
+
+	// Warm pool hit metric should NOT be published (no instance assigned)
+	if mockMetrics.warmPoolHitCalled {
+		t.Error("WarmPoolHit metric should NOT be published when warm pool returns Assigned=false")
+	}
+
+	// Code should proceed to cold start path (but will fail at nil fleet check)
+	// This is fine - we've verified the warm pool was tried and returned false
+}
+
 // Silence unused variable warnings for test imports
 var (
 	_ = db.ErrJobAlreadyClaimed

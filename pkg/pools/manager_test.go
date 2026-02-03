@@ -2370,3 +2370,125 @@ func TestStopPoolInstance_Error(t *testing.T) {
 		t.Error("expected error when stop fails")
 	}
 }
+
+func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
+	// Test that when multiple goroutines attempt to claim the same instance,
+	// only one succeeds and the other either fails or gets a different instance
+	claimCount := 0
+	startCount := 0
+
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
+			claimCount++
+			// First claim succeeds, subsequent claims fail with conflict
+			if claimCount > 1 {
+				return db.ErrInstanceAlreadyClaimed
+			}
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-only-one"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			startCount++
+			return &ec2.StartInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	// Run two concurrent claims
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func(jobID int64) {
+			_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", jobID)
+			results <- err
+		}(int64(12345 + i))
+	}
+
+	// Collect results
+	var successCount, errorCount int
+	for i := 0; i < 2; i++ {
+		err := <-results
+		if err == nil {
+			successCount++
+		} else if errors.Is(err, ErrNoAvailableInstance) {
+			errorCount++
+		}
+	}
+
+	// With only one instance available, one should succeed and one should fail
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 success, got %d", successCount)
+	}
+	if errorCount != 1 {
+		t.Errorf("expected exactly 1 ErrNoAvailableInstance error, got %d", errorCount)
+	}
+	// Instance should only be started once
+	if startCount != 1 {
+		t.Errorf("expected instance to be started once, got %d starts", startCount)
+	}
+}
+
+func TestClaimAndStartPoolInstance_DBClaimFailure(t *testing.T) {
+	// Test that a non-conflict DB error (e.g., network error) stops iteration
+	// and returns the error instead of trying next instance
+	dbError := errors.New("DynamoDB network error")
+
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
+			return dbError
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-stopped1"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+							{
+								InstanceId:   aws.String("i-stopped2"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	if err == nil {
+		t.Fatal("expected error when DB claim fails with non-conflict error")
+	}
+	// Error should mention the DB error, not ErrNoAvailableInstance
+	if errors.Is(err, ErrNoAvailableInstance) {
+		t.Error("should return DB error, not ErrNoAvailableInstance")
+	}
+}

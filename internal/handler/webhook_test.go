@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Shavakan/runs-fleet/pkg/db"
+	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/google/go-github/v57/github"
@@ -59,6 +61,180 @@ func (m *MockMetrics) PublishJobQueued(ctx context.Context) error {
 func (m *MockMetrics) PublishQueueDepth(_ context.Context, _ float64) error {
 	m.QueueDepthCalled = true
 	return nil
+}
+
+// MockDBClient implements db.Client methods needed for EnsureEphemeralPool testing.
+type MockDBClient struct {
+	GetPoolConfigFunc       func(ctx context.Context, poolName string) (*db.PoolConfig, error)
+	CreateEphemeralPoolFunc func(ctx context.Context, config *db.PoolConfig) error
+	TouchPoolActivityFunc   func(ctx context.Context, poolName string) error
+	CreatePoolCalled        bool
+	TouchActivityCalled     bool
+	LastCreatedConfig       *db.PoolConfig
+}
+
+func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
+	if m.GetPoolConfigFunc != nil {
+		return m.GetPoolConfigFunc(ctx, poolName)
+	}
+	return nil, nil
+}
+
+func (m *MockDBClient) CreateEphemeralPool(ctx context.Context, config *db.PoolConfig) error {
+	m.CreatePoolCalled = true
+	m.LastCreatedConfig = config
+	if m.CreateEphemeralPoolFunc != nil {
+		return m.CreateEphemeralPoolFunc(ctx, config)
+	}
+	return nil
+}
+
+func (m *MockDBClient) TouchPoolActivity(ctx context.Context, poolName string) error {
+	m.TouchActivityCalled = true
+	if m.TouchPoolActivityFunc != nil {
+		return m.TouchPoolActivityFunc(ctx, poolName)
+	}
+	return nil
+}
+
+// TestEnsureEphemeralPool_CreatesNewPool verifies that a new ephemeral pool is created
+// with correct configuration when no existing pool is found.
+func TestEnsureEphemeralPool_CreatesNewPool(t *testing.T) {
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return nil, nil // No existing pool
+		},
+	}
+
+	jobConfig := &gh.JobConfig{
+		Pool:         "test-ephemeral",
+		InstanceType: "c7g.xlarge",
+		Arch:         "arm64",
+		CPUMin:       4,
+		CPUMax:       8,
+		RAMMin:       8,
+		RAMMax:       16,
+		Families:     []string{"c7g", "m7g"},
+	}
+
+	err := EnsureEphemeralPool(context.Background(), mockDB, jobConfig)
+	if err != nil {
+		t.Fatalf("EnsureEphemeralPool() error = %v", err)
+	}
+
+	if !mockDB.CreatePoolCalled {
+		t.Error("CreateEphemeralPool should be called for new pool")
+	}
+
+	cfg := mockDB.LastCreatedConfig
+	if cfg == nil {
+		t.Fatal("LastCreatedConfig should not be nil")
+	}
+	if cfg.PoolName != "test-ephemeral" {
+		t.Errorf("PoolName = %s, want test-ephemeral", cfg.PoolName)
+	}
+	if !cfg.Ephemeral {
+		t.Error("Ephemeral should be true")
+	}
+	if cfg.DesiredRunning != 0 {
+		t.Errorf("DesiredRunning = %d, want 0 (warm pool)", cfg.DesiredRunning)
+	}
+	if cfg.DesiredStopped != 1 {
+		t.Errorf("DesiredStopped = %d, want 1", cfg.DesiredStopped)
+	}
+	if cfg.Arch != "arm64" {
+		t.Errorf("Arch = %s, want arm64", cfg.Arch)
+	}
+	if mockDB.TouchActivityCalled {
+		t.Error("TouchPoolActivity should NOT be called for new pool")
+	}
+}
+
+// TestEnsureEphemeralPool_ExistingEphemeral verifies that existing ephemeral pools
+// only have their activity touched, not recreated.
+func TestEnsureEphemeralPool_ExistingEphemeral_TouchesActivity(t *testing.T) {
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:  "existing-ephemeral",
+				Ephemeral: true,
+			}, nil
+		},
+	}
+
+	jobConfig := &gh.JobConfig{
+		Pool: "existing-ephemeral",
+	}
+
+	err := EnsureEphemeralPool(context.Background(), mockDB, jobConfig)
+	if err != nil {
+		t.Fatalf("EnsureEphemeralPool() error = %v", err)
+	}
+
+	if mockDB.CreatePoolCalled {
+		t.Error("CreateEphemeralPool should NOT be called for existing ephemeral pool")
+	}
+	if !mockDB.TouchActivityCalled {
+		t.Error("TouchPoolActivity should be called for existing ephemeral pool")
+	}
+}
+
+// TestEnsureEphemeralPool_ExistingDeclarative verifies that declarative (non-ephemeral)
+// pools are not modified.
+func TestEnsureEphemeralPool_ExistingDeclarative_NoOp(t *testing.T) {
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:  "declarative-pool",
+				Ephemeral: false, // Declarative pool
+			}, nil
+		},
+	}
+
+	jobConfig := &gh.JobConfig{
+		Pool: "declarative-pool",
+	}
+
+	err := EnsureEphemeralPool(context.Background(), mockDB, jobConfig)
+	if err != nil {
+		t.Fatalf("EnsureEphemeralPool() error = %v", err)
+	}
+
+	if mockDB.CreatePoolCalled {
+		t.Error("CreateEphemeralPool should NOT be called for declarative pool")
+	}
+	if mockDB.TouchActivityCalled {
+		t.Error("TouchPoolActivity should NOT be called for declarative pool")
+	}
+}
+
+// TestEnsureEphemeralPool_RaceCondition verifies that when pool creation fails
+// due to race condition (pool already exists), it falls back to touching activity.
+func TestEnsureEphemeralPool_RaceCondition_FallsBackToTouch(t *testing.T) {
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return nil, nil // No existing pool on first check
+		},
+		CreateEphemeralPoolFunc: func(_ context.Context, _ *db.PoolConfig) error {
+			return db.ErrPoolAlreadyExists // Race condition: another instance created it
+		},
+	}
+
+	jobConfig := &gh.JobConfig{
+		Pool: "race-pool",
+	}
+
+	err := EnsureEphemeralPool(context.Background(), mockDB, jobConfig)
+	if err != nil {
+		t.Fatalf("EnsureEphemeralPool() error = %v", err)
+	}
+
+	if !mockDB.CreatePoolCalled {
+		t.Error("CreateEphemeralPool should be called")
+	}
+	if !mockDB.TouchActivityCalled {
+		t.Error("TouchPoolActivity should be called as fallback on race condition")
+	}
 }
 
 func TestHandleWorkflowJobQueued(t *testing.T) {

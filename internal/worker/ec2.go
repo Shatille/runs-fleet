@@ -36,6 +36,11 @@ var (
 	FleetRetryBaseDelay = 2 * time.Second
 )
 
+// WarmPoolAssignerInterface defines warm pool assignment operations for testing.
+type WarmPoolAssignerInterface interface {
+	TryAssignToWarmPool(ctx context.Context, job *queue.JobMessage) (*WarmPoolResult, error)
+}
+
 // EC2WorkerDeps holds dependencies for the EC2 worker.
 type EC2WorkerDeps struct {
 	Queue       queue.Queue
@@ -46,6 +51,10 @@ type EC2WorkerDeps struct {
 	DB          *db.Client
 	Config      *config.Config
 	SubnetIndex *uint64
+
+	// WarmPoolAssigner allows injection of custom assigner for testing.
+	// If nil, creates default WarmPoolAssigner from Pool, Runner, DB.
+	WarmPoolAssigner WarmPoolAssignerInterface
 }
 
 // RunEC2Worker starts the EC2 queue processing loop.
@@ -131,19 +140,25 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 	}
 
-	if deps.Fleet == nil {
-		ec2Log.Error("fleet manager nil", slog.Int64(logging.KeyJobID, job.JobID))
-		return
-	}
-
 	if job.Pool != "" {
-		assigner := &WarmPoolAssigner{
-			Pool:   deps.Pool,
-			Runner: deps.Runner,
-			DB:     deps.DB,
+		var assigner WarmPoolAssignerInterface
+		if deps.WarmPoolAssigner != nil {
+			assigner = deps.WarmPoolAssigner
+		} else {
+			assigner = &WarmPoolAssigner{
+				Pool:   deps.Pool,
+				Runner: deps.Runner,
+				DB:     deps.DB,
+			}
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, &job)
-		if err == nil && result.Assigned {
+		if err != nil {
+			ec2Log.Error("warm pool assignment failed",
+				slog.Int64(logging.KeyJobID, job.JobID),
+				slog.String(logging.KeyPoolName, job.Pool),
+				slog.String("error", err.Error()))
+			// Fall through to cold start
+		} else if result.Assigned {
 			jobProcessed = true
 			if deps.Metrics != nil {
 				_ = deps.Metrics.PublishWarmPoolHit(ctx)
@@ -153,6 +168,12 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				slog.String(logging.KeyInstanceID, result.InstanceID))
 			return
 		}
+	}
+
+	// Fleet manager required for cold start
+	if deps.Fleet == nil {
+		ec2Log.Error("fleet manager nil", slog.Int64(logging.KeyJobID, job.JobID))
+		return
 	}
 
 	spec := &fleet.LaunchSpec{
