@@ -42,10 +42,12 @@ type spotPriceCache struct {
 type availabilityCache struct {
 	mu        sync.RWMutex
 	available map[string]bool // instance type -> available
+	expires   time.Time
 	loaded    bool
 }
 
 const spotPriceCacheTTL = 5 * time.Minute
+const availabilityCacheTTL = 24 * time.Hour
 
 // Manager orchestrates EC2 fleet creation for runner instances.
 type Manager struct {
@@ -680,10 +682,10 @@ func (m *Manager) filterAvailableInstanceTypes(ctx context.Context, instanceType
 	return filtered
 }
 
-// ensureAvailabilityLoaded loads available instance types from AWS if not already cached.
+// ensureAvailabilityLoaded loads available instance types from AWS if not already cached or expired.
 func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 	m.availabilityCache.mu.RLock()
-	if m.availabilityCache.loaded {
+	if m.availabilityCache.loaded && time.Now().Before(m.availabilityCache.expires) {
 		m.availabilityCache.mu.RUnlock()
 		return nil
 	}
@@ -693,7 +695,7 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 	defer m.availabilityCache.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if m.availabilityCache.loaded {
+	if m.availabilityCache.loaded && time.Now().Before(m.availabilityCache.expires) {
 		return nil
 	}
 
@@ -722,6 +724,7 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 
 	m.availabilityCache.available = available
 	m.availabilityCache.loaded = true
+	m.availabilityCache.expires = time.Now().Add(availabilityCacheTTL)
 	fleetLog.Info("loaded instance type availability",
 		slog.Int("available_types", len(available)))
 
