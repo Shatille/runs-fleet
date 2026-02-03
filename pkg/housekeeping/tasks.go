@@ -2,9 +2,11 @@ package housekeeping
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -325,6 +327,12 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 // interruption re-queue delays, ensuring legitimate jobs aren't prematurely orphaned.
 const orphanedJobThreshold = 2 * time.Hour
 
+// orphanedJobCandidate holds job info for orphaned job cleanup.
+type orphanedJobCandidate struct {
+	JobID      int64
+	InstanceID string
+}
+
 // ExecuteOrphanedJobs cleans up jobs with status "running" whose instances no longer exist.
 // This prevents stale job records from inflating pool busy counts and causing infinite scaling.
 //
@@ -350,7 +358,8 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		ProjectionExpression: aws.String("job_id, instance_id"),
 	}
 
-	var orphanedCount int
+	// Collect all candidate jobs first
+	var candidates []orphanedJobCandidate
 	var lastEvaluatedKey map[string]types.AttributeValue
 
 	for {
@@ -366,7 +375,11 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 			var instanceID string
 
 			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
-				_, _ = fmt.Sscanf(v.Value, "%d", &jobID)
+				parsed, err := strconv.ParseInt(v.Value, 10, 64)
+				if err != nil {
+					continue
+				}
+				jobID = parsed
 			}
 			if v, ok := item["instance_id"].(*types.AttributeValueMemberS); ok {
 				instanceID = v.Value
@@ -376,33 +389,42 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 				continue
 			}
 
-			exists, err := t.instanceExists(ctx, instanceID)
-			if err != nil {
-				t.logger().Debug("instance check failed",
-					slog.Int64("job_id", jobID),
-					slog.String("instance_id", instanceID),
-					slog.String("error", err.Error()))
-				continue
-			}
-
-			if !exists {
-				if err := t.markJobOrphaned(ctx, jobID); err != nil {
-					t.logger().Error("mark job orphaned failed",
-						slog.Int64("job_id", jobID),
-						slog.String("error", err.Error()))
-					continue
-				}
-				orphanedCount++
-				t.logger().Info("orphaned job cleaned up",
-					slog.Int64("job_id", jobID),
-					slog.String("instance_id", instanceID))
-			}
+			candidates = append(candidates, orphanedJobCandidate{
+				JobID:      jobID,
+				InstanceID: instanceID,
+			})
 		}
 
 		lastEvaluatedKey = output.LastEvaluatedKey
 		if lastEvaluatedKey == nil {
 			break
 		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Batch check instance existence
+	existingInstances := t.batchCheckInstances(ctx, candidates)
+
+	// Mark orphaned jobs
+	var orphanedCount int
+	for _, c := range candidates {
+		if existingInstances[c.InstanceID] {
+			continue
+		}
+
+		if err := t.markJobOrphaned(ctx, c.JobID); err != nil {
+			t.logger().Error("mark job orphaned failed",
+				slog.Int64("job_id", c.JobID),
+				slog.String("error", err.Error()))
+			continue
+		}
+		orphanedCount++
+		t.logger().Info("orphaned job cleaned up",
+			slog.Int64("job_id", c.JobID),
+			slog.String("instance_id", c.InstanceID))
 	}
 
 	if t.metrics != nil && orphanedCount > 0 {
@@ -415,7 +437,62 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 	return nil
 }
 
-// markJobOrphaned updates a job's status to "orphaned".
+// batchCheckInstances checks multiple instances in batches and returns a map of existing instance IDs.
+// Uses batched DescribeInstances calls to reduce API overhead.
+func (t *Tasks) batchCheckInstances(ctx context.Context, candidates []orphanedJobCandidate) map[string]bool {
+	// Collect unique instance IDs
+	instanceSet := make(map[string]struct{})
+	for _, c := range candidates {
+		instanceSet[c.InstanceID] = struct{}{}
+	}
+
+	instanceIDs := make([]string, 0, len(instanceSet))
+	for id := range instanceSet {
+		instanceIDs = append(instanceIDs, id)
+	}
+
+	existing := make(map[string]bool)
+	const batchSize = 100 // EC2 recommends batches of 100
+
+	for i := 0; i < len(instanceIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(instanceIDs) {
+			end = len(instanceIDs)
+		}
+		batch := instanceIDs[i:end]
+
+		output, err := t.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: batch,
+		})
+		if err != nil {
+			// On error, check individually to handle InvalidInstanceID errors
+			for _, id := range batch {
+				exists, _ := t.instanceExists(ctx, id)
+				existing[id] = exists
+			}
+			continue
+		}
+
+		for _, reservation := range output.Reservations {
+			for _, instance := range reservation.Instances {
+				if instance.InstanceId == nil || instance.State == nil {
+					continue
+				}
+				state := instance.State.Name
+				if state != ec2types.InstanceStateNameTerminated {
+					existing[*instance.InstanceId] = true
+				} else if instance.LaunchTime != nil && time.Since(*instance.LaunchTime) < instanceTerminationGracePeriod {
+					existing[*instance.InstanceId] = true
+				}
+			}
+		}
+	}
+
+	return existing
+}
+
+// markJobOrphaned updates a job's status to "orphaned" if it's still running.
+// Uses conditional write to prevent race conditions with concurrent job completions.
 func (t *Tasks) markJobOrphaned(ctx context.Context, jobID int64) error {
 	key, err := attributevalue.MarshalMap(map[string]int64{
 		"job_id": jobID,
@@ -425,18 +502,25 @@ func (t *Tasks) markJobOrphaned(ctx context.Context, jobID int64) error {
 	}
 
 	_, err = t.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:        aws.String(t.config.JobsTableName),
-		Key:              key,
-		UpdateExpression: aws.String("SET #status = :status, completed_at = :completed_at"),
+		TableName:           aws.String(t.config.JobsTableName),
+		Key:                 key,
+		UpdateExpression:    aws.String("SET #status = :orphaned, completed_at = :completed_at"),
+		ConditionExpression: aws.String("#status = :running"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status":       &types.AttributeValueMemberS{Value: "orphaned"},
+			":orphaned":     &types.AttributeValueMemberS{Value: "orphaned"},
+			":running":      &types.AttributeValueMemberS{Value: "running"},
 			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 		},
 	})
 	if err != nil {
+		// ConditionalCheckFailedException means job status changed (completed normally)
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil
+		}
 		return fmt.Errorf("failed to update job: %w", err)
 	}
 
