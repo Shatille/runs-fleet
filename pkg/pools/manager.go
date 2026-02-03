@@ -535,6 +535,9 @@ func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs
 
 	var ready []PoolInstance
 	for _, inst := range instances {
+		if inst.State != stateRunning {
+			continue
+		}
 		if _, isBusy := busySet[inst.InstanceID]; !isBusy {
 			ready = append(ready, inst)
 		}
