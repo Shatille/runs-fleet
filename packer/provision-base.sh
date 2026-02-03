@@ -64,9 +64,46 @@ sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="2.24.5"
-sudo curl -sL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
-  -o /usr/local/bin/docker-compose
+COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
+COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
+# Download and verify checksum (filenames must match for sha256sum -c)
+curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o "/tmp/${COMPOSE_BINARY}.sha256" \
+  || { echo "Failed to download Docker Compose checksum"; exit 1; }
+curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}" -o "/tmp/${COMPOSE_BINARY}" \
+  || { echo "Failed to download Docker Compose"; exit 1; }
+cd /tmp && sha256sum -c "${COMPOSE_BINARY}.sha256" \
+  || { echo "Docker Compose checksum mismatch"; rm -f "/tmp/${COMPOSE_BINARY}" "/tmp/${COMPOSE_BINARY}.sha256"; exit 1; }
+# Install as standalone binary (docker-compose)
+sudo mv "/tmp/${COMPOSE_BINARY}" /usr/local/bin/docker-compose \
+  || { echo "Failed to install Docker Compose binary"; exit 1; }
 sudo chmod +x /usr/local/bin/docker-compose
+# Install as Docker CLI plugin (docker compose)
+sudo mkdir -p /usr/local/lib/docker/cli-plugins \
+  || { echo "Failed to create Docker CLI plugins directory"; exit 1; }
+sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose \
+  || { echo "Failed to install Docker Compose plugin"; exit 1; }
+rm -f "/tmp/${COMPOSE_BINARY}.sha256"
+
+echo "==> Configuring QEMU binfmt for multi-arch builds"
+# Pin to specific version for supply-chain security (--privileged required for /proc/sys/fs/binfmt_misc)
+BINFMT_VERSION="qemu-v9.2.0-51"
+sudo tee /etc/systemd/system/binfmt-qemu.service > /dev/null <<BINFMT
+[Unit]
+Description=Register QEMU binfmt handlers for multi-arch container builds
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --privileged tonistiigi/binfmt:${BINFMT_VERSION} --install all
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+BINFMT
+[ $? -eq 0 ] || { echo "Failed to create binfmt-qemu.service"; exit 1; }
+sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
+sudo systemctl enable binfmt-qemu.service || { echo "Failed to enable binfmt-qemu.service"; exit 1; }
 
 echo "==> Installing Vault CLI"
 VAULT_VERSION="1.18.3"
@@ -143,5 +180,7 @@ sudo rm -rf /var/cache/dnf
 echo "==> Base AMI provisioning complete"
 echo "    - Docker: $(docker --version)"
 echo "    - Docker Compose: $(docker-compose --version)"
+echo "    - Docker Compose Plugin: $(docker compose version)"
+echo "    - QEMU binfmt: enabled at boot"
 echo "    - SSM Agent: enabled"
 echo "    - CloudWatch Agent: enabled"
