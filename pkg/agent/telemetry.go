@@ -78,12 +78,6 @@ func NewSQSTelemetry(cfg aws.Config, queueURL string, logger Logger) *SQSTelemet
 	}
 }
 
-// NewTelemetry is an alias for NewSQSTelemetry for backward compatibility.
-// Deprecated: Use NewSQSTelemetry instead.
-func NewTelemetry(cfg aws.Config, queueURL string, logger Logger) *SQSTelemetry {
-	return NewSQSTelemetry(cfg, queueURL, logger)
-}
-
 // Telemetry is an alias for SQSTelemetry for backward compatibility.
 // Deprecated: Use SQSTelemetry instead.
 type Telemetry = SQSTelemetry

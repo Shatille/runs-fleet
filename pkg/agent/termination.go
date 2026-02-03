@@ -48,16 +48,6 @@ func NewEC2Terminator(cfg aws.Config, telemetry TelemetryClient, logger Logger) 
 	}
 }
 
-// NewTerminator is an alias for NewEC2Terminator for backward compatibility.
-// Deprecated: Use NewEC2Terminator instead.
-func NewTerminator(cfg aws.Config, telemetry *Telemetry, logger Logger) *EC2Terminator {
-	return &EC2Terminator{
-		ec2Client: ec2.NewFromConfig(cfg),
-		telemetry: telemetry,
-		logger:    logger,
-	}
-}
-
 // TerminateInstance sends telemetry and terminates the EC2 instance.
 func (t *EC2Terminator) TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error {
 	t.logger.Printf("Preparing to terminate instance %s", instanceID)
