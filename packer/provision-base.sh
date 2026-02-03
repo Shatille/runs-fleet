@@ -66,20 +66,20 @@ echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="2.24.5"
 COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
 COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
-# Download and verify checksum
-curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o /tmp/docker-compose.sha256 \
+# Download and verify checksum (filenames must match for sha256sum -c)
+curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o "/tmp/${COMPOSE_BINARY}.sha256" \
   || { echo "Failed to download Docker Compose checksum"; exit 1; }
-curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}" -o /tmp/docker-compose \
+curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}" -o "/tmp/${COMPOSE_BINARY}" \
   || { echo "Failed to download Docker Compose"; exit 1; }
-cd /tmp && echo "$(cat docker-compose.sha256)" | sha256sum -c \
-  || { echo "Docker Compose checksum mismatch"; rm -f /tmp/docker-compose /tmp/docker-compose.sha256; exit 1; }
+cd /tmp && sha256sum -c "${COMPOSE_BINARY}.sha256" \
+  || { echo "Docker Compose checksum mismatch"; rm -f "/tmp/${COMPOSE_BINARY}" "/tmp/${COMPOSE_BINARY}.sha256"; exit 1; }
 # Install as standalone binary (docker-compose)
-sudo mv /tmp/docker-compose /usr/local/bin/docker-compose
+sudo mv "/tmp/${COMPOSE_BINARY}" /usr/local/bin/docker-compose
 sudo chmod +x /usr/local/bin/docker-compose
 # Install as Docker CLI plugin (docker compose)
 sudo mkdir -p /usr/local/lib/docker/cli-plugins
 sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
-rm -f /tmp/docker-compose.sha256
+rm -f "/tmp/${COMPOSE_BINARY}.sha256"
 
 echo "==> Configuring QEMU binfmt for multi-arch builds"
 # Pin to specific version for supply-chain security (--privileged required for /proc/sys/fs/binfmt_misc)
