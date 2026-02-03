@@ -36,6 +36,8 @@ type DBClient interface {
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error)
+	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -200,15 +202,33 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 	}
 
+	// Get count of busy instances (running jobs) from DynamoDB
+	// Abort reconciliation on error to avoid terminating busy instances
+	busy, err := m.dbClient.GetPoolRunningJobCount(ctx, poolName)
+	if err != nil {
+		return fmt.Errorf("failed to get running job count: %w", err)
+	}
+
+	// Ready = running instances without jobs
+	// busy should never exceed running, but clamp to be safe
+	if busy > running {
+		busy = running
+	}
+	ready := running - busy
+
+	// desiredRunning represents desired READY instances (idle, available for jobs)
 	poolLog.Info("pool reconciliation",
 		slog.String(logging.KeyPoolName, poolName),
-		slog.Int("desired_running", desiredRunning),
+		slog.Int("desired_ready", desiredRunning),
 		slog.Int("desired_stopped", desiredStopped),
 		slog.Int("actual_running", running),
+		slog.Int("actual_ready", ready),
+		slog.Int("actual_busy", busy),
 		slog.Int("actual_stopped", stopped))
 
-	if running < desiredRunning {
-		deficit := desiredRunning - running
+	// Scale based on ready count, not total running
+	if ready < desiredRunning {
+		deficit := desiredRunning - ready
 
 		stoppedInstances := m.filterByState(instances, stateStopped)
 		toStart := min(deficit, len(stoppedInstances))
@@ -253,20 +273,37 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				}
 			}
 		}
-	} else if running > desiredRunning {
-		// Too many running instances - stop or terminate excess
-		excess := running - desiredRunning
+	} else if ready > desiredRunning {
+		// Too many ready (idle) instances - stop or terminate excess
+		// Only scale down idle instances, never busy ones
+		excess := ready - desiredRunning
 		runningInstances := m.filterByState(instances, stateRunning)
 
-		// First, check idle instances (those without assigned jobs)
-		idleInstances := m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+		// For warm pools (desiredRunning=0), stop instances immediately
+		// For hot pools, only stop instances that exceeded idle timeout
+		var candidateInstances []PoolInstance
+		if desiredRunning == 0 && desiredStopped > 0 {
+			// Warm pool: all ready instances are candidates for stopping
+			// Get specific busy instance IDs to exclude them
+			busyIDs, err := m.dbClient.GetPoolBusyInstanceIDs(ctx, poolName)
+			if err != nil {
+				poolLog.Warn("failed to get busy instance IDs, using idle filter instead",
+					slog.String("error", err.Error()))
+				candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+			} else {
+				candidateInstances = m.filterReadyInstances(runningInstances, busyIDs)
+			}
+		} else {
+			// Hot pool: only idle instances that exceeded timeout
+			candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+		}
 
-		toStop := min(excess, len(idleInstances))
+		toStop := min(excess, len(candidateInstances))
 		if toStop > 0 && stopped < desiredStopped {
 			canStop := min(toStop, desiredStopped-stopped)
 			instanceIDs := make([]string, canStop)
 			for i := 0; i < canStop; i++ {
-				instanceIDs[i] = idleInstances[i].InstanceID
+				instanceIDs[i] = candidateInstances[i].InstanceID
 			}
 			if err := m.stopInstances(ctx, instanceIDs); err != nil {
 				poolLog.Error("instances stop failed", slog.String("error", err.Error()))
@@ -276,11 +313,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 
 		if excess > 0 {
 			// Sort by launch time (oldest first)
-			toTerminate := min(excess, len(idleInstances))
+			toTerminate := min(excess, len(candidateInstances))
 			if toTerminate > 0 {
 				instanceIDs := make([]string, toTerminate)
 				for i := 0; i < toTerminate; i++ {
-					instanceIDs[i] = idleInstances[i].InstanceID
+					instanceIDs[i] = candidateInstances[i].InstanceID
 				}
 				if err := m.terminateInstances(ctx, instanceIDs); err != nil {
 					poolLog.Error("instances terminate failed", slog.String("error", err.Error()))
@@ -300,6 +337,40 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			}
 			if err := m.terminateInstances(ctx, instanceIDs); err != nil {
 				poolLog.Error("stopped instances terminate failed", slog.String("error", err.Error()))
+			}
+		}
+	} else if stopped < desiredStopped && ready >= desiredRunning {
+		// Need more stopped instances but have enough ready (or desiredRunning is 0)
+		// This handles warm pools (desiredRunning=0, desiredStopped>0)
+		// Create new instances - they will boot as running, then be stopped
+		// in next reconciliation when ready > desiredRunning
+		deficit := desiredStopped - stopped
+		instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
+		if len(instanceTypes) == 0 {
+			poolLog.Warn("no instance types resolved for stopped pool deficit",
+				slog.String(logging.KeyPoolName, poolName))
+		} else {
+			for i := 0; i < deficit; i++ {
+				subnetID := m.selectSubnet()
+				if subnetID == "" {
+					poolLog.Error("no subnets configured for pool",
+						slog.String(logging.KeyPoolName, poolName))
+					break
+				}
+				spec := &fleet.LaunchSpec{
+					RunID:         time.Now().UnixNano(),
+					InstanceType:  instanceTypes[0],
+					InstanceTypes: instanceTypes,
+					SubnetID:      subnetID,
+					Pool:          poolName,
+					Spot:          true,
+					Arch:          arch,
+				}
+				if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
+					poolLog.Error("fleet creation for stopped pool failed",
+						slog.String(logging.KeyPoolName, poolName),
+						slog.String("error", err.Error()))
+				}
 			}
 		}
 	}
@@ -452,6 +523,26 @@ func (m *Manager) filterIdleInstances(instances []PoolInstance, idleTimeoutMinut
 		}
 	}
 	return idle
+}
+
+// filterReadyInstances returns running instances that are not busy (no running job).
+// Used for warm pools where we want to stop instances immediately without idle timeout.
+func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs []string) []PoolInstance {
+	busySet := make(map[string]struct{}, len(busyInstanceIDs))
+	for _, id := range busyInstanceIDs {
+		busySet[id] = struct{}{}
+	}
+
+	var ready []PoolInstance
+	for _, inst := range instances {
+		if inst.State != stateRunning {
+			continue
+		}
+		if _, isBusy := busySet[inst.InstanceID]; !isBusy {
+			ready = append(ready, inst)
+		}
+	}
+	return ready
 }
 
 func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) error {

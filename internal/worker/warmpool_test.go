@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -115,6 +117,14 @@ func (m *mockDBClient) ListPools(_ context.Context) ([]string, error) {
 
 func (m *mockDBClient) GetPoolPeakConcurrency(_ context.Context, _ string, _ int) (int, error) {
 	return 0, nil
+}
+
+func (m *mockDBClient) GetPoolRunningJobCount(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockDBClient) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
 }
 
 func (m *mockDBClient) AcquirePoolReconcileLock(_ context.Context, _, _ string, _ time.Duration) error {
@@ -229,5 +239,275 @@ func TestWarmPoolAssigner_EmptyPool(t *testing.T) {
 	}
 	if result.Assigned {
 		t.Error("expected job to NOT be assigned from empty pool")
+	}
+}
+
+// mockPoolManager implements PoolManager for testing
+type mockPoolManager struct {
+	claimAndStartFunc func(ctx context.Context, poolName string, jobID int64) (*pools.AvailableInstance, error)
+	stopFunc          func(ctx context.Context, instanceID string) error
+	stopCalled        bool
+	stoppedInstanceID string
+}
+
+func (m *mockPoolManager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64) (*pools.AvailableInstance, error) {
+	if m.claimAndStartFunc != nil {
+		return m.claimAndStartFunc(ctx, poolName, jobID)
+	}
+	return nil, pools.ErrNoAvailableInstance
+}
+
+func (m *mockPoolManager) StopPoolInstance(ctx context.Context, instanceID string) error {
+	m.stopCalled = true
+	m.stoppedInstanceID = instanceID
+	if m.stopFunc != nil {
+		return m.stopFunc(ctx, instanceID)
+	}
+	return nil
+}
+
+// mockRunnerPreparer implements RunnerPreparer for testing
+type mockRunnerPreparer struct {
+	prepareFunc   func(ctx context.Context, req runner.PrepareRunnerRequest) error
+	prepareCalled bool
+	lastRequest   runner.PrepareRunnerRequest
+}
+
+func (m *mockRunnerPreparer) PrepareRunner(ctx context.Context, req runner.PrepareRunnerRequest) error {
+	m.prepareCalled = true
+	m.lastRequest = req
+	if m.prepareFunc != nil {
+		return m.prepareFunc(ctx, req)
+	}
+	return nil
+}
+
+// mockJobDBClient implements JobDBClient for testing
+type mockJobDBClient struct {
+	hasJobsTable        bool
+	saveJobFunc         func(ctx context.Context, job *db.JobRecord) error
+	releaseClaimFunc    func(ctx context.Context, instanceID string, jobID int64) error
+	saveJobCalled       bool
+	releaseClaimCalled  bool
+	lastSavedJob        *db.JobRecord
+	releasedInstanceID  string
+}
+
+func (m *mockJobDBClient) HasJobsTable() bool {
+	return m.hasJobsTable
+}
+
+func (m *mockJobDBClient) SaveJob(ctx context.Context, job *db.JobRecord) error {
+	m.saveJobCalled = true
+	m.lastSavedJob = job
+	if m.saveJobFunc != nil {
+		return m.saveJobFunc(ctx, job)
+	}
+	return nil
+}
+
+func (m *mockJobDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error {
+	m.releaseClaimCalled = true
+	m.releasedInstanceID = instanceID
+	if m.releaseClaimFunc != nil {
+		return m.releaseClaimFunc(ctx, instanceID, jobID)
+	}
+	return nil
+}
+
+// TestTryAssignToWarmPool_Success_FullFlow tests the complete success path:
+// claim instance -> start -> prepare runner -> save job record
+func TestTryAssignToWarmPool_Success_FullFlow(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-success123",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{}
+
+	mockDB := &mockJobDBClient{
+		hasJobsTable: true,
+	}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+		Spot:  true,
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify assignment succeeded
+	if !result.Assigned {
+		t.Error("expected job to be assigned")
+	}
+	if result.InstanceID != "i-success123" {
+		t.Errorf("InstanceID = %s, want i-success123", result.InstanceID)
+	}
+
+	// Verify runner was prepared
+	if !mockRunner.prepareCalled {
+		t.Error("PrepareRunner should be called")
+	}
+	if mockRunner.lastRequest.InstanceID != "i-success123" {
+		t.Errorf("PrepareRunner InstanceID = %s, want i-success123", mockRunner.lastRequest.InstanceID)
+	}
+
+	// Verify job was saved
+	if !mockDB.saveJobCalled {
+		t.Error("SaveJob should be called")
+	}
+	if mockDB.lastSavedJob.JobID != 12345 {
+		t.Errorf("Saved JobID = %d, want 12345", mockDB.lastSavedJob.JobID)
+	}
+	if !mockDB.lastSavedJob.WarmPoolHit {
+		t.Error("WarmPoolHit should be true")
+	}
+
+	// Verify instance was NOT stopped (success path)
+	if mockPool.stopCalled {
+		t.Error("StopPoolInstance should NOT be called on success")
+	}
+}
+
+// TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance tests that when
+// SSM preparation fails, the instance is stopped and claim is released.
+func TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-ssmfail",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{
+		prepareFunc: func(_ context.Context, _ runner.PrepareRunnerRequest) error {
+			return errors.New("SSM parameter store error")
+		},
+	}
+
+	mockDB := &mockJobDBClient{
+		hasJobsTable: true,
+	}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify assignment failed gracefully (not an error, just not assigned)
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned after SSM prep failure")
+	}
+
+	// Verify instance was stopped
+	if !mockPool.stopCalled {
+		t.Error("StopPoolInstance should be called after SSM prep failure")
+	}
+	if mockPool.stoppedInstanceID != "i-ssmfail" {
+		t.Errorf("Stopped instance = %s, want i-ssmfail", mockPool.stoppedInstanceID)
+	}
+
+	// Verify claim was released
+	if !mockDB.releaseClaimCalled {
+		t.Error("ReleaseInstanceClaim should be called after SSM prep failure")
+	}
+
+	// Verify job was NOT saved (failure before save)
+	if mockDB.saveJobCalled {
+		t.Error("SaveJob should NOT be called after SSM prep failure")
+	}
+}
+
+// TestTryAssignToWarmPool_DBSaveFailure_StopsInstance tests that when
+// job record save fails, the claim is released and instance is stopped.
+func TestTryAssignToWarmPool_DBSaveFailure_StopsInstance(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-dbfail",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{} // PrepareRunner succeeds
+
+	mockDB := &mockJobDBClient{
+		hasJobsTable: true,
+		saveJobFunc: func(_ context.Context, _ *db.JobRecord) error {
+			return errors.New("DynamoDB write error")
+		},
+	}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify assignment failed gracefully
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned after DB save failure")
+	}
+
+	// Verify PrepareRunner was called (it succeeded)
+	if !mockRunner.prepareCalled {
+		t.Error("PrepareRunner should be called before DB save")
+	}
+
+	// Verify claim was released BEFORE stopping instance
+	if !mockDB.releaseClaimCalled {
+		t.Error("ReleaseInstanceClaim should be called after DB save failure")
+	}
+
+	// Verify instance was stopped
+	if !mockPool.stopCalled {
+		t.Error("StopPoolInstance should be called after DB save failure")
+	}
+	if mockPool.stoppedInstanceID != "i-dbfail" {
+		t.Errorf("Stopped instance = %s, want i-dbfail", mockPool.stoppedInstanceID)
 	}
 }

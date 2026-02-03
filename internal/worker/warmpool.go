@@ -16,11 +16,29 @@ import (
 
 var warmPoolLog = logging.WithComponent(logging.LogTypePool, "warmpool-assigner")
 
+// PoolManager defines warm pool operations for instance assignment.
+type PoolManager interface {
+	ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64) (*pools.AvailableInstance, error)
+	StopPoolInstance(ctx context.Context, instanceID string) error
+}
+
+// RunnerPreparer defines runner configuration operations.
+type RunnerPreparer interface {
+	PrepareRunner(ctx context.Context, req runner.PrepareRunnerRequest) error
+}
+
+// JobDBClient defines database operations for job records.
+type JobDBClient interface {
+	HasJobsTable() bool
+	SaveJob(ctx context.Context, job *db.JobRecord) error
+	ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error
+}
+
 // WarmPoolAssigner handles assignment of jobs to warm pool instances.
 type WarmPoolAssigner struct {
-	Pool   *pools.Manager
-	Runner *runner.Manager
-	DB     *db.Client
+	Pool   PoolManager
+	Runner RunnerPreparer
+	DB     JobDBClient
 }
 
 // WarmPoolResult contains the result of a warm pool assignment attempt.
