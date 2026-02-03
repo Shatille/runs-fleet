@@ -87,9 +87,11 @@ type mockTaskDynamoDBAPI struct {
 	queryErr      error
 	batchWriteErr error
 	scanErr       error
+	updateErr     error
 	queryCalls    int
 	scanCalls     int
 	batchCalls    int
+	updateCalls   int
 }
 
 func (m *mockTaskDynamoDBAPI) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
@@ -120,13 +122,22 @@ func (m *mockTaskDynamoDBAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ .
 	}, nil
 }
 
+func (m *mockTaskDynamoDBAPI) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	m.updateCalls++
+	if m.updateErr != nil {
+		return nil, m.updateErr
+	}
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
 // mockTaskMetricsAPI implements MetricsAPI for testing.
 type mockTaskMetricsAPI struct {
-	orphanedCount    int
-	ssmCount         int
-	jobCount         int
-	poolUtilizations map[string]float64
-	err              error
+	orphanedCount     int
+	ssmCount          int
+	jobCount          int
+	orphanedJobsCount int
+	poolUtilizations  map[string]float64
+	err               error
 }
 
 func (m *mockTaskMetricsAPI) PublishOrphanedInstancesTerminated(_ context.Context, count int) error {
@@ -141,6 +152,11 @@ func (m *mockTaskMetricsAPI) PublishSSMParametersDeleted(_ context.Context, coun
 
 func (m *mockTaskMetricsAPI) PublishJobRecordsArchived(_ context.Context, count int) error {
 	m.jobCount = count
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishOrphanedJobsCleanedUp(_ context.Context, count int) error {
+	m.orphanedJobsCount = count
 	return m.err
 }
 
@@ -522,6 +538,143 @@ func TestExecuteOldJobs_ScanError(t *testing.T) {
 	}
 
 	err := tasks.ExecuteOldJobs(context.Background())
+	if err == nil {
+		t.Fatal("expected error from scan")
+	}
+}
+
+func TestExecuteOrphanedJobs_NoJobsTable(t *testing.T) {
+	tasks := &Tasks{
+		config: &config.Config{
+			JobsTableName: "",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteOrphanedJobs_NoOrphanedJobs(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{},
+	}
+
+	tasks := &Tasks{
+		dynamoClient: dynamoClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 update calls, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteOrphanedJobs_WithOrphanedJobs(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-orphaned1"},
+			},
+		},
+	}
+	// Mock EC2 that returns instance not found
+	ec2Client := &mockEC2API{
+		describeErr: errors.New("InvalidInstanceID.NotFound"),
+	}
+	metricsClient := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: dynamoClient,
+		metrics:      metricsClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 update call, got %d", dynamoClient.updateCalls)
+	}
+
+	if metricsClient.orphanedJobsCount != 1 {
+		t.Errorf("expected orphaned jobs count 1, got %d", metricsClient.orphanedJobsCount)
+	}
+}
+
+func TestExecuteOrphanedJobs_InstanceExists(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-existing"},
+			},
+		},
+	}
+	// Mock EC2 that returns instance exists
+	now := time.Now()
+	ec2Client := &mockEC2API{
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: aws.String("i-existing"),
+						LaunchTime: aws.Time(now),
+						State: &ec2types.InstanceState{
+							Name: ec2types.InstanceStateNameRunning,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: dynamoClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Instance exists, so no updates should happen
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 update calls, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteOrphanedJobs_ScanError(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		scanErr: errors.New("scan error"),
+	}
+
+	tasks := &Tasks{
+		dynamoClient: dynamoClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedJobs(context.Background())
 	if err == nil {
 		t.Fatal("expected error from scan")
 	}

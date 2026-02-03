@@ -41,19 +41,21 @@ func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) er
 
 // mockTaskExecutor implements TaskExecutor for testing.
 type mockTaskExecutor struct {
-	orphanedErr      error
-	ssmErr           error
-	jobsErr          error
-	poolErr          error
-	costErr          error
-	dlqErr           error
-	ephemeralPoolErr error
-	orphanedCall     int
-	ssmCall          int
-	jobsCall         int
-	poolCall         int
-	costCall         int
-	dlqCall          int
+	orphanedErr       error
+	ssmErr            error
+	jobsErr           error
+	orphanedJobsErr   error
+	poolErr           error
+	costErr           error
+	dlqErr            error
+	ephemeralPoolErr  error
+	orphanedCall      int
+	ssmCall           int
+	jobsCall          int
+	orphanedJobsCall  int
+	poolCall          int
+	costCall          int
+	dlqCall           int
 	ephemeralPoolCall int
 }
 
@@ -70,6 +72,11 @@ func (m *mockTaskExecutor) ExecuteStaleSecrets(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteOldJobs(_ context.Context) error {
 	m.jobsCall++
 	return m.jobsErr
+}
+
+func (m *mockTaskExecutor) ExecuteOrphanedJobs(_ context.Context) error {
+	m.orphanedJobsCall++
+	return m.orphanedJobsErr
 }
 
 func (m *mockTaskExecutor) ExecutePoolAudit(_ context.Context) error {

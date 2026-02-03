@@ -118,6 +118,11 @@ func (p *CloudWatchPublisher) PublishJobRecordsArchived(ctx context.Context, cou
 	return p.putMetric(ctx, "JobRecordsArchived", float64(count), types.StandardUnitCount)
 }
 
+// PublishOrphanedJobsCleanedUp publishes orphaned jobs cleaned up metric.
+func (p *CloudWatchPublisher) PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error {
+	return p.putMetric(ctx, "OrphanedJobsCleanedUp", float64(count), types.StandardUnitCount)
+}
+
 // PublishPoolUtilization publishes pool utilization metric with pool name dimension.
 func (p *CloudWatchPublisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{

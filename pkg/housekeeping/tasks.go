@@ -12,6 +12,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -31,6 +32,7 @@ type DynamoDBAPI interface {
 	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	BatchWriteItem(ctx context.Context, params *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error)
 	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 }
 
 // MetricsAPI defines CloudWatch metrics publishing.
@@ -38,6 +40,7 @@ type MetricsAPI interface {
 	PublishOrphanedInstancesTerminated(ctx context.Context, count int) error
 	PublishSSMParametersDeleted(ctx context.Context, count int) error
 	PublishJobRecordsArchived(ctx context.Context, count int) error
+	PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error
 	PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error
 }
 
@@ -313,6 +316,130 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 	if deletedCount > 0 {
 		t.logger().Info("old job records deleted", slog.Int(logging.KeyCount, deletedCount))
 	}
+	return nil
+}
+
+// orphanedJobThreshold is the minimum age for running jobs to be considered orphaned.
+// Jobs older than this with non-existent instances are marked as orphaned.
+// 2 hours exceeds max job runtime (MaxRuntimeMinutes + 10) and allows for spot
+// interruption re-queue delays, ensuring legitimate jobs aren't prematurely orphaned.
+const orphanedJobThreshold = 2 * time.Hour
+
+// ExecuteOrphanedJobs cleans up jobs with status "running" whose instances no longer exist.
+// This prevents stale job records from inflating pool busy counts and causing infinite scaling.
+//
+// Note: Uses DynamoDB Scan which is O(n) on table size. For tables with >100k items,
+// consider adding GSI on (status, created_at) for more efficient queries.
+func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
+	if t.config.JobsTableName == "" {
+		return nil
+	}
+
+	cutoffTime := time.Now().Add(-orphanedJobThreshold).Format(time.RFC3339)
+
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(t.config.JobsTableName),
+		FilterExpression: aws.String("#status = :status AND created_at < :cutoff"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status": &types.AttributeValueMemberS{Value: "running"},
+			":cutoff": &types.AttributeValueMemberS{Value: cutoffTime},
+		},
+		ProjectionExpression: aws.String("job_id, instance_id"),
+	}
+
+	var orphanedCount int
+	var lastEvaluatedKey map[string]types.AttributeValue
+
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := t.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return fmt.Errorf("failed to scan jobs: %w", err)
+		}
+
+		for _, item := range output.Items {
+			var jobID int64
+			var instanceID string
+
+			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
+				_, _ = fmt.Sscanf(v.Value, "%d", &jobID)
+			}
+			if v, ok := item["instance_id"].(*types.AttributeValueMemberS); ok {
+				instanceID = v.Value
+			}
+
+			if jobID == 0 || instanceID == "" {
+				continue
+			}
+
+			exists, err := t.instanceExists(ctx, instanceID)
+			if err != nil {
+				t.logger().Debug("instance check failed",
+					slog.Int64("job_id", jobID),
+					slog.String("instance_id", instanceID),
+					slog.String("error", err.Error()))
+				continue
+			}
+
+			if !exists {
+				if err := t.markJobOrphaned(ctx, jobID); err != nil {
+					t.logger().Error("mark job orphaned failed",
+						slog.Int64("job_id", jobID),
+						slog.String("error", err.Error()))
+					continue
+				}
+				orphanedCount++
+				t.logger().Info("orphaned job cleaned up",
+					slog.Int64("job_id", jobID),
+					slog.String("instance_id", instanceID))
+			}
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
+	}
+
+	if t.metrics != nil && orphanedCount > 0 {
+		_ = t.metrics.PublishOrphanedJobsCleanedUp(ctx, orphanedCount)
+	}
+
+	if orphanedCount > 0 {
+		t.logger().Info("orphaned jobs cleaned up", slog.Int(logging.KeyCount, orphanedCount))
+	}
+	return nil
+}
+
+// markJobOrphaned updates a job's status to "orphaned".
+func (t *Tasks) markJobOrphaned(ctx context.Context, jobID int64) error {
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = t.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:        aws.String(t.config.JobsTableName),
+		Key:              key,
+		UpdateExpression: aws.String("SET #status = :status, completed_at = :completed_at"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status":       &types.AttributeValueMemberS{Value: "orphaned"},
+			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update job: %w", err)
+	}
+
 	return nil
 }
 
