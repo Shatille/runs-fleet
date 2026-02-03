@@ -79,6 +79,7 @@ GitHub workflows request runners via labels:
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 ```
 
 ### Resource labels
@@ -88,6 +89,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
 - `ram=<n>` - Exact RAM in GB
 - `ram=<min>+<max>` - RAM range in GB
 - `family=<f1>+<f2>` - Instance families (e.g., `c7g+m7g`)
+- `gen=<n>` - Instance generation (e.g., `gen=8` for Graviton4). Default: any generation
 - `arch=<arch>` - Architecture: `arm64` or `amd64`
 - `disk=<size>` - Disk in GiB (1-16384, gp3)
 

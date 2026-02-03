@@ -733,6 +733,96 @@ func TestParseLabels_PublicIP(t *testing.T) {
 	}
 }
 
+func TestParseLabels_Generation(t *testing.T) {
+	tests := []struct {
+		name              string
+		labels            []string
+		wantGen           int
+		wantInstanceTypes []string
+		wantErr           bool
+	}{
+		{
+			name:              "Gen 8 ARM64",
+			labels:            []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=8"},
+			wantGen:           8,
+			wantInstanceTypes: []string{"c8g.xlarge", "m8g.xlarge"},
+		},
+		{
+			name:              "Gen 7 ARM64",
+			labels:            []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=7"},
+			wantGen:           7,
+			wantInstanceTypes: []string{"c7g.xlarge", "m7g.xlarge"},
+		},
+		{
+			name:              "Gen 7 amd64",
+			labels:            []string{"runs-fleet=12345/cpu=4/arch=amd64/gen=7"},
+			wantGen:           7,
+			wantInstanceTypes: []string{"c7i.xlarge", "m7i.xlarge"},
+		},
+		{
+			name:    "No gen (defaults to 0, any generation)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64"},
+			wantGen: 0,
+		},
+		{
+			name:    "Invalid gen value (non-numeric)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=abc"},
+			wantErr: true,
+		},
+		{
+			name:    "Invalid gen value (zero)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=0"},
+			wantErr: true,
+		},
+		{
+			name:    "Invalid gen value (negative)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=-1"},
+			wantErr: true,
+		},
+		{
+			name:    "Invalid gen value (too large)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=11"},
+			wantErr: true,
+		},
+		{
+			name:              "Gen with family filter",
+			labels:            []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=8/family=c8g"},
+			wantGen:           8,
+			wantInstanceTypes: []string{"c8g.xlarge"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+
+			if got.Gen != tt.wantGen {
+				t.Errorf("ParseLabels() Gen = %d, want %d", got.Gen, tt.wantGen)
+			}
+
+			for _, wantType := range tt.wantInstanceTypes {
+				found := false
+				for _, gotType := range got.InstanceTypes {
+					if gotType == wantType {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("ParseLabels() InstanceTypes missing %q, got %v", wantType, got.InstanceTypes)
+				}
+			}
+		})
+	}
+}
+
 func TestParseLabels_OriginalLabel(t *testing.T) {
 	tests := []struct {
 		name              string

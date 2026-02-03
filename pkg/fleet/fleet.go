@@ -23,6 +23,7 @@ var fleetLog = logging.WithComponent(logging.LogTypeFleet, "manager")
 type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
 	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
+	DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 }
 
 // CircuitBreaker defines circuit breaker operations.
@@ -37,14 +38,22 @@ type spotPriceCache struct {
 	expires time.Time
 }
 
+// availabilityCache caches available instance types in the region.
+type availabilityCache struct {
+	mu        sync.RWMutex
+	available map[string]bool // instance type -> available
+	loaded    bool
+}
+
 const spotPriceCacheTTL = 5 * time.Minute
 
 // Manager orchestrates EC2 fleet creation for runner instances.
 type Manager struct {
-	ec2Client      EC2API
-	config         *config.Config
-	circuitBreaker CircuitBreaker
-	spotCache      spotPriceCache
+	ec2Client         EC2API
+	config            *config.Config
+	circuitBreaker    CircuitBreaker
+	spotCache         spotPriceCache
+	availabilityCache availabilityCache
 }
 
 // NewManager creates fleet manager with EC2 client and configuration.
@@ -180,7 +189,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 			totalTypes += len(cfg.Overrides)
 		}
 		if totalTypes > 1 {
-			fleetLog.Info("spot diversification enabled",
+			fleetLog.Debug("spot diversification enabled",
 				slog.Int("instance_types", totalTypes),
 				slog.Int("launch_configs", len(launchTemplateConfigs)))
 		}
@@ -251,6 +260,12 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 	instanceTypes := spec.InstanceTypes
 	if len(instanceTypes) == 0 {
 		instanceTypes = []string{spec.InstanceType}
+	}
+
+	// Filter out instance types not available in this region
+	instanceTypes = m.filterAvailableInstanceTypes(ctx, instanceTypes)
+	if len(instanceTypes) == 0 {
+		return nil, fmt.Errorf("no instance types available in region after filtering")
 	}
 
 	// Limit total instance types (EC2 Fleet maximum per launch template config is 20)
@@ -535,7 +550,7 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 		}
 	}
 
-	fleetLog.Info("architecture selected based on spot price",
+	fleetLog.Debug("architecture selected based on spot price",
 		slog.String("arch", cheapestArch),
 		slog.Float64("avg_price", cheapestPrice))
 	return cheapestArch
@@ -635,4 +650,80 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 		total += price
 	}
 	return total / float64(len(latestPrices))
+}
+
+// filterAvailableInstanceTypes filters instance types to only those available in the region.
+// Uses cached availability data, loading from AWS API on first call.
+func (m *Manager) filterAvailableInstanceTypes(ctx context.Context, instanceTypes []string) []string {
+	if err := m.ensureAvailabilityLoaded(ctx); err != nil {
+		fleetLog.Warn("failed to load instance type availability, using all types",
+			slog.String("error", err.Error()))
+		return instanceTypes
+	}
+
+	m.availabilityCache.mu.RLock()
+	defer m.availabilityCache.mu.RUnlock()
+
+	var filtered []string
+	for _, instType := range instanceTypes {
+		if m.availabilityCache.available[instType] {
+			filtered = append(filtered, instType)
+		}
+	}
+
+	if len(filtered) < len(instanceTypes) {
+		fleetLog.Debug("filtered unavailable instance types",
+			slog.Int("original", len(instanceTypes)),
+			slog.Int("available", len(filtered)))
+	}
+
+	return filtered
+}
+
+// ensureAvailabilityLoaded loads available instance types from AWS if not already cached.
+func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
+	m.availabilityCache.mu.RLock()
+	if m.availabilityCache.loaded {
+		m.availabilityCache.mu.RUnlock()
+		return nil
+	}
+	m.availabilityCache.mu.RUnlock()
+
+	m.availabilityCache.mu.Lock()
+	defer m.availabilityCache.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if m.availabilityCache.loaded {
+		return nil
+	}
+
+	available := make(map[string]bool)
+	var nextToken *string
+
+	for {
+		output, err := m.ec2Client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
+			LocationType: types.LocationTypeRegion,
+			MaxResults:   aws.Int32(1000),
+			NextToken:    nextToken,
+		})
+		if err != nil {
+			return fmt.Errorf("describe instance type offerings: %w", err)
+		}
+
+		for _, offering := range output.InstanceTypeOfferings {
+			available[string(offering.InstanceType)] = true
+		}
+
+		if output.NextToken == nil {
+			break
+		}
+		nextToken = output.NextToken
+	}
+
+	m.availabilityCache.available = available
+	m.availabilityCache.loaded = true
+	fleetLog.Info("loaded instance type availability",
+		slog.Int("available_types", len(available)))
+
+	return nil
 }

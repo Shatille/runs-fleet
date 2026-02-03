@@ -96,6 +96,7 @@ type JobConfig struct {
 	RAMMin        float64  // Minimum RAM in GB (from ram= label)
 	RAMMax        float64  // Maximum RAM in GB (from ram= label, e.g., ram=8+32)
 	Families      []string // Instance families (from family= label, e.g., family=c7g+m7g)
+	Gen           int      // Instance generation (from gen= label, e.g., gen=8). 0 = any generation
 	OriginalLabel string   // Original runs-fleet label from workflow (for GitHub matching)
 
 	// Storage configuration
@@ -193,6 +194,13 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 		case "family":
 			cfg.Families = strings.Split(value, "+")
 
+		case "gen":
+			gen, err := parseBoundedInt(value, 1, 10, "gen")
+			if err != nil {
+				return err
+			}
+			cfg.Gen = gen
+
 		case "arch":
 			if value == ArchARM64 || value == ArchAMD64 {
 				cfg.Arch = value
@@ -220,12 +228,9 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 			}
 
 		case "disk":
-			diskGiB, err := strconv.Atoi(value)
+			diskGiB, err := parseBoundedInt(value, 1, 16384, "disk")
 			if err != nil {
-				return fmt.Errorf("invalid disk label: %w", err)
-			}
-			if diskGiB < 1 || diskGiB > 16384 {
-				return fmt.Errorf("disk size must be between 1 and 16384 GiB, got %d", diskGiB)
+				return err
 			}
 			cfg.StorageGiB = diskGiB
 
@@ -239,6 +244,18 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 	}
 
 	return nil
+}
+
+// parseBoundedInt parses a string to int and validates it's within [min, max] range.
+func parseBoundedInt(s string, minBound, maxBound int, label string) (int, error) {
+	val, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s label: %w", label, err)
+	}
+	if val < minBound || val > maxBound {
+		return 0, fmt.Errorf("%s must be between %d and %d, got %d", label, minBound, maxBound, val)
+	}
+	return val, nil
 }
 
 // parseRange parses an integer range like "4" or "4+16" into min and max values.
@@ -299,6 +316,7 @@ func ResolveFlexibleSpec(cfg *JobConfig) error {
 		RAMMax:   cfg.RAMMax,
 		Arch:     cfg.Arch,
 		Families: cfg.Families,
+		Gen:      cfg.Gen,
 	}
 
 	// If no families specified, use defaults for the architecture
