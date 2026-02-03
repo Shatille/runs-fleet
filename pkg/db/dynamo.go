@@ -891,7 +891,10 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		return nil, fmt.Errorf("jobs table not configured")
 	}
 
-	// Scan for running job with this instance_id (job_id is the primary key)
+	// Scan for running job with this instance_id (job_id is the primary key).
+	// TODO: Add GSI on instance_id for O(1) lookup instead of O(n) scan.
+	// Current approach is acceptable given small table size (ephemeral jobs, <1000 items)
+	// and low call frequency (spot interruption handling only).
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
 		FilterExpression: aws.String("instance_id = :instance_id AND #status = :status"),
