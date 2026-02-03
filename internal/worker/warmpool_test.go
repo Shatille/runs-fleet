@@ -119,10 +119,6 @@ func (m *mockDBClient) GetPoolPeakConcurrency(_ context.Context, _ string, _ int
 	return 0, nil
 }
 
-func (m *mockDBClient) GetPoolRunningJobCount(_ context.Context, _ string) (int, error) {
-	return 0, nil
-}
-
 func (m *mockDBClient) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
 }

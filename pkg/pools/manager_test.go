@@ -29,7 +29,6 @@ type MockDBClient struct {
 	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
-	GetPoolRunningJobCountFunc   func(ctx context.Context, poolName string) (int, error)
 	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
@@ -61,13 +60,6 @@ func (m *MockDBClient) ListPools(ctx context.Context) ([]string, error) {
 func (m *MockDBClient) GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
 	if m.GetPoolPeakConcurrencyFunc != nil {
 		return m.GetPoolPeakConcurrencyFunc(ctx, poolName, windowHours)
-	}
-	return 0, nil
-}
-
-func (m *MockDBClient) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
-	if m.GetPoolRunningJobCountFunc != nil {
-		return m.GetPoolRunningJobCountFunc(ctx, poolName)
 	}
 	return 0, nil
 }
@@ -911,8 +903,8 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		GetPoolRunningJobCountFunc: func(_ context.Context, _ string) (int, error) {
-			return 2, nil // Both instances are busy
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			return []string{"i-busy1", "i-busy2"}, nil // Both instances are busy
 		},
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
@@ -963,6 +955,81 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 	}
 }
 
+func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
+	// Stale job records from terminated instances should not inflate busy count.
+	// GetPoolBusyInstanceIDs returns instance IDs from DynamoDB, but only IDs
+	// matching actual running pool instances should count as busy.
+	fleetCreateCalled := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"test-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 1,
+				DesiredStopped: 0,
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			// 100 stale records from long-dead instances + 1 real busy instance
+			return []string{
+				"i-running1", // matches actual pool instance
+				"i-dead1", "i-dead2", "i-dead3", "i-dead4", "i-dead5",
+				"i-dead6", "i-dead7", "i-dead8", "i-dead9", "i-dead10",
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCalled++
+			return []string{"i-new"}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 2 running pool instances: 1 busy, 1 idle
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-running1"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+							{
+								InstanceId:   aws.String("i-running2"),
+								InstanceType: ec2types.InstanceTypeT3Medium,
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// running=2, busy=1 (only i-running1 intersects), ready=1, desired=1
+	// Should NOT create new instances — stale records must be ignored
+	if fleetCreateCalled != 0 {
+		t.Errorf("Expected 0 fleet create calls (stale records should be ignored), got %d", fleetCreateCalled)
+	}
+}
+
 func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
 	// Test that reconciliation doesn't scale down busy instances
 	// desired_ready=1, running=3, busy=2 -> ready=1 -> no scale-down needed
@@ -980,8 +1047,8 @@ func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		GetPoolRunningJobCountFunc: func(_ context.Context, _ string) (int, error) {
-			return 2, nil // 2 instances are busy
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			return []string{"i-busy1", "i-busy2"}, nil // 2 instances are busy
 		},
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
@@ -1042,8 +1109,8 @@ func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
 	}
 }
 
-func TestReconcilePoolJobCountError(t *testing.T) {
-	// Test that reconciliation aborts when GetPoolRunningJobCount fails
+func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
+	// Test that reconciliation aborts when GetPoolBusyInstanceIDs fails
 	fleetCreateCalled := false
 	terminateCalled := false
 
@@ -1058,8 +1125,8 @@ func TestReconcilePoolJobCountError(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		GetPoolRunningJobCountFunc: func(_ context.Context, _ string) (int, error) {
-			return 0, errors.New("DynamoDB error")
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			return nil, errors.New("DynamoDB error")
 		},
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
@@ -1106,12 +1173,12 @@ func TestReconcilePoolJobCountError(t *testing.T) {
 
 	manager.reconcile(context.Background())
 
-	// Should NOT scale down or create fleets when job count query fails
+	// Should NOT scale down or create fleets when busy instance query fails
 	if fleetCreateCalled {
-		t.Error("Should not create fleet when GetPoolRunningJobCount fails")
+		t.Error("Should not create fleet when GetPoolBusyInstanceIDs fails")
 	}
 	if terminateCalled {
-		t.Error("Should not terminate instances when GetPoolRunningJobCount fails - could kill busy instances")
+		t.Error("Should not terminate instances when GetPoolBusyInstanceIDs fails - could kill busy instances")
 	}
 }
 

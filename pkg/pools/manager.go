@@ -36,7 +36,6 @@ type DBClient interface {
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
-	GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error)
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
@@ -202,17 +201,27 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 	}
 
-	// Get count of busy instances (running jobs) from DynamoDB
-	// Abort reconciliation on error to avoid terminating busy instances
-	busy, err := m.dbClient.GetPoolRunningJobCount(ctx, poolName)
+	// Get busy instance IDs from DynamoDB and intersect with actual pool instances.
+	// Only count an instance as busy if it both has a running job record AND
+	// exists as a running pool instance. This prevents stale job records from
+	// inflating the busy count and triggering runaway scaling.
+	busyIDs, err := m.dbClient.GetPoolBusyInstanceIDs(ctx, poolName)
 	if err != nil {
-		return fmt.Errorf("failed to get running job count: %w", err)
+		return fmt.Errorf("failed to get busy instance IDs: %w", err)
 	}
 
-	// Ready = running instances without jobs
-	// busy should never exceed running, but clamp to be safe
-	if busy > running {
-		busy = running
+	busySet := make(map[string]struct{}, len(busyIDs))
+	for _, id := range busyIDs {
+		busySet[id] = struct{}{}
+	}
+	var busy int
+	for _, inst := range instances {
+		if inst.State != stateRunning {
+			continue
+		}
+		if _, ok := busySet[inst.InstanceID]; ok {
+			busy++
+		}
 	}
 	ready := running - busy
 
@@ -281,15 +290,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		var candidateInstances []PoolInstance
 		if desiredRunning == 0 && desiredStopped > 0 {
 			// Warm pool: all ready instances are candidates for stopping
-			// Get specific busy instance IDs to exclude them
-			busyIDs, err := m.dbClient.GetPoolBusyInstanceIDs(ctx, poolName)
-			if err != nil {
-				poolLog.Warn("failed to get busy instance IDs, using idle filter instead",
-					slog.String("error", err.Error()))
-				candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
-			} else {
-				candidateInstances = m.filterReadyInstances(runningInstances, busyIDs)
-			}
+			// Reuse busyIDs from earlier query (line would have returned early on error)
+			candidateInstances = m.filterReadyInstances(runningInstances, busyIDs)
 		} else {
 			// Hot pool: only idle instances that exceeded timeout
 			candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
