@@ -625,8 +625,9 @@ type JobHistoryEntry struct {
 }
 
 // QueryPoolJobHistory retrieves recent jobs for a pool within the specified time window.
-// Note: This uses Scan with filter which is inefficient for large tables.
-// For production, add a GSI on (pool, created_at) for efficient queries.
+//
+// Performance note: Uses Scan with filter. Acceptable for current scale (~100 jobs/day).
+// For high-volume deployments, add GSI on (pool, created_at) for efficient queries.
 func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since time.Time) ([]JobHistoryEntry, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
@@ -638,8 +639,6 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 
 	sinceStr := since.Format(time.RFC3339)
 
-	// Use Scan with filter - this is inefficient but works without GSI
-	// TODO: Add GSI on (pool, created_at) for production efficiency
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
 		FilterExpression: aws.String("#pool = :pool AND created_at >= :since"),
@@ -755,7 +754,10 @@ func (c *Client) GetPoolPeakConcurrency(ctx context.Context, poolName string, wi
 
 // GetPoolRunningJobCount returns the number of jobs currently running in a pool.
 // Uses Scan with filter on pool and status fields.
-// TODO: Add GSI on (pool, status) for efficient Query operation on large tables.
+//
+// Performance note: Scan is acceptable for current scale (~100 jobs/day, ~10 concurrent).
+// For high-volume deployments (>1000 concurrent jobs), add GSI on (pool, status) in
+// Terraform and switch to Query. See: github.com/Shatille/runs-fleet/issues/TBD
 func (c *Client) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
 	if poolName == "" {
 		return 0, fmt.Errorf("pool name cannot be empty")
@@ -789,6 +791,9 @@ func (c *Client) GetPoolRunningJobCount(ctx context.Context, poolName string) (i
 
 // GetPoolBusyInstanceIDs returns instance IDs that have running jobs in the pool.
 // Used to identify which instances should not be stopped during reconciliation.
+//
+// Performance note: Uses Scan (same as GetPoolRunningJobCount). Acceptable for
+// current scale; requires GSI for high-volume deployments.
 func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
