@@ -64,19 +64,27 @@ sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="2.24.5"
+COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
+COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
+# Download and verify checksum
+curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o /tmp/docker-compose.sha256 \
+  || { echo "Failed to download Docker Compose checksum"; exit 1; }
+curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}" -o /tmp/docker-compose \
+  || { echo "Failed to download Docker Compose"; exit 1; }
+cd /tmp && echo "$(cat docker-compose.sha256)" | sha256sum -c \
+  || { echo "Docker Compose checksum mismatch"; rm -f /tmp/docker-compose /tmp/docker-compose.sha256; exit 1; }
 # Install as standalone binary (docker-compose)
-sudo curl -sL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
-  -o /usr/local/bin/docker-compose
+sudo mv /tmp/docker-compose /usr/local/bin/docker-compose
 sudo chmod +x /usr/local/bin/docker-compose
 # Install as Docker CLI plugin (docker compose)
 sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -sL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
-  -o /usr/local/lib/docker/cli-plugins/docker-compose
-sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+rm -f /tmp/docker-compose.sha256
 
 echo "==> Configuring QEMU binfmt for multi-arch builds"
-# Create systemd service to register binfmt handlers at boot (after docker)
-sudo tee /etc/systemd/system/binfmt-qemu.service > /dev/null <<'BINFMT'
+# Pin to specific version for supply-chain security (--privileged required for /proc/sys/fs/binfmt_misc)
+BINFMT_VERSION="qemu-v9.2.0-51"
+sudo tee /etc/systemd/system/binfmt-qemu.service > /dev/null <<BINFMT
 [Unit]
 Description=Register QEMU binfmt handlers for multi-arch container builds
 After=docker.service
@@ -84,14 +92,15 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/docker run --rm --privileged tonistiigi/binfmt:latest --install all
+ExecStart=/usr/bin/docker run --rm --privileged tonistiigi/binfmt:${BINFMT_VERSION} --install all
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 BINFMT
-sudo systemctl daemon-reload
-sudo systemctl enable binfmt-qemu.service
+[ $? -eq 0 ] || { echo "Failed to create binfmt-qemu.service"; exit 1; }
+sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
+sudo systemctl enable binfmt-qemu.service || { echo "Failed to enable binfmt-qemu.service"; exit 1; }
 
 echo "==> Installing Vault CLI"
 VAULT_VERSION="1.18.3"
