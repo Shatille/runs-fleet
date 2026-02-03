@@ -111,6 +111,13 @@ YARN_VERSION="1.22.22"
 PNPM_VERSION="9.15.4"
 sudo /usr/local/bin/npm install -g "yarn@${YARN_VERSION}" "pnpm@${PNPM_VERSION}" \
   || { echo "Failed to install yarn/pnpm"; exit 1; }
+# Create symlinks in /usr/bin for PATH compatibility with GitHub Actions
+sudo ln -sf /usr/local/bin/node /usr/bin/node
+sudo ln -sf /usr/local/bin/npm /usr/bin/npm
+sudo ln -sf /usr/local/bin/npx /usr/bin/npx
+sudo ln -sf /usr/local/bin/yarn /usr/bin/yarn
+sudo ln -sf /usr/local/bin/pnpm /usr/bin/pnpm
+sudo ln -sf /usr/local/bin/pnpx /usr/bin/pnpx
 
 echo "==> Configuring QEMU binfmt for multi-arch builds"
 # Pin to specific version for supply-chain security (--privileged required for /proc/sys/fs/binfmt_misc)
