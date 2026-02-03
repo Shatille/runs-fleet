@@ -106,8 +106,10 @@ echo "${NODE_CHECKSUM}  /tmp/${NODE_DIST}.tar.xz" | sha256sum -c \
 sudo tar -xJf "/tmp/${NODE_DIST}.tar.xz" -C /usr/local --strip-components=1 \
   || { echo "Failed to extract Node.js"; exit 1; }
 rm -f "/tmp/${NODE_DIST}.tar.xz" /tmp/node-shasums.txt
-# Install yarn and pnpm globally
-sudo /usr/local/bin/npm install -g yarn pnpm \
+# Install yarn and pnpm globally (pinned versions for reproducibility)
+YARN_VERSION="1.22.22"
+PNPM_VERSION="9.15.4"
+sudo /usr/local/bin/npm install -g "yarn@${YARN_VERSION}" "pnpm@${PNPM_VERSION}" \
   || { echo "Failed to install yarn/pnpm"; exit 1; }
 
 echo "==> Configuring QEMU binfmt for multi-arch builds"
