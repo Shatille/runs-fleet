@@ -363,13 +363,15 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
-		FilterExpression: aws.String("#pool = :pool AND created_at >= :since"),
+		FilterExpression: aws.String("#pool = :pool AND created_at >= :since AND #status <> :orphaned"),
 		ExpressionAttributeNames: map[string]string{
-			"#pool": "pool",
+			"#pool":   "pool",
+			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pool":  &types.AttributeValueMemberS{Value: poolName},
-			":since": &types.AttributeValueMemberS{Value: sinceStr},
+			":pool":     &types.AttributeValueMemberS{Value: poolName},
+			":since":    &types.AttributeValueMemberS{Value: sinceStr},
+			":orphaned": &types.AttributeValueMemberS{Value: "orphaned"},
 		},
 	}
 

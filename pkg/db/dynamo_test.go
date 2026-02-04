@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1468,6 +1469,26 @@ func TestQueryPoolJobHistory(t *testing.T) {
 				},
 			},
 			wantErr: true,
+		},
+		{
+			name:     "Excludes orphaned jobs",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					if input.FilterExpression == nil || !strings.Contains(*input.FilterExpression, "#status <> :orphaned") {
+						return nil, errors.New("filter expression must exclude orphaned jobs")
+					}
+					if _, ok := input.ExpressionAttributeNames["#status"]; !ok {
+						return nil, errors.New("ExpressionAttributeNames must include #status")
+					}
+					if _, ok := input.ExpressionAttributeValues[":orphaned"]; !ok {
+						return nil, errors.New("ExpressionAttributeValues must include :orphaned")
+					}
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantLen: 0,
+			wantErr: false,
 		},
 	}
 
