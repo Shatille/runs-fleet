@@ -55,7 +55,6 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 	}
 
-	// Try warm pool assignment first
 	if job.Pool != "" {
 		assigner := &WarmPoolAssigner{
 			Pool:   p.Pool,
@@ -78,7 +77,6 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 	}
 
-	// Cold start: create new fleet
 	spec := &fleet.LaunchSpec{
 		RunID:         job.RunID,
 		InstanceType:  job.InstanceType,

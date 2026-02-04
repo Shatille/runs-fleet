@@ -3,7 +3,6 @@ package logging
 
 import (
 	"context"
-	"io"
 	golog "log"
 	"log/slog"
 	"os"
@@ -20,18 +19,6 @@ func Init() {
 	slog.SetDefault(logger)
 
 	// Redirect stdlib log.Print* calls to slog
-	golog.SetOutput(&slogWriter{logger: logger})
-	golog.SetFlags(0)
-}
-
-// InitWithLevel configures the default slog logger with JSON output at the specified level.
-func InitWithLevel(level slog.Level) {
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-	})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
 	golog.SetOutput(&slogWriter{logger: logger})
 	golog.SetFlags(0)
 }
@@ -91,9 +78,7 @@ const (
 	LogTypeFleet       = "fleet"
 	LogTypeCircuit     = "circuit"
 	LogTypeRunner      = "runner"
-	LogTypeGitOps      = "gitops"
 	LogTypeCost        = "cost"
-	LogTypeTracing     = "tracing"
 	LogTypeK8s         = "k8s"
 	LogTypeMetrics     = "metrics"
 	LogTypeDB          = "db"
@@ -184,49 +169,4 @@ func argsToAttrs(args []any) []slog.Attr {
 		}
 	}
 	return attrs
-}
-
-// Info logs at info level using the default logger.
-func Info(msg string, attrs ...any) {
-	slog.Info(msg, attrs...)
-}
-
-// Warn logs at warn level using the default logger.
-func Warn(msg string, attrs ...any) {
-	slog.Warn(msg, attrs...)
-}
-
-// Error logs at error level using the default logger.
-func Error(msg string, attrs ...any) {
-	slog.Error(msg, attrs...)
-}
-
-// Debug logs at debug level using the default logger.
-func Debug(msg string, attrs ...any) {
-	slog.Debug(msg, attrs...)
-}
-
-// InfoContext logs at info level with context using the default logger.
-func InfoContext(ctx context.Context, msg string, attrs ...any) {
-	slog.InfoContext(ctx, msg, attrs...)
-}
-
-// WarnContext logs at warn level with context using the default logger.
-func WarnContext(ctx context.Context, msg string, attrs ...any) {
-	slog.WarnContext(ctx, msg, attrs...)
-}
-
-// ErrorContext logs at error level with context using the default logger.
-func ErrorContext(ctx context.Context, msg string, attrs ...any) {
-	slog.ErrorContext(ctx, msg, attrs...)
-}
-
-// DebugContext logs at debug level with context using the default logger.
-func DebugContext(ctx context.Context, msg string, attrs ...any) {
-	slog.DebugContext(ctx, msg, attrs...)
-}
-
-// Discard returns a logger that discards all output.
-func Discard() *Logger {
-	return &Logger{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }

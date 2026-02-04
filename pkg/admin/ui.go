@@ -33,7 +33,6 @@ func UIHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Strip /admin prefix if present
 		if strings.HasPrefix(path, "/admin") {
 			path = strings.TrimPrefix(path, "/admin")
 			if path == "" {
@@ -41,7 +40,6 @@ func UIHandler() http.Handler {
 			}
 		}
 
-		// Try to serve the exact file (non-directory paths)
 		if path != "/" && !strings.HasSuffix(path, "/") {
 			if f, err := subFS.Open(strings.TrimPrefix(path, "/")); err == nil {
 				_ = f.Close()

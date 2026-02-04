@@ -54,7 +54,6 @@ func (e *Executor) SetCloudWatchLogger(cwLogger *CloudWatchLogger) {
 func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResult, error) {
 	runScript := filepath.Join(runnerPath, "run.sh")
 
-	// Verify run.sh exists
 	if _, err := os.Stat(runScript); err != nil {
 		return nil, fmt.Errorf("run.sh not found: %w", err)
 	}
@@ -63,7 +62,6 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		StartedAt: time.Now(),
 	}
 
-	// Create command
 	cmd := exec.CommandContext(ctx, runScript)
 	cmd.Dir = runnerPath
 	cmd.Env = append(os.Environ(),
@@ -75,7 +73,6 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		Setpgid: true,
 	}
 
-	// Get stdout and stderr pipes
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
@@ -86,14 +83,12 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		return nil, fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
-	// Start the process
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start runner: %w", err)
 	}
 
 	e.logger.Printf("Runner process started with PID %d", cmd.Process.Pid)
 
-	// Start safety monitor
 	safetyCtx, safetyCancel := context.WithCancel(ctx)
 	defer safetyCancel()
 
@@ -101,7 +96,6 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		go e.safetyMonitor.Monitor(safetyCtx)
 	}
 
-	// Stream output
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -115,11 +109,9 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		e.streamOutput(stderr, "stderr")
 	}()
 
-	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
-	// Wait for completion or signals
 	doneChan := make(chan error, 1)
 	go func() {
 		doneChan <- cmd.Wait()
@@ -128,7 +120,6 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 	var interruptedBy string
 	select {
 	case err := <-doneChan:
-		// Process completed normally
 		wg.Wait()
 		result.CompletedAt = time.Now()
 		result.Duration = result.CompletedAt.Sub(result.StartedAt)
@@ -146,17 +137,14 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		}
 
 	case sig := <-sigChan:
-		// Signal received - graceful shutdown
 		e.logger.Printf("Received signal %v, initiating graceful shutdown...", sig)
 		interruptedBy = sig.String()
 		result.InterruptedBy = interruptedBy
 
-		// Send SIGTERM to process group
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		}
 
-		// Wait for graceful shutdown with timeout
 		select {
 		case err := <-doneChan:
 			wg.Wait()
@@ -175,7 +163,6 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 			e.logger.Println("Runner exited gracefully after signal")
 
 		case <-time.After(GracefulShutdownTimeout):
-			// Force kill
 			e.logger.Println("Graceful shutdown timeout, force killing runner...")
 			if cmd.Process != nil {
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -189,7 +176,6 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 		}
 
 	case <-ctx.Done():
-		// Context cancelled
 		e.logger.Println("Context cancelled, terminating runner...")
 		interruptedBy = "context_cancelled"
 		result.InterruptedBy = interruptedBy

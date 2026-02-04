@@ -83,7 +83,6 @@ func (t *K8sTerminator) cleanupResources(ctx context.Context, podName string) {
 
 	t.logger.Printf("Cleaning up resources: Secret=%s, ConfigMap=%s", secretName, configMapName)
 
-	// Delete Secret
 	if err := t.clientset.CoreV1().Secrets(t.namespace).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil {
 		if !errors.IsNotFound(err) {
 			t.logger.Printf("Warning: failed to delete Secret %s: %v", secretName, err)
@@ -92,7 +91,6 @@ func (t *K8sTerminator) cleanupResources(ctx context.Context, podName string) {
 		t.logger.Printf("Deleted Secret %s", secretName)
 	}
 
-	// Delete ConfigMap
 	if err := t.clientset.CoreV1().ConfigMaps(t.namespace).Delete(ctx, configMapName, metav1.DeleteOptions{}); err != nil {
 		if !errors.IsNotFound(err) {
 			t.logger.Printf("Warning: failed to delete ConfigMap %s: %v", configMapName, err)

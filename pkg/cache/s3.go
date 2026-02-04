@@ -45,23 +45,6 @@ func NewServer(cfg aws.Config, bucketName string) *Server {
 	}
 }
 
-// NewServerWithScope creates a new cache server with repository scoping.
-// Scope should be in format "org/repo" for repo-level isolation or "org" for org-level sharing.
-// If the scope is invalid, the server is created with no scope (empty string).
-func NewServerWithScope(cfg aws.Config, bucketName, scope string) *Server {
-	client := s3.NewFromConfig(cfg)
-	validScope := scope
-	if err := validateScope(scope); err != nil {
-		validScope = ""
-	}
-	return &Server{
-		s3Client:        client,
-		presignClient:   s3.NewPresignClient(client),
-		cacheBucketName: bucketName,
-		defaultScope:    validScope,
-	}
-}
-
 // SetScope sets the cache scope for repository isolation.
 // Returns an error if the scope is invalid.
 func (s *Server) SetScope(scope string) error {

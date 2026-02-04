@@ -129,7 +129,15 @@ func main() {
 		directProcessorSem = make(chan struct{}, 10)
 	}
 
-	mux := setupHTTPRoutes(cfg, jobQueue, dbClient, cacheServer, metricsPublisher, prometheusHandler, directProcessor, directProcessorSem)
+	ws := &webhookServer{
+		cfg:                cfg,
+		jobQueue:           jobQueue,
+		dbClient:           dbClient,
+		metricsPublisher:   metricsPublisher,
+		directProcessor:    directProcessor,
+		directProcessorSem: directProcessorSem,
+	}
+	mux := ws.setupHTTPRoutes(cacheServer, prometheusHandler)
 
 	server := &http.Server{
 		Addr:         ":8080",
@@ -380,7 +388,16 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 	return metrics.NewMultiPublisher(publishers...), prometheusHandler
 }
 
-func setupHTTPRoutes(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, cacheServer *cache.Server, metricsPublisher metrics.Publisher, prometheusHandler http.Handler, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) *http.ServeMux {
+type webhookServer struct {
+	cfg                *config.Config
+	jobQueue           queue.Queue
+	dbClient           *db.Client
+	metricsPublisher   metrics.Publisher
+	directProcessor    *worker.DirectProcessor
+	directProcessorSem chan struct{}
+}
+
+func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHandler http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -388,67 +405,63 @@ func setupHTTPRoutes(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Clie
 		_, _ = fmt.Fprintf(w, "OK\n")
 	})
 
-	mux.HandleFunc("/ready", makeReadinessHandler(jobQueue))
+	mux.HandleFunc("/ready", ws.handleReadiness)
 
 	if prometheusHandler != nil {
-		mux.Handle(cfg.MetricsPrometheusPath, prometheusHandler)
+		mux.Handle(ws.cfg.MetricsPrometheusPath, prometheusHandler)
 	}
 
-	cacheHandler := cache.NewHandlerWithAuth(cacheServer, metricsPublisher, cfg.CacheSecret)
+	cacheHandler := cache.NewHandlerWithAuth(cacheServer, ws.metricsPublisher, ws.cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
 
-	adminHandler := admin.NewHandler(dbClient, cfg.AdminSecret)
+	adminHandler := admin.NewHandler(ws.dbClient, ws.cfg.AdminSecret)
 	adminHandler.RegisterRoutes(mux)
 	mux.Handle("/admin/", admin.UIHandler())
 
-	mux.HandleFunc("/webhook", makeWebhookHandler(cfg, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem))
+	mux.HandleFunc("/webhook", ws.handleWebhook)
 
 	return mux
 }
 
-func makeReadinessHandler(q queue.Queue) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if pinger, ok := q.(queue.Pinger); ok {
-			pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-			defer cancel()
-			if err := pinger.Ping(pingCtx); err != nil {
-				serverLog.Warn("readiness check failed", slog.String("error", err.Error()))
-				http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
-				return
-			}
+func (ws *webhookServer) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	if pinger, ok := ws.jobQueue.(queue.Pinger); ok {
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pinger.Ping(pingCtx); err != nil {
+			serverLog.Warn("readiness check failed", slog.String("error", err.Error()))
+			http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
+			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "OK\n")
 	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, "OK\n")
 }
 
-func makeWebhookHandler(cfg *config.Config, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) http.HandlerFunc {
+func (ws *webhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	log := logging.WithComponent(logging.LogTypeWebhook, "handler")
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-		payload, err := gh.ParseWebhook(r, cfg.GitHubWebhookSecret)
-		if err != nil {
-			log.Warn("webhook parse failed", slog.String("error", err.Error()))
-			http.Error(w, "Bad request", http.StatusBadRequest)
-			return
-		}
+	payload, err := gh.ParseWebhook(r, ws.cfg.GitHubWebhookSecret)
+	if err != nil {
+		log.Warn("webhook parse failed", slog.String("error", err.Error()))
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
 
-		processed, response := processWebhookEvent(r.Context(), payload, jobQueue, dbClient, metricsPublisher, directProcessor, directProcessorSem)
+	processed, response := ws.processWebhookEvent(r.Context(), payload)
 
-		w.WriteHeader(http.StatusOK)
-		if processed {
-			_, _ = fmt.Fprintf(w, "%s\n", response)
-		} else {
-			_, _ = fmt.Fprintf(w, "Event acknowledged\n")
-		}
+	w.WriteHeader(http.StatusOK)
+	if processed {
+		_, _ = fmt.Fprintf(w, "%s\n", response)
+	} else {
+		_, _ = fmt.Fprintf(w, "Event acknowledged\n")
 	}
 }
 
-func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queue.Queue, dbClient *db.Client, metricsPublisher metrics.Publisher, directProcessor *worker.DirectProcessor, directProcessorSem chan struct{}) (bool, string) {
+func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interface{}) (bool, string) {
 	event, ok := payload.(*github.WorkflowJobEvent)
 	if !ok {
 		return false, ""
@@ -456,18 +469,18 @@ func processWebhookEvent(ctx context.Context, payload interface{}, jobQueue queu
 
 	switch event.GetAction() {
 	case "queued":
-		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, jobQueue, dbClient, metricsPublisher)
+		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
 		if err != nil || jobMsg == nil {
 			return false, ""
 		}
-		worker.TryDirectProcessing(ctx, directProcessor, directProcessorSem, jobMsg)
+		worker.TryDirectProcessing(ctx, ws.directProcessor, ws.directProcessorSem, jobMsg)
 		return true, "Job queued"
 
 	case "completed":
 		if event.GetWorkflowJob().GetConclusion() != "failure" {
 			return false, ""
 		}
-		requeued, err := handler.HandleJobFailure(ctx, event, jobQueue, dbClient, metricsPublisher)
+		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
 		if err != nil {
 			webhookLog.Error("job failure handling failed",
 				slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),

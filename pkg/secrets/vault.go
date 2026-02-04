@@ -72,7 +72,6 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 		client.SetNamespace(cfg.Namespace)
 	}
 
-	// Authenticate
 	if err := authenticate(ctx, client, cfg); err != nil {
 		return nil, fmt.Errorf("vault authentication failed: %w", err)
 	}

@@ -24,12 +24,6 @@ type CloudWatchPublisher struct {
 // Ensure CloudWatchPublisher implements Publisher.
 var _ Publisher = (*CloudWatchPublisher)(nil)
 
-// NewPublisher creates a CloudWatch metrics publisher.
-// Deprecated: Use NewCloudWatchPublisher instead.
-func NewPublisher(cfg aws.Config) *CloudWatchPublisher {
-	return NewCloudWatchPublisher(cfg)
-}
-
 // NewCloudWatchPublisher creates a CloudWatch metrics publisher.
 func NewCloudWatchPublisher(cfg aws.Config) *CloudWatchPublisher {
 	return NewCloudWatchPublisherWithNamespace(cfg, "RunsFleet")

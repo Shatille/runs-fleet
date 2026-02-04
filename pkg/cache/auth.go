@@ -93,13 +93,11 @@ func ValidateCacheToken(secret, token string) bool {
 	encodedPayload := parts[0]
 	providedSignature := parts[1]
 
-	// Decode payload
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(encodedPayload)
 	if err != nil {
 		return false
 	}
 
-	// Recompute HMAC
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write(payloadBytes)
 	expectedSignature := hex.EncodeToString(h.Sum(nil))

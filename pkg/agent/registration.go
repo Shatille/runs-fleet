@@ -80,7 +80,6 @@ func (r *Registrar) FetchConfig(ctx context.Context, runnerID string) (*secrets.
 func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerConfig, runnerPath string) error {
 	configScript := filepath.Join(runnerPath, "config.sh")
 
-	// Verify config.sh exists
 	if _, err := os.Stat(configScript); err != nil {
 		return fmt.Errorf("config.sh not found: %w", err)
 	}
@@ -93,7 +92,6 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerCo
 	}
 	repoURL := fmt.Sprintf("https://github.com/%s", config.Repo)
 
-	// Build command arguments
 	args := []string{
 		"--unattended",
 		"--ephemeral",
@@ -101,27 +99,22 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerCo
 		"--token", config.JITToken,
 	}
 
-	// Add labels if specified
 	if len(config.Labels) > 0 {
 		args = append(args, "--labels", strings.Join(config.Labels, ","))
 	}
 
-	// Add runner group if specified
 	if config.RunnerGroup != "" {
 		args = append(args, "--runnergroup", config.RunnerGroup)
 	}
 
-	// Add a unique runner name
 	hostname, _ := os.Hostname()
 	runnerName := fmt.Sprintf("runs-fleet-%s", hostname)
 	args = append(args, "--name", runnerName)
 
-	// Don't replace if already registered
 	args = append(args, "--replace")
 
 	r.logger.Printf("Registering runner with URL: %s", repoURL)
 
-	// Execute config.sh
 	cmd := exec.CommandContext(ctx, configScript, args...)
 	cmd.Dir = runnerPath
 	cmd.Env = append(os.Environ(),

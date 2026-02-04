@@ -508,28 +508,6 @@ func TestK8sResourceRequests_EmptyFields(t *testing.T) {
 	}
 }
 
-func TestValkeyOptions_AllFields(t *testing.T) {
-	opts := ValkeyOptions{
-		Addr:     "localhost:6379",
-		Password: "secret",
-		DB:       1,
-		UseTLS:   true,
-	}
-
-	if opts.Addr != "localhost:6379" {
-		t.Errorf("Addr = %q, want %q", opts.Addr, "localhost:6379")
-	}
-	if opts.Password != "secret" {
-		t.Errorf("Password = %q, want %q", opts.Password, "secret")
-	}
-	if opts.DB != 1 {
-		t.Errorf("DB = %d, want 1", opts.DB)
-	}
-	if !opts.UseTLS {
-		t.Error("UseTLS should be true")
-	}
-}
-
 func TestValkeyStateStore_DeleteNonexistentPool(t *testing.T) {
 	store, mr := setupTestValkey(t)
 	defer mr.Close()

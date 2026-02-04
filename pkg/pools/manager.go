@@ -191,39 +191,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		return fmt.Errorf("failed to get pool instances: %w", err)
 	}
 
-	var running, stopped int
-	for _, inst := range instances {
-		switch inst.State {
-		case stateRunning:
-			running++
-		case stateStopped:
-			stopped++
-		}
-	}
-
-	// Get busy instance IDs from DynamoDB and intersect with actual pool instances.
-	// Only count an instance as busy if it both has a running job record AND
-	// exists as a running pool instance. This prevents stale job records from
-	// inflating the busy count and triggering runaway scaling.
 	busyIDs, err := m.dbClient.GetPoolBusyInstanceIDs(ctx, poolName)
 	if err != nil {
 		return fmt.Errorf("failed to get busy instance IDs: %w", err)
 	}
 
-	busySet := make(map[string]struct{}, len(busyIDs))
-	for _, id := range busyIDs {
-		busySet[id] = struct{}{}
-	}
-	var busy int
-	for _, inst := range instances {
-		if inst.State != stateRunning {
-			continue
-		}
-		if _, ok := busySet[inst.InstanceID]; ok {
-			busy++
-		}
-	}
-	ready := running - busy
+	running, stopped, busy, ready := countInstanceStates(instances, busyIDs)
 
 	// Track changes for logging
 	var started, stoppedCount, created, terminated int
@@ -249,35 +222,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 
 		if deficit > 0 {
-			// Resolve instance types for this pool
-			instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
-			if len(instanceTypes) == 0 {
-				poolLog.Warn("no instance types resolved",
-					slog.String(logging.KeyPoolName, poolName))
-			} else {
-				for i := 0; i < deficit; i++ {
-					subnetID := m.selectSubnet()
-					if subnetID == "" {
-						return fmt.Errorf("no subnets configured for pool %s", poolName)
-					}
-					spec := &fleet.LaunchSpec{
-						RunID:         time.Now().UnixNano(),
-						InstanceType:  instanceTypes[0],
-						InstanceTypes: instanceTypes,
-						SubnetID:      subnetID,
-						Pool:          poolName,
-						Spot:          true,
-						Arch:          arch,
-					}
-					if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
-						poolLog.Error("fleet creation failed",
-							slog.String(logging.KeyPoolName, poolName),
-							slog.String("error", err.Error()))
-					} else {
-						created++
-					}
-				}
-			}
+			created += m.createPoolFleetInstances(ctx, poolName, deficit, poolConfig)
 		}
 	} else if ready > desiredRunning {
 		// Too many ready (idle) instances - stop or terminate excess
@@ -350,36 +295,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		// Create new instances - they will boot as running, then be stopped
 		// in next reconciliation when ready > desiredRunning
 		deficit := desiredStopped - stopped
-		instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
-		if len(instanceTypes) == 0 {
-			poolLog.Warn("no instance types resolved for stopped pool deficit",
-				slog.String(logging.KeyPoolName, poolName))
-		} else {
-			for i := 0; i < deficit; i++ {
-				subnetID := m.selectSubnet()
-				if subnetID == "" {
-					poolLog.Error("no subnets configured for pool",
-						slog.String(logging.KeyPoolName, poolName))
-					break
-				}
-				spec := &fleet.LaunchSpec{
-					RunID:         time.Now().UnixNano(),
-					InstanceType:  instanceTypes[0],
-					InstanceTypes: instanceTypes,
-					SubnetID:      subnetID,
-					Pool:          poolName,
-					Spot:          true,
-					Arch:          arch,
-				}
-				if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
-					poolLog.Error("fleet creation for stopped pool failed",
-						slog.String(logging.KeyPoolName, poolName),
-						slog.String("error", err.Error()))
-				} else {
-					created++
-				}
-			}
-		}
+		created += m.createPoolFleetInstances(ctx, poolName, deficit, poolConfig)
 	}
 
 	// Log reconciliation only when changes occurred
@@ -814,6 +730,73 @@ func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error
 	poolLog.Info("pool instance stopped",
 		slog.String(logging.KeyInstanceID, instanceID))
 	return nil
+}
+
+// countInstanceStates counts running, stopped, busy, and ready instances.
+// Busy count is intersected with actual pool instances to prevent stale job records
+// from inflating the count and triggering runaway scaling.
+func countInstanceStates(instances []PoolInstance, busyIDs []string) (running, stopped, busy, ready int) {
+	for _, inst := range instances {
+		switch inst.State {
+		case stateRunning:
+			running++
+		case stateStopped:
+			stopped++
+		}
+	}
+
+	busySet := make(map[string]struct{}, len(busyIDs))
+	for _, id := range busyIDs {
+		busySet[id] = struct{}{}
+	}
+	for _, inst := range instances {
+		if inst.State != stateRunning {
+			continue
+		}
+		if _, ok := busySet[inst.InstanceID]; ok {
+			busy++
+		}
+	}
+	ready = running - busy
+	return
+}
+
+// createPoolFleetInstances creates new fleet instances for a pool.
+// Returns the number of instances successfully created.
+func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string, count int, poolConfig *db.PoolConfig) int {
+	instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
+	if len(instanceTypes) == 0 {
+		poolLog.Warn("no instance types resolved",
+			slog.String(logging.KeyPoolName, poolName))
+		return 0
+	}
+
+	var created int
+	for i := 0; i < count; i++ {
+		subnetID := m.selectSubnet()
+		if subnetID == "" {
+			poolLog.Error("no subnets configured for pool",
+				slog.String(logging.KeyPoolName, poolName))
+			break
+		}
+		spec := &fleet.LaunchSpec{
+			RunID:         time.Now().UnixNano(),
+			InstanceType:  instanceTypes[0],
+			InstanceTypes: instanceTypes,
+			SubnetID:      subnetID,
+			Pool:          poolName,
+			Spot:          true,
+			Arch:          arch,
+		}
+		if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
+			poolLog.Error("fleet creation failed",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.String("error", err.Error()))
+		} else {
+			created++
+		}
+	}
+	return created
 }
 
 // resolvePoolInstanceTypes resolves instance types for a pool configuration.

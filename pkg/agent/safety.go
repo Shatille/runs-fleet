@@ -69,7 +69,6 @@ func (s *SafetyMonitor) Monitor(ctx context.Context) {
 	}
 }
 
-// check performs safety checks.
 func (s *SafetyMonitor) check() {
 	// Signal check completion for test synchronization
 	defer func() {
@@ -101,7 +100,6 @@ func (s *SafetyMonitor) check() {
 	}
 }
 
-// checkDiskSpace checks available disk space.
 func (s *SafetyMonitor) checkDiskSpace() error {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs("/", &stat); err != nil {

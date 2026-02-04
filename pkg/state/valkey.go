@@ -3,7 +3,6 @@ package state
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,53 +44,6 @@ type K8sResourceRequests struct {
 type ValkeyStateStore struct {
 	client    *redis.Client
 	keyPrefix string
-}
-
-// ValkeyOptions configures the Valkey connection.
-type ValkeyOptions struct {
-	Addr     string
-	Password string
-	DB       int
-	UseTLS   bool
-}
-
-// NewValkeyStateStore creates a Valkey-backed state store.
-func NewValkeyStateStore(addr, password string, db int) (*ValkeyStateStore, error) {
-	return NewValkeyStateStoreWithOptions(ValkeyOptions{
-		Addr:     addr,
-		Password: password,
-		DB:       db,
-		UseTLS:   false,
-	})
-}
-
-// NewValkeyStateStoreWithOptions creates a Valkey-backed state store with full options.
-func NewValkeyStateStoreWithOptions(opts ValkeyOptions) (*ValkeyStateStore, error) {
-	redisOpts := &redis.Options{
-		Addr:     opts.Addr,
-		Password: opts.Password,
-		DB:       opts.DB,
-	}
-
-	if opts.UseTLS {
-		redisOpts.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-	}
-
-	client := redis.NewClient(redisOpts)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Valkey: %w", err)
-	}
-
-	return &ValkeyStateStore{
-		client:    client,
-		keyPrefix: "runs-fleet:",
-	}, nil
 }
 
 // NewValkeyStateStoreWithClient creates a state store with an existing client (for testing).

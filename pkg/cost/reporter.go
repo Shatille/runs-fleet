@@ -141,11 +141,9 @@ func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SN
 func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 	costLog.Info("generating daily cost report")
 
-	// Calculate time range (previous 24 hours)
 	endTime := time.Now().Truncate(time.Hour)
 	startTime := endTime.Add(-24 * time.Hour)
 
-	// Get cost metrics
 	breakdown, err := r.getCostMetrics(ctx, startTime, endTime)
 	if err != nil {
 		return fmt.Errorf("failed to get cost metrics: %w", err)
@@ -153,10 +151,8 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 
 	breakdown.Date = startTime.Format("2006-01-02")
 
-	// Generate markdown report
 	report := r.generateMarkdownReport(breakdown)
 
-	// Store in S3
 	if r.reportsBucket != "" {
 		key := fmt.Sprintf("cost/%s/%s/%s.md",
 			startTime.Format("2006"),
@@ -176,7 +172,6 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 		}
 	}
 
-	// Send notification
 	if r.snsTopicARN != "" {
 		_, err = r.snsClient.Publish(ctx, &sns.PublishInput{
 			TopicArn: aws.String(r.snsTopicARN),
@@ -198,7 +193,6 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.Time) (*Breakdown, error) {
 	breakdown := &Breakdown{}
 
-	// Define metrics to query
 	queries := []cwtypes.MetricDataQuery{
 		{
 			Id: aws.String("fleet_size_increment"),
@@ -266,7 +260,6 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 		return nil, fmt.Errorf("failed to get metric data: %w", err)
 	}
 
-	// Process metric results
 	var totalInstances, spotInterruptions, jobSuccess, jobFailure float64
 	var totalJobDurationSeconds float64
 
@@ -290,7 +283,6 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 		}
 	}
 
-	// Calculate costs based on metrics
 	// Estimate average job duration in hours
 	totalJobs := jobSuccess + jobFailure
 	avgJobHours := 0.5 // Default 30 min if no data
@@ -337,7 +329,6 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	// S3: Storage and requests (minimal for cache)
 	breakdown.S3Cost = 0.05 // Estimate
 
-	// Total
 	breakdown.TotalCost = breakdown.EC2SpotCost + breakdown.EC2OnDemandCost +
 		breakdown.FargateCost + breakdown.SQSCost + breakdown.DynamoDBCost +
 		breakdown.CloudWatchCost + breakdown.S3Cost

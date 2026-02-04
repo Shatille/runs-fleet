@@ -311,12 +311,10 @@ func (c *Config) IsK8sBackend() bool {
 
 // Validate checks that all required configuration fields are present and valid.
 func (c *Config) Validate() error {
-	// Validate backend selection
 	if c.DefaultBackend != "" && c.DefaultBackend != BackendEC2 && c.DefaultBackend != BackendK8s {
 		return fmt.Errorf("RUNS_FLEET_MODE must be 'ec2' or 'k8s', got %q", c.DefaultBackend)
 	}
 
-	// Common validation
 	if c.GitHubWebhookSecret == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_WEBHOOK_SECRET is required")
 	}
@@ -341,7 +339,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must not exceed 1440 (24 hours), got %d", c.MaxRuntimeMinutes)
 	}
 
-	// Backend-specific validation
 	if c.IsEC2Backend() {
 		if err := c.validateEC2Config(); err != nil {
 			return err
@@ -356,7 +353,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Metrics validation
 	if err := c.validateMetricsConfig(); err != nil {
 		return err
 	}

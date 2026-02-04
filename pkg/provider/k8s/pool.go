@@ -99,7 +99,16 @@ func (p *PoolProvider) StartRunners(_ context.Context, _ []string) error {
 // StopRunners deletes pods. K8s doesn't support stopping pods like EC2.
 // For warm pool management, use Deployment scaling instead.
 func (p *PoolProvider) StopRunners(ctx context.Context, runnerIDs []string) error {
-	if len(runnerIDs) == 0 {
+	return p.deletePods(ctx, runnerIDs)
+}
+
+// TerminateRunners deletes pods from the cluster.
+func (p *PoolProvider) TerminateRunners(ctx context.Context, runnerIDs []string) error {
+	return p.deletePods(ctx, runnerIDs)
+}
+
+func (p *PoolProvider) deletePods(ctx context.Context, podNames []string) error {
+	if len(podNames) == 0 {
 		return nil
 	}
 
@@ -107,7 +116,7 @@ func (p *PoolProvider) StopRunners(ctx context.Context, runnerIDs []string) erro
 	var failCount int
 	var lastErr error
 
-	for _, podName := range runnerIDs {
+	for _, podName := range podNames {
 		err := p.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 		if err != nil && !errors.IsNotFound(err) {
 			failCount++
@@ -121,34 +130,6 @@ func (p *PoolProvider) StopRunners(ctx context.Context, runnerIDs []string) erro
 
 	if lastErr != nil {
 		return fmt.Errorf("failed to delete %d pod(s): %w", failCount, lastErr)
-	}
-	return nil
-}
-
-// TerminateRunners deletes pods from the cluster.
-func (p *PoolProvider) TerminateRunners(ctx context.Context, runnerIDs []string) error {
-	if len(runnerIDs) == 0 {
-		return nil
-	}
-
-	namespace := p.config.KubeNamespace
-	var failCount int
-	var lastErr error
-
-	for _, podName := range runnerIDs {
-		err := p.clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{})
-		if err != nil && !errors.IsNotFound(err) {
-			failCount++
-			lastErr = err
-		} else {
-			p.mu.Lock()
-			delete(p.podIdle, podName)
-			p.mu.Unlock()
-		}
-	}
-
-	if lastErr != nil {
-		return fmt.Errorf("failed to terminate %d pod(s): %w", failCount, lastErr)
 	}
 	return nil
 }
