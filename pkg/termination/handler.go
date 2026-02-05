@@ -4,6 +4,7 @@ package termination
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -96,7 +97,11 @@ func (h *Handler) Run(ctx context.Context) {
 		case <-ticker.C:
 			messages, err := h.queueClient.ReceiveMessages(ctx, 10, 20)
 			if err != nil {
-				termLog.Error("receive messages failed", slog.String("error", err.Error()))
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					termLog.Warn("receive messages failed", slog.String("error", err.Error()))
+				} else {
+					termLog.Error("receive messages failed", slog.String("error", err.Error()))
+				}
 				continue
 			}
 

@@ -4,6 +4,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -136,7 +137,11 @@ func (h *Handler) Run(ctx context.Context) {
 			messages, err := h.queueClient.ReceiveMessages(recvCtx, 10, 20)
 			cancel()
 			if err != nil {
-				eventsLog.Error("receive messages failed", slog.String("error", err.Error()))
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					eventsLog.Warn("receive messages failed", slog.String("error", err.Error()))
+				} else {
+					eventsLog.Error("receive messages failed", slog.String("error", err.Error()))
+				}
 				continue
 			}
 

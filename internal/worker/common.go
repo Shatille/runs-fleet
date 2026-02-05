@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -52,9 +53,15 @@ func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, pr
 			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
 			cancel()
 			if err != nil {
-				workerLog.Error("receive messages failed",
-					slog.String("worker", name),
-					slog.String("error", err.Error()))
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					workerLog.Warn("receive messages failed",
+						slog.String("worker", name),
+						slog.String("error", err.Error()))
+				} else {
+					workerLog.Error("receive messages failed",
+						slog.String("worker", name),
+						slog.String("error", err.Error()))
+				}
 				continue
 			}
 
