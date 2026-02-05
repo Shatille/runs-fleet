@@ -2004,6 +2004,168 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 	}
 }
 
+//nolint:dupl // Test cases have intentionally similar structure with different data
+func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
+	fleetCreateCount := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"ephemeral-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       "ephemeral-pool",
+				DesiredRunning: 0, // Default is 0
+				DesiredStopped: 0,
+				InstanceType:   "c7g.xlarge",
+				Ephemeral:      true,
+				LastJobTime:    time.Now().Add(-2 * time.Hour), // Last job 2 hours ago (within 4h window)
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+			return 0, nil // No jobs in 1-hour peak window
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCount++
+			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should create 1 instance because LastJobTime is within 4-hour window
+	if fleetCreateCount != 1 {
+		t.Errorf("expected 1 fleet create (minimum from LastJobTime), got %d", fleetCreateCount)
+	}
+}
+
+//nolint:dupl // Test cases have intentionally similar structure with different data
+func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
+	fleetCreateCount := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"ephemeral-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       "ephemeral-pool",
+				DesiredRunning: 0, // Default is 0
+				DesiredStopped: 0,
+				InstanceType:   "c7g.xlarge",
+				Ephemeral:      true,
+				LastJobTime:    time.Now().Add(-5 * time.Hour), // Last job 5 hours ago (outside 4h window)
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+			return 0, nil // No jobs in 1-hour peak window
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCount++
+			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should NOT create any instance because LastJobTime is outside 4-hour window
+	if fleetCreateCount != 0 {
+		t.Errorf("expected 0 fleet creates (LastJobTime expired), got %d", fleetCreateCount)
+	}
+}
+
+//nolint:dupl // Test cases have intentionally similar structure with different data
+func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
+	fleetCreateCount := 0
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"ephemeral-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       "ephemeral-pool",
+				DesiredRunning: 0, // Default is 0
+				DesiredStopped: 0,
+				InstanceType:   "c7g.xlarge",
+				Ephemeral:      true,
+				LastJobTime:    time.Now().Add(-2 * time.Hour), // Last job 2 hours ago (within 4h window)
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+			return 0, errors.New("database error") // Peak query fails
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreateCount++
+			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{},
+			}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Should still create 1 instance because LastJobTime is within window, despite peak query failure
+	if fleetCreateCount != 1 {
+		t.Errorf("expected 1 fleet create (fallback to LastJobTime), got %d", fleetCreateCount)
+	}
+}
+
 func TestGetAvailableInstance_StoppedInstance(t *testing.T) {
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
