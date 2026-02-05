@@ -57,6 +57,10 @@ type Publisher interface {
 	// PublishPoolUtilization publishes pool utilization percentage with pool name dimension.
 	PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error
 
+	// PublishPoolRunningJobs publishes count of jobs with status=running for a pool.
+	// This gauge helps detect stale job records that should have been completed.
+	PublishPoolRunningJobs(ctx context.Context, poolName string, count int) error
+
 	// PublishSchedulingFailure publishes a scheduling failure event with task type dimension.
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
 
@@ -136,6 +140,9 @@ func (NoopPublisher) PublishOrphanedJobsCleanedUp(context.Context, int) error { 
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishPoolUtilization(context.Context, string, float64) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishPoolRunningJobs(context.Context, string, int) error { return nil }
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishSchedulingFailure(context.Context, string) error { return nil }

@@ -141,6 +141,7 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 		{"PublishSSMParametersDeleted", func() error { return multi.PublishSSMParametersDeleted(ctx, 3) }},
 		{"PublishJobRecordsArchived", func() error { return multi.PublishJobRecordsArchived(ctx, 10) }},
 		{"PublishPoolUtilization", func() error { return multi.PublishPoolUtilization(ctx, "default", 75.5) }},
+		{"PublishPoolRunningJobs", func() error { return multi.PublishPoolRunningJobs(ctx, "default", 5) }},
 		{"PublishSchedulingFailure", func() error { return multi.PublishSchedulingFailure(ctx, "runner-provision") }},
 		{"PublishCircuitBreakerTriggered", func() error { return multi.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
 	}

@@ -31,6 +31,7 @@ type PrometheusPublisher struct {
 	jobRecordsArchived          prometheus.Counter
 	orphanedJobsCleanedUp       prometheus.Counter
 	poolUtilization             *prometheus.GaugeVec
+	poolRunningJobs             *prometheus.GaugeVec
 	schedulingFailure           *prometheus.CounterVec
 	circuitBreakerTriggered     *prometheus.CounterVec
 	jobClaimFailures            prometheus.Counter
@@ -138,6 +139,11 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 			Name:      "pool_utilization_percent",
 			Help:      "Pool utilization percentage",
 		}, []string{"pool_name"}),
+		poolRunningJobs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: cfg.Namespace,
+			Name:      "pool_running_jobs",
+			Help:      "Number of jobs with status=running per pool",
+		}, []string{"pool_name"}),
 		schedulingFailure: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: cfg.Namespace,
 			Name:      "scheduling_failure_total",
@@ -182,6 +188,7 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 		p.jobRecordsArchived,
 		p.orphanedJobsCleanedUp,
 		p.poolUtilization,
+		p.poolRunningJobs,
 		p.schedulingFailure,
 		p.circuitBreakerTriggered,
 		p.jobClaimFailures,
@@ -287,6 +294,11 @@ func (p *PrometheusPublisher) PublishOrphanedJobsCleanedUp(_ context.Context, co
 
 func (p *PrometheusPublisher) PublishPoolUtilization(_ context.Context, poolName string, utilization float64) error { //nolint:revive
 	p.poolUtilization.WithLabelValues(poolName).Set(utilization)
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishPoolRunningJobs(_ context.Context, poolName string, count int) error { //nolint:revive
+	p.poolRunningJobs.WithLabelValues(poolName).Set(float64(count))
 	return nil
 }
 
