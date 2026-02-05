@@ -310,14 +310,14 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 		wantErr           bool
 	}{
 		{
-			name: "Simple CPU spec",
+			name: "Simple CPU spec (defaults to 2x range)",
 			labels: []string{
 				"runs-fleet=12345/cpu=4/arch=arm64",
 			},
 			wantCPUMin:        4,
-			wantCPUMax:        0,
+			wantCPUMax:        8, // Defaults to 2x CPUMin for bounded diversification
 			wantArch:          "arm64",
-			wantInstanceTypes: 1,
+			wantInstanceTypes: 2, // Matches 4 and 8 vCPU instances
 		},
 		{
 			name: "CPU range",
@@ -364,31 +364,34 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 			wantInstanceTypes: 4, // 2 sizes x 2 families
 		},
 		{
-			name: "amd64 architecture",
+			name: "amd64 architecture (defaults to 2x range)",
 			labels: []string{
 				"runs-fleet=12345/cpu=4/arch=amd64",
 			},
 			wantCPUMin:        4,
+			wantCPUMax:        8, // Defaults to 2x CPUMin
 			wantArch:          "amd64",
-			wantInstanceTypes: 1,
+			wantInstanceTypes: 2, // Matches 4 and 8 vCPU instances
 		},
 		{
-			name: "With other options",
+			name: "With other options (defaults to 2x range)",
 			labels: []string{
 				"runs-fleet=12345/cpu=4/arch=arm64/spot=false/private=true/pool=mypool",
 			},
 			wantCPUMin:        4,
+			wantCPUMax:        8, // Defaults to 2x CPUMin
 			wantArch:          "arm64",
-			wantInstanceTypes: 1,
+			wantInstanceTypes: 2, // Matches 4 and 8 vCPU instances
 		},
 		{
-			name: "Empty arch (defaults to ARM64 families)",
+			name: "Empty arch (defaults to 2x range)",
 			labels: []string{
 				"runs-fleet=12345/cpu=4",
 			},
 			wantCPUMin:        4,
+			wantCPUMax:        8, // Defaults to 2x CPUMin
 			wantArch:          "",
-			wantInstanceTypes: 1, // Matches ARM64 instances only (legacy template compatibility)
+			wantInstanceTypes: 2, // Matches 4 and 8 vCPU instances across architectures
 		},
 		{
 			name: "No matching instances",

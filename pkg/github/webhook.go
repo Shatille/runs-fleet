@@ -305,6 +305,13 @@ func ResolveFlexibleSpec(cfg *JobConfig) error {
 		cfg.CPUMin = 2 // Default minimum 2 vCPUs
 	}
 
+	// Default CPUMax to 2x CPUMin for bounded spot diversification.
+	// Without this cap, cpu=4 would match all instances with 4+ vCPUs,
+	// and price-capacity-optimized could select a much larger instance.
+	if cfg.CPUMax == 0 {
+		cfg.CPUMax = cfg.CPUMin * 2
+	}
+
 	// Determine OS from arch (flexible specs default to linux)
 	cfg.OS = "linux"
 
