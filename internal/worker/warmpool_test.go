@@ -123,6 +123,10 @@ func (m *mockDBClient) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]st
 	return nil, nil
 }
 
+func (m *mockDBClient) GetPoolRunningJobCount(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 func (m *mockDBClient) AcquirePoolReconcileLock(_ context.Context, _, _ string, _ time.Duration) error {
 	return nil
 }
