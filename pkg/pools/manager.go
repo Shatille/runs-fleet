@@ -37,7 +37,6 @@ type DBClient interface {
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
-	GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -197,23 +196,14 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		return fmt.Errorf("failed to get busy instance IDs: %w", err)
 	}
 
-	// Get running job count - this is the authoritative "busy" count for scaling decisions
-	// Even if instances are terminated, running jobs represent work in progress
-	runningJobCount, err := m.dbClient.GetPoolRunningJobCount(ctx, poolName)
-	if err != nil {
-		poolLog.Warn("failed to get running job count, falling back to instance matching",
-			slog.String(logging.KeyPoolName, poolName),
-			slog.String("error", err.Error()))
-		runningJobCount = 0
-	}
-
 	running, stopped, _, _ := countInstanceStates(instances, busyIDs)
-	// Use running job count as busy - this prevents creating instances for work already in progress
-	busy := max(runningJobCount, len(filterMatchingInstances(instances, busyIDs)))
+
+	// Busy count = running instances that have jobs assigned (instance-job intersection).
+	// Only count actual running instances with matching job records - orphaned job records
+	// (from terminated instances) must NOT inflate busy count or they block scale-down.
+	runningInstances := m.filterByState(instances, stateRunning)
+	busy := len(filterMatchingInstances(runningInstances, busyIDs))
 	ready := running - busy
-	if ready < 0 {
-		ready = 0
-	}
 
 	// Track changes for logging
 	var started, stoppedCount, created, terminated int

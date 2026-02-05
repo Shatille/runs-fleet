@@ -30,7 +30,6 @@ type MockDBClient struct {
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
-	GetPoolRunningJobCountFunc   func(ctx context.Context, poolName string) (int, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -70,13 +69,6 @@ func (m *MockDBClient) GetPoolBusyInstanceIDs(ctx context.Context, poolName stri
 		return m.GetPoolBusyInstanceIDsFunc(ctx, poolName)
 	}
 	return nil, nil
-}
-
-func (m *MockDBClient) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
-	if m.GetPoolRunningJobCountFunc != nil {
-		return m.GetPoolRunningJobCountFunc(ctx, poolName)
-	}
-	return 0, nil
 }
 
 func (m *MockDBClient) AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error {
@@ -2565,5 +2557,286 @@ func TestClaimAndStartPoolInstance_DBClaimFailure(t *testing.T) {
 	// Error should mention the DB error, not ErrNoAvailableInstance
 	if errors.Is(err, ErrNoAvailableInstance) {
 		t.Error("should return DB error, not ErrNoAvailableInstance")
+	}
+}
+
+//nolint:dupl // Test cases have intentionally similar structure with different data
+func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
+	// Orphaned job records (from terminated instances) must NOT prevent stopping
+	// idle running instances in warm pools (desiredRunning=0).
+	// This is the critical warm pool invariant: running instances should either
+	// be busy (running a job) or get stopped immediately.
+	var stoppedInstances []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"warm-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 0, // Warm pool: no hot standby
+				DesiredStopped: 5, // Pool capacity
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			// 5 orphaned job records from terminated instances - these should NOT
+			// prevent scale-down of the 3 idle running instances
+			return []string{"i-dead1", "i-dead2", "i-dead3", "i-dead4", "i-dead5"}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 3 running (all idle - no matching busy IDs), 2 stopped
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+					{InstanceId: aws.String("i-stopped2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedInstances = append(stoppedInstances, input.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{PrivateSubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// running=3, stopped=2, busy=0 (orphaned IDs don't match any running instances)
+	// ready=3-0=3, excess=3-0=3, all 3 idle instances should be stopped
+	if len(stoppedInstances) != 3 {
+		t.Errorf("Expected 3 instances stopped (orphaned jobs must not block scale-down), got %d: %v",
+			len(stoppedInstances), stoppedInstances)
+	}
+}
+
+func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
+	// Warm pool invariant: running instances that are not busy must be stopped.
+	// This test verifies that idle running instances are returned to stopped state.
+	var stoppedInstances []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"warm-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 3, InstanceType: "t3.medium"}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			return []string{"i-busy"}, nil // 1 instance is busy
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 3 running: 1 busy + 2 idle; 1 stopped
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{InstanceId: aws.String("i-busy"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedInstances = append(stoppedInstances, input.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{PrivateSubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// running=3, busy=1 (i-busy matches), ready=2, excess=2
+	// Both idle instances should be stopped, busy instance protected
+	if len(stoppedInstances) != 2 {
+		t.Errorf("Expected 2 idle instances stopped, got %d: %v", len(stoppedInstances), stoppedInstances)
+	}
+	for _, id := range stoppedInstances {
+		if id == "i-busy" {
+			t.Error("Busy instance i-busy should NOT be stopped")
+		}
+	}
+}
+
+//nolint:dupl // Test cases have intentionally similar structure with different data
+func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
+	// Busy count must be calculated by intersecting job records with actual
+	// running pool instances. Job records for non-existent instances (orphaned)
+	// must not inflate the busy count.
+	//
+	// This test verifies that idle instances get stopped despite orphaned job
+	// records - the critical behavior that was broken before the fix.
+	var stoppedInstances []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"test-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 0,
+				DesiredStopped: 5,
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			// 1 real busy instance + 10 orphaned job records
+			return []string{
+				"i-running1", // matches actual running instance
+				"i-orphan1", "i-orphan2", "i-orphan3", "i-orphan4", "i-orphan5",
+				"i-orphan6", "i-orphan7", "i-orphan8", "i-orphan9", "i-orphan10",
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return []string{"i-new"}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 3 running instances: 1 busy (i-running1), 2 idle
+			// 2 stopped instances
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{InstanceId: aws.String("i-running1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-running2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-running3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+					{InstanceId: aws.String("i-stopped2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedInstances = append(stoppedInstances, input.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// Correct calculation:
+	// running=3, stopped=2
+	// busy = intersection of running instances with busyIDs = 1 (only i-running1)
+	// ready = 3 - 1 = 2
+	// ready (2) > desiredRunning (0), excess=2
+
+	// INCORRECT calculation (the bug we're fixing):
+	// busy = max(11, 1) = 11 (inflated by orphaned job count)
+	// ready = 3 - 11 = -8, clamped to 0
+	// ready (0) > desiredRunning (0) = false, NO scale-down!
+
+	// Critical: 2 idle instances MUST be stopped (orphaned jobs must not block)
+	if len(stoppedInstances) != 2 {
+		t.Errorf("Expected 2 instances stopped (busy=1 from intersection, not 11 from job count), got %d: %v",
+			len(stoppedInstances), stoppedInstances)
+	}
+}
+
+func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
+	// Test scenario with a mix of orphaned jobs and real running jobs.
+	// Only real jobs (on existing running instances) should count as busy.
+	var stoppedInstances []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"mixed-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				DesiredRunning: 0,
+				DesiredStopped: 10,
+				InstanceType:   "t3.medium",
+			}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
+			// 2 real busy + 3 orphaned
+			return []string{
+				"i-busy1", "i-busy2",                   // real - match running instances
+				"i-orphan1", "i-orphan2", "i-orphan3", // orphaned - instances don't exist
+			}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return []string{"i-new"}, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			// 5 running: 2 busy + 3 idle; 3 stopped
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{InstanceId: aws.String("i-busy1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-busy2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+					{InstanceId: aws.String("i-stopped2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+					{InstanceId: aws.String("i-stopped3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedInstances = append(stoppedInstances, input.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	// running=5, stopped=3
+	// busy = 2 (only i-busy1, i-busy2 are real - orphaned don't match any instances)
+	// ready = 5 - 2 = 3
+	// excess = 3 - 0 = 3
+	// All 3 idle instances should be stopped
+
+	if len(stoppedInstances) != 3 {
+		t.Errorf("Expected 3 idle instances stopped (busy=2 real, not 5 total), got %d: %v",
+			len(stoppedInstances), stoppedInstances)
+	}
+
+	// Verify busy instances were NOT stopped
+	for _, id := range stoppedInstances {
+		if id == "i-busy1" || id == "i-busy2" {
+			t.Errorf("Busy instance %s should NOT be stopped", id)
+		}
 	}
 }

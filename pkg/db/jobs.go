@@ -471,48 +471,11 @@ func (c *Client) GetPoolPeakConcurrency(ctx context.Context, poolName string, wi
 	return peak, nil
 }
 
-// GetPoolRunningJobCount returns the number of jobs currently running in a pool.
-// Uses Scan with filter on pool and status fields.
-//
-// Performance note: Scan is acceptable for current scale (~100 jobs/day, ~10 concurrent).
-// For high-volume deployments (>1000 concurrent jobs), add GSI on (pool, status) in
-// Terraform and switch to Query. See: github.com/Shatille/runs-fleet/issues/TBD
-func (c *Client) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
-	if poolName == "" {
-		return 0, fmt.Errorf("pool name cannot be empty")
-	}
-
-	if c.jobsTable == "" {
-		return 0, nil
-	}
-
-	input := &dynamodb.ScanInput{
-		TableName:        aws.String(c.jobsTable),
-		FilterExpression: aws.String("#pool = :pool AND #status = :status"),
-		ExpressionAttributeNames: map[string]string{
-			"#pool":   "pool",
-			"#status": "status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pool":   &types.AttributeValueMemberS{Value: poolName},
-			":status": &types.AttributeValueMemberS{Value: "running"},
-		},
-		Select: types.SelectCount,
-	}
-
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return 0, fmt.Errorf("failed to scan jobs: %w", err)
-	}
-
-	return int(output.Count), nil
-}
-
 // GetPoolBusyInstanceIDs returns instance IDs that have running jobs in the pool.
 // Used to identify which instances should not be stopped during reconciliation.
 //
-// Performance note: Uses Scan (same as GetPoolRunningJobCount). Acceptable for
-// current scale; requires GSI for high-volume deployments.
+// Performance note: Uses Scan. Acceptable for current scale (~100 jobs/day, ~10 concurrent).
+// For high-volume deployments (>1000 concurrent jobs), add GSI on (pool, status).
 func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
