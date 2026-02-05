@@ -327,6 +327,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	return nil
 }
 
+// ephemeralScaleDownWindow is the time window for keeping at least one instance
+// after the last job. This prevents premature scale-to-zero when jobs are infrequent
+// but the pool is still actively used.
+const ephemeralScaleDownWindow = 4 * time.Hour
+
 // getEphemeralAutoScaledCount returns the auto-scaled desired running count for ephemeral pools.
 // Returns (desiredRunning, true) if scaling was applied, or (0, false) for non-ephemeral pools.
 func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName string, poolConfig *db.PoolConfig) (int, bool) {
@@ -334,11 +339,28 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 		return 0, false
 	}
 
+	// Check recent activity first (fast path, no query needed)
+	// This also ensures minimum capacity is maintained if peak query fails
+	var recentlyActive bool
+	var sinceLastJob time.Duration
+	if !poolConfig.LastJobTime.IsZero() {
+		sinceLastJob = time.Since(poolConfig.LastJobTime)
+		recentlyActive = sinceLastJob < ephemeralScaleDownWindow
+	}
+
 	peak, err := m.dbClient.GetPoolPeakConcurrency(ctx, poolName, 1) // 1 hour window
 	if err != nil {
 		poolLog.Error("peak concurrency query failed",
 			slog.String(logging.KeyPoolName, poolName),
 			slog.String("error", err.Error()))
+		// If recently active, keep minimum capacity despite query failure
+		if recentlyActive {
+			poolLog.Info("ephemeral pool keeping minimum capacity (peak query failed)",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.Time("last_job_time", poolConfig.LastJobTime),
+				slog.Duration("since_last_job", sinceLastJob))
+			return 1, true
+		}
 		return poolConfig.DesiredRunning, true // Fall back to config default
 	}
 
@@ -349,6 +371,15 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 			slog.Int("peak_concurrency", peak),
 			slog.Int("desired_running", desired))
 		return desired, true
+	}
+
+	// Peak is 0, but check if pool was recently active
+	if recentlyActive {
+		poolLog.Info("ephemeral pool keeping minimum capacity",
+			slog.String(logging.KeyPoolName, poolName),
+			slog.Time("last_job_time", poolConfig.LastJobTime),
+			slog.Duration("since_last_job", sinceLastJob))
+		return 1, true
 	}
 
 	return poolConfig.DesiredRunning, true
