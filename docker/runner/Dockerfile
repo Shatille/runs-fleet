@@ -112,6 +112,32 @@ RUN set -ex; \
     echo "Patched $PATCHED node-tar package(s)"; \
     if [ "$PATCHED" -eq 0 ]; then echo "ERROR: No tar packages found - node-tar CVEs unpatched" >&2; exit 1; fi
 
+# Patch @isaacs/brace-expansion CVE-2026-25547: Uncontrolled Resource Consumption
+# SHA512 from https://registry.npmjs.org/@isaacs/brace-expansion/5.0.1 (.dist.integrity)
+RUN set -ex; \
+    PKG_INTEGRITY="sha512-WMz71T1JS624nWj2n2fnYAuPovhv7EUhk69R6i9dsVyzxt5eM3bjwvgk9L+APE1TRscGysAVMANkB0jh0LQZrQ=="; \
+    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/@isaacs/brace-expansion/-/brace-expansion-5.0.1.tgz -o /tmp/brace-expansion-5.0.1.tgz; \
+    ACTUAL=$(openssl dgst -sha512 -binary /tmp/brace-expansion-5.0.1.tgz | base64 -w0); \
+    EXPECTED=$(echo "$PKG_INTEGRITY" | sed 's/^sha512-//'); \
+    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
+    echo 0 > /tmp/patched_count; \
+    rm -f /tmp/patch_errors; \
+    find /home/runner/externals -type d -name "brace-expansion" -path "*/node_modules/@isaacs/*" -exec sh -c 'set -e; \
+        for pkg_dir; do \
+            if [ -f "$pkg_dir/package.json" ]; then \
+                rm -rf "$pkg_dir"; \
+                mkdir -p "$pkg_dir"; \
+                tar -xzf /tmp/brace-expansion-5.0.1.tgz -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
+                COUNT=$(cat /tmp/patched_count); \
+                echo $((COUNT + 1)) > /tmp/patched_count; \
+            fi; \
+        done' _ {} +; \
+    if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
+    PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
+    rm -f /tmp/brace-expansion-5.0.1.tgz /tmp/patched_count /tmp/patch_errors; \
+    echo "Patched $PATCHED @isaacs/brace-expansion package(s)"; \
+    if [ "$PATCHED" -eq 0 ]; then echo "WARNING: No @isaacs/brace-expansion packages found" >&2; fi
+
 # Copy agent binary
 COPY --from=builder /bin/runs-fleet-agent /usr/local/bin/runs-fleet-agent
 RUN chmod +x /usr/local/bin/runs-fleet-agent
