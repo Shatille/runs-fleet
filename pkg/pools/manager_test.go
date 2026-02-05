@@ -30,6 +30,7 @@ type MockDBClient struct {
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
+	GetPoolRunningJobCountFunc   func(ctx context.Context, poolName string) (int, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -69,6 +70,13 @@ func (m *MockDBClient) GetPoolBusyInstanceIDs(ctx context.Context, poolName stri
 		return m.GetPoolBusyInstanceIDsFunc(ctx, poolName)
 	}
 	return nil, nil
+}
+
+func (m *MockDBClient) GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error) {
+	if m.GetPoolRunningJobCountFunc != nil {
+		return m.GetPoolRunningJobCountFunc(ctx, poolName)
+	}
+	return 0, nil
 }
 
 func (m *MockDBClient) AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error {

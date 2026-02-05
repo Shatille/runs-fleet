@@ -37,6 +37,7 @@ type DBClient interface {
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
+	GetPoolRunningJobCount(ctx context.Context, poolName string) (int, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
@@ -196,7 +197,23 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		return fmt.Errorf("failed to get busy instance IDs: %w", err)
 	}
 
-	running, stopped, busy, ready := countInstanceStates(instances, busyIDs)
+	// Get running job count - this is the authoritative "busy" count for scaling decisions
+	// Even if instances are terminated, running jobs represent work in progress
+	runningJobCount, err := m.dbClient.GetPoolRunningJobCount(ctx, poolName)
+	if err != nil {
+		poolLog.Warn("failed to get running job count, falling back to instance matching",
+			slog.String(logging.KeyPoolName, poolName),
+			slog.String("error", err.Error()))
+		runningJobCount = 0
+	}
+
+	running, stopped, _, _ := countInstanceStates(instances, busyIDs)
+	// Use running job count as busy - this prevents creating instances for work already in progress
+	busy := max(runningJobCount, len(filterMatchingInstances(instances, busyIDs)))
+	ready := running - busy
+	if ready < 0 {
+		ready = 0
+	}
 
 	// Track changes for logging
 	var started, stoppedCount, created, terminated int
@@ -485,6 +502,22 @@ func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs
 		}
 	}
 	return ready
+}
+
+// filterMatchingInstances returns instances whose IDs are in the given list.
+func filterMatchingInstances(instances []PoolInstance, instanceIDs []string) []PoolInstance {
+	idSet := make(map[string]struct{}, len(instanceIDs))
+	for _, id := range instanceIDs {
+		idSet[id] = struct{}{}
+	}
+
+	var matched []PoolInstance
+	for _, inst := range instances {
+		if _, ok := idSet[inst.InstanceID]; ok {
+			matched = append(matched, inst)
+		}
+	}
+	return matched
 }
 
 func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) error {
