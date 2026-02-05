@@ -471,6 +471,91 @@ func (c *Client) GetPoolPeakConcurrency(ctx context.Context, poolName string, wi
 	return peak, nil
 }
 
+// GetPoolP90Concurrency calculates the 90th percentile of concurrent jobs
+// for a pool within the specified time window (in hours).
+// This is more cost-effective than peak for scaling stopped instances,
+// as it tolerates occasional bursts falling back to cold-start.
+// Returns 0 if no jobs found or on error.
+func (c *Client) GetPoolP90Concurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
+	if windowHours <= 0 {
+		windowHours = 1
+	}
+
+	since := time.Now().Add(-time.Duration(windowHours) * time.Hour)
+	jobs, err := c.QueryPoolJobHistory(ctx, poolName, since)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(jobs) == 0 {
+		return 0, nil
+	}
+
+	type event struct {
+		time  time.Time
+		delta int // +1 for start, -1 for end
+	}
+
+	var events []event
+	now := time.Now()
+
+	for _, job := range jobs {
+		if job.CreatedAt.IsZero() {
+			continue
+		}
+		events = append(events, event{time: job.CreatedAt, delta: 1})
+
+		endTime := job.CompletedAt
+		if endTime.IsZero() {
+			endTime = now
+		}
+		events = append(events, event{time: endTime, delta: -1})
+	}
+
+	if len(events) == 0 {
+		return 0, nil
+	}
+
+	// Sort events by time, ends before starts at same timestamp to avoid negative concurrency
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].time.Equal(events[j].time) {
+			return events[i].delta < events[j].delta // -1 (end) before +1 (start)
+		}
+		return events[i].time.Before(events[j].time)
+	})
+
+	// Sample concurrency at 1-minute intervals over the window
+	sampleInterval := time.Minute
+	windowStart := since
+	windowEnd := now
+
+	var samples []int
+	var eventIdx int
+	var current int
+
+	for t := windowStart; t.Before(windowEnd); t = t.Add(sampleInterval) {
+		// Advance through events strictly before time t
+		for eventIdx < len(events) && events[eventIdx].time.Before(t) {
+			current += events[eventIdx].delta
+			eventIdx++
+		}
+		samples = append(samples, current)
+	}
+
+	if len(samples) == 0 {
+		return 0, nil
+	}
+
+	// Sort samples to find P90 (90th percentile)
+	sort.Ints(samples)
+	// P90 index: for N samples, index = floor(0.9 * (N-1)) gives the 90th percentile
+	// e.g., 10 samples: floor(0.9 * 9) = 8 (9th value, 0-indexed)
+	// e.g., 60 samples: floor(0.9 * 59) = 53 (54th value, 0-indexed)
+	p90Index := int(0.9 * float64(len(samples)-1))
+
+	return samples[p90Index], nil
+}
+
 // GetPoolBusyInstanceIDs returns instance IDs that have running jobs in the pool.
 // Used to identify which instances should not be stopped during reconciliation.
 //

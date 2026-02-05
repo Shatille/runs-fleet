@@ -1515,6 +1515,7 @@ func TestQueryPoolJobHistory(t *testing.T) {
 	}
 }
 
+//nolint:dupl // P90 and peak tests intentionally use similar job scenarios with different expected results
 func TestGetPoolPeakConcurrency(t *testing.T) {
 	now := time.Now()
 
@@ -1617,6 +1618,127 @@ func TestGetPoolPeakConcurrency(t *testing.T) {
 			}
 			if !tt.wantErr && peak != tt.wantPeak {
 				t.Errorf("GetPoolPeakConcurrency() = %d, want %d", peak, tt.wantPeak)
+			}
+		})
+	}
+}
+
+//nolint:dupl // P90 and peak tests intentionally use similar job scenarios with different expected results
+func TestGetPoolP90Concurrency(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		poolName string
+		mockDB   *MockDynamoDBAPI
+		wantP90  int
+		wantErr  bool
+	}{
+		{
+			name:     "Brief spike returns lower than peak",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				// 3 overlapping jobs for only 2 minutes out of 60
+				// Peak is 3, but P90 should be much lower (most samples are 0)
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(1),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-30 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-20 * time.Minute).Format(time.RFC3339),
+					})
+					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(2),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-25 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
+					})
+					item3, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(3),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-22 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-12 * time.Minute).Format(time.RFC3339),
+					})
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2, item3}}, nil
+				},
+			},
+			wantP90: 2, // P90 is 2, even though peak is 3
+			wantErr: false,
+		},
+		{
+			name:     "Sustained concurrency returns that value",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				// 2 jobs running for most of the hour
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(1),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-55 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-5 * time.Minute).Format(time.RFC3339),
+					})
+					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(2),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-50 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-10 * time.Minute).Format(time.RFC3339),
+					})
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+				},
+			},
+			wantP90: 2, // Both jobs overlap for 40+ minutes, P90 should be 2
+			wantErr: false,
+		},
+		{
+			name:     "No jobs returns zero",
+			poolName: "empty-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantP90: 0,
+			wantErr: false,
+		},
+		{
+			name:     "Non-overlapping jobs",
+			poolName: "test-pool",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(1),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-30 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-25 * time.Minute).Format(time.RFC3339),
+					})
+					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
+						"job_id":       int64(2),
+						"pool":         "test-pool",
+						"created_at":   now.Add(-20 * time.Minute).Format(time.RFC3339),
+						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
+					})
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+				},
+			},
+			wantP90: 1, // ~10 minutes of activity at concurrency 1, P90 captures this
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			p90, err := client.GetPoolP90Concurrency(context.Background(), tt.poolName, 1)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetPoolP90Concurrency() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && p90 != tt.wantP90 {
+				t.Errorf("GetPoolP90Concurrency() = %d, want %d", p90, tt.wantP90)
 			}
 		})
 	}

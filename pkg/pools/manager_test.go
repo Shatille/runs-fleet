@@ -28,7 +28,7 @@ type MockDBClient struct {
 	GetPoolConfigFunc            func(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
-	GetPoolPeakConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolP90ConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
@@ -57,9 +57,9 @@ func (m *MockDBClient) ListPools(ctx context.Context) ([]string, error) {
 	return []string{}, nil
 }
 
-func (m *MockDBClient) GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
-	if m.GetPoolPeakConcurrencyFunc != nil {
-		return m.GetPoolPeakConcurrencyFunc(ctx, poolName, windowHours)
+func (m *MockDBClient) GetPoolP90Concurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
+	if m.GetPoolP90ConcurrencyFunc != nil {
+		return m.GetPoolP90ConcurrencyFunc(ctx, poolName, windowHours)
 	}
 	return 0, nil
 }
@@ -1909,8 +1909,8 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{
 				PoolName:       "ephemeral-pool",
-				DesiredRunning: 1, // Default, should be overridden by peak
-				DesiredStopped: 0,
+				DesiredRunning: 1, // Ignored - ephemeral pools always get desiredRunning=0
+				DesiredStopped: 0, // Overridden by peak concurrency (3)
 				InstanceType:   "c7g.xlarge",
 				Ephemeral:      true,
 			}, nil
@@ -1918,7 +1918,7 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
 		},
-		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 3, nil // Peak of 3 concurrent jobs
 		},
 	}
@@ -1962,8 +1962,8 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{
 				PoolName:       "ephemeral-pool",
-				DesiredRunning: 2, // Default, should be used when peak fails
-				DesiredStopped: 0,
+				DesiredRunning: 0, // Ephemeral pools always have desiredRunning=0
+				DesiredStopped: 2, // Fallback to this when peak query fails
 				InstanceType:   "c7g.xlarge",
 				Ephemeral:      true,
 			}, nil
@@ -1971,7 +1971,7 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
 		},
-		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, errors.New("database error")
 		},
 	}
@@ -1998,9 +1998,9 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 
 	manager.reconcile(context.Background())
 
-	// Should fallback to default DesiredRunning of 2 when peak fails
+	// Should fallback to DesiredStopped of 2 when peak fails (ephemeral pools always have desiredRunning=0)
 	if fleetCreateCount != 2 {
-		t.Errorf("expected 2 fleet creates (fallback to default), got %d", fleetCreateCount)
+		t.Errorf("expected 2 fleet creates (fallback to DesiredStopped), got %d", fleetCreateCount)
 	}
 }
 
@@ -2025,7 +2025,7 @@ func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
 		},
-		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, nil // No jobs in 1-hour peak window
 		},
 	}
@@ -2079,7 +2079,7 @@ func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
 		},
-		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, nil // No jobs in 1-hour peak window
 		},
 	}
@@ -2133,7 +2133,7 @@ func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
 		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
 			return nil
 		},
-		GetPoolPeakConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, errors.New("database error") // Peak query fails
 		},
 	}

@@ -115,7 +115,7 @@ func (m *mockDBClient) ListPools(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
-func (m *mockDBClient) GetPoolPeakConcurrency(_ context.Context, _ string, _ int) (int, error) {
+func (m *mockDBClient) GetPoolP90Concurrency(_ context.Context, _ string, _ int) (int, error) {
 	return 0, nil
 }
 

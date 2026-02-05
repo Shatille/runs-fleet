@@ -35,7 +35,7 @@ type DBClient interface {
 	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
 	ListPools(ctx context.Context) ([]string, error)
-	GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolP90Concurrency(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
@@ -181,9 +181,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 
 	desiredRunning, desiredStopped := m.getScheduledDesiredCounts(poolConfig)
 
-	// For ephemeral pools, override with auto-scaled value based on peak concurrency
-	if ephemeralDesired, ok := m.getEphemeralAutoScaledCount(ctx, poolName, poolConfig); ok {
-		desiredRunning = ephemeralDesired
+	// For ephemeral pools, override with auto-scaled values based on peak concurrency
+	// Ephemeral pools scale stopped instances (not running) for on-demand starts
+	if ephRunning, ephStopped, ok := m.getEphemeralAutoScaledCount(ctx, poolName, poolConfig); ok {
+		desiredRunning = ephRunning
+		desiredStopped = ephStopped
 	}
 
 	instances, err := m.getPoolInstances(ctx, poolName)
@@ -297,9 +299,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			}
 		}
 	} else if stopped < desiredStopped && desiredRunning == 0 {
-		// Need more stopped instances for warm pool (desiredRunning=0, desiredStopped>0)
-		// Only applies when desiredRunning is explicitly 0, not for ephemeral pools
-		// with auto-scaled desiredRunning > 0
+		// Need more stopped instances for warm/ephemeral pools (desiredRunning=0, desiredStopped>0)
 		deficit := desiredStopped - stopped
 		created += m.createPoolFleetInstances(ctx, poolName, deficit, poolConfig)
 	}
@@ -332,11 +332,13 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 // but the pool is still actively used.
 const ephemeralScaleDownWindow = 4 * time.Hour
 
-// getEphemeralAutoScaledCount returns the auto-scaled desired running count for ephemeral pools.
-// Returns (desiredRunning, true) if scaling was applied, or (0, false) for non-ephemeral pools.
-func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName string, poolConfig *db.PoolConfig) (int, bool) {
+// getEphemeralAutoScaledCount returns the auto-scaled desired counts for ephemeral pools.
+// Ephemeral pools scale stopped instances (not running) based on peak concurrency,
+// since jobs claim and start stopped instances on-demand via ClaimAndStartPoolInstance.
+// Returns (desiredRunning, desiredStopped, true) if scaling was applied, or (0, 0, false) for non-ephemeral pools.
+func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName string, poolConfig *db.PoolConfig) (int, int, bool) {
 	if !poolConfig.Ephemeral {
-		return 0, false
+		return 0, 0, false
 	}
 
 	// Check recent activity first (fast path, no query needed)
@@ -348,41 +350,41 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 		recentlyActive = sinceLastJob < ephemeralScaleDownWindow
 	}
 
-	peak, err := m.dbClient.GetPoolPeakConcurrency(ctx, poolName, 1) // 1 hour window
+	p90, err := m.dbClient.GetPoolP90Concurrency(ctx, poolName, 1) // 1 hour window
 	if err != nil {
-		poolLog.Error("peak concurrency query failed",
+		poolLog.Error("p90 concurrency query failed",
 			slog.String(logging.KeyPoolName, poolName),
 			slog.String("error", err.Error()))
 		// If recently active, keep minimum capacity despite query failure
 		if recentlyActive {
-			poolLog.Info("ephemeral pool keeping minimum capacity (peak query failed)",
+			poolLog.Debug("ephemeral pool keeping minimum capacity (query failed)",
 				slog.String(logging.KeyPoolName, poolName),
 				slog.Time("last_job_time", poolConfig.LastJobTime),
 				slog.Duration("since_last_job", sinceLastJob))
-			return 1, true
+			return 0, 1, true
 		}
-		return poolConfig.DesiredRunning, true // Fall back to config default
+		return 0, poolConfig.DesiredStopped, true // Ephemeral pools always have desiredRunning=0
 	}
 
-	if peak > 0 {
-		desired := max(1, peak)
+	if p90 > 0 {
+		desired := max(1, p90)
 		poolLog.Info("ephemeral pool auto-scaling",
 			slog.String(logging.KeyPoolName, poolName),
-			slog.Int("peak_concurrency", peak),
-			slog.Int("desired_running", desired))
-		return desired, true
+			slog.Int("p90_concurrency", p90),
+			slog.Int("desired_stopped", desired))
+		return 0, desired, true
 	}
 
-	// Peak is 0, but check if pool was recently active
+	// P90 is 0, but check if pool was recently active
 	if recentlyActive {
-		poolLog.Info("ephemeral pool keeping minimum capacity",
+		poolLog.Debug("ephemeral pool keeping minimum capacity",
 			slog.String(logging.KeyPoolName, poolName),
 			slog.Time("last_job_time", poolConfig.LastJobTime),
 			slog.Duration("since_last_job", sinceLastJob))
-		return 1, true
+		return 0, 1, true
 	}
 
-	return poolConfig.DesiredRunning, true
+	return 0, poolConfig.DesiredStopped, true // Ephemeral pools always have desiredRunning=0
 }
 
 // getScheduledDesiredCounts returns the desired running and stopped counts based on schedule.
