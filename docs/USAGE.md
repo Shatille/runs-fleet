@@ -15,8 +15,8 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
 | Label | Description |
 |-------|-------------|
 | `runs-fleet=<run-id>` | Workflow run identifier (required) |
-| `cpu=<n>` | vCPU count (default: 2) |
-| `cpu=<min>+<max>` | vCPU range for spot diversification |
+| `cpu=<n>` | vCPU count (default: 2). Defaults to 2x range (e.g., `cpu=4` → 4-8 vCPUs) |
+| `cpu=<min>+<max>` | Explicit vCPU range for spot diversification |
 | `ram=<n>` | Minimum RAM in GB |
 | `ram=<min>+<max>` | RAM range in GB |
 | `arch=<arch>` | Architecture: `arm64` or `amd64` (omit for both) |
@@ -34,11 +34,14 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
 runs-fleet uses flexible specs to select instances dynamically via EC2 Fleet:
 
 ```yaml
-# Fixed CPU, flexible family selection
+# 4 vCPUs with bounded diversification (matches 4-8 vCPUs by default)
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
 
-# CPU range for spot diversification across instance sizes
+# Explicit CPU range for wider spot diversification
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/arch=arm64"
+
+# Exact CPU match (no diversification)
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+4/arch=arm64"
 
 # Specific families for workload requirements
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/family=c7g+m7g/arch=arm64"
@@ -46,6 +49,20 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/family=c7g+m7g/arch=arm64"
 # Architecture-agnostic: EC2 Fleet chooses ARM64 or AMD64 based on spot availability
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
 ```
+
+### CPU Range Behavior
+
+When you specify `cpu=N` without a max, runs-fleet defaults to a 2x range (`N` to `2*N` vCPUs) to enable bounded spot diversification:
+
+| Label | Matches |
+|-------|---------|
+| `cpu=2` | 2-4 vCPUs |
+| `cpu=4` | 4-8 vCPUs |
+| `cpu=8` | 8-16 vCPUs |
+| `cpu=4+4` | Exactly 4 vCPUs |
+| `cpu=4+16` | 4-16 vCPUs |
+
+This bounded diversification improves spot availability without risk of selecting excessively large instances. EC2 Fleet's `price-capacity-optimized` strategy selects from the available pool.
 
 When `arch` is omitted, runs-fleet creates multiple EC2 Fleet launch template configurations (one per architecture) and lets EC2 choose based on `price-capacity-optimized` strategy. This maximizes spot availability across both ARM64 and AMD64 instance pools.
 
