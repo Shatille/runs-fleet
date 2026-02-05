@@ -3,6 +3,13 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "pkg/admin/ui/**"
+      - "Makefile"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
