@@ -142,6 +142,31 @@ func (p *CloudWatchPublisher) PublishPoolUtilization(ctx context.Context, poolNa
 	return nil
 }
 
+// PublishPoolRunningJobs publishes running jobs count metric with pool name dimension.
+func (p *CloudWatchPublisher) PublishPoolRunningJobs(ctx context.Context, poolName string, count int) error {
+	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+		Namespace: aws.String(p.namespace),
+		MetricData: []types.MetricDatum{
+			{
+				MetricName: aws.String("PoolRunningJobs"),
+				Value:      aws.Float64(float64(count)),
+				Unit:       types.StandardUnitCount,
+				Timestamp:  aws.Time(time.Now()),
+				Dimensions: []types.Dimension{
+					{
+						Name:  aws.String("PoolName"),
+						Value: aws.String(poolName),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish pool running jobs metric for %s: %w", poolName, err)
+	}
+	return nil
+}
+
 // PublishSchedulingFailure publishes scheduling failure metric with task type dimension.
 func (p *CloudWatchPublisher) PublishSchedulingFailure(ctx context.Context, taskType string) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{

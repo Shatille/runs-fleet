@@ -101,6 +101,7 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishSSMParametersDeleted", func() error { return pub.PublishSSMParametersDeleted(ctx, 3) }},
 		{"PublishJobRecordsArchived", func() error { return pub.PublishJobRecordsArchived(ctx, 10) }},
 		{"PublishPoolUtilization", func() error { return pub.PublishPoolUtilization(ctx, "default", 75.5) }},
+		{"PublishPoolRunningJobs", func() error { return pub.PublishPoolRunningJobs(ctx, "default", 5) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "runner-provision") }},
 		{"PublishCircuitBreakerTriggered", func() error { return pub.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
 	}

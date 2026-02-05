@@ -182,6 +182,12 @@ func (m *MultiPublisher) PublishPoolUtilization(ctx context.Context, poolName st
 	})
 }
 
+func (m *MultiPublisher) PublishPoolRunningJobs(ctx context.Context, poolName string, count int) error { //nolint:revive
+	return m.publishAll(func(p Publisher) error {
+		return p.PublishPoolRunningJobs(ctx, poolName, count)
+	})
+}
+
 func (m *MultiPublisher) PublishSchedulingFailure(ctx context.Context, taskType string) error { //nolint:revive
 	return m.publishAll(func(p Publisher) error {
 		return p.PublishSchedulingFailure(ctx, taskType)

@@ -175,6 +175,10 @@ func (p *DatadogPublisher) PublishPoolUtilization(_ context.Context, poolName st
 	return p.client.Gauge("pool_utilization_percent", utilization, []string{"pool_name:" + poolName}, 1)
 }
 
+func (p *DatadogPublisher) PublishPoolRunningJobs(_ context.Context, poolName string, count int) error { //nolint:revive
+	return p.client.Gauge("pool_running_jobs", float64(count), []string{"pool_name:" + poolName}, 1)
+}
+
 func (p *DatadogPublisher) PublishSchedulingFailure(_ context.Context, taskType string) error { //nolint:revive
 	return p.client.Incr("scheduling_failure", []string{"task_type:" + taskType}, 1)
 }
