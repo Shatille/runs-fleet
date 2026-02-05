@@ -289,11 +289,10 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				terminated += toTerminate
 			}
 		}
-	} else if stopped < desiredStopped && ready >= desiredRunning {
-		// Need more stopped instances but have enough ready (or desiredRunning is 0)
-		// This handles warm pools (desiredRunning=0, desiredStopped>0)
-		// Create new instances - they will boot as running, then be stopped
-		// in next reconciliation when ready > desiredRunning
+	} else if stopped < desiredStopped && desiredRunning == 0 {
+		// Need more stopped instances for warm pool (desiredRunning=0, desiredStopped>0)
+		// Only applies when desiredRunning is explicitly 0, not for ephemeral pools
+		// with auto-scaled desiredRunning > 0
 		deficit := desiredStopped - stopped
 		created += m.createPoolFleetInstances(ctx, poolName, deficit, poolConfig)
 	}
