@@ -117,7 +117,11 @@ func (h *Handler) Run(ctx context.Context) {
 		case <-ticker.C:
 			messages, err := h.queueClient.ReceiveMessages(ctx, 1, 20)
 			if err != nil {
-				h.logger().Error("receive messages failed", slog.String("error", err.Error()))
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					h.logger().Warn("receive messages failed", slog.String("error", err.Error()))
+				} else {
+					h.logger().Error("receive messages failed", slog.String("error", err.Error()))
+				}
 				continue
 			}
 
