@@ -4,10 +4,6 @@ on:
   push:
     tags:
       - "v*.*.*"
-    paths:
-      - "docker/runner/**"
-      - "cmd/agent/**"
-      - "pkg/agent/**"
   workflow_dispatch:
     inputs:
       tag:
@@ -34,9 +30,58 @@ env:
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
 
 jobs:
+  # Check if runner-related files changed since last tag
+  check-changes:
+    name: Check Runner Changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for runner file changes
+        id: check
+        run: |
+          # Always build on workflow_dispatch or workflow_call
+          if [[ "${{ github.event_name }}" != "push" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Non-push trigger, will build"
+            exit 0
+          fi
+
+          # Find previous tag
+          PREV_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname | sed -n '2p')
+          if [[ -z "$PREV_TAG" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "No previous tag found, will build"
+            exit 0
+          fi
+
+          echo "Comparing $PREV_TAG to ${{ github.ref_name }}"
+
+          # Check if runner-related files changed
+          CHANGED=$(git diff --name-only "$PREV_TAG" "${{ github.ref_name }}" -- \
+            'docker/runner/**' \
+            'cmd/agent/**' \
+            'pkg/agent/**' \
+            | head -1)
+
+          if [[ -n "$CHANGED" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Runner files changed, will build"
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "No runner file changes, skipping build"
+          fi
+
   # Determine version once, share across jobs
   prepare:
     name: Prepare Build
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
