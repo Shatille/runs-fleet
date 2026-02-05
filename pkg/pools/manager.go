@@ -302,6 +302,8 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	if started+stoppedCount+created+terminated > 0 {
 		poolLog.Info("pool reconciled",
 			slog.String(logging.KeyPoolName, poolName),
+			slog.Int("desired_running", desiredRunning),
+			slog.Int("desired_stopped", desiredStopped),
 			slog.Int("running", running),
 			slog.Int("stopped", stopped),
 			slog.Int("ready", ready),
@@ -336,6 +338,10 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 
 	if peak > 0 {
 		desired := max(1, peak)
+		poolLog.Info("ephemeral pool auto-scaling",
+			slog.String(logging.KeyPoolName, poolName),
+			slog.Int("peak_concurrency", peak),
+			slog.Int("desired_running", desired))
 		return desired, true
 	}
 
