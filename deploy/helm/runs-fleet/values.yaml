@@ -241,6 +241,11 @@ metrics:
   # Datadog DogStatsD metrics
   datadog:
     enabled: false
+    # When true, uses Downward API to get node IP for DogStatsD (required for hostPort DaemonSet)
+    useHostIP: true
+    # Port for DogStatsD when useHostIP is true (default: 8125)
+    port: 8125
+    # Static address (only used when useHostIP is false)
     address: "127.0.0.1:8125"
     tags: [] # Global tags, e.g., ["env:production", "service:runs-fleet"]
     # Autodiscovery log collection (requires Datadog Agent with log collection enabled)
