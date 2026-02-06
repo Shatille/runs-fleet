@@ -265,9 +265,18 @@ spec:
             {{- end }}
             - name: RUNS_FLEET_METRICS_DATADOG_ENABLED
               value: {{ .Values.metrics.datadog.enabled | quote }}
-            {{- if .Values.metrics.datadog.address }}
+            {{- if .Values.metrics.datadog.enabled }}
+            {{- if .Values.metrics.datadog.useHostIP }}
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: RUNS_FLEET_METRICS_DATADOG_ADDR
+              value: "$(DD_AGENT_HOST):{{ .Values.metrics.datadog.port | default 8125 }}"
+            {{- else if .Values.metrics.datadog.address }}
             - name: RUNS_FLEET_METRICS_DATADOG_ADDR
               value: {{ .Values.metrics.datadog.address | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.metrics.datadog.tags }}
             - name: RUNS_FLEET_METRICS_DATADOG_TAGS
