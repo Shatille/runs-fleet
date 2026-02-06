@@ -84,8 +84,8 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 
 ### Resource labels
 
-- `cpu=<n>` - Exact vCPU count
-- `cpu=<min>+<max>` - vCPU range for spot diversification
+- `cpu=<n>` - vCPU count (defaults to 2x range: cpu=4 matches 4-8 vCPUs)
+- `cpu=<min>+<max>` - Explicit vCPU range (cpu=4+4 for exact match)
 - `ram=<n>` - Exact RAM in GB
 - `ram=<min>+<max>` - RAM range in GB
 - `family=<f1>+<f2>` - Instance families (e.g., `c7g+m7g`)
