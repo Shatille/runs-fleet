@@ -18,7 +18,7 @@ var warmPoolLog = logging.WithComponent(logging.LogTypePool, "warmpool-assigner"
 
 // PoolManager defines warm pool operations for instance assignment.
 type PoolManager interface {
-	ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64) (*pools.AvailableInstance, error)
+	ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string) (*pools.AvailableInstance, error)
 	StopPoolInstance(ctx context.Context, instanceID string) error
 }
 
@@ -61,7 +61,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 
 	// Atomically claim and start a stopped instance to prevent race conditions
 	// Uses DynamoDB distributed locking to prevent multiple orchestrators from claiming the same instance
-	instance, err := w.Pool.ClaimAndStartPoolInstance(ctx, job.Pool, job.JobID)
+	instance, err := w.Pool.ClaimAndStartPoolInstance(ctx, job.Pool, job.JobID, job.Repo)
 	if err != nil {
 		if errors.Is(err, pools.ErrNoAvailableInstance) {
 			return &WarmPoolResult{Assigned: false}, nil

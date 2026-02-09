@@ -63,11 +63,12 @@ func TestTryAssignToWarmPool_NilManagers(t *testing.T) {
 
 // mockEC2API implements pools.EC2API for testing
 type mockEC2API struct {
-	describeInstancesFunc           func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
-	startInstancesFunc              func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
-	stopInstancesFunc               func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
-	terminateInstancesFunc          func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
-	cancelSpotInstanceRequestsFunc  func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
+	describeInstancesFunc          func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	startInstancesFunc             func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
+	stopInstancesFunc              func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	terminateInstancesFunc         func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	cancelSpotInstanceRequestsFunc func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
+	createTagsFunc                 func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
 
 func (m *mockEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -103,6 +104,13 @@ func (m *mockEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2
 		return m.cancelSpotInstanceRequestsFunc(ctx, params, optFns...)
 	}
 	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
+}
+
+func (m *mockEC2API) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+	if m.createTagsFunc != nil {
+		return m.createTagsFunc(ctx, params, optFns...)
+	}
+	return &ec2.CreateTagsOutput{}, nil
 }
 
 // mockDBClient implements pools.DBClient interface for testing
@@ -256,15 +264,15 @@ func TestWarmPoolAssigner_EmptyPool(t *testing.T) {
 
 // mockPoolManager implements PoolManager for testing
 type mockPoolManager struct {
-	claimAndStartFunc func(ctx context.Context, poolName string, jobID int64) (*pools.AvailableInstance, error)
+	claimAndStartFunc func(ctx context.Context, poolName string, jobID int64, repo string) (*pools.AvailableInstance, error)
 	stopFunc          func(ctx context.Context, instanceID string) error
 	stopCalled        bool
 	stoppedInstanceID string
 }
 
-func (m *mockPoolManager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64) (*pools.AvailableInstance, error) {
+func (m *mockPoolManager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string) (*pools.AvailableInstance, error) {
 	if m.claimAndStartFunc != nil {
-		return m.claimAndStartFunc(ctx, poolName, jobID)
+		return m.claimAndStartFunc(ctx, poolName, jobID, repo)
 	}
 	return nil, pools.ErrNoAvailableInstance
 }
@@ -331,7 +339,7 @@ func (m *mockJobDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID s
 // claim instance -> start -> prepare runner -> save job record
 func TestTryAssignToWarmPool_Success_FullFlow(t *testing.T) {
 	mockPool := &mockPoolManager{
-		claimAndStartFunc: func(_ context.Context, _ string, _ int64) (*pools.AvailableInstance, error) {
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string) (*pools.AvailableInstance, error) {
 			return &pools.AvailableInstance{
 				InstanceID:   "i-success123",
 				InstanceType: "c7g.xlarge",
@@ -401,7 +409,7 @@ func TestTryAssignToWarmPool_Success_FullFlow(t *testing.T) {
 // SSM preparation fails, the instance is stopped and claim is released.
 func TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance(t *testing.T) {
 	mockPool := &mockPoolManager{
-		claimAndStartFunc: func(_ context.Context, _ string, _ int64) (*pools.AvailableInstance, error) {
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string) (*pools.AvailableInstance, error) {
 			return &pools.AvailableInstance{
 				InstanceID:   "i-ssmfail",
 				InstanceType: "c7g.xlarge",
@@ -465,7 +473,7 @@ func TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance(t *testing.T) {
 // job record save fails, the claim is released and instance is stopped.
 func TestTryAssignToWarmPool_DBSaveFailure_StopsInstance(t *testing.T) {
 	mockPool := &mockPoolManager{
-		claimAndStartFunc: func(_ context.Context, _ string, _ int64) (*pools.AvailableInstance, error) {
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string) (*pools.AvailableInstance, error) {
 			return &pools.AvailableInstance{
 				InstanceID:   "i-dbfail",
 				InstanceType: "c7g.xlarge",

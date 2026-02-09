@@ -296,6 +296,7 @@ type MockEC2API struct {
 	StopInstancesFunc              func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	TerminateInstancesFunc         func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 	CancelSpotInstanceRequestsFunc func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
+	CreateTagsFunc                 func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
 
 func (m *MockEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -331,6 +332,13 @@ func (m *MockEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2
 		return m.CancelSpotInstanceRequestsFunc(ctx, params, optFns...)
 	}
 	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
+}
+
+func (m *MockEC2API) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+	if m.CreateTagsFunc != nil {
+		return m.CreateTagsFunc(ctx, params, optFns...)
+	}
+	return &ec2.CreateTagsOutput{}, nil
 }
 
 func TestSetEC2Client(t *testing.T) {
@@ -2308,7 +2316,7 @@ func TestStartInstanceForJob(t *testing.T) {
 	// Mark instance as idle first
 	manager.MarkInstanceIdle("i-test123")
 
-	err := manager.StartInstanceForJob(context.Background(), "i-test123")
+	err := manager.StartInstanceForJob(context.Background(), "i-test123", "owner/repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2332,9 +2340,122 @@ func TestStartInstanceForJob_NoEC2Client(t *testing.T) {
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	// Don't set EC2 client
 
-	err := manager.StartInstanceForJob(context.Background(), "i-test123")
+	err := manager.StartInstanceForJob(context.Background(), "i-test123", "owner/repo")
 	if err == nil {
 		t.Error("expected error when EC2 client not configured")
+	}
+}
+
+func TestStartInstanceForJob_CreatesRoleTag(t *testing.T) {
+	const instanceID = "i-roletagtest"
+	startCalled := false
+	createTagsCalled := false
+	var taggedInstanceID string
+	var taggedRepo string
+
+	mockEC2 := &MockEC2API{
+		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			startCalled = true
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			createTagsCalled = true
+			if len(params.Resources) > 0 {
+				taggedInstanceID = params.Resources[0]
+			}
+			for _, tag := range params.Tags {
+				if *tag.Key == "Role" {
+					taggedRepo = *tag.Value
+				}
+			}
+			return &ec2.CreateTagsOutput{}, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+	manager.MarkInstanceIdle(instanceID)
+
+	err := manager.StartInstanceForJob(context.Background(), instanceID, "owner/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !startCalled {
+		t.Error("StartInstances was not called")
+	}
+	if !createTagsCalled {
+		t.Error("CreateTags was not called")
+	}
+	if taggedInstanceID != instanceID {
+		t.Errorf("tagged wrong instance: got %q, want %q", taggedInstanceID, instanceID)
+	}
+	if taggedRepo != "owner/repo" {
+		t.Errorf("tagged wrong repo: got %q, want %q", taggedRepo, "owner/repo")
+	}
+}
+
+func TestStartInstanceForJob_EmptyRepoSkipsTag(t *testing.T) {
+	const instanceID = "i-emptyrepotest"
+	startCalled := false
+	createTagsCalled := false
+
+	mockEC2 := &MockEC2API{
+		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			startCalled = true
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			createTagsCalled = true
+			return &ec2.CreateTagsOutput{}, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+	manager.MarkInstanceIdle(instanceID)
+
+	err := manager.StartInstanceForJob(context.Background(), instanceID, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !startCalled {
+		t.Error("StartInstances was not called")
+	}
+	if createTagsCalled {
+		t.Error("CreateTags should not be called when repo is empty")
+	}
+}
+
+func TestStartInstanceForJob_CreateTagsError_NonFatal(t *testing.T) {
+	const instanceID = "i-tagerrortest"
+	startCalled := false
+	createTagsCalled := false
+
+	mockEC2 := &MockEC2API{
+		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			startCalled = true
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			createTagsCalled = true
+			return nil, errors.New("tagging failed")
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+	manager.MarkInstanceIdle(instanceID)
+
+	// Should succeed even if CreateTags fails - tagging is non-critical
+	err := manager.StartInstanceForJob(context.Background(), instanceID, "owner/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !startCalled {
+		t.Error("StartInstances was not called")
+	}
+	if !createTagsCalled {
+		t.Error("CreateTags was not called")
 	}
 }
 
@@ -2385,7 +2506,7 @@ func TestClaimAndStartPoolInstance_Success(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2427,7 +2548,7 @@ func TestClaimAndStartPoolInstance_NoInstance(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
 	if !errors.Is(err, ErrNoAvailableInstance) {
 		t.Errorf("expected ErrNoAvailableInstance, got %v", err)
 	}
@@ -2478,7 +2599,7 @@ func TestClaimAndStartPoolInstance_StartError(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
 	if err == nil {
 		t.Error("expected error when start fails")
 	}
@@ -2536,7 +2657,7 @@ func TestClaimAndStartPoolInstance_ClaimConflict(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2573,7 +2694,7 @@ func TestClaimAndStartPoolInstance_NilDBClient(t *testing.T) {
 	manager := NewManager(nil, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
 	if err == nil {
 		t.Error("expected error when DB client is nil")
 	}
@@ -2687,7 +2808,7 @@ func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 	results := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		go func(jobID int64) {
-			_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", jobID)
+			_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", jobID, "owner/repo")
 			results <- err
 		}(int64(12345 + i))
 	}
@@ -2753,7 +2874,7 @@ func TestClaimAndStartPoolInstance_DBClaimFailure(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345)
+	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
 	if err == nil {
 		t.Fatal("expected error when DB claim fails with non-conflict error")
 	}

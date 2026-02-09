@@ -60,6 +60,7 @@ type EC2API interface {
 	StopInstances(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 	CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
+	CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
 
 // PoolInstance represents an EC2 instance in a pool.
@@ -720,17 +721,19 @@ func (m *Manager) getAvailableInstanceLocked(ctx context.Context, poolName strin
 
 // StartInstanceForJob starts a stopped pool instance for a job.
 // The caller must have already updated the instance's runner config in SSM.
+// The repo parameter is used to tag the instance with the Role tag for cost allocation.
 // Returns the instance ID on success.
 // Note: Prefer ClaimAndStartPoolInstance for atomic claim+start to avoid race conditions.
-func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID string) error {
+func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID, repo string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	return m.startInstanceForJobLocked(ctx, instanceID)
+	return m.startInstanceForJobLocked(ctx, instanceID, repo)
 }
 
 // startInstanceForJobLocked starts an instance while already holding the lock.
-func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID string) error {
+// If repo is non-empty, the instance is tagged with the Role tag for cost allocation.
+func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, repo string) error {
 	if m.ec2Client == nil {
 		return fmt.Errorf("EC2 client not configured")
 	}
@@ -740,6 +743,27 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID stri
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start instance %s: %w", instanceID, err)
+	}
+
+	// Tag the instance with Role for cost allocation
+	// Pool instances are created without this tag since the repo is unknown at creation time
+	if repo != "" {
+		_, err := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: []string{instanceID},
+			Tags: []types.Tag{
+				{
+					Key:   aws.String("Role"),
+					Value: aws.String(repo),
+				},
+			},
+		})
+		if err != nil {
+			// Log but don't fail - tagging is for cost allocation, not critical path
+			poolLog.Warn("failed to tag instance with Role",
+				slog.String(logging.KeyInstanceID, instanceID),
+				slog.String("repo", repo),
+				slog.String("error", err.Error()))
+		}
 	}
 
 	// Mark as busy immediately to prevent reconciler from touching it
@@ -761,15 +785,19 @@ const instanceClaimTTL = 5 * time.Minute
 // This prevents race conditions in multi-orchestrator deployments where multiple
 // orchestrators might try to claim the same stopped instance for different jobs.
 //
+// The repo parameter is used to tag the instance with the Role tag for cost allocation.
+// Pool instances are created without knowing which repo will use them, so the tag is
+// applied when the instance is assigned to a job.
+//
 // The claim flow is:
 //  1. Find all stopped instances in the pool
 //  2. For each instance, atomically claim it in DynamoDB (fails if another job claimed it)
-//  3. Start the EC2 instance
+//  3. Start the EC2 instance and tag it with the repo
 //  4. If start fails, release the DynamoDB claim and return error
 //
 // The caller is responsible for releasing the claim after job completion or failure
 // by calling the DB's ReleaseInstanceClaim method.
-func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64) (*AvailableInstance, error) {
+func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string) (*AvailableInstance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -804,7 +832,7 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		}
 
 		// Start the instance while holding both local mutex and DynamoDB claim
-		if err := m.startInstanceForJobLocked(ctx, instance.InstanceID); err != nil {
+		if err := m.startInstanceForJobLocked(ctx, instance.InstanceID, repo); err != nil {
 			// Release the DynamoDB claim since we failed to start
 			if releaseErr := m.dbClient.ReleaseInstanceClaim(ctx, instance.InstanceID, jobID); releaseErr != nil {
 				poolLog.Error("instance claim release failed after start failure",
