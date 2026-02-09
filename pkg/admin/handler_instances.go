@@ -88,10 +88,8 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 		Values: stateValues,
 	})
 
-	const maxInstances = 500
 	var allReservations []types.Reservation
 	var nextToken *string
-	var instanceCount int
 	for {
 		output, err := h.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			Filters:   filters,
@@ -102,11 +100,8 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 			h.writeError(w, http.StatusInternalServerError, "Failed to list instances", err.Error())
 			return
 		}
-		for _, res := range output.Reservations {
-			instanceCount += len(res.Instances)
-		}
 		allReservations = append(allReservations, output.Reservations...)
-		if output.NextToken == nil || instanceCount >= maxInstances {
+		if output.NextToken == nil {
 			break
 		}
 		nextToken = output.NextToken

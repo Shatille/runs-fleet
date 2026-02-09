@@ -1085,6 +1085,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 		config                    *config.Config
 		wantInterruptionBehavior  types.SpotInstanceInterruptionBehavior
 		wantNoInterruptionBehavior bool
+		wantOnDemand              bool
 	}{
 		{
 			name: "Persistent spot sets interruption behavior to stop",
@@ -1114,12 +1115,64 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			},
 			wantNoInterruptionBehavior: true,
 		},
+		{
+			name: "Persistent spot with on-demand request ignores persistent flag",
+			spec: &LaunchSpec{
+				RunID:          12345,
+				InstanceType:   "t4g.medium",
+				SubnetID:       "subnet-1",
+				Spot:           false,
+				PersistentSpot: true,
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantOnDemand:              true,
+			wantNoInterruptionBehavior: true,
+		},
+		{
+			name: "Persistent spot with global spot disabled becomes on-demand",
+			spec: &LaunchSpec{
+				RunID:          12345,
+				InstanceType:   "t4g.medium",
+				SubnetID:       "subnet-1",
+				Spot:           true,
+				PersistentSpot: true,
+			},
+			config: &config.Config{
+				SpotEnabled: false,
+			},
+			wantOnDemand:              true,
+			wantNoInterruptionBehavior: true,
+		},
+		{
+			name: "Persistent spot with pool",
+			spec: &LaunchSpec{
+				RunID:          12345,
+				InstanceType:   "t4g.medium",
+				SubnetID:       "subnet-1",
+				Spot:           true,
+				PersistentSpot: true,
+				Pool:           "default",
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockEC2Client{
 				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+					// Check on-demand vs spot
+					if tt.wantOnDemand {
+						if params.TargetCapacitySpecification.DefaultTargetCapacityType != types.DefaultTargetCapacityTypeOnDemand {
+							t.Errorf("TargetCapacityType = %v, want OnDemand", params.TargetCapacitySpecification.DefaultTargetCapacityType)
+						}
+					}
+
 					if tt.wantNoInterruptionBehavior {
 						if params.SpotOptions != nil && params.SpotOptions.InstanceInterruptionBehavior != "" {
 							t.Errorf("InstanceInterruptionBehavior should not be set for non-persistent spot")
@@ -1210,6 +1263,91 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 			wantErr:        true,
 			wantErrContains: "failed to describe instance",
 		},
+		{
+			name:       "Returns error when instance not found",
+			instanceID: "i-nonexistent",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{},
+			},
+			wantErr:        true,
+			wantErrContains: "instance not found",
+		},
+		{
+			name:       "Returns error when reservations have no instances",
+			instanceID: "i-123456789",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{
+					{
+						Instances: []types.Instance{},
+					},
+				},
+			},
+			wantErr:        true,
+			wantErrContains: "instance not found",
+		},
+		{
+			name:       "Returns empty string when SpotInstanceRequestId is empty",
+			instanceID: "i-123456789",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{
+					{
+						Instances: []types.Instance{
+							{
+								InstanceId:            aws.String("i-123456789"),
+								SpotInstanceRequestId: aws.String(""),
+							},
+						},
+					},
+				},
+			},
+			wantSpotReqID: "",
+		},
+		{
+			name:       "Finds instance across multiple reservations",
+			instanceID: "i-target",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{
+					{
+						Instances: []types.Instance{
+							{
+								InstanceId:            aws.String("i-other1"),
+								SpotInstanceRequestId: aws.String("sir-other1"),
+							},
+						},
+					},
+					{
+						Instances: []types.Instance{
+							{
+								InstanceId:            aws.String("i-target"),
+								SpotInstanceRequestId: aws.String("sir-target"),
+							},
+						},
+					},
+				},
+			},
+			wantSpotReqID: "sir-target",
+		},
+		{
+			name:       "Finds instance among multiple in same reservation",
+			instanceID: "i-target",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{
+					{
+						Instances: []types.Instance{
+							{
+								InstanceId:            aws.String("i-other"),
+								SpotInstanceRequestId: aws.String("sir-other"),
+							},
+							{
+								InstanceId:            aws.String("i-target"),
+								SpotInstanceRequestId: aws.String("sir-target"),
+							},
+						},
+					},
+				},
+			},
+			wantSpotReqID: "sir-target",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1245,6 +1383,136 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 			}
 			if spotReqID != tt.wantSpotReqID {
 				t.Errorf("spotReqID = %q, want %q", spotReqID, tt.wantSpotReqID)
+			}
+		})
+	}
+}
+
+func TestGetSpotRequestIDsForInstances(t *testing.T) {
+	tests := []struct {
+		name          string
+		instanceIDs   []string
+		mockResponses []*ec2.DescribeInstancesOutput
+		mockError     error
+		wantResult    map[string]string
+		wantErr       bool
+		wantAPICalls  int
+	}{
+		{
+			name:         "empty input returns nil",
+			instanceIDs:  []string{},
+			wantResult:   nil,
+			wantAPICalls: 0,
+		},
+		{
+			name:        "single instance with spot request",
+			instanceIDs: []string{"i-123"},
+			mockResponses: []*ec2.DescribeInstancesOutput{
+				{
+					Reservations: []types.Reservation{
+						{
+							Instances: []types.Instance{
+								{
+									InstanceId:            aws.String("i-123"),
+									SpotInstanceRequestId: aws.String("sir-abc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantResult:   map[string]string{"i-123": "sir-abc"},
+			wantAPICalls: 1,
+		},
+		{
+			name:        "multiple instances mixed spot and on-demand",
+			instanceIDs: []string{"i-123", "i-456", "i-789"},
+			mockResponses: []*ec2.DescribeInstancesOutput{
+				{
+					Reservations: []types.Reservation{
+						{
+							Instances: []types.Instance{
+								{
+									InstanceId:            aws.String("i-123"),
+									SpotInstanceRequestId: aws.String("sir-abc"),
+								},
+								{
+									InstanceId:            aws.String("i-456"),
+									SpotInstanceRequestId: nil, // on-demand
+								},
+								{
+									InstanceId:            aws.String("i-789"),
+									SpotInstanceRequestId: aws.String("sir-xyz"),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantResult: map[string]string{
+				"i-123": "sir-abc",
+				"i-789": "sir-xyz",
+			},
+			wantAPICalls: 1,
+		},
+		{
+			name:         "API error returns error",
+			instanceIDs:  []string{"i-123"},
+			mockError:    errors.New("API error"),
+			wantErr:      true,
+			wantAPICalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiCalls := 0
+			responseIdx := 0
+			mock := &mockEC2Client{
+				DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+					apiCalls++
+					if tt.mockError != nil {
+						return nil, tt.mockError
+					}
+					if responseIdx < len(tt.mockResponses) {
+						resp := tt.mockResponses[responseIdx]
+						responseIdx++
+						return resp, nil
+					}
+					return &ec2.DescribeInstancesOutput{}, nil
+				},
+			}
+
+			manager := &Manager{
+				ec2Client: mock,
+				config:    &config.Config{},
+			}
+
+			result, err := manager.GetSpotRequestIDsForInstances(context.Background(), tt.instanceIDs)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if apiCalls != tt.wantAPICalls {
+				t.Errorf("API calls = %d, want %d", apiCalls, tt.wantAPICalls)
+			}
+
+			if len(result) != len(tt.wantResult) {
+				t.Errorf("result length = %d, want %d", len(result), len(tt.wantResult))
+			}
+
+			for instanceID, wantSpotID := range tt.wantResult {
+				if result[instanceID] != wantSpotID {
+					t.Errorf("result[%s] = %q, want %q", instanceID, result[instanceID], wantSpotID)
+				}
 			}
 		})
 	}

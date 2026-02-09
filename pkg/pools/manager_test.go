@@ -117,8 +117,9 @@ func (m *MockDBClient) GetSpotRequestIDs(ctx context.Context, instanceIDs []stri
 
 // MockFleetAPI implements FleetAPI interface
 type MockFleetAPI struct {
-	CreateFleetFunc                func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
-	GetSpotRequestIDForInstanceFunc func(ctx context.Context, instanceID string) (string, error)
+	CreateFleetFunc                    func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	GetSpotRequestIDForInstanceFunc    func(ctx context.Context, instanceID string) (string, error)
+	GetSpotRequestIDsForInstancesFunc  func(ctx context.Context, instanceIDs []string) (map[string]string, error)
 }
 
 func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -133,6 +134,13 @@ func (m *MockFleetAPI) GetSpotRequestIDForInstance(ctx context.Context, instance
 		return m.GetSpotRequestIDForInstanceFunc(ctx, instanceID)
 	}
 	return "", nil
+}
+
+func (m *MockFleetAPI) GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error) {
+	if m.GetSpotRequestIDsForInstancesFunc != nil {
+		return m.GetSpotRequestIDsForInstancesFunc(ctx, instanceIDs)
+	}
+	return nil, nil
 }
 
 func TestReconcileLoop(t *testing.T) {
@@ -3033,5 +3041,259 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 		if id == "i-busy1" || id == "i-busy2" {
 			t.Errorf("Busy instance %s should NOT be stopped", id)
 		}
+	}
+}
+
+// TestTerminateInstancesWithSpotCancellation tests spot request cancellation during termination.
+func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
+	tests := []struct {
+		name                       string
+		instanceIDs                []string
+		spotRequestInfo            map[string]db.SpotRequestInfo
+		getSpotRequestIDsError     error
+		cancelSpotError            error
+		wantCancelSpotRequestIDs   []string
+		wantCancelSpotRequestsCall bool
+	}{
+		{
+			name:        "cancels persistent spot requests after termination",
+			instanceIDs: []string{"i-123", "i-456"},
+			spotRequestInfo: map[string]db.SpotRequestInfo{
+				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
+				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: true},
+			},
+			wantCancelSpotRequestIDs:   []string{"sir-aaa", "sir-bbb"},
+			wantCancelSpotRequestsCall: true,
+		},
+		{
+			name:        "skips non-persistent spot requests",
+			instanceIDs: []string{"i-123", "i-456"},
+			spotRequestInfo: map[string]db.SpotRequestInfo{
+				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
+				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: false}, // one-time
+			},
+			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
+			wantCancelSpotRequestsCall: true,
+		},
+		{
+			name:        "skips instances with empty spot request ID",
+			instanceIDs: []string{"i-123", "i-456"},
+			spotRequestInfo: map[string]db.SpotRequestInfo{
+				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
+				"i-456": {InstanceID: "i-456", SpotRequestID: "", Persistent: true}, // on-demand
+			},
+			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
+			wantCancelSpotRequestsCall: true,
+		},
+		{
+			name:                       "handles no spot requests gracefully",
+			instanceIDs:                []string{"i-123", "i-456"},
+			spotRequestInfo:            map[string]db.SpotRequestInfo{},
+			wantCancelSpotRequestsCall: false,
+		},
+		{
+			name:                       "handles GetSpotRequestIDs error gracefully",
+			instanceIDs:                []string{"i-123"},
+			getSpotRequestIDsError:     errors.New("db error"),
+			wantCancelSpotRequestsCall: false,
+		},
+		{
+			name:        "continues on CancelSpotInstanceRequests error",
+			instanceIDs: []string{"i-123"},
+			spotRequestInfo: map[string]db.SpotRequestInfo{
+				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
+			},
+			cancelSpotError:            errors.New("cancel error"),
+			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
+			wantCancelSpotRequestsCall: true,
+		},
+		{
+			name:        "handles all instances being non-persistent",
+			instanceIDs: []string{"i-123", "i-456"},
+			spotRequestInfo: map[string]db.SpotRequestInfo{
+				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: false},
+				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: false},
+			},
+			wantCancelSpotRequestsCall: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cancelSpotCalled bool
+			var canceledSpotRequestIDs []string
+
+			mockDB := &MockDBClient{
+				GetSpotRequestIDsFunc: func(_ context.Context, _ []string) (map[string]db.SpotRequestInfo, error) {
+					if tt.getSpotRequestIDsError != nil {
+						return nil, tt.getSpotRequestIDsError
+					}
+					return tt.spotRequestInfo, nil
+				},
+			}
+
+			mockEC2 := &MockEC2API{
+				TerminateInstancesFunc: func(_ context.Context, _ *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+					return &ec2.TerminateInstancesOutput{}, nil
+				},
+				CancelSpotInstanceRequestsFunc: func(_ context.Context, params *ec2.CancelSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+					cancelSpotCalled = true
+					canceledSpotRequestIDs = params.SpotInstanceRequestIds
+					if tt.cancelSpotError != nil {
+						return nil, tt.cancelSpotError
+					}
+					return &ec2.CancelSpotInstanceRequestsOutput{}, nil
+				},
+			}
+
+			manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+			manager.SetEC2Client(mockEC2)
+
+			err := manager.terminateInstances(context.Background(), tt.instanceIDs)
+			if err != nil {
+				t.Fatalf("terminateInstances() unexpected error: %v", err)
+			}
+
+			if cancelSpotCalled != tt.wantCancelSpotRequestsCall {
+				t.Errorf("CancelSpotInstanceRequests called = %v, want %v", cancelSpotCalled, tt.wantCancelSpotRequestsCall)
+			}
+
+			if tt.wantCancelSpotRequestsCall && tt.wantCancelSpotRequestIDs != nil {
+				if len(canceledSpotRequestIDs) != len(tt.wantCancelSpotRequestIDs) {
+					t.Errorf("cancelled spot request IDs count = %d, want %d",
+						len(canceledSpotRequestIDs), len(tt.wantCancelSpotRequestIDs))
+				}
+
+				wantSet := make(map[string]bool)
+				for _, id := range tt.wantCancelSpotRequestIDs {
+					wantSet[id] = true
+				}
+				for _, id := range canceledSpotRequestIDs {
+					if !wantSet[id] {
+						t.Errorf("unexpected spot request ID cancelled: %s", id)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestCreatePoolFleetInstancesSavesSpotRequestID tests that spot request IDs are saved during fleet creation.
+func TestCreatePoolFleetInstancesSavesSpotRequestID(t *testing.T) {
+	tests := []struct {
+		name                 string
+		instanceIDs          []string
+		spotRequestIDResults map[string]string
+		getSpotRequestError  error
+		saveSpotError        error
+		wantSavedSpotIDs     map[string]string
+	}{
+		{
+			name:        "saves spot request IDs for all instances",
+			instanceIDs: []string{"i-123", "i-456"},
+			spotRequestIDResults: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "sir-bbb",
+			},
+			wantSavedSpotIDs: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "sir-bbb",
+			},
+		},
+		{
+			name:        "handles GetSpotRequestIDForInstance error gracefully",
+			instanceIDs: []string{"i-123"},
+			spotRequestIDResults: map[string]string{
+				"i-123": "",
+			},
+			getSpotRequestError: errors.New("describe error"),
+			wantSavedSpotIDs:    map[string]string{},
+		},
+		{
+			name:        "handles SaveSpotRequestID error gracefully",
+			instanceIDs: []string{"i-123"},
+			spotRequestIDResults: map[string]string{
+				"i-123": "sir-aaa",
+			},
+			saveSpotError:    errors.New("save error"),
+			wantSavedSpotIDs: map[string]string{},
+		},
+		{
+			name:        "skips instances without spot request ID (on-demand)",
+			instanceIDs: []string{"i-123", "i-456"},
+			spotRequestIDResults: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "", // on-demand
+			},
+			wantSavedSpotIDs: map[string]string{
+				"i-123": "sir-aaa",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			savedSpotIDs := make(map[string]string)
+
+			mockDB := &MockDBClient{
+				SaveSpotRequestIDFunc: func(_ context.Context, instanceID, spotRequestID string, persistent bool) error {
+					if tt.saveSpotError != nil {
+						return tt.saveSpotError
+					}
+					if !persistent {
+						t.Errorf("SaveSpotRequestID called with persistent=false for pool instance")
+					}
+					savedSpotIDs[instanceID] = spotRequestID
+					return nil
+				},
+			}
+
+			mockFleet := &MockFleetAPI{
+				CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+					return tt.instanceIDs, nil
+				},
+				GetSpotRequestIDsForInstancesFunc: func(_ context.Context, instanceIDs []string) (map[string]string, error) {
+					if tt.getSpotRequestError != nil {
+						return nil, tt.getSpotRequestError
+					}
+					// Filter out empty values (on-demand instances)
+					result := make(map[string]string)
+					for _, id := range instanceIDs {
+						if spotID, ok := tt.spotRequestIDResults[id]; ok && spotID != "" {
+							result[id] = spotID
+						}
+					}
+					return result, nil
+				},
+			}
+
+			manager := NewManager(mockDB, mockFleet, &config.Config{
+				PrivateSubnetIDs: []string{"subnet-1"},
+			})
+			manager.SetEC2Client(&MockEC2API{})
+
+			poolConfig := &db.PoolConfig{
+				PoolName:       "test-pool",
+				InstanceType:   "t4g.medium",
+				DesiredRunning: 2,
+			}
+
+			created := manager.createPoolFleetInstances(context.Background(), "test-pool", 1, poolConfig)
+			if created == 0 {
+				t.Fatalf("createPoolFleetInstances() created 0 instances")
+			}
+
+			for wantInstance, wantSpotID := range tt.wantSavedSpotIDs {
+				if savedSpotIDs[wantInstance] != wantSpotID {
+					t.Errorf("SaveSpotRequestID for %s = %q, want %q",
+						wantInstance, savedSpotIDs[wantInstance], wantSpotID)
+				}
+			}
+
+			if len(savedSpotIDs) != len(tt.wantSavedSpotIDs) {
+				t.Errorf("SaveSpotRequestID called for %d instances, want %d",
+					len(savedSpotIDs), len(tt.wantSavedSpotIDs))
+			}
+		})
 	}
 }

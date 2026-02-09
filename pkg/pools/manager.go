@@ -49,6 +49,7 @@ type DBClient interface {
 type FleetAPI interface {
 	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
 	GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error)
+	GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error)
 }
 
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -910,23 +911,22 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 		}
 		created++
 
-		// Store spot request ID for later cancellation on terminate
-		for _, instanceID := range instanceIDs {
-			spotReqID, err := m.fleetManager.GetSpotRequestIDForInstance(ctx, instanceID)
+		// Store spot request IDs for later cancellation on terminate (batch query)
+		if len(instanceIDs) > 0 {
+			spotReqIDs, err := m.fleetManager.GetSpotRequestIDsForInstances(ctx, instanceIDs)
 			if err != nil {
-				poolLog.Warn("spot request ID query failed",
-					slog.String(logging.KeyInstanceID, instanceID),
+				poolLog.Warn("spot request IDs batch query failed",
+					slog.String(logging.KeyPoolName, poolName),
 					slog.String("error", err.Error()))
-				continue
-			}
-			if spotReqID == "" {
-				continue
-			}
-			if err := m.dbClient.SaveSpotRequestID(ctx, instanceID, spotReqID, true); err != nil {
-				poolLog.Warn("spot request ID save failed",
-					slog.String(logging.KeyInstanceID, instanceID),
-					slog.String("spot_request_id", spotReqID),
-					slog.String("error", err.Error()))
+			} else {
+				for instanceID, spotReqID := range spotReqIDs {
+					if err := m.dbClient.SaveSpotRequestID(ctx, instanceID, spotReqID, true); err != nil {
+						poolLog.Warn("spot request ID save failed",
+							slog.String(logging.KeyInstanceID, instanceID),
+							slog.String("spot_request_id", spotReqID),
+							slog.String("error", err.Error()))
+					}
+				}
 			}
 		}
 	}

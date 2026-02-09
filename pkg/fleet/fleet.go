@@ -754,11 +754,49 @@ func (m *Manager) GetSpotRequestIDForInstance(ctx context.Context, instanceID st
 
 	for _, reservation := range output.Reservations {
 		for _, instance := range reservation.Instances {
-			if instance.SpotInstanceRequestId != nil {
-				return *instance.SpotInstanceRequestId, nil
+			if aws.ToString(instance.InstanceId) == instanceID {
+				return aws.ToString(instance.SpotInstanceRequestId), nil
 			}
 		}
 	}
 
-	return "", nil
+	return "", fmt.Errorf("instance not found: %s", instanceID)
+}
+
+// GetSpotRequestIDsForInstances queries EC2 to get spot request IDs for multiple instances.
+// Returns a map of instanceID -> spotRequestID.
+// Instances without spot request IDs or not found are omitted from the result.
+// Handles batching for AWS API limits (max 1000 instances per request).
+func (m *Manager) GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error) {
+	if len(instanceIDs) == 0 {
+		return nil, nil
+	}
+
+	result := make(map[string]string)
+	const maxBatchSize = 1000 // AWS DescribeInstances API limit
+
+	for i := 0; i < len(instanceIDs); i += maxBatchSize {
+		end := i + maxBatchSize
+		if end > len(instanceIDs) {
+			end = len(instanceIDs)
+		}
+		batch := instanceIDs[i:end]
+
+		output, err := m.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: batch,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to describe instances: %w", err)
+		}
+
+		for _, reservation := range output.Reservations {
+			for _, instance := range reservation.Instances {
+				if instance.SpotInstanceRequestId != nil && *instance.SpotInstanceRequestId != "" {
+					result[aws.ToString(instance.InstanceId)] = *instance.SpotInstanceRequestId
+				}
+			}
+		}
+	}
+
+	return result, nil
 }

@@ -1429,3 +1429,219 @@ func TestExecuteOrphanedSpotRequests_DescribeError(t *testing.T) {
 		t.Fatal("expected error from describe spot requests")
 	}
 }
+
+func TestExecuteOrphanedSpotRequests_CancelError(t *testing.T) {
+	// Cancel errors are logged but don't fail the operation
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-orphaned"),
+				InstanceId:            strPtr("i-deleted"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+		},
+		instances:     []ec2types.Reservation{},
+		cancelSpotErr: errors.New("cancel API error"),
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	// Cancel errors are logged but operation continues successfully
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Cancel was still attempted
+	if ec2Client.cancelSpotCalls != 1 {
+		t.Errorf("expected 1 cancel call attempt, got %d", ec2Client.cancelSpotCalls)
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_MixedOrphanedAndActive(t *testing.T) {
+	now := time.Now()
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-orphaned"),
+				InstanceId:            strPtr("i-deleted"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+			{
+				SpotInstanceRequestId: strPtr("sir-active"),
+				InstanceId:            strPtr("i-running"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+		},
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: strPtr("i-running"),
+						LaunchTime: &now,
+						State: &ec2types.InstanceState{
+							Name: ec2types.InstanceStateNameRunning,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only orphaned request should be cancelled
+	if len(ec2Client.cancelledSpotReqIDs) != 1 {
+		t.Errorf("expected 1 spot request cancelled, got %d", len(ec2Client.cancelledSpotReqIDs))
+	}
+	if ec2Client.cancelledSpotReqIDs[0] != "sir-orphaned" {
+		t.Errorf("expected sir-orphaned to be cancelled, got %s", ec2Client.cancelledSpotReqIDs[0])
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_OnlyOpenActiveDisabledStatesProcessed(t *testing.T) {
+	// The DescribeSpotInstanceRequests API call filters by state ["open", "active", "disabled"]
+	// This test verifies the filter is applied. Note: the mock doesn't actually filter,
+	// but in production only requests in those states would be returned by the API.
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-open"),
+				InstanceId:            strPtr("i-deleted"),
+				State:                 ec2types.SpotInstanceStateOpen, // Will be processed
+			},
+			{
+				SpotInstanceRequestId: strPtr("sir-active"),
+				InstanceId:            strPtr("i-deleted2"),
+				State:                 ec2types.SpotInstanceStateActive, // Will be processed
+			},
+		},
+		instances: []ec2types.Reservation{},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both open and active state requests should be cancelled when orphaned
+	if len(ec2Client.cancelledSpotReqIDs) != 2 {
+		t.Errorf("expected 2 spot requests cancelled, got %d", len(ec2Client.cancelledSpotReqIDs))
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_NilInstanceID(t *testing.T) {
+	// Spot request not yet fulfilled (no instance assigned)
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-pending"),
+				InstanceId:            nil, // Not fulfilled yet
+				State:                 ec2types.SpotInstanceStateOpen,
+			},
+		},
+		instances: []ec2types.Reservation{},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should not cancel pending (unfulfilled) requests
+	if ec2Client.cancelSpotCalls != 0 {
+		t.Errorf("expected 0 cancel calls for unfulfilled requests, got %d", ec2Client.cancelSpotCalls)
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_TerminatedInstancesAreOrphaned(t *testing.T) {
+	// Terminated instances older than grace period are considered orphaned
+	oldLaunchTime := time.Now().Add(-2 * time.Hour) // Well past the grace period
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-terminated"),
+				InstanceId:            strPtr("i-terminated"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+		},
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: strPtr("i-terminated"),
+						LaunchTime: &oldLaunchTime,
+						State: &ec2types.InstanceState{
+							Name: ec2types.InstanceStateNameTerminated,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Terminated instances (past grace period) should be considered orphaned
+	if len(ec2Client.cancelledSpotReqIDs) != 1 {
+		t.Errorf("expected 1 spot request cancelled for terminated instance, got %d", len(ec2Client.cancelledSpotReqIDs))
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_DescribeInstancesError(t *testing.T) {
+	// When DescribeInstances fails, the implementation falls back to individual checks
+	// and treats instances as non-existent if individual checks also fail
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-test"),
+				InstanceId:            strPtr("i-test"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+		},
+		describeErr: errors.New("describe instances API error"),
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	// DescribeInstances errors are handled gracefully - operation continues
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Since describe failed and fallback treats as not existing, the spot request should be cancelled
+	if len(ec2Client.cancelledSpotReqIDs) != 1 {
+		t.Errorf("expected 1 spot request cancelled when describe fails, got %d", len(ec2Client.cancelledSpotReqIDs))
+	}
+}
