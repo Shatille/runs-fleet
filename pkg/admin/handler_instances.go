@@ -119,12 +119,14 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	var warnings []string
 	for pool := range pools {
 		busyIDs, err := h.db.GetPoolBusyInstanceIDs(ctx, pool)
 		if err != nil {
 			h.log.Warn("failed to get busy instances for pool",
 				slog.String(logging.KeyPoolName, pool),
 				slog.String(logging.KeyError, err.Error()))
+			warnings = append(warnings, "busy status unavailable for pool: "+pool)
 			continue
 		}
 		for _, id := range busyIDs {
@@ -153,10 +155,14 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"instances": instances,
 		"total":     len(instances),
-	})
+	}
+	if len(warnings) > 0 {
+		response["warnings"] = warnings
+	}
+	h.writeJSON(w, http.StatusOK, response)
 }
 
 func getEC2Tag(tags []types.Tag, key string) string {
