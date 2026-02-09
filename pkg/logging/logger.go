@@ -61,6 +61,7 @@ const (
 	KeyRepo         = "repo"
 	KeyRunID        = "run_id"
 	KeyTask         = "task"
+	KeyUser         = "user"
 	KeyWorkflowName = "workflow_name"
 )
 

@@ -20,30 +20,34 @@ var ErrJobAlreadyClaimed = errors.New("job already claimed")
 // jobRecord represents a job stored in DynamoDB.
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
-	InstanceID   string `dynamodbav:"instance_id"`
-	JobID        int64  `dynamodbav:"job_id"`
-	RunID        int64  `dynamodbav:"run_id"`
-	Repo         string `dynamodbav:"repo"`
-	InstanceType string `dynamodbav:"instance_type"`
-	Pool         string `dynamodbav:"pool"`
-	Spot         bool   `dynamodbav:"spot"`
-	RetryCount   int    `dynamodbav:"retry_count"`
-	WarmPoolHit  bool   `dynamodbav:"warm_pool_hit"`
-	Status       string `dynamodbav:"status"`
-	CreatedAt    string `dynamodbav:"created_at"`
+	InstanceID     string `dynamodbav:"instance_id"`
+	JobID          int64  `dynamodbav:"job_id"`
+	RunID          int64  `dynamodbav:"run_id"`
+	Repo           string `dynamodbav:"repo"`
+	InstanceType   string `dynamodbav:"instance_type"`
+	Pool           string `dynamodbav:"pool"`
+	Spot           bool   `dynamodbav:"spot"`
+	RetryCount     int    `dynamodbav:"retry_count"`
+	WarmPoolHit    bool   `dynamodbav:"warm_pool_hit"`
+	Status         string `dynamodbav:"status"`
+	CreatedAt      string `dynamodbav:"created_at"`
+	SpotRequestID  string `dynamodbav:"spot_request_id,omitempty"`
+	PersistentSpot bool   `dynamodbav:"persistent_spot,omitempty"`
 }
 
 // JobRecord contains job information for storage.
 type JobRecord struct {
-	JobID        int64
-	RunID        int64
-	Repo         string
-	InstanceID   string
-	InstanceType string
-	Pool         string
-	Spot         bool
-	RetryCount   int
-	WarmPoolHit  bool
+	JobID          int64
+	RunID          int64
+	Repo           string
+	InstanceID     string
+	InstanceType   string
+	Pool           string
+	Spot           bool
+	RetryCount     int
+	WarmPoolHit    bool
+	SpotRequestID  string
+	PersistentSpot bool
 }
 
 // JobHistoryEntry represents a job with timing information for auto-scaling calculations.
@@ -72,17 +76,19 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	}
 
 	record := jobRecord{
-		InstanceID:   job.InstanceID,
-		JobID:        job.JobID,
-		RunID:        job.RunID,
-		Repo:         job.Repo,
-		InstanceType: job.InstanceType,
-		Pool:         job.Pool,
-		Spot:         job.Spot,
-		RetryCount:   job.RetryCount,
-		WarmPoolHit:  job.WarmPoolHit,
-		Status:       "running",
-		CreatedAt:    time.Now().Format(time.RFC3339),
+		InstanceID:     job.InstanceID,
+		JobID:          job.JobID,
+		RunID:          job.RunID,
+		Repo:           job.Repo,
+		InstanceType:   job.InstanceType,
+		Pool:           job.Pool,
+		Spot:           job.Spot,
+		RetryCount:     job.RetryCount,
+		WarmPoolHit:    job.WarmPoolHit,
+		Status:         "running",
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		SpotRequestID:  job.SpotRequestID,
+		PersistentSpot: job.PersistentSpot,
 	}
 
 	item, err := attributevalue.MarshalMap(record)
@@ -652,5 +658,437 @@ func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, 
 	}
 
 	return true, nil
+}
+
+// AdminJobEntry represents a job for admin API responses.
+type AdminJobEntry struct {
+	JobID           int64
+	RunID           int64
+	Repo            string
+	InstanceID      string
+	InstanceType    string
+	Pool            string
+	Spot            bool
+	WarmPoolHit     bool
+	RetryCount      int
+	Status          string
+	ExitCode        int
+	DurationSeconds int
+	CreatedAt       time.Time
+	StartedAt       time.Time
+	CompletedAt     time.Time
+}
+
+// AdminJobFilter specifies filtering options for job queries.
+type AdminJobFilter struct {
+	Status string
+	Pool   string
+	Since  time.Time
+	Limit  int
+	Offset int
+}
+
+// AdminJobStats contains aggregate job statistics.
+type AdminJobStats struct {
+	Total       int
+	Completed   int
+	Failed      int
+	Running     int
+	Requeued    int
+	WarmPoolHit int
+}
+
+// ListJobsForAdmin retrieves jobs with filtering for admin API.
+func (c *Client) ListJobsForAdmin(ctx context.Context, filter AdminJobFilter) ([]AdminJobEntry, int, error) {
+	if c.jobsTable == "" {
+		return nil, 0, fmt.Errorf("jobs table not configured")
+	}
+
+	// Build filter expression
+	filterParts := []string{}
+	exprNames := map[string]string{}
+	exprValues := map[string]types.AttributeValue{}
+
+	if filter.Status != "" {
+		filterParts = append(filterParts, "#status = :status")
+		exprNames["#status"] = "status"
+		exprValues[":status"] = &types.AttributeValueMemberS{Value: filter.Status}
+	}
+
+	if filter.Pool != "" {
+		filterParts = append(filterParts, "#pool = :pool")
+		exprNames["#pool"] = "pool"
+		exprValues[":pool"] = &types.AttributeValueMemberS{Value: filter.Pool}
+	}
+
+	if !filter.Since.IsZero() {
+		filterParts = append(filterParts, "created_at >= :since")
+		exprValues[":since"] = &types.AttributeValueMemberS{Value: filter.Since.Format(time.RFC3339)}
+	}
+
+	input := &dynamodb.ScanInput{
+		TableName: aws.String(c.jobsTable),
+	}
+
+	if len(filterParts) > 0 {
+		filterExpr := filterParts[0]
+		for i := 1; i < len(filterParts); i++ {
+			filterExpr += " AND " + filterParts[i]
+		}
+		input.FilterExpression = aws.String(filterExpr)
+	}
+
+	if len(exprNames) > 0 {
+		input.ExpressionAttributeNames = exprNames
+	}
+	if len(exprValues) > 0 {
+		input.ExpressionAttributeValues = exprValues
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to scan jobs: %w", err)
+	}
+
+	var entries []AdminJobEntry
+	for _, item := range output.Items {
+		entry := parseJobItem(item)
+		entries = append(entries, entry)
+	}
+
+	// Sort by created_at descending
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CreatedAt.After(entries[j].CreatedAt)
+	})
+
+	total := len(entries)
+
+	// Apply offset and limit
+	if filter.Offset > 0 {
+		if filter.Offset >= len(entries) {
+			entries = nil
+		} else {
+			entries = entries[filter.Offset:]
+		}
+	}
+
+	if filter.Limit > 0 && filter.Limit < len(entries) {
+		entries = entries[:filter.Limit]
+	}
+
+	return entries, total, nil
+}
+
+// GetJobForAdmin retrieves a single job by ID for admin API.
+func (c *Client) GetJobForAdmin(ctx context.Context, jobID int64) (*AdminJobEntry, error) {
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	output, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job: %w", err)
+	}
+
+	if output.Item == nil {
+		return nil, nil
+	}
+
+	entry := parseJobItem(output.Item)
+	return &entry, nil
+}
+
+// GetJobStatsForAdmin retrieves aggregate job statistics for admin API.
+func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*AdminJobStats, error) {
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("created_at >= :since"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":since": &types.AttributeValueMemberS{Value: since.Format(time.RFC3339)},
+		},
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan jobs: %w", err)
+	}
+
+	stats := &AdminJobStats{}
+	for _, item := range output.Items {
+		stats.Total++
+
+		if status, ok := item["status"]; ok {
+			if s, ok := status.(*types.AttributeValueMemberS); ok {
+				switch s.Value {
+				case "completed", "success":
+					stats.Completed++
+				case "failed", "error":
+					stats.Failed++
+				case "running", "claiming":
+					stats.Running++
+				case "requeued":
+					stats.Requeued++
+				}
+			}
+		}
+
+		if warmHit, ok := item["warm_pool_hit"]; ok {
+			if b, ok := warmHit.(*types.AttributeValueMemberBOOL); ok && b.Value {
+				stats.WarmPoolHit++
+			}
+		}
+	}
+
+	return stats, nil
+}
+
+// SaveSpotRequestID stores the spot request ID for an instance.
+// Used to track persistent spot requests that can be cancelled on termination.
+func (c *Client) SaveSpotRequestID(ctx context.Context, instanceID, spotRequestID string, persistent bool) error {
+	if instanceID == "" {
+		return fmt.Errorf("instance ID cannot be empty")
+	}
+	if spotRequestID == "" {
+		return fmt.Errorf("spot request ID cannot be empty")
+	}
+
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	// Update existing job record with spot request ID
+	// Uses Scan since instance_id is not the primary key
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("instance_id = :instance_id"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
+		},
+		ProjectionExpression: aws.String("job_id"),
+		Limit:                aws.Int32(1),
+	}
+
+	output, err := c.dynamoClient.Scan(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to find job for instance: %w", err)
+	}
+
+	if len(output.Items) == 0 {
+		return fmt.Errorf("no job found for instance %s", instanceID)
+	}
+
+	var jobID int64
+	if v, ok := output.Items[0]["job_id"].(*types.AttributeValueMemberN); ok {
+		if _, parseErr := fmt.Sscanf(v.Value, "%d", &jobID); parseErr != nil {
+			return fmt.Errorf("failed to parse job ID: %w", parseErr)
+		}
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	update := "SET spot_request_id = :spot_req_id, persistent_spot = :persistent"
+	exprValues, err := attributevalue.MarshalMap(map[string]interface{}{
+		":spot_req_id": spotRequestID,
+		":persistent":  persistent,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal values: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(c.jobsTable),
+		Key:                       key,
+		UpdateExpression:          aws.String(update),
+		ExpressionAttributeValues: exprValues,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save spot request ID: %w", err)
+	}
+
+	return nil
+}
+
+// SpotRequestInfo contains spot request information for an instance.
+type SpotRequestInfo struct {
+	InstanceID    string
+	SpotRequestID string
+	Persistent    bool
+}
+
+// GetSpotRequestIDs retrieves spot request IDs for multiple instances.
+// Returns a map of instance ID to SpotRequestInfo.
+// Only returns entries for instances that have persistent spot requests.
+//
+// Performance note: Uses single Scan with filter. For high-volume deployments,
+// add GSI on (instance_id, persistent_spot) for O(1) lookups.
+func (c *Client) GetSpotRequestIDs(ctx context.Context, instanceIDs []string) (map[string]SpotRequestInfo, error) {
+	if len(instanceIDs) == 0 {
+		return make(map[string]SpotRequestInfo), nil
+	}
+
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	result := make(map[string]SpotRequestInfo)
+
+	// Build instance ID set for fast lookup
+	instanceSet := make(map[string]struct{}, len(instanceIDs))
+	for _, id := range instanceIDs {
+		instanceSet[id] = struct{}{}
+	}
+
+	// Single Scan with persistent_spot filter, then filter by instance IDs in memory
+	// More efficient than N separate scans for small/medium tables (<10k items)
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(c.jobsTable),
+		FilterExpression: aws.String("persistent_spot = :persistent AND attribute_exists(spot_request_id)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":persistent": &types.AttributeValueMemberBOOL{Value: true},
+		},
+		ProjectionExpression: aws.String("instance_id, spot_request_id, persistent_spot"),
+	}
+
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan for spot requests: %w", err)
+		}
+
+		for _, item := range output.Items {
+			var instanceID string
+			if v, ok := item["instance_id"].(*types.AttributeValueMemberS); ok {
+				instanceID = v.Value
+			}
+
+			// Skip if not in our target set
+			if _, ok := instanceSet[instanceID]; !ok {
+				continue
+			}
+
+			info := SpotRequestInfo{
+				InstanceID: instanceID,
+			}
+			if v, ok := item["spot_request_id"].(*types.AttributeValueMemberS); ok {
+				info.SpotRequestID = v.Value
+			}
+			if v, ok := item["persistent_spot"].(*types.AttributeValueMemberBOOL); ok {
+				info.Persistent = v.Value
+			}
+
+			if info.SpotRequestID != "" {
+				result[instanceID] = info
+			}
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+func parseJobItem(item map[string]types.AttributeValue) AdminJobEntry {
+	return AdminJobEntry{
+		JobID:           getInt64Attr(item, "job_id"),
+		RunID:           getInt64Attr(item, "run_id"),
+		Repo:            getStringAttr(item, "repo"),
+		InstanceID:      getStringAttr(item, "instance_id"),
+		InstanceType:    getStringAttr(item, "instance_type"),
+		Pool:            getStringAttr(item, "pool"),
+		Spot:            getBoolAttr(item, "spot"),
+		WarmPoolHit:     getBoolAttr(item, "warm_pool_hit"),
+		RetryCount:      getIntAttr(item, "retry_count"),
+		Status:          getStringAttr(item, "status"),
+		ExitCode:        getIntAttr(item, "exit_code"),
+		DurationSeconds: getIntAttr(item, "duration_seconds"),
+		CreatedAt:       getTimeAttr(item, "created_at"),
+		StartedAt:       getTimeAttr(item, "started_at"),
+		CompletedAt:     getTimeAttr(item, "completed_at"),
+	}
+}
+
+func getStringAttr(item map[string]types.AttributeValue, key string) string {
+	if v, ok := item[key]; ok {
+		if s, ok := v.(*types.AttributeValueMemberS); ok {
+			return s.Value
+		}
+	}
+	return ""
+}
+
+func getInt64Attr(item map[string]types.AttributeValue, key string) int64 {
+	if v, ok := item[key]; ok {
+		if n, ok := v.(*types.AttributeValueMemberN); ok {
+			val, _ := parseInt64(n.Value)
+			return val
+		}
+	}
+	return 0
+}
+
+func getIntAttr(item map[string]types.AttributeValue, key string) int {
+	if v, ok := item[key]; ok {
+		if n, ok := v.(*types.AttributeValueMemberN); ok {
+			val, _ := parseInt(n.Value)
+			return val
+		}
+	}
+	return 0
+}
+
+func getBoolAttr(item map[string]types.AttributeValue, key string) bool {
+	if v, ok := item[key]; ok {
+		if b, ok := v.(*types.AttributeValueMemberBOOL); ok {
+			return b.Value
+		}
+	}
+	return false
+}
+
+func getTimeAttr(item map[string]types.AttributeValue, key string) time.Time {
+	if v, ok := item[key]; ok {
+		if s, ok := v.(*types.AttributeValueMemberS); ok {
+			t, _ := time.Parse(time.RFC3339, s.Value)
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func parseInt64(s string) (int64, error) {
+	var n int64
+	_, err := fmt.Sscanf(s, "%d", &n)
+	return n, err
+}
+
+func parseInt(s string) (int, error) {
+	var n int
+	_, err := fmt.Sscanf(s, "%d", &n)
+	return n, err
 }
 

@@ -63,10 +63,11 @@ func TestTryAssignToWarmPool_NilManagers(t *testing.T) {
 
 // mockEC2API implements pools.EC2API for testing
 type mockEC2API struct {
-	describeInstancesFunc  func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
-	startInstancesFunc     func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
-	stopInstancesFunc      func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
-	terminateInstancesFunc func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	describeInstancesFunc           func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	startInstancesFunc              func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
+	stopInstancesFunc               func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	terminateInstancesFunc          func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	cancelSpotInstanceRequestsFunc  func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
 }
 
 func (m *mockEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -95,6 +96,13 @@ func (m *mockEC2API) TerminateInstances(ctx context.Context, params *ec2.Termina
 		return m.terminateInstancesFunc(ctx, params, optFns...)
 	}
 	return &ec2.TerminateInstancesOutput{}, nil
+}
+
+func (m *mockEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+	if m.cancelSpotInstanceRequestsFunc != nil {
+		return m.cancelSpotInstanceRequestsFunc(ctx, params, optFns...)
+	}
+	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
 }
 
 // mockDBClient implements pools.DBClient interface for testing
@@ -143,6 +151,14 @@ func (m *mockDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID stri
 		return m.releaseInstanceClaimFunc(ctx, instanceID, jobID)
 	}
 	return nil
+}
+
+func (m *mockDBClient) SaveSpotRequestID(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+
+func (m *mockDBClient) GetSpotRequestIDs(_ context.Context, _ []string) (map[string]db.SpotRequestInfo, error) {
+	return make(map[string]db.SpotRequestInfo), nil
 }
 
 // createTestAssigner creates a WarmPoolAssigner with mock EC2 for testing

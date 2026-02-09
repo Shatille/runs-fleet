@@ -24,6 +24,7 @@ type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
 	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
+	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 }
 
 // CircuitBreaker defines circuit breaker operations.
@@ -73,20 +74,21 @@ func (m *Manager) SetCircuitBreaker(cb CircuitBreaker) {
 
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
-	RunID         int64
-	InstanceType  string   // Primary instance type (used if InstanceTypes is empty)
-	InstanceTypes []string // Multiple instance types for spot diversification (Phase 10)
-	SubnetID      string
-	Spot          bool
-	Pool          string
-	Repo          string // Repository name for cost allocation (Role tag)
-	ForceOnDemand bool   // Force on-demand even if spot is preferred (for retries)
-	RetryCount    int    // Number of times this job has been retried
-	Region        string // Target AWS region (Phase 3: Multi-region)
-	Environment   string // Environment tag (Phase 6: Per-stack environments)
-	OS            string // Operating system: linux, windows (Phase 4: Windows support)
-	Arch          string // Architecture: amd64, arm64
-	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
+	RunID          int64
+	InstanceType   string   // Primary instance type (used if InstanceTypes is empty)
+	InstanceTypes  []string // Multiple instance types for spot diversification (Phase 10)
+	SubnetID       string
+	Spot           bool
+	Pool           string
+	Repo           string // Repository name for cost allocation (Role tag)
+	ForceOnDemand  bool   // Force on-demand even if spot is preferred (for retries)
+	RetryCount     int    // Number of times this job has been retried
+	Region         string // Target AWS region (Phase 3: Multi-region)
+	Environment    string // Environment tag (Phase 6: Per-stack environments)
+	OS             string // Operating system: linux, windows (Phase 4: Windows support)
+	Arch           string // Architecture: amd64, arm64
+	StorageGiB     int    // Disk storage in GiB (0 = use launch template default)
+	PersistentSpot bool   // Use persistent spot request (can stop/start) vs one-time (terminate only)
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity.
@@ -185,6 +187,11 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	} else {
 		req.SpotOptions = &types.SpotOptionsRequest{
 			AllocationStrategy: types.SpotAllocationStrategyPriceCapacityOptimized,
+		}
+		// Persistent spot requests can be stopped and restarted (for warm pools)
+		// One-time spot requests terminate when interrupted (for cold-start jobs)
+		if spec.PersistentSpot {
+			req.SpotOptions.InstanceInterruptionBehavior = types.SpotInstanceInterruptionBehaviorStop
 		}
 		totalTypes := 0
 		for _, cfg := range launchTemplateConfigs {
@@ -729,4 +736,29 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 		slog.Int("available_types", len(available)))
 
 	return nil
+}
+
+// GetSpotRequestIDForInstance queries EC2 to get the spot request ID for an instance.
+// Returns empty string if the instance is not a spot instance or doesn't exist.
+func (m *Manager) GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error) {
+	if instanceID == "" {
+		return "", fmt.Errorf("instance ID cannot be empty")
+	}
+
+	output, err := m.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to describe instance: %w", err)
+	}
+
+	for _, reservation := range output.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.SpotInstanceRequestId != nil {
+				return *instance.SpotInstanceRequestId, nil
+			}
+		}
+	}
+
+	return "", nil
 }

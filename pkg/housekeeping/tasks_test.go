@@ -19,12 +19,18 @@ import (
 
 // mockEC2API implements EC2API for testing.
 type mockEC2API struct {
-	instances      []ec2types.Reservation
-	describeErr    error
-	terminateErr   error
-	describeCalls  int
-	terminateCalls int
-	terminatedIDs  []string
+	instances           []ec2types.Reservation
+	spotRequests        []ec2types.SpotInstanceRequest
+	describeErr         error
+	terminateErr        error
+	describeSpotErr     error
+	cancelSpotErr       error
+	describeCalls       int
+	terminateCalls      int
+	describeSpotCalls   int
+	cancelSpotCalls     int
+	terminatedIDs       []string
+	cancelledSpotReqIDs []string
 }
 
 func (m *mockEC2API) DescribeInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -44,6 +50,25 @@ func (m *mockEC2API) TerminateInstances(_ context.Context, params *ec2.Terminate
 		return nil, m.terminateErr
 	}
 	return &ec2.TerminateInstancesOutput{}, nil
+}
+
+func (m *mockEC2API) DescribeSpotInstanceRequests(_ context.Context, _ *ec2.DescribeSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+	m.describeSpotCalls++
+	if m.describeSpotErr != nil {
+		return nil, m.describeSpotErr
+	}
+	return &ec2.DescribeSpotInstanceRequestsOutput{
+		SpotInstanceRequests: m.spotRequests,
+	}, nil
+}
+
+func (m *mockEC2API) CancelSpotInstanceRequests(_ context.Context, params *ec2.CancelSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+	m.cancelSpotCalls++
+	m.cancelledSpotReqIDs = params.SpotInstanceRequestIds
+	if m.cancelSpotErr != nil {
+		return nil, m.cancelSpotErr
+	}
+	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
 }
 
 // mockSecretsStore implements secrets.Store for testing.
@@ -1290,4 +1315,117 @@ func TestEphemeralPoolTTL(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+func TestExecuteOrphanedSpotRequests_NoSpotRequests(t *testing.T) {
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ec2Client.cancelSpotCalls != 0 {
+		t.Errorf("expected 0 cancel calls, got %d", ec2Client.cancelSpotCalls)
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_CancelsOrphanedRequests(t *testing.T) {
+	// Simulate spot requests with instances that no longer exist
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-orphaned1"),
+				InstanceId:            strPtr("i-deleted1"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+			{
+				SpotInstanceRequestId: strPtr("sir-orphaned2"),
+				InstanceId:            strPtr("i-deleted2"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+		},
+		instances: []ec2types.Reservation{}, // No instances exist
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ec2Client.cancelSpotCalls != 1 {
+		t.Errorf("expected 1 cancel call, got %d", ec2Client.cancelSpotCalls)
+	}
+
+	if len(ec2Client.cancelledSpotReqIDs) != 2 {
+		t.Errorf("expected 2 spot requests cancelled, got %d", len(ec2Client.cancelledSpotReqIDs))
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_KeepsActiveRequests(t *testing.T) {
+	now := time.Now()
+	ec2Client := &mockEC2API{
+		spotRequests: []ec2types.SpotInstanceRequest{
+			{
+				SpotInstanceRequestId: strPtr("sir-active"),
+				InstanceId:            strPtr("i-running"),
+				State:                 ec2types.SpotInstanceStateActive,
+			},
+		},
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: strPtr("i-running"),
+						LaunchTime: &now,
+						State: &ec2types.InstanceState{
+							Name: ec2types.InstanceStateNameRunning,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ec2Client.cancelSpotCalls != 0 {
+		t.Errorf("expected 0 cancel calls for active requests, got %d", ec2Client.cancelSpotCalls)
+	}
+}
+
+func TestExecuteOrphanedSpotRequests_DescribeError(t *testing.T) {
+	ec2Client := &mockEC2API{
+		describeSpotErr: errors.New("API error"),
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		config:    &config.Config{},
+	}
+
+	err := tasks.ExecuteOrphanedSpotRequests(context.Background())
+	if err == nil {
+		t.Fatal("expected error from describe spot requests")
+	}
 }

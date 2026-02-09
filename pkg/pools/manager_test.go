@@ -28,12 +28,14 @@ type MockDBClient struct {
 	GetPoolConfigFunc            func(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
 	ListPoolsFunc                func(ctx context.Context) ([]string, error)
-	GetPoolP90ConcurrencyFunc   func(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolP90ConcurrencyFunc    func(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
 	ReleaseInstanceClaimFunc     func(ctx context.Context, instanceID string, jobID int64) error
+	SaveSpotRequestIDFunc        func(ctx context.Context, instanceID, spotRequestID string, persistent bool) error
+	GetSpotRequestIDsFunc        func(ctx context.Context, instanceIDs []string) (map[string]db.SpotRequestInfo, error)
 }
 
 func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -99,9 +101,24 @@ func (m *MockDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID stri
 	return nil
 }
 
+func (m *MockDBClient) SaveSpotRequestID(ctx context.Context, instanceID, spotRequestID string, persistent bool) error {
+	if m.SaveSpotRequestIDFunc != nil {
+		return m.SaveSpotRequestIDFunc(ctx, instanceID, spotRequestID, persistent)
+	}
+	return nil
+}
+
+func (m *MockDBClient) GetSpotRequestIDs(ctx context.Context, instanceIDs []string) (map[string]db.SpotRequestInfo, error) {
+	if m.GetSpotRequestIDsFunc != nil {
+		return m.GetSpotRequestIDsFunc(ctx, instanceIDs)
+	}
+	return make(map[string]db.SpotRequestInfo), nil
+}
+
 // MockFleetAPI implements FleetAPI interface
 type MockFleetAPI struct {
-	CreateFleetFunc func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	CreateFleetFunc                func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	GetSpotRequestIDForInstanceFunc func(ctx context.Context, instanceID string) (string, error)
 }
 
 func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -109,6 +126,13 @@ func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) 
 		return m.CreateFleetFunc(ctx, spec)
 	}
 	return nil, nil
+}
+
+func (m *MockFleetAPI) GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error) {
+	if m.GetSpotRequestIDForInstanceFunc != nil {
+		return m.GetSpotRequestIDForInstanceFunc(ctx, instanceID)
+	}
+	return "", nil
 }
 
 func TestReconcileLoop(t *testing.T) {
@@ -256,12 +280,14 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
+//nolint:dupl // Mock struct mirrors EC2API interface - intentional pattern
 // MockEC2API implements EC2API interface
 type MockEC2API struct {
-	DescribeInstancesFunc  func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
-	StartInstancesFunc     func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
-	StopInstancesFunc      func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
-	TerminateInstancesFunc func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	DescribeInstancesFunc          func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	StartInstancesFunc             func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
+	StopInstancesFunc              func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	TerminateInstancesFunc         func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	CancelSpotInstanceRequestsFunc func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
 }
 
 func (m *MockEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -290,6 +316,13 @@ func (m *MockEC2API) TerminateInstances(ctx context.Context, params *ec2.Termina
 		return m.TerminateInstancesFunc(ctx, params, optFns...)
 	}
 	return &ec2.TerminateInstancesOutput{}, nil
+}
+
+func (m *MockEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+	if m.CancelSpotInstanceRequestsFunc != nil {
+		return m.CancelSpotInstanceRequestsFunc(ctx, params, optFns...)
+	}
+	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
 }
 
 func TestSetEC2Client(t *testing.T) {

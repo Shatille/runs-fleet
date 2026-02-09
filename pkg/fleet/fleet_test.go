@@ -13,9 +13,10 @@ import (
 )
 
 type mockEC2Client struct {
-	CreateFleetFunc                    func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
-	DescribeSpotPriceHistoryFunc       func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
-	DescribeInstanceTypeOfferingsFunc  func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
+	CreateFleetFunc                   func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	DescribeSpotPriceHistoryFunc      func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
+	DescribeInstanceTypeOfferingsFunc func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
+	DescribeInstancesFunc             func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 }
 
 func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
@@ -54,6 +55,13 @@ func (m *mockEC2Client) DescribeInstanceTypeOfferings(ctx context.Context, param
 			{InstanceType: types.InstanceTypeC6iXlarge},
 		},
 	}, nil
+}
+
+func (m *mockEC2Client) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	if m.DescribeInstancesFunc != nil {
+		return m.DescribeInstancesFunc(ctx, params, optFns...)
+	}
+	return &ec2.DescribeInstancesOutput{}, nil
 }
 
 func TestCreateFleet(t *testing.T) {
@@ -1067,5 +1075,177 @@ func TestBuildLaunchTemplateConfigs_AllTypesUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no instance types available") {
 		t.Errorf("expected 'no instance types available' error, got: %v", err)
+	}
+}
+
+func TestCreateFleet_PersistentSpot(t *testing.T) {
+	tests := []struct {
+		name                      string
+		spec                      *LaunchSpec
+		config                    *config.Config
+		wantInterruptionBehavior  types.SpotInstanceInterruptionBehavior
+		wantNoInterruptionBehavior bool
+	}{
+		{
+			name: "Persistent spot sets interruption behavior to stop",
+			spec: &LaunchSpec{
+				RunID:          12345,
+				InstanceType:   "t4g.medium",
+				SubnetID:       "subnet-1",
+				Spot:           true,
+				PersistentSpot: true,
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
+		},
+		{
+			name: "Non-persistent spot does not set interruption behavior",
+			spec: &LaunchSpec{
+				RunID:          12345,
+				InstanceType:   "t4g.medium",
+				SubnetID:       "subnet-1",
+				Spot:           true,
+				PersistentSpot: false,
+			},
+			config: &config.Config{
+				SpotEnabled: true,
+			},
+			wantNoInterruptionBehavior: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEC2Client{
+				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+					if tt.wantNoInterruptionBehavior {
+						if params.SpotOptions != nil && params.SpotOptions.InstanceInterruptionBehavior != "" {
+							t.Errorf("InstanceInterruptionBehavior should not be set for non-persistent spot")
+						}
+					} else {
+						if params.SpotOptions == nil {
+							t.Error("SpotOptions should not be nil for spot request")
+						} else if params.SpotOptions.InstanceInterruptionBehavior != tt.wantInterruptionBehavior {
+							t.Errorf("InstanceInterruptionBehavior = %v, want %v",
+								params.SpotOptions.InstanceInterruptionBehavior, tt.wantInterruptionBehavior)
+						}
+					}
+					return &ec2.CreateFleetOutput{
+						Instances: []types.CreateFleetInstance{
+							{InstanceIds: []string{"i-123456789"}},
+						},
+					}, nil
+				},
+			}
+
+			manager := &Manager{
+				ec2Client: mock,
+				config:    tt.config,
+			}
+
+			_, err := manager.CreateFleet(context.Background(), tt.spec)
+			if err != nil {
+				t.Errorf("CreateFleet() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestGetSpotRequestIDForInstance(t *testing.T) {
+	tests := []struct {
+		name           string
+		instanceID     string
+		mockResponse   *ec2.DescribeInstancesOutput
+		mockError      error
+		wantSpotReqID  string
+		wantErr        bool
+		wantErrContains string
+	}{
+		{
+			name:       "Returns spot request ID for spot instance",
+			instanceID: "i-123456789",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{
+					{
+						Instances: []types.Instance{
+							{
+								InstanceId:            aws.String("i-123456789"),
+								SpotInstanceRequestId: aws.String("sir-abcdef12"),
+							},
+						},
+					},
+				},
+			},
+			wantSpotReqID: "sir-abcdef12",
+		},
+		{
+			name:       "Returns empty string for on-demand instance",
+			instanceID: "i-123456789",
+			mockResponse: &ec2.DescribeInstancesOutput{
+				Reservations: []types.Reservation{
+					{
+						Instances: []types.Instance{
+							{
+								InstanceId:            aws.String("i-123456789"),
+								SpotInstanceRequestId: nil,
+							},
+						},
+					},
+				},
+			},
+			wantSpotReqID: "",
+		},
+		{
+			name:            "Returns error for empty instance ID",
+			instanceID:     "",
+			wantErr:        true,
+			wantErrContains: "instance ID cannot be empty",
+		},
+		{
+			name:            "Returns error on API failure",
+			instanceID:     "i-123456789",
+			mockError:      errors.New("API error"),
+			wantErr:        true,
+			wantErrContains: "failed to describe instance",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEC2Client{
+				DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+					if tt.mockError != nil {
+						return nil, tt.mockError
+					}
+					return tt.mockResponse, nil
+				},
+			}
+
+			manager := &Manager{
+				ec2Client: mock,
+				config:    &config.Config{},
+			}
+
+			spotReqID, err := manager.GetSpotRequestIDForInstance(context.Background(), tt.instanceID)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
+					t.Errorf("error = %q, want error containing %q", err, tt.wantErrContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if spotReqID != tt.wantSpotReqID {
+				t.Errorf("spotReqID = %q, want %q", spotReqID, tt.wantSpotReqID)
+			}
+		})
 	}
 }

@@ -28,6 +28,7 @@ type PoolDB interface {
 	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	SavePoolConfig(ctx context.Context, config *db.PoolConfig) error
 	DeletePoolConfig(ctx context.Context, poolName string) error
+	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 }
 
 // Handler provides HTTP endpoints for pool configuration management.
@@ -54,6 +55,9 @@ type PoolResponse struct {
 	InstanceType       string             `json:"instance_type,omitempty"`
 	DesiredRunning     int                `json:"desired_running"`
 	DesiredStopped     int                `json:"desired_stopped"`
+	CurrentRunning     int                `json:"current_running"`
+	CurrentStopped     int                `json:"current_stopped"`
+	BusyInstances      int                `json:"busy_instances"`
 	IdleTimeoutMinutes int                `json:"idle_timeout_minutes,omitempty"`
 	Ephemeral          bool               `json:"ephemeral"`
 	Environment        string             `json:"environment,omitempty"`
@@ -143,7 +147,15 @@ func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
 		if config == nil {
 			continue
 		}
-		pools = append(pools, h.configToResponse(config))
+
+		busyIDs, err := h.db.GetPoolBusyInstanceIDs(ctx, name)
+		if err != nil {
+			adminLog.Warn("failed to get busy instances",
+				slog.String(logging.KeyPoolName, name),
+				slog.String("error", err.Error()))
+		}
+
+		pools = append(pools, h.configToResponseWithBusy(config, len(busyIDs)))
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -153,13 +165,14 @@ func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
 
 // GetPool handles GET /api/pools/{name}.
 func (h *Handler) GetPool(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	name := r.PathValue("name")
 	if name == "" {
 		h.writeError(w, http.StatusBadRequest, "Pool name is required", "")
 		return
 	}
 
-	config, err := h.db.GetPoolConfig(r.Context(), name)
+	config, err := h.db.GetPoolConfig(ctx, name)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
@@ -169,7 +182,14 @@ func (h *Handler) GetPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, h.configToResponse(config))
+	busyIDs, err := h.db.GetPoolBusyInstanceIDs(ctx, name)
+	if err != nil {
+		adminLog.Warn("failed to get busy instances",
+			slog.String(logging.KeyPoolName, name),
+			slog.String("error", err.Error()))
+	}
+
+	h.writeJSON(w, http.StatusOK, h.configToResponseWithBusy(config, len(busyIDs)))
 }
 
 // CreatePool handles POST /api/pools.
@@ -368,11 +388,18 @@ func (h *Handler) validatePoolRequest(req *PoolRequest, isCreate bool) error {
 }
 
 func (h *Handler) configToResponse(config *db.PoolConfig) PoolResponse {
+	return h.configToResponseWithBusy(config, 0)
+}
+
+func (h *Handler) configToResponseWithBusy(config *db.PoolConfig, busyCount int) PoolResponse {
 	resp := PoolResponse{
 		PoolName:           config.PoolName,
 		InstanceType:       config.InstanceType,
 		DesiredRunning:     config.DesiredRunning,
 		DesiredStopped:     config.DesiredStopped,
+		CurrentRunning:     config.CurrentRunning,
+		CurrentStopped:     config.CurrentStopped,
+		BusyInstances:      busyCount,
 		IdleTimeoutMinutes: config.IdleTimeoutMinutes,
 		Ephemeral:          config.Ephemeral,
 		Environment:        config.Environment,
@@ -457,8 +484,13 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 	if remoteAddr == "" {
 		remoteAddr = r.RemoteAddr
 	}
+	user := GetUsername(r.Context())
+	if user == "" {
+		user = "anonymous"
+	}
 	attrs := []any{
 		slog.Bool(logging.KeyAudit, true),
+		slog.String(logging.KeyUser, user),
 		slog.String(logging.KeyAction, action),
 		slog.String(logging.KeyPoolName, poolName),
 		slog.String(logging.KeyResult, result),

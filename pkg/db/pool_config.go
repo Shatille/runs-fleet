@@ -32,8 +32,10 @@ type PoolConfig struct {
 	InstanceType string `dynamodbav:"instance_type"`
 	// DesiredRunning is the number of ready (idle) instances to maintain.
 	// Busy instances (running jobs) are not counted toward this target.
-	DesiredRunning int            `dynamodbav:"desired_running"`
-	DesiredStopped int            `dynamodbav:"desired_stopped"`
+	DesiredRunning     int            `dynamodbav:"desired_running"`
+	DesiredStopped     int            `dynamodbav:"desired_stopped"`
+	CurrentRunning     int            `dynamodbav:"current_running,omitempty"`
+	CurrentStopped     int            `dynamodbav:"current_stopped,omitempty"`
 	IdleTimeoutMinutes int            `dynamodbav:"idle_timeout_minutes,omitempty"`
 	Schedules          []PoolSchedule `dynamodbav:"schedules,omitempty"`
 	// Environment isolation
