@@ -2663,3 +2663,382 @@ func TestInstanceClaimKey(t *testing.T) {
 		})
 	}
 }
+
+// Phase 1: Spot Request ID Storage Tests
+
+func TestSaveSpotRequestID_Success(t *testing.T) {
+	scanCalls := 0
+	updateCalls := 0
+
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			scanCalls++
+			// Verify filter expression
+			if params.FilterExpression == nil || !strings.Contains(*params.FilterExpression, "instance_id") {
+				t.Error("ScanFunc should filter by instance_id")
+			}
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"job_id": &types.AttributeValueMemberN{Value: "12345"},
+					},
+				},
+			}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			updateCalls++
+			// Verify update expression contains spot request fields
+			if params.UpdateExpression == nil || !strings.Contains(*params.UpdateExpression, "spot_request_id") {
+				t.Error("UpdateItemFunc should update spot_request_id")
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "i-12345", "sir-abcdef", true)
+	if err != nil {
+		t.Fatalf("SaveSpotRequestID() error = %v", err)
+	}
+
+	if scanCalls != 1 {
+		t.Errorf("expected 1 scan call, got %d", scanCalls)
+	}
+	if updateCalls != 1 {
+		t.Errorf("expected 1 update call, got %d", updateCalls)
+	}
+}
+
+func TestSaveSpotRequestID_EmptyInstanceID(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "", "sir-abcdef", true)
+	if err == nil {
+		t.Error("SaveSpotRequestID() should fail with empty instance ID")
+	}
+	if !strings.Contains(err.Error(), "instance ID cannot be empty") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveSpotRequestID_EmptySpotRequestID(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "i-12345", "", true)
+	if err == nil {
+		t.Error("SaveSpotRequestID() should fail with empty spot request ID")
+	}
+	if !strings.Contains(err.Error(), "spot request ID cannot be empty") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveSpotRequestID_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "i-12345", "sir-abcdef", true)
+	if err == nil {
+		t.Error("SaveSpotRequestID() should fail when jobs table not configured")
+	}
+	if !strings.Contains(err.Error(), "jobs table not configured") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveSpotRequestID_JobNotFound(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "i-nonexistent", "sir-abcdef", true)
+	if err == nil {
+		t.Error("SaveSpotRequestID() should fail when job not found")
+	}
+	if !strings.Contains(err.Error(), "no job found for instance") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveSpotRequestID_ScanError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			return nil, errors.New("dynamodb scan error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "i-12345", "sir-abcdef", true)
+	if err == nil {
+		t.Error("SaveSpotRequestID() should fail on scan error")
+	}
+	if !strings.Contains(err.Error(), "failed to find job") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveSpotRequestID_UpdateError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{"job_id": &types.AttributeValueMemberN{Value: "12345"}},
+				},
+			}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, errors.New("dynamodb update error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveSpotRequestID(context.Background(), "i-12345", "sir-abcdef", true)
+	if err == nil {
+		t.Error("SaveSpotRequestID() should fail on update error")
+	}
+	if !strings.Contains(err.Error(), "failed to save spot request ID") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSpotRequestIDs_Success(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			// Verify filter for persistent_spot
+			if params.FilterExpression == nil || !strings.Contains(*params.FilterExpression, "persistent_spot") {
+				t.Error("ScanFunc should filter by persistent_spot")
+			}
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"instance_id":      &types.AttributeValueMemberS{Value: "i-12345"},
+						"spot_request_id":  &types.AttributeValueMemberS{Value: "sir-abcdef"},
+						"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+					},
+					{
+						"instance_id":      &types.AttributeValueMemberS{Value: "i-67890"},
+						"spot_request_id":  &types.AttributeValueMemberS{Value: "sir-ghijkl"},
+						"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+					},
+					{
+						"instance_id":      &types.AttributeValueMemberS{Value: "i-other"},
+						"spot_request_id":  &types.AttributeValueMemberS{Value: "sir-other"},
+						"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+					},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	result, err := client.GetSpotRequestIDs(context.Background(), []string{"i-12345", "i-67890"})
+	if err != nil {
+		t.Fatalf("GetSpotRequestIDs() error = %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 results, got %d", len(result))
+	}
+
+	if info, ok := result["i-12345"]; !ok {
+		t.Error("expected i-12345 in result")
+	} else {
+		if info.SpotRequestID != "sir-abcdef" {
+			t.Errorf("SpotRequestID = %s, want sir-abcdef", info.SpotRequestID)
+		}
+		if !info.Persistent {
+			t.Error("expected Persistent = true")
+		}
+	}
+
+	if info, ok := result["i-67890"]; !ok {
+		t.Error("expected i-67890 in result")
+	} else {
+		if info.SpotRequestID != "sir-ghijkl" {
+			t.Errorf("SpotRequestID = %s, want sir-ghijkl", info.SpotRequestID)
+		}
+	}
+
+	// i-other should not be in result (not in requested list)
+	if _, ok := result["i-other"]; ok {
+		t.Error("i-other should not be in result")
+	}
+}
+
+func TestGetSpotRequestIDs_EmptyInput(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "jobs-table",
+	}
+
+	result, err := client.GetSpotRequestIDs(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("GetSpotRequestIDs() error = %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %d items", len(result))
+	}
+}
+
+func TestGetSpotRequestIDs_NoJobsTable(t *testing.T) {
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	_, err := client.GetSpotRequestIDs(context.Background(), []string{"i-12345"})
+	if err == nil {
+		t.Error("GetSpotRequestIDs() should fail when jobs table not configured")
+	}
+	if !strings.Contains(err.Error(), "jobs table not configured") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSpotRequestIDs_ScanError(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			return nil, errors.New("dynamodb scan error")
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	_, err := client.GetSpotRequestIDs(context.Background(), []string{"i-12345"})
+	if err == nil {
+		t.Error("GetSpotRequestIDs() should fail on scan error")
+	}
+	if !strings.Contains(err.Error(), "failed to scan") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestGetSpotRequestIDs_Pagination(t *testing.T) {
+	scanCalls := 0
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			scanCalls++
+			if scanCalls == 1 {
+				// First page
+				return &dynamodb.ScanOutput{
+					Items: []map[string]types.AttributeValue{
+						{
+							"instance_id":      &types.AttributeValueMemberS{Value: "i-page1"},
+							"spot_request_id":  &types.AttributeValueMemberS{Value: "sir-page1"},
+							"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+						},
+					},
+					LastEvaluatedKey: map[string]types.AttributeValue{
+						"job_id": &types.AttributeValueMemberN{Value: "100"},
+					},
+				}, nil
+			}
+			// Second page (last)
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"instance_id":      &types.AttributeValueMemberS{Value: "i-page2"},
+						"spot_request_id":  &types.AttributeValueMemberS{Value: "sir-page2"},
+						"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+					},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	result, err := client.GetSpotRequestIDs(context.Background(), []string{"i-page1", "i-page2"})
+	if err != nil {
+		t.Fatalf("GetSpotRequestIDs() error = %v", err)
+	}
+
+	if scanCalls != 2 {
+		t.Errorf("expected 2 scan calls for pagination, got %d", scanCalls)
+	}
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 results, got %d", len(result))
+	}
+
+	if _, ok := result["i-page1"]; !ok {
+		t.Error("expected i-page1 in result")
+	}
+	if _, ok := result["i-page2"]; !ok {
+		t.Error("expected i-page2 in result")
+	}
+}
+
+func TestGetSpotRequestIDs_MissingSpotRequestID(t *testing.T) {
+	mockDB := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{
+						"instance_id":      &types.AttributeValueMemberS{Value: "i-12345"},
+						"spot_request_id":  &types.AttributeValueMemberS{Value: ""}, // Empty
+						"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+					},
+					{
+						"instance_id":      &types.AttributeValueMemberS{Value: "i-67890"},
+						// Missing spot_request_id entirely
+						"persistent_spot":  &types.AttributeValueMemberBOOL{Value: true},
+					},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	result, err := client.GetSpotRequestIDs(context.Background(), []string{"i-12345", "i-67890"})
+	if err != nil {
+		t.Fatalf("GetSpotRequestIDs() error = %v", err)
+	}
+
+	// Neither should be in result since spot_request_id is empty/missing
+	if len(result) != 0 {
+		t.Errorf("expected 0 results for empty/missing spot_request_id, got %d", len(result))
+	}
+}

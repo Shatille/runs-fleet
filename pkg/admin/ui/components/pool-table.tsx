@@ -24,6 +24,9 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
               Stopped
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Busy
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Arch
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -55,10 +58,23 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
                 {pool.instance_type || '-'}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                {pool.desired_running}
+                <span className={pool.current_running !== pool.desired_running ? 'text-yellow-600' : ''}>
+                  {pool.current_running ?? '-'}/{pool.desired_running}
+                </span>
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                {pool.desired_stopped}
+                <span className={pool.current_stopped !== pool.desired_stopped ? 'text-yellow-600' : ''}>
+                  {pool.current_stopped ?? '-'}/{pool.desired_stopped}
+                </span>
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                {pool.busy_instances > 0 ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                    {pool.busy_instances}
+                  </span>
+                ) : (
+                  <span className="text-gray-400">0</span>
+                )}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                 {pool.arch || '-'}

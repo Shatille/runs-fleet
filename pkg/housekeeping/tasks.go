@@ -27,6 +27,8 @@ import (
 type EC2API interface {
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	DescribeSpotInstanceRequests(ctx context.Context, params *ec2.DescribeSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error)
+	CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
 }
 
 // DynamoDBAPI defines DynamoDB operations for housekeeping.
@@ -697,6 +699,104 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// ExecuteOrphanedSpotRequests finds and cancels spot instance requests whose instances no longer exist.
+// This cleans up persistent spot requests that were not properly cancelled during instance termination.
+func (t *Tasks) ExecuteOrphanedSpotRequests(ctx context.Context) error {
+	// Find all active spot requests with runs-fleet:managed tag
+	input := &ec2.DescribeSpotInstanceRequestsInput{
+		Filters: []ec2types.Filter{
+			{
+				Name:   aws.String("tag:runs-fleet:managed"),
+				Values: []string{"true"},
+			},
+			{
+				Name:   aws.String("state"),
+				Values: []string{"open", "active", "disabled"},
+			},
+		},
+	}
+
+	output, err := t.ec2Client.DescribeSpotInstanceRequests(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to describe spot instance requests: %w", err)
+	}
+
+	if len(output.SpotInstanceRequests) == 0 {
+		t.logger().Debug("no managed spot requests found")
+		return nil
+	}
+
+	// Collect instance IDs to check for existence
+	var instanceIDs []string
+	requestToInstance := make(map[string]string) // spot request ID -> instance ID
+	for _, req := range output.SpotInstanceRequests {
+		if req.SpotInstanceRequestId == nil {
+			continue
+		}
+		// Only check fulfilled requests (have an instance ID)
+		if req.InstanceId != nil && *req.InstanceId != "" {
+			instanceIDs = append(instanceIDs, *req.InstanceId)
+			requestToInstance[*req.SpotInstanceRequestId] = *req.InstanceId
+		}
+	}
+
+	if len(instanceIDs) == 0 {
+		return nil
+	}
+
+	// Check which instances still exist
+	existingInstances := t.batchCheckInstances(ctx, instanceIDsToOrphanedCandidates(instanceIDs))
+
+	// Cancel spot requests for non-existent instances
+	var orphanedRequestIDs []string
+	for reqID, instanceID := range requestToInstance {
+		if !existingInstances[instanceID] {
+			orphanedRequestIDs = append(orphanedRequestIDs, reqID)
+		}
+	}
+
+	if len(orphanedRequestIDs) == 0 {
+		return nil
+	}
+
+	// Cancel orphaned spot requests in batches of 100
+	const batchSize = 100
+	var cancelledCount int
+	for i := 0; i < len(orphanedRequestIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(orphanedRequestIDs) {
+			end = len(orphanedRequestIDs)
+		}
+		batch := orphanedRequestIDs[i:end]
+
+		_, err := t.ec2Client.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
+			SpotInstanceRequestIds: batch,
+		})
+		if err != nil {
+			t.logger().Error("spot request cancellation failed",
+				slog.Int("count", len(batch)),
+				slog.String("error", err.Error()))
+			continue
+		}
+		cancelledCount += len(batch)
+	}
+
+	if cancelledCount > 0 {
+		t.logger().Info("orphaned spot requests cancelled",
+			slog.Int(logging.KeyCount, cancelledCount))
+	}
+	return nil
+}
+
+// instanceIDsToOrphanedCandidates converts instance IDs to orphanedJobCandidate slice for batch checking.
+func instanceIDsToOrphanedCandidates(instanceIDs []string) []orphanedJobCandidate {
+	candidates := make([]orphanedJobCandidate, len(instanceIDs))
+	for i, id := range instanceIDs {
+		candidates[i] = orphanedJobCandidate{InstanceID: id}
+	}
+	return candidates
 }
 
 // terminatePoolInstances terminates all EC2 instances belonging to a pool.

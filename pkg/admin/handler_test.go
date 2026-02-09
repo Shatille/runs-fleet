@@ -63,6 +63,10 @@ func (m *mockPoolDB) DeletePoolConfig(_ context.Context, poolName string) error 
 	return nil
 }
 
+func (m *mockPoolDB) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 func TestListPools(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -1,9 +1,7 @@
 package admin
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -13,43 +11,67 @@ import (
 
 var adminAuthLog = logging.WithComponent(logging.LogTypeAdmin, "auth")
 
-// AuthMiddleware provides authentication for admin API endpoints.
+type contextKey string
+
+const (
+	// UserContextKey is the context key for the authenticated user.
+	UserContextKey contextKey = "admin_user"
+	// GroupsContextKey is the context key for the user's groups.
+	GroupsContextKey contextKey = "admin_groups"
+)
+
+// Keycloak gatekeeper proxy headers
+const (
+	HeaderUser   = "X-Auth-Request-User"
+	HeaderGroups = "X-Auth-Request-Groups"
+	HeaderEmail  = "X-Auth-Request-Email"
+)
+
+// UserInfo contains authenticated user information from Keycloak.
+type UserInfo struct {
+	Username string
+	Email    string
+	Groups   []string
+}
+
+// AuthMiddleware validates requests authenticated by Keycloak gatekeeper proxy.
+// It expects the proxy to set X-Auth-Request-User and optionally X-Auth-Request-Groups headers.
 type AuthMiddleware struct {
-	secret  string
-	enabled bool
+	// requireAuth when true, rejects requests without valid Keycloak headers.
+	// Set to false for local development without Keycloak.
+	requireAuth bool
 }
 
 // NewAuthMiddleware creates authentication middleware for admin endpoints.
-// If secret is empty, authentication is disabled.
-func NewAuthMiddleware(secret string) *AuthMiddleware {
+// When requireAuth is true (non-empty string passed), requests without Keycloak headers are rejected.
+// For backwards compatibility, pass empty string to disable auth requirement.
+func NewAuthMiddleware(requireAuth string) *AuthMiddleware {
 	return &AuthMiddleware{
-		secret:  secret,
-		enabled: secret != "",
+		requireAuth: requireAuth != "",
 	}
 }
 
-// Wrap returns an http.Handler that validates the admin token before calling the next handler.
+// Wrap returns an http.Handler that extracts user identity from Keycloak headers.
 func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !m.enabled {
-			next.ServeHTTP(w, r)
+		user := m.extractUserInfo(r)
+
+		if m.requireAuth && user.Username == "" {
+			adminAuthLog.Warn("admin auth failed: missing user header",
+				slog.String("remote_addr", r.RemoteAddr),
+				slog.String("path", r.URL.Path))
+			http.Error(w, "Unauthorized: authentication required", http.StatusUnauthorized)
 			return
 		}
 
-		token := m.extractToken(r)
-		if token == "" {
-			adminAuthLog.Warn("admin auth failed: missing token", slog.String("remote_addr", r.RemoteAddr))
-			http.Error(w, "Unauthorized: missing admin token", http.StatusUnauthorized)
-			return
+		// Add user info to context
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, UserContextKey, user)
+		if len(user.Groups) > 0 {
+			ctx = context.WithValue(ctx, GroupsContextKey, user.Groups)
 		}
 
-		if !m.validateToken(token) {
-			adminAuthLog.Warn("admin auth failed: invalid token", slog.String("remote_addr", r.RemoteAddr))
-			http.Error(w, "Unauthorized: invalid admin token", http.StatusUnauthorized)
-			return
-		}
-
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -58,63 +80,38 @@ func (m *AuthMiddleware) WrapFunc(next http.HandlerFunc) http.Handler {
 	return m.Wrap(next)
 }
 
-// IsEnabled returns whether authentication is enabled.
+// IsEnabled returns whether authentication is required.
 func (m *AuthMiddleware) IsEnabled() bool {
-	return m.enabled
+	return m.requireAuth
 }
 
-func (m *AuthMiddleware) extractToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	return ""
-}
-
-func (m *AuthMiddleware) validateToken(token string) bool {
-	h := hmac.New(sha256.New, []byte(m.secret))
-	h.Write([]byte("admin"))
-	expected := h.Sum(nil)
-
-	provided, err := decodeHex(token)
-	if err != nil {
-		return false
+func (m *AuthMiddleware) extractUserInfo(r *http.Request) UserInfo {
+	user := UserInfo{
+		Username: r.Header.Get(HeaderUser),
+		Email:    r.Header.Get(HeaderEmail),
 	}
 
-	return subtle.ConstantTimeCompare(expected, provided) == 1
-}
-
-func decodeHex(s string) ([]byte, error) {
-	if len(s)%2 != 0 {
-		return nil, errInvalidHex
-	}
-	result := make([]byte, len(s)/2)
-	for i := 0; i < len(s); i += 2 {
-		a := hexVal(s[i])
-		b := hexVal(s[i+1])
-		if a < 0 || b < 0 {
-			return nil, errInvalidHex
+	if groups := r.Header.Get(HeaderGroups); groups != "" {
+		user.Groups = strings.Split(groups, ",")
+		for i := range user.Groups {
+			user.Groups[i] = strings.TrimSpace(user.Groups[i])
 		}
-		result[i/2] = byte(a<<4 | b)
 	}
-	return result, nil
+
+	return user
 }
 
-func hexVal(c byte) int {
-	switch {
-	case '0' <= c && c <= '9':
-		return int(c - '0')
-	case 'a' <= c && c <= 'f':
-		return int(c - 'a' + 10)
-	case 'A' <= c && c <= 'F':
-		return int(c - 'A' + 10)
-	default:
-		return -1
+// GetUser returns the authenticated user from the request context.
+// Returns empty UserInfo if not authenticated.
+func GetUser(ctx context.Context) UserInfo {
+	if user, ok := ctx.Value(UserContextKey).(UserInfo); ok {
+		return user
 	}
+	return UserInfo{}
 }
 
-type hexError struct{}
-
-func (hexError) Error() string { return "invalid hex encoding" }
-
-var errInvalidHex = hexError{}
+// GetUsername returns the authenticated username from the request context.
+// Returns empty string if not authenticated.
+func GetUsername(ctx context.Context) string {
+	return GetUser(ctx).Username
+}
