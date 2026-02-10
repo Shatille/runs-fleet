@@ -1080,12 +1080,13 @@ func TestBuildLaunchTemplateConfigs_AllTypesUnavailable(t *testing.T) {
 
 func TestCreateFleet_PersistentSpot(t *testing.T) {
 	tests := []struct {
-		name                      string
-		spec                      *LaunchSpec
-		config                    *config.Config
-		wantInterruptionBehavior  types.SpotInstanceInterruptionBehavior
+		name                       string
+		spec                       *LaunchSpec
+		config                     *config.Config
+		wantInterruptionBehavior   types.SpotInstanceInterruptionBehavior
 		wantNoInterruptionBehavior bool
-		wantOnDemand              bool
+		wantOnDemand               bool
+		wantFleetType              types.FleetType
 	}{
 		{
 			name: "Persistent spot sets interruption behavior to stop",
@@ -1100,6 +1101,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 				SpotEnabled: true,
 			},
 			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
+			wantFleetType:            types.FleetTypeRequest,
 		},
 		{
 			name: "Non-persistent spot does not set interruption behavior",
@@ -1114,6 +1116,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 				SpotEnabled: true,
 			},
 			wantNoInterruptionBehavior: true,
+			wantFleetType:              types.FleetTypeInstant,
 		},
 		{
 			name: "Persistent spot with on-demand request ignores persistent flag",
@@ -1127,8 +1130,9 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			config: &config.Config{
 				SpotEnabled: true,
 			},
-			wantOnDemand:              true,
+			wantOnDemand:               true,
 			wantNoInterruptionBehavior: true,
+			wantFleetType:              types.FleetTypeInstant,
 		},
 		{
 			name: "Persistent spot with global spot disabled becomes on-demand",
@@ -1142,8 +1146,9 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			config: &config.Config{
 				SpotEnabled: false,
 			},
-			wantOnDemand:              true,
+			wantOnDemand:               true,
 			wantNoInterruptionBehavior: true,
+			wantFleetType:              types.FleetTypeInstant,
 		},
 		{
 			name: "Persistent spot with pool",
@@ -1159,6 +1164,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 				SpotEnabled: true,
 			},
 			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
+			wantFleetType:            types.FleetTypeRequest,
 		},
 	}
 
@@ -1166,6 +1172,11 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockEC2Client{
 				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+					// Check fleet type
+					if params.Type != tt.wantFleetType {
+						t.Errorf("FleetType = %v, want %v", params.Type, tt.wantFleetType)
+					}
+
 					// Check on-demand vs spot
 					if tt.wantOnDemand {
 						if params.TargetCapacitySpecification.DefaultTargetCapacityType != types.DefaultTargetCapacityTypeOnDemand {

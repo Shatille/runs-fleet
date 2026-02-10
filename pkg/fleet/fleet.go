@@ -190,7 +190,9 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		}
 		// Persistent spot requests can be stopped and restarted (for warm pools)
 		// One-time spot requests terminate when interrupted (for cold-start jobs)
+		// Persistent spot requires "request" fleet type since "instant" only supports "terminate" interruption
 		if spec.PersistentSpot {
+			req.Type = types.FleetTypeRequest
 			req.SpotOptions.InstanceInterruptionBehavior = types.SpotInstanceInterruptionBehaviorStop
 		}
 		totalTypes := 0
