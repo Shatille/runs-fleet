@@ -3,6 +3,7 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	golog "log"
 	"log/slog"
 	"os"
@@ -17,7 +18,7 @@ func Init() {
 		var err error
 		hostname, err = os.Hostname()
 		if err != nil {
-			slog.Warn("failed to get hostname", slog.String(KeyError, err.Error()))
+			fmt.Fprintf(os.Stderr, "logging: failed to get hostname: %v\n", err)
 			hostname = "unknown"
 		}
 	}
