@@ -17,8 +17,10 @@ func Init() {
 	if hostname == "" {
 		var err error
 		hostname, err = os.Hostname()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "logging: failed to get hostname: %v\n", err)
+		if err != nil || hostname == "" {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "logging: failed to get hostname: %v\n", err)
+			}
 			hostname = "unknown"
 		}
 	}
