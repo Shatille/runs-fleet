@@ -33,7 +33,9 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/go-github/v57/github"
 	"github.com/google/uuid"
 )
@@ -131,6 +133,7 @@ func main() {
 
 	ws := &webhookServer{
 		cfg:                cfg,
+		awsCfg:             awsCfg,
 		jobQueue:           jobQueue,
 		dbClient:           dbClient,
 		metricsPublisher:   metricsPublisher,
@@ -390,6 +393,7 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 
 type webhookServer struct {
 	cfg                *config.Config
+	awsCfg             aws.Config
 	jobQueue           queue.Queue
 	dbClient           *db.Client
 	metricsPublisher   metrics.Publisher
@@ -414,8 +418,34 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	cacheHandler := cache.NewHandlerWithAuth(cacheServer, ws.metricsPublisher, ws.cfg.CacheSecret)
 	cacheHandler.RegisterRoutes(mux)
 
+	// Admin API handlers
+	adminAuth := admin.NewAuthMiddleware(ws.cfg.AdminSecret)
+
 	adminHandler := admin.NewHandler(ws.dbClient, ws.cfg.AdminSecret)
 	adminHandler.RegisterRoutes(mux)
+
+	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth)
+	jobsHandler.RegisterRoutes(mux)
+
+	ec2Client := ec2.NewFromConfig(ws.awsCfg)
+	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, adminAuth)
+	instancesHandler.RegisterRoutes(mux)
+
+	sqsClient := sqs.NewFromConfig(ws.awsCfg)
+	queuesHandler := admin.NewQueuesHandler(sqsClient, admin.QueueConfig{
+		MainQueue:         ws.cfg.QueueURL,
+		MainQueueDLQ:      ws.cfg.QueueDLQURL,
+		PoolQueue:         ws.cfg.PoolQueueURL,
+		EventsQueue:       ws.cfg.EventsQueueURL,
+		TerminationQueue:  ws.cfg.TerminationQueueURL,
+		HousekeepingQueue: ws.cfg.HousekeepingQueueURL,
+	}, adminAuth)
+	queuesHandler.RegisterRoutes(mux)
+
+	dynamoClient := dynamodb.NewFromConfig(ws.awsCfg)
+	circuitHandler := admin.NewCircuitHandler(dynamoClient, ws.cfg.CircuitBreakerTable, adminAuth)
+	circuitHandler.RegisterRoutes(mux)
+
 	mux.Handle("/admin/", admin.UIHandler())
 
 	mux.HandleFunc("/webhook", ws.handleWebhook)
