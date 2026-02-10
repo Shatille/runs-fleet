@@ -3,6 +3,7 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	golog "log"
 	"log/slog"
 	"os"
@@ -12,8 +13,23 @@ import (
 // Init configures the default slog logger with JSON output and
 // redirects stdlib log to the structured logger.
 func Init() {
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		var err error
+		hostname, err = os.Hostname()
+		if err != nil || hostname == "" {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "logging: failed to get hostname: %v\n", err)
+			}
+			hostname = "unknown"
+		}
+	}
+
+	baseHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
+	})
+	handler := baseHandler.WithAttrs([]slog.Attr{
+		slog.String(KeyHost, hostname),
 	})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
@@ -46,6 +62,7 @@ const (
 	KeyCount        = "count"
 	KeyDuration     = "duration_ms"
 	KeyError        = "error"
+	KeyHost         = "host"
 	KeyInstanceID   = "instance_id"
 	KeyInstanceType = "instance_type"
 	KeyJobID        = "job_id"
