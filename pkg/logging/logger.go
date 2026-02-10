@@ -14,7 +14,11 @@ import (
 func Init() {
 	hostname := os.Getenv("HOSTNAME")
 	if hostname == "" {
-		hostname, _ = os.Hostname()
+		var err error
+		hostname, err = os.Hostname()
+		if err != nil {
+			hostname = "unknown"
+		}
 	}
 
 	baseHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
