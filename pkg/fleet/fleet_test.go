@@ -12,8 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+const testInstanceID = "i-123456789"
+
+//nolint:dupl // Intentionally mirrors EC2API interface for testing
 type mockEC2Client struct {
 	CreateFleetFunc                   func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	CreateTagsFunc                    func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 	DescribeSpotPriceHistoryFunc      func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferingsFunc func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstancesFunc             func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
@@ -24,6 +28,13 @@ func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleet
 		return m.CreateFleetFunc(ctx, params, optFns...)
 	}
 	return &ec2.CreateFleetOutput{}, nil
+}
+
+func (m *mockEC2Client) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+	if m.CreateTagsFunc != nil {
+		return m.CreateTagsFunc(ctx, params, optFns...)
+	}
+	return &ec2.CreateTagsOutput{}, nil
 }
 
 func (m *mockEC2Client) DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
@@ -173,7 +184,7 @@ func TestCreateFleet(t *testing.T) {
 					return &ec2.CreateFleetOutput{
 						Instances: []types.CreateFleetInstance{
 							{
-								InstanceIds: []string{"i-123456789"},
+								InstanceIds: []string{testInstanceID},
 							},
 						},
 					}, nil
@@ -192,8 +203,8 @@ func TestCreateFleet(t *testing.T) {
 			if len(instanceIDs) != 1 {
 				t.Errorf("CreateFleet() returned %d instance IDs, want 1", len(instanceIDs))
 			}
-			if len(instanceIDs) > 0 && instanceIDs[0] != "i-123456789" {
-				t.Errorf("CreateFleet() returned instance ID %s, want i-123456789", instanceIDs[0])
+			if len(instanceIDs) > 0 && instanceIDs[0] != testInstanceID {
+				t.Errorf("CreateFleet() returned instance ID %s, want testInstanceID", instanceIDs[0])
 			}
 		})
 	}
@@ -502,7 +513,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 					return &ec2.CreateFleetOutput{
 						Instances: []types.CreateFleetInstance{
 							{
-								InstanceIds: []string{"i-123456789"},
+								InstanceIds: []string{testInstanceID},
 							},
 						},
 					}, nil
@@ -1087,6 +1098,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 		wantNoInterruptionBehavior bool
 		wantOnDemand               bool
 		wantFleetType              types.FleetType
+		wantCreateTagsCalled       bool
 	}{
 		{
 			name: "Persistent spot sets interruption behavior to stop",
@@ -1102,6 +1114,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			},
 			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
 			wantFleetType:            types.FleetTypeRequest,
+			wantCreateTagsCalled:     true,
 		},
 		{
 			name: "Non-persistent spot does not set interruption behavior",
@@ -1117,6 +1130,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			},
 			wantNoInterruptionBehavior: true,
 			wantFleetType:              types.FleetTypeInstant,
+			wantCreateTagsCalled:       false,
 		},
 		{
 			name: "Persistent spot with on-demand request ignores persistent flag",
@@ -1133,6 +1147,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			wantOnDemand:               true,
 			wantNoInterruptionBehavior: true,
 			wantFleetType:              types.FleetTypeInstant,
+			wantCreateTagsCalled:       false,
 		},
 		{
 			name: "Persistent spot with global spot disabled becomes on-demand",
@@ -1149,6 +1164,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			wantOnDemand:               true,
 			wantNoInterruptionBehavior: true,
 			wantFleetType:              types.FleetTypeInstant,
+			wantCreateTagsCalled:       false,
 		},
 		{
 			name: "Persistent spot with pool",
@@ -1165,11 +1181,16 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			},
 			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
 			wantFleetType:            types.FleetTypeRequest,
+			wantCreateTagsCalled:     true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			createTagsCalled := false
+			var taggedInstanceIDs []string
+			var appliedTags []types.Tag
+
 			mock := &mockEC2Client{
 				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
 					// Check fleet type
@@ -1198,9 +1219,15 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 					}
 					return &ec2.CreateFleetOutput{
 						Instances: []types.CreateFleetInstance{
-							{InstanceIds: []string{"i-123456789"}},
+							{InstanceIds: []string{testInstanceID}},
 						},
 					}, nil
+				},
+				CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+					createTagsCalled = true
+					taggedInstanceIDs = params.Resources
+					appliedTags = params.Tags
+					return &ec2.CreateTagsOutput{}, nil
 				},
 			}
 
@@ -1213,7 +1240,68 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 			if err != nil {
 				t.Errorf("CreateFleet() error = %v", err)
 			}
+
+			if createTagsCalled != tt.wantCreateTagsCalled {
+				t.Errorf("CreateTags called = %v, want %v", createTagsCalled, tt.wantCreateTagsCalled)
+			}
+
+			if tt.wantCreateTagsCalled {
+				if len(taggedInstanceIDs) != 1 || taggedInstanceIDs[0] != testInstanceID {
+					t.Errorf("CreateTags instanceIDs = %v, want [testInstanceID]", taggedInstanceIDs)
+				}
+				if len(appliedTags) == 0 {
+					t.Error("CreateTags should have tags")
+				}
+			}
 		})
+	}
+}
+
+func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
+	tagAttempts := 0
+
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			return &ec2.CreateFleetOutput{
+				Instances: []types.CreateFleetInstance{
+					{InstanceIds: []string{testInstanceID}},
+				},
+			}, nil
+		},
+		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			tagAttempts++
+			return nil, errors.New("simulated CreateTags failure")
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config: &config.Config{
+			SpotEnabled: true,
+		},
+	}
+
+	spec := &LaunchSpec{
+		RunID:          12345,
+		InstanceType:   "t4g.medium",
+		SubnetID:       "subnet-1",
+		Spot:           true,
+		PersistentSpot: true,
+	}
+
+	instanceIDs, err := manager.CreateFleet(context.Background(), spec)
+	if err == nil {
+		t.Error("CreateFleet should return error when tagging fails")
+	}
+	if !strings.Contains(err.Error(), "tagging failed") {
+		t.Errorf("error should mention tagging failed, got: %v", err)
+	}
+	if tagAttempts != 3 {
+		t.Errorf("CreateTags should be retried 3 times, got %d attempts", tagAttempts)
+	}
+	// Verify instanceIDs are returned so caller can clean up orphaned instances
+	if len(instanceIDs) != 1 || instanceIDs[0] != testInstanceID {
+		t.Errorf("instanceIDs should be returned on tagging failure for cleanup, got: %v", instanceIDs)
 	}
 }
 
@@ -1229,13 +1317,13 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 	}{
 		{
 			name:       "Returns spot request ID for spot instance",
-			instanceID: "i-123456789",
+			instanceID: testInstanceID,
 			mockResponse: &ec2.DescribeInstancesOutput{
 				Reservations: []types.Reservation{
 					{
 						Instances: []types.Instance{
 							{
-								InstanceId:            aws.String("i-123456789"),
+								InstanceId:            aws.String(testInstanceID),
 								SpotInstanceRequestId: aws.String("sir-abcdef12"),
 							},
 						},
@@ -1246,13 +1334,13 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 		},
 		{
 			name:       "Returns empty string for on-demand instance",
-			instanceID: "i-123456789",
+			instanceID: testInstanceID,
 			mockResponse: &ec2.DescribeInstancesOutput{
 				Reservations: []types.Reservation{
 					{
 						Instances: []types.Instance{
 							{
-								InstanceId:            aws.String("i-123456789"),
+								InstanceId:            aws.String(testInstanceID),
 								SpotInstanceRequestId: nil,
 							},
 						},
@@ -1268,9 +1356,9 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 			wantErrContains: "instance ID cannot be empty",
 		},
 		{
-			name:            "Returns error on API failure",
-			instanceID:     "i-123456789",
-			mockError:      errors.New("API error"),
+			name:        "Returns error on API failure",
+			instanceID:  testInstanceID,
+			mockError:   errors.New("API error"),
 			wantErr:        true,
 			wantErrContains: "failed to describe instance",
 		},
@@ -1285,7 +1373,7 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 		},
 		{
 			name:       "Returns error when reservations have no instances",
-			instanceID: "i-123456789",
+			instanceID: testInstanceID,
 			mockResponse: &ec2.DescribeInstancesOutput{
 				Reservations: []types.Reservation{
 					{
@@ -1298,13 +1386,13 @@ func TestGetSpotRequestIDForInstance(t *testing.T) {
 		},
 		{
 			name:       "Returns empty string when SpotInstanceRequestId is empty",
-			instanceID: "i-123456789",
+			instanceID: testInstanceID,
 			mockResponse: &ec2.DescribeInstancesOutput{
 				Reservations: []types.Reservation{
 					{
 						Instances: []types.Instance{
 							{
-								InstanceId:            aws.String("i-123456789"),
+								InstanceId:            aws.String(testInstanceID),
 								SpotInstanceRequestId: aws.String(""),
 							},
 						},
