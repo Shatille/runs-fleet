@@ -1113,7 +1113,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 				SpotEnabled: true,
 			},
 			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
-			wantFleetType:            types.FleetTypeRequest,
+			wantFleetType:            types.FleetTypeMaintain,
 			wantCreateTagsCalled:     true,
 		},
 		{
@@ -1180,7 +1180,7 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 				SpotEnabled: true,
 			},
 			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
-			wantFleetType:            types.FleetTypeRequest,
+			wantFleetType:            types.FleetTypeMaintain,
 			wantCreateTagsCalled:     true,
 		},
 	}
