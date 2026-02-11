@@ -1,0 +1,8 @@
+{
+  "name": "runs-fleet",
+  "version": "0.1.0",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "^1.58.1"
+  }
+}
