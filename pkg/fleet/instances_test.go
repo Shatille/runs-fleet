@@ -508,3 +508,142 @@ func TestGroupInstanceTypesByArch(t *testing.T) {
 		})
 	}
 }
+
+func TestInstanceSpec_MatchesFlexibleSpec(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance InstanceSpec
+		spec     FlexibleSpec
+		want     bool
+	}{
+		{
+			name:     "exact match - all fields",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 4, RAMMin: 8, RAMMax: 8, Arch: "arm64", Families: []string{"c7g"}, Gen: 7},
+			want:     true,
+		},
+		{
+			name:     "match - CPU in range",
+			instance: InstanceSpec{Type: "c7g.2xlarge", CPU: 8, RAM: 16, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 16},
+			want:     true,
+		},
+		{
+			name:     "no match - CPU below min",
+			instance: InstanceSpec{Type: "c7g.large", CPU: 2, RAM: 4, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 8},
+			want:     false,
+		},
+		{
+			name:     "no match - CPU above max",
+			instance: InstanceSpec{Type: "c7g.4xlarge", CPU: 16, RAM: 32, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 8},
+			want:     false,
+		},
+		{
+			name:     "match - RAM in range",
+			instance: InstanceSpec{Type: "m7g.xlarge", CPU: 4, RAM: 16, Arch: "arm64", Family: "m7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, RAMMin: 8, RAMMax: 32},
+			want:     true,
+		},
+		{
+			name:     "no match - RAM below min",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, RAMMin: 16},
+			want:     false,
+		},
+		{
+			name:     "no match - RAM above max",
+			instance: InstanceSpec{Type: "m7g.2xlarge", CPU: 8, RAM: 32, Arch: "arm64", Family: "m7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, RAMMax: 16},
+			want:     false,
+		},
+		{
+			name:     "match - arch matches",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Arch: "arm64"},
+			want:     true,
+		},
+		{
+			name:     "no match - arch mismatch",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Arch: "amd64"},
+			want:     false,
+		},
+		{
+			name:     "match - empty arch in spec accepts any",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4},
+			want:     true,
+		},
+		{
+			name:     "match - family in list",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Families: []string{"c7g", "m7g"}},
+			want:     true,
+		},
+		{
+			name:     "no match - family not in list",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Families: []string{"m7g", "r7g"}},
+			want:     false,
+		},
+		{
+			name:     "match - empty families in spec accepts any",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4},
+			want:     true,
+		},
+		{
+			name:     "match - family case insensitive",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Families: []string{"C7G"}},
+			want:     true,
+		},
+		{
+			name:     "match - gen matches",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Gen: 7},
+			want:     true,
+		},
+		{
+			name:     "no match - gen mismatch",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Gen: 8},
+			want:     false,
+		},
+		{
+			name:     "match - gen 0 in spec accepts any",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Gen: 0},
+			want:     true,
+		},
+		{
+			name:     "match - CPU max 0 means no upper limit",
+			instance: InstanceSpec{Type: "c7g.16xlarge", CPU: 64, RAM: 128, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 0},
+			want:     true,
+		},
+		{
+			name:     "match - RAM max 0 means no upper limit",
+			instance: InstanceSpec{Type: "m7g.16xlarge", CPU: 64, RAM: 256, Arch: "arm64", Family: "m7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, RAMMin: 8, RAMMax: 0},
+			want:     true,
+		},
+		{
+			name:     "nil spec (empty) matches any instance",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{},
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.instance.MatchesFlexibleSpec(tt.spec)
+			if got != tt.want {
+				t.Errorf("InstanceSpec.MatchesFlexibleSpec() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

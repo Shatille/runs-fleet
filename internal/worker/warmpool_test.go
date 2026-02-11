@@ -8,6 +8,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
@@ -264,15 +265,15 @@ func TestWarmPoolAssigner_EmptyPool(t *testing.T) {
 
 // mockPoolManager implements PoolManager for testing
 type mockPoolManager struct {
-	claimAndStartFunc func(ctx context.Context, poolName string, jobID int64, repo string) (*pools.AvailableInstance, error)
+	claimAndStartFunc func(ctx context.Context, poolName string, jobID int64, repo string, spec *fleet.FlexibleSpec) (*pools.AvailableInstance, error)
 	stopFunc          func(ctx context.Context, instanceID string) error
 	stopCalled        bool
 	stoppedInstanceID string
 }
 
-func (m *mockPoolManager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string) (*pools.AvailableInstance, error) {
+func (m *mockPoolManager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string, spec *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
 	if m.claimAndStartFunc != nil {
-		return m.claimAndStartFunc(ctx, poolName, jobID, repo)
+		return m.claimAndStartFunc(ctx, poolName, jobID, repo, spec)
 	}
 	return nil, pools.ErrNoAvailableInstance
 }
@@ -339,7 +340,7 @@ func (m *mockJobDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID s
 // claim instance -> start -> prepare runner -> save job record
 func TestTryAssignToWarmPool_Success_FullFlow(t *testing.T) {
 	mockPool := &mockPoolManager{
-		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string) (*pools.AvailableInstance, error) {
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
 			return &pools.AvailableInstance{
 				InstanceID:   "i-success123",
 				InstanceType: "c7g.xlarge",
@@ -409,7 +410,7 @@ func TestTryAssignToWarmPool_Success_FullFlow(t *testing.T) {
 // SSM preparation fails, the instance is stopped and claim is released.
 func TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance(t *testing.T) {
 	mockPool := &mockPoolManager{
-		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string) (*pools.AvailableInstance, error) {
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
 			return &pools.AvailableInstance{
 				InstanceID:   "i-ssmfail",
 				InstanceType: "c7g.xlarge",
@@ -473,7 +474,7 @@ func TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance(t *testing.T) {
 // job record save fails, the claim is released and instance is stopped.
 func TestTryAssignToWarmPool_DBSaveFailure_StopsInstance(t *testing.T) {
 	mockPool := &mockPoolManager{
-		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string) (*pools.AvailableInstance, error) {
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
 			return &pools.AvailableInstance{
 				InstanceID:   "i-dbfail",
 				InstanceType: "c7g.xlarge",
@@ -529,5 +530,131 @@ func TestTryAssignToWarmPool_DBSaveFailure_StopsInstance(t *testing.T) {
 	}
 	if mockPool.stoppedInstanceID != "i-dbfail" {
 		t.Errorf("Stopped instance = %s, want i-dbfail", mockPool.stoppedInstanceID)
+	}
+}
+
+// TestTryAssignToWarmPool_SpecBuildingFromJobMessage tests that FlexibleSpec
+// is correctly built from JobMessage fields and passed to ClaimAndStartPoolInstance.
+func TestTryAssignToWarmPool_SpecBuildingFromJobMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		job        *queue.JobMessage
+		wantSpec   *fleet.FlexibleSpec
+		wantNilSpec bool
+	}{
+		{
+			name: "full spec from job message",
+			job: &queue.JobMessage{
+				JobID:    12345,
+				RunID:    67890,
+				Repo:     "owner/repo",
+				Pool:     "test-pool",
+				CPUMin:   4,
+				CPUMax:   8,
+				RAMMin:   16,
+				RAMMax:   32,
+				Arch:     "arm64",
+				Families: []string{"c7g", "m7g"},
+				Gen:      7,
+			},
+			wantSpec: &fleet.FlexibleSpec{
+				CPUMin:   4,
+				CPUMax:   8,
+				RAMMin:   16,
+				RAMMax:   32,
+				Arch:     "arm64",
+				Families: []string{"c7g", "m7g"},
+				Gen:      7,
+			},
+		},
+		{
+			name: "partial spec - only arch",
+			job: &queue.JobMessage{
+				JobID: 12345,
+				RunID: 67890,
+				Repo:  "owner/repo",
+				Pool:  "test-pool",
+				Arch:  "amd64",
+			},
+			wantSpec: &fleet.FlexibleSpec{
+				Arch: "amd64",
+			},
+		},
+		{
+			name: "no spec fields - nil spec",
+			job: &queue.JobMessage{
+				JobID: 12345,
+				RunID: 67890,
+				Repo:  "owner/repo",
+				Pool:  "test-pool",
+			},
+			wantNilSpec: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedSpec *fleet.FlexibleSpec
+
+			mockPool := &mockPoolManager{
+				claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, spec *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+					capturedSpec = spec
+					return &pools.AvailableInstance{
+						InstanceID:   "i-test",
+						InstanceType: "c7g.xlarge",
+					}, nil
+				},
+			}
+
+			mockRunner := &mockRunnerPreparer{}
+			mockDB := &mockJobDBClient{hasJobsTable: true}
+
+			assigner := &WarmPoolAssigner{
+				Pool:   mockPool,
+				Runner: mockRunner,
+				DB:     mockDB,
+			}
+
+			result, err := assigner.TryAssignToWarmPool(context.Background(), tt.job)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !result.Assigned {
+				t.Fatal("expected job to be assigned")
+			}
+
+			if tt.wantNilSpec {
+				if capturedSpec != nil {
+					t.Errorf("expected nil spec, got %+v", capturedSpec)
+				}
+				return
+			}
+
+			if capturedSpec == nil {
+				t.Fatal("expected non-nil spec, got nil")
+			}
+
+			if capturedSpec.CPUMin != tt.wantSpec.CPUMin {
+				t.Errorf("CPUMin = %d, want %d", capturedSpec.CPUMin, tt.wantSpec.CPUMin)
+			}
+			if capturedSpec.CPUMax != tt.wantSpec.CPUMax {
+				t.Errorf("CPUMax = %d, want %d", capturedSpec.CPUMax, tt.wantSpec.CPUMax)
+			}
+			if capturedSpec.RAMMin != tt.wantSpec.RAMMin {
+				t.Errorf("RAMMin = %f, want %f", capturedSpec.RAMMin, tt.wantSpec.RAMMin)
+			}
+			if capturedSpec.RAMMax != tt.wantSpec.RAMMax {
+				t.Errorf("RAMMax = %f, want %f", capturedSpec.RAMMax, tt.wantSpec.RAMMax)
+			}
+			if capturedSpec.Arch != tt.wantSpec.Arch {
+				t.Errorf("Arch = %s, want %s", capturedSpec.Arch, tt.wantSpec.Arch)
+			}
+			if capturedSpec.Gen != tt.wantSpec.Gen {
+				t.Errorf("Gen = %d, want %d", capturedSpec.Gen, tt.wantSpec.Gen)
+			}
+			if len(capturedSpec.Families) != len(tt.wantSpec.Families) {
+				t.Errorf("Families = %v, want %v", capturedSpec.Families, tt.wantSpec.Families)
+			}
+		})
 	}
 }

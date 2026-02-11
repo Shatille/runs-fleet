@@ -2506,7 +2506,7 @@ func TestClaimAndStartPoolInstance_Success(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2548,7 +2548,7 @@ func TestClaimAndStartPoolInstance_NoInstance(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", nil)
 	if !errors.Is(err, ErrNoAvailableInstance) {
 		t.Errorf("expected ErrNoAvailableInstance, got %v", err)
 	}
@@ -2599,7 +2599,7 @@ func TestClaimAndStartPoolInstance_StartError(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", nil)
 	if err == nil {
 		t.Error("expected error when start fails")
 	}
@@ -2657,7 +2657,7 @@ func TestClaimAndStartPoolInstance_ClaimConflict(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2694,7 +2694,7 @@ func TestClaimAndStartPoolInstance_NilDBClient(t *testing.T) {
 	manager := NewManager(nil, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
+	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", nil)
 	if err == nil {
 		t.Error("expected error when DB client is nil")
 	}
@@ -2808,7 +2808,7 @@ func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 	results := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		go func(jobID int64) {
-			_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", jobID, "owner/repo")
+			_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", jobID, "owner/repo", nil)
 			results <- err
 		}(int64(12345 + i))
 	}
@@ -2874,7 +2874,7 @@ func TestClaimAndStartPoolInstance_DBClaimFailure(t *testing.T) {
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
 
-	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo")
+	_, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", nil)
 	if err == nil {
 		t.Fatal("expected error when DB claim fails with non-conflict error")
 	}
@@ -3414,6 +3414,146 @@ func TestCreatePoolFleetInstancesSavesSpotRequestID(t *testing.T) {
 			if len(savedSpotIDs) != len(tt.wantSavedSpotIDs) {
 				t.Errorf("SaveSpotRequestID called for %d instances, want %d",
 					len(savedSpotIDs), len(tt.wantSavedSpotIDs))
+			}
+		})
+	}
+}
+
+// TestClaimAndStartPoolInstance_WithSpec tests that spec filtering selects correct instances.
+func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
+	tests := []struct {
+		name             string
+		instances        []ec2types.Instance
+		spec             *fleet.FlexibleSpec
+		wantInstanceID   string
+		wantNoInstance   bool
+	}{
+		{
+			name: "spec filters by arch - ARM64",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-amd64"),
+					InstanceType: ec2types.InstanceTypeC6iXlarge, // amd64
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-arm64"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // arm64
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				Arch: "arm64",
+			},
+			wantInstanceID: "i-arm64",
+		},
+		{
+			name: "spec filters by arch - AMD64",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-amd64"),
+					InstanceType: ec2types.InstanceTypeC6iXlarge, // amd64
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-arm64"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // arm64
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				Arch: "amd64",
+			},
+			wantInstanceID: "i-amd64",
+		},
+		{
+			name: "spec filters by CPU - selects smallest",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-8cpu"),
+					InstanceType: ec2types.InstanceTypeC7g2xlarge, // 8 CPU
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-4cpu"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // 4 CPU
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 8,
+				Arch:   "arm64",
+			},
+			wantInstanceID: "i-4cpu", // Best-fit: smallest matching
+		},
+		{
+			name: "spec filters out all instances",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-small"),
+					InstanceType: ec2types.InstanceTypeC7gLarge, // 2 CPU
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 8, // No instance with 8+ CPUs
+			},
+			wantNoInstance: true,
+		},
+		{
+			name: "nil spec matches any instance",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-any"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge,
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec:           nil, // Legacy behavior: any instance
+			wantInstanceID: "i-any",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockDB := &MockDBClient{
+				ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
+					return nil
+				},
+			}
+
+			mockEC2 := &MockEC2API{
+				DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+					return &ec2.DescribeInstancesOutput{
+						Reservations: []ec2types.Reservation{{Instances: tt.instances}},
+					}, nil
+				},
+				StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+					return &ec2.StartInstancesOutput{}, nil
+				},
+			}
+
+			manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+			manager.SetEC2Client(mockEC2)
+
+			instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", tt.spec)
+
+			if tt.wantNoInstance {
+				if !errors.Is(err, ErrNoAvailableInstance) {
+					t.Errorf("expected ErrNoAvailableInstance, got %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if instance == nil {
+				t.Fatal("expected instance, got nil")
+			}
+			if instance.InstanceID != tt.wantInstanceID {
+				t.Errorf("InstanceID = %s, want %s", instance.InstanceID, tt.wantInstanceID)
 			}
 		})
 	}

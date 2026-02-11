@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,6 +71,38 @@ type PoolInstance struct {
 	LaunchTime   time.Time
 	InstanceType string
 	IdleSince    time.Time // When the instance became idle (no job assigned)
+
+	// Spec from InstanceCatalog lookup (populated for multi-spec pool matching)
+	CPU    int
+	RAM    float64
+	Arch   string
+	Family string
+	Gen    int
+}
+
+// matchesFlexibleSpec checks if this instance matches the given flexible spec requirements.
+// Returns true if spec is nil (legacy behavior: any instance matches).
+// Returns false if instance type is not in InstanceCatalog (CPU=0) when spec is provided.
+func (p PoolInstance) matchesFlexibleSpec(spec *fleet.FlexibleSpec) bool {
+	if spec == nil {
+		return true
+	}
+
+	// Instance type must be in catalog for spec matching
+	// (instances not in catalog have CPU=0 and would fail any CPUMin check)
+	if p.CPU == 0 {
+		return false
+	}
+
+	instSpec := fleet.InstanceSpec{
+		Type:   p.InstanceType,
+		CPU:    p.CPU,
+		RAM:    p.RAM,
+		Arch:   p.Arch,
+		Family: p.Family,
+		Gen:    p.Gen,
+	}
+	return instSpec.MatchesFlexibleSpec(*spec)
 }
 
 // Manager orchestrates warm pool operations and instance assignment.
@@ -464,13 +497,27 @@ func (m *Manager) getPoolInstances(ctx context.Context, poolName string) ([]Pool
 	var instances []PoolInstance
 	for _, reservation := range output.Reservations {
 		for _, inst := range reservation.Instances {
+			instanceType := string(inst.InstanceType)
 			instance := PoolInstance{
 				InstanceID:   aws.ToString(inst.InstanceId),
 				State:        string(inst.State.Name),
-				InstanceType: string(inst.InstanceType),
+				InstanceType: instanceType,
 			}
 			if inst.LaunchTime != nil {
 				instance.LaunchTime = *inst.LaunchTime
+			}
+
+			// Populate spec fields from InstanceCatalog for multi-spec pool matching
+			if spec, ok := fleet.GetInstanceSpec(instanceType); ok {
+				instance.CPU = spec.CPU
+				instance.RAM = spec.RAM
+				instance.Arch = spec.Arch
+				instance.Family = spec.Family
+				instance.Gen = spec.Gen
+			} else {
+				poolLog.Warn("instance type not in catalog, spec matching may fail",
+					slog.String(logging.KeyInstanceID, instance.InstanceID),
+					slog.String("instance_type", instanceType))
 			}
 
 			// Check idle tracking
@@ -789,15 +836,22 @@ const instanceClaimTTL = 5 * time.Minute
 // Pool instances are created without knowing which repo will use them, so the tag is
 // applied when the instance is assigned to a job.
 //
+// The spec parameter is used for multi-spec pool matching. If non-nil, only instances
+// that satisfy the spec requirements are considered. Matching instances are sorted
+// by CPU ascending (best-fit: smallest instance that meets requirements).
+// If nil, any stopped instance is eligible (legacy behavior).
+//
 // The claim flow is:
 //  1. Find all stopped instances in the pool
-//  2. For each instance, atomically claim it in DynamoDB (fails if another job claimed it)
-//  3. Start the EC2 instance and tag it with the repo
-//  4. If start fails, release the DynamoDB claim and return error
+//  2. Filter by spec requirements (if spec is provided)
+//  3. Sort by CPU ascending (best-fit selection)
+//  4. For each instance, atomically claim it in DynamoDB (fails if another job claimed it)
+//  5. Start the EC2 instance and tag it with the repo
+//  6. If start fails, release the DynamoDB claim and return error
 //
 // The caller is responsible for releasing the claim after job completion or failure
 // by calling the DB's ReleaseInstanceClaim method.
-func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string) (*AvailableInstance, error) {
+func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string, spec *fleet.FlexibleSpec) (*AvailableInstance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -811,12 +865,28 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		return nil, fmt.Errorf("failed to get pool instances: %w", err)
 	}
 
-	// Try to claim and start each stopped instance
+	// Filter stopped instances matching the spec
+	var candidates []PoolInstance
 	for _, inst := range instances {
 		if inst.State != stateStopped {
 			continue
 		}
+		if !inst.matchesFlexibleSpec(spec) {
+			continue
+		}
+		candidates = append(candidates, inst)
+	}
 
+	// Sort by CPU ascending (best-fit: smallest instance that meets requirements)
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].CPU != candidates[j].CPU {
+			return candidates[i].CPU < candidates[j].CPU
+		}
+		return candidates[i].RAM < candidates[j].RAM
+	})
+
+	// Try to claim and start each candidate instance
+	for _, inst := range candidates {
 		instance := &AvailableInstance{
 			InstanceID:   inst.InstanceID,
 			InstanceType: inst.InstanceType,

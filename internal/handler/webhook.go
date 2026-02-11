@@ -72,6 +72,13 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		InstanceTypes: jobConfig.InstanceTypes,
 		StorageGiB:    jobConfig.StorageGiB,
 		PublicIP:      jobConfig.PublicIP,
+		// Flexible spec for multi-spec pool matching
+		CPUMin:   jobConfig.CPUMin,
+		CPUMax:   jobConfig.CPUMax,
+		RAMMin:   jobConfig.RAMMin,
+		RAMMax:   jobConfig.RAMMax,
+		Families: jobConfig.Families,
+		Gen:      jobConfig.Gen,
 	}
 
 	if err := q.SendMessage(ctx, msg); err != nil {
