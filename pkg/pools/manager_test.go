@@ -3513,6 +3513,177 @@ func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
 			spec:           nil, // Legacy behavior: any instance
 			wantInstanceID: "i-any",
 		},
+		{
+			name: "best-fit tie-breaker - same CPU, select lower RAM",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-4cpu-16ram"),
+					InstanceType: ec2types.InstanceTypeM7gXlarge, // 4 CPU, 16 RAM
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-4cpu-8ram"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // 4 CPU, 8 RAM
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 4,
+				Arch:   "arm64",
+			},
+			wantInstanceID: "i-4cpu-8ram", // Lower RAM wins tie-breaker
+		},
+		{
+			name: "skips running instances even if they match spec",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-running-matches"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge,
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				},
+				{
+					InstanceId:   aws.String("i-stopped-matches"),
+					InstanceType: ec2types.InstanceTypeC7g2xlarge,
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				Arch:   "arm64",
+			},
+			wantInstanceID: "i-stopped-matches",
+		},
+		{
+			name: "all instances running - no available instance",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-running1"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge,
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				},
+				{
+					InstanceId:   aws.String("i-running2"),
+					InstanceType: ec2types.InstanceTypeC7g2xlarge,
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				Arch:   "arm64",
+			},
+			wantNoInstance: true,
+		},
+		{
+			name: "filters by generation",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-gen7"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // Gen 7
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-gen8"),
+					InstanceType: ec2types.InstanceTypeC8gXlarge, // Gen 8
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				Gen:    8,
+				Arch:   "arm64",
+			},
+			wantInstanceID: "i-gen8",
+		},
+		{
+			name: "filters by family - single family",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-c7g"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // c7g family
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-m7g"),
+					InstanceType: ec2types.InstanceTypeM7gXlarge, // m7g family
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin:   4,
+				Families: []string{"m7g"},
+				Arch:     "arm64",
+			},
+			wantInstanceID: "i-m7g",
+		},
+		{
+			name: "filters by family - multiple families",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-t4g"),
+					InstanceType: ec2types.InstanceTypeT4gXlarge, // t4g family - not in filter
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-c7g"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // c7g family - in filter
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin:   4,
+				Families: []string{"c7g", "m7g"},
+				Arch:     "arm64",
+			},
+			wantInstanceID: "i-c7g",
+		},
+		{
+			name: "RAM filter - minimum RAM",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-8ram"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // 4 CPU, 8 RAM
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-16ram"),
+					InstanceType: ec2types.InstanceTypeM7gXlarge, // 4 CPU, 16 RAM
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				RAMMin: 12, // Needs at least 12GB
+				Arch:   "arm64",
+			},
+			wantInstanceID: "i-16ram",
+		},
+		{
+			name: "mixed arch pool - selects correct arch",
+			instances: []ec2types.Instance{
+				{
+					InstanceId:   aws.String("i-amd64-1"),
+					InstanceType: ec2types.InstanceTypeC6iXlarge, // amd64, 4 CPU
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-arm64-1"),
+					InstanceType: ec2types.InstanceTypeC7gXlarge, // arm64, 4 CPU
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+				{
+					InstanceId:   aws.String("i-amd64-2"),
+					InstanceType: ec2types.InstanceTypeC6i2xlarge, // amd64, 8 CPU
+					State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+				},
+			},
+			spec: &fleet.FlexibleSpec{
+				CPUMin: 4,
+				CPUMax: 8,
+				Arch:   "amd64",
+			},
+			wantInstanceID: "i-amd64-1", // Smallest amd64 instance
+		},
 	}
 
 	for _, tt := range tests {
@@ -3556,5 +3727,135 @@ func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
 				t.Errorf("InstanceID = %s, want %s", instance.InstanceID, tt.wantInstanceID)
 			}
 		})
+	}
+}
+
+// TestClaimAndStartPoolInstance_WithSpec_ClaimConflict tests that when first matching
+// instance is already claimed, it tries the next matching instance.
+func TestClaimAndStartPoolInstance_WithSpec_ClaimConflict(t *testing.T) {
+	claimAttempts := 0
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, _ int64, _ time.Duration) error {
+			claimAttempts++
+			// First ARM64 instance (smaller) is already claimed
+			if instanceID == "i-arm64-small" {
+				return db.ErrInstanceAlreadyClaimed
+			}
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-arm64-small"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge, // 4 CPU - best fit but claimed
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+							{
+								InstanceId:   aws.String("i-arm64-large"),
+								InstanceType: ec2types.InstanceTypeC7g2xlarge, // 8 CPU - second best
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+							{
+								InstanceId:   aws.String("i-amd64"),
+								InstanceType: ec2types.InstanceTypeC6iXlarge, // wrong arch
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StartInstancesFunc: func(_ context.Context, params *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != "i-arm64-large" {
+				t.Errorf("expected i-arm64-large to be started, got %v", params.InstanceIds)
+			}
+			return &ec2.StartInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	spec := &fleet.FlexibleSpec{
+		CPUMin: 4,
+		Arch:   "arm64",
+	}
+
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instance == nil {
+		t.Fatal("expected instance, got nil")
+	}
+	if instance.InstanceID != "i-arm64-large" {
+		t.Errorf("expected i-arm64-large, got %s", instance.InstanceID)
+	}
+	if claimAttempts != 2 {
+		t.Errorf("expected 2 claim attempts, got %d", claimAttempts)
+	}
+}
+
+// TestClaimAndStartPoolInstance_UnknownInstanceType tests that instances with types
+// not in InstanceCatalog are excluded from spec matching.
+func TestClaimAndStartPoolInstance_UnknownInstanceType(t *testing.T) {
+	mockDB := &MockDBClient{
+		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{
+					{
+						Instances: []ec2types.Instance{
+							{
+								InstanceId:   aws.String("i-unknown"),
+								InstanceType: "unknown.type", // Not in InstanceCatalog
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+							{
+								InstanceId:   aws.String("i-known"),
+								InstanceType: ec2types.InstanceTypeC7gXlarge, // In catalog
+								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+		StartInstancesFunc: func(_ context.Context, params *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != "i-known" {
+				t.Errorf("expected i-known to be started (unknown type excluded), got %v", params.InstanceIds)
+			}
+			return &ec2.StartInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	spec := &fleet.FlexibleSpec{
+		CPUMin: 4,
+		Arch:   "arm64",
+	}
+
+	instance, err := manager.ClaimAndStartPoolInstance(context.Background(), "test-pool", 12345, "owner/repo", spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instance == nil {
+		t.Fatal("expected instance, got nil")
+	}
+	if instance.InstanceID != "i-known" {
+		t.Errorf("expected i-known, got %s", instance.InstanceID)
 	}
 }

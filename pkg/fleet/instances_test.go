@@ -636,6 +636,91 @@ func TestInstanceSpec_MatchesFlexibleSpec(t *testing.T) {
 			spec:     FlexibleSpec{},
 			want:     true,
 		},
+		// Edge cases and boundary conditions
+		{
+			name:     "boundary - CPU exactly at min",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 8},
+			want:     true,
+		},
+		{
+			name:     "boundary - CPU exactly at max",
+			instance: InstanceSpec{Type: "c7g.2xlarge", CPU: 8, RAM: 16, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 8},
+			want:     true,
+		},
+		{
+			name:     "boundary - RAM exactly at min",
+			instance: InstanceSpec{Type: "m7g.xlarge", CPU: 4, RAM: 16, Arch: "arm64", Family: "m7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, RAMMin: 16, RAMMax: 32},
+			want:     true,
+		},
+		{
+			name:     "boundary - RAM exactly at max",
+			instance: InstanceSpec{Type: "m7g.2xlarge", CPU: 8, RAM: 32, Arch: "arm64", Family: "m7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, RAMMin: 16, RAMMax: 32},
+			want:     true,
+		},
+		{
+			name:     "combined constraints - all must pass",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 8, RAMMin: 8, RAMMax: 16, Arch: "arm64", Families: []string{"c7g"}, Gen: 7},
+			want:     true,
+		},
+		{
+			name:     "combined constraints - one fails",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, CPUMax: 8, RAMMin: 8, RAMMax: 16, Arch: "amd64", Families: []string{"c7g"}, Gen: 7},
+			want:     false, // arch mismatch
+		},
+		{
+			name:     "multiple families - first matches",
+			instance: InstanceSpec{Type: "c7g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Families: []string{"c7g", "m7g", "r7g"}},
+			want:     true,
+		},
+		{
+			name:     "multiple families - last matches",
+			instance: InstanceSpec{Type: "r7g.xlarge", CPU: 4, RAM: 32, Arch: "arm64", Family: "r7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 4, Families: []string{"c7g", "m7g", "r7g"}},
+			want:     true,
+		},
+		{
+			name:     "multiple families - none match",
+			instance: InstanceSpec{Type: "t4g.xlarge", CPU: 4, RAM: 16, Arch: "arm64", Family: "t4g", Gen: 4},
+			spec:     FlexibleSpec{CPUMin: 4, Families: []string{"c7g", "m7g", "r7g"}},
+			want:     false,
+		},
+		{
+			name:     "zero CPU instance - fails any CPUMin check",
+			instance: InstanceSpec{Type: "unknown.type", CPU: 0, RAM: 0, Arch: "", Family: "", Gen: 0},
+			spec:     FlexibleSpec{CPUMin: 1},
+			want:     false,
+		},
+		{
+			name:     "zero CPU instance - passes empty spec",
+			instance: InstanceSpec{Type: "unknown.type", CPU: 0, RAM: 0, Arch: "", Family: "", Gen: 0},
+			spec:     FlexibleSpec{},
+			want:     true,
+		},
+		{
+			name:     "only CPUMin specified - no upper bound",
+			instance: InstanceSpec{Type: "c7g.16xlarge", CPU: 64, RAM: 128, Arch: "arm64", Family: "c7g", Gen: 7},
+			spec:     FlexibleSpec{CPUMin: 2},
+			want:     true,
+		},
+		{
+			name:     "only RAMMin specified - no upper bound",
+			instance: InstanceSpec{Type: "r7g.16xlarge", CPU: 64, RAM: 512, Arch: "arm64", Family: "r7g", Gen: 7},
+			spec:     FlexibleSpec{RAMMin: 64},
+			want:     true,
+		},
+		{
+			name:     "fractional RAM comparison",
+			instance: InstanceSpec{Type: "t4g.micro", CPU: 2, RAM: 1, Arch: "arm64", Family: "t4g", Gen: 4},
+			spec:     FlexibleSpec{RAMMin: 0.5, RAMMax: 2},
+			want:     true,
+		},
 	}
 
 	for _, tt := range tests {
