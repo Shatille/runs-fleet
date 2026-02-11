@@ -54,6 +54,12 @@ type PoolConfig struct {
 	RAMMin   float64  `dynamodbav:"ram_min,omitempty"`  // Minimum RAM in GB
 	RAMMax   float64  `dynamodbav:"ram_max,omitempty"`  // Maximum RAM in GB
 	Families []string `dynamodbav:"families,omitempty"` // Instance families (e.g., c7g, m7g)
+
+	// Multi-spec pool support: allow pool to hold instances with different specs.
+	// When enabled, pool creates instances based on recent job demand patterns
+	// rather than fixed pool-level spec. Jobs are matched to compatible instances.
+	// TODO: Implement demand-driven reconciliation logic.
+	MultiSpec bool `dynamodbav:"multi_spec,omitempty"`
 }
 
 // GetPoolConfig retrieves pool configuration from DynamoDB.
@@ -198,7 +204,8 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 			"SET instance_type = :it, desired_running = :dr, desired_stopped = :ds, " +
 				"idle_timeout_minutes = :itm, schedules = :sc, environment = :env, #region = :reg, " +
 				"ephemeral = :eph, last_job_time = :ljt, arch = :arch, cpu_min = :cpumin, " +
-				"cpu_max = :cpumax, ram_min = :rammin, ram_max = :rammax, families = :fam"),
+				"cpu_max = :cpumax, ram_min = :rammin, ram_max = :rammax, families = :fam, " +
+				"multi_spec = :ms"),
 		ExpressionAttributeNames: map[string]string{
 			"#region": "region", // region is a reserved word
 		},
@@ -218,6 +225,7 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 			":rammin": attrOrNull(item, "ram_min"),
 			":rammax": attrOrNull(item, "ram_max"),
 			":fam":    attrOrNull(item, "families"),
+			":ms":     attrOrNull(item, "multi_spec"),
 		},
 	})
 	if err != nil {

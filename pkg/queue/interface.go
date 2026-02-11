@@ -66,6 +66,14 @@ type JobMessage struct {
 	TraceID       string   `json:"trace_id,omitempty"`
 	SpanID        string   `json:"span_id,omitempty"`
 	ParentID      string   `json:"parent_id,omitempty"`
+
+	// Flexible instance spec for multi-spec pool matching
+	CPUMin   int      `json:"cpu_min,omitempty"`
+	CPUMax   int      `json:"cpu_max,omitempty"`
+	RAMMin   float64  `json:"ram_min,omitempty"`
+	RAMMax   float64  `json:"ram_max,omitempty"`
+	Families []string `json:"families,omitempty"`
+	Gen      int      `json:"gen,omitempty"`
 }
 
 // ExtractTraceContext extracts OpenTelemetry trace context from message attributes.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/internal/handler"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -18,7 +19,7 @@ var warmPoolLog = logging.WithComponent(logging.LogTypePool, "warmpool-assigner"
 
 // PoolManager defines warm pool operations for instance assignment.
 type PoolManager interface {
-	ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string) (*pools.AvailableInstance, error)
+	ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string, spec *fleet.FlexibleSpec) (*pools.AvailableInstance, error)
 	StopPoolInstance(ctx context.Context, instanceID string) error
 }
 
@@ -59,9 +60,24 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		return &WarmPoolResult{Assigned: false}, nil
 	}
 
+	// Build FlexibleSpec from job message for multi-spec pool matching
+	// If no spec fields are set, spec is nil (legacy: any instance matches)
+	var spec *fleet.FlexibleSpec
+	if job.CPUMin > 0 || job.CPUMax > 0 || job.RAMMin > 0 || job.RAMMax > 0 || len(job.Families) > 0 || job.Gen > 0 || job.Arch != "" {
+		spec = &fleet.FlexibleSpec{
+			CPUMin:   job.CPUMin,
+			CPUMax:   job.CPUMax,
+			RAMMin:   job.RAMMin,
+			RAMMax:   job.RAMMax,
+			Arch:     job.Arch,
+			Families: job.Families,
+			Gen:      job.Gen,
+		}
+	}
+
 	// Atomically claim and start a stopped instance to prevent race conditions
 	// Uses DynamoDB distributed locking to prevent multiple orchestrators from claiming the same instance
-	instance, err := w.Pool.ClaimAndStartPoolInstance(ctx, job.Pool, job.JobID, job.Repo)
+	instance, err := w.Pool.ClaimAndStartPoolInstance(ctx, job.Pool, job.JobID, job.Repo, spec)
 	if err != nil {
 		if errors.Is(err, pools.ErrNoAvailableInstance) {
 			return &WarmPoolResult{Assigned: false}, nil

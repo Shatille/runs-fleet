@@ -195,6 +195,57 @@ type FlexibleSpec struct {
 	Gen      int      // Required instance generation (0 = any generation)
 }
 
+// MatchesFlexibleSpec checks if this instance spec satisfies the flexible spec requirements.
+// Returns true if the instance matches all specified constraints.
+// Zero/empty values in FlexibleSpec are treated as "any" (no constraint).
+//
+// Note: Architecture comparison is case-sensitive ("arm64"/"amd64") because arch values
+// are normalized at label parsing time. Family comparison is case-insensitive for flexibility.
+func (is InstanceSpec) MatchesFlexibleSpec(spec FlexibleSpec) bool {
+	// Check architecture (case-sensitive, values normalized at parsing)
+	if spec.Arch != "" && is.Arch != spec.Arch {
+		return false
+	}
+
+	// Check generation
+	if spec.Gen > 0 && is.Gen != spec.Gen {
+		return false
+	}
+
+	// Check CPU range
+	if is.CPU < spec.CPUMin {
+		return false
+	}
+	if spec.CPUMax > 0 && is.CPU > spec.CPUMax {
+		return false
+	}
+
+	// Check RAM range
+	if is.RAM < spec.RAMMin {
+		return false
+	}
+	if spec.RAMMax > 0 && is.RAM > spec.RAMMax {
+		return false
+	}
+
+	// Check family filter
+	if len(spec.Families) > 0 && !containsIgnoreCase(spec.Families, is.Family) {
+		return false
+	}
+
+	return true
+}
+
+// containsIgnoreCase checks if the slice contains the target string (case-insensitive).
+func containsIgnoreCase(slice []string, target string) bool {
+	for _, s := range slice {
+		if strings.EqualFold(s, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveInstanceTypes finds all instance types matching the flexible spec.
 // Returns instance types sorted by CPU (ascending) for optimal spot availability.
 func ResolveInstanceTypes(spec FlexibleSpec) []string {
