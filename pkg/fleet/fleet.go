@@ -19,9 +19,11 @@ import (
 
 var fleetLog = logging.WithComponent(logging.LogTypeFleet, "manager")
 
+//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 // EC2API defines EC2 operations for fleet management.
 type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
@@ -107,21 +109,6 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 
 	tags := m.buildTags(spec)
 
-	req := &ec2.CreateFleetInput{
-		LaunchTemplateConfigs: launchTemplateConfigs,
-		TargetCapacitySpecification: &types.TargetCapacitySpecificationRequest{
-			TotalTargetCapacity:       &targetCapacity,
-			DefaultTargetCapacityType: types.DefaultTargetCapacityTypeSpot,
-		},
-		Type: types.FleetTypeInstant,
-		TagSpecifications: []types.TagSpecification{
-			{
-				ResourceType: types.ResourceTypeInstance,
-				Tags:         tags,
-			},
-		},
-	}
-
 	// Determine if we should use spot or on-demand
 	useSpot := spec.Spot && m.config.SpotEnabled && !spec.ForceOnDemand
 
@@ -139,6 +126,38 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 			fleetLog.Info("circuit breaker open, forcing on-demand",
 				slog.String("instance_type", primaryType))
 			useSpot = false
+		}
+	}
+
+	// Will we use FleetTypeRequest? Only for persistent spot with spot enabled.
+	usePersistentSpot := useSpot && spec.PersistentSpot
+
+	req := &ec2.CreateFleetInput{
+		LaunchTemplateConfigs: launchTemplateConfigs,
+		TargetCapacitySpecification: &types.TargetCapacitySpecificationRequest{
+			TotalTargetCapacity:       &targetCapacity,
+			DefaultTargetCapacityType: types.DefaultTargetCapacityTypeSpot,
+		},
+		Type: types.FleetTypeInstant,
+	}
+
+	// TagSpecifications differ by fleet type due to EC2 API limitation:
+	// - FleetTypeInstant: can tag instances directly via ResourceType=instance
+	// - FleetTypeRequest: rejects ResourceType=instance with InvalidTagKey.Malformed error
+	//   Instances must be tagged via separate CreateTags call after fleet creation.
+	if usePersistentSpot {
+		req.TagSpecifications = []types.TagSpecification{
+			{
+				ResourceType: types.ResourceTypeFleet,
+				Tags:         tags,
+			},
+		}
+	} else {
+		req.TagSpecifications = []types.TagSpecification{
+			{
+				ResourceType: types.ResourceTypeInstance,
+				Tags:         tags,
+			},
 		}
 	}
 
@@ -232,7 +251,57 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		instanceIDs = append(instanceIDs, inst.InstanceIds...)
 	}
 
+	// For persistent spot (FleetTypeRequest), instances must be tagged separately.
+	// EC2 Fleet API rejects ResourceType=instance in TagSpecifications for FleetTypeRequest,
+	// returning InvalidTagKey.Malformed error. Tags are required for bootstrap - the runner
+	// agent reads runs-fleet:run-id and runs-fleet:runner-image from instance tags.
+	if usePersistentSpot && len(instanceIDs) > 0 && len(tags) > 0 {
+		if err := m.tagInstancesWithRetry(ctx, instanceIDs, tags); err != nil {
+			fleetLog.Error("failed to tag persistent spot instances after retries",
+				slog.String("error", err.Error()),
+				slog.Int("instance_count", len(instanceIDs)),
+				slog.Any("instance_ids", instanceIDs))
+			// Return instanceIDs so caller can terminate orphaned instances
+			return instanceIDs, fmt.Errorf("instances created but tagging failed: %w", err)
+		}
+	}
+
 	return instanceIDs, nil
+}
+
+// tagInstancesWithRetry applies tags to instances with exponential backoff.
+// EC2 has eventual consistency - instances may not be immediately taggable after creation.
+// Retries with 1s, 2s, 4s delays between attempts.
+func (m *Manager) tagInstancesWithRetry(ctx context.Context, instanceIDs []string, tags []types.Tag) error {
+	const maxAttempts = 3
+	delays := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoffIdx := attempt - 1
+			fleetLog.Debug("retrying instance tagging",
+				slog.Int("attempt", attempt+1),
+				slog.Int("max_attempts", maxAttempts),
+				slog.Duration("delay", delays[backoffIdx]))
+			select {
+			case <-time.After(delays[backoffIdx]):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		_, err := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
+			Resources: instanceIDs,
+			Tags:      tags,
+		})
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+
+	return fmt.Errorf("failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // getLaunchTemplateForArch returns the launch template name for a specific OS and architecture.
