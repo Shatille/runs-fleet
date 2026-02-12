@@ -13,7 +13,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
+
+// mockAPIError implements smithy.APIError for testing
+type mockAPIError struct {
+	code    string
+	message string
+}
+
+func (e *mockAPIError) Error() string              { return e.message }
+func (e *mockAPIError) ErrorCode() string          { return e.code }
+func (e *mockAPIError) ErrorMessage() string       { return e.message }
+func (e *mockAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultUnknown }
 
 type mockHousekeepingEC2 struct {
 	instances       map[string]ec2types.InstanceStateName
@@ -633,9 +645,51 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_EC2Error(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// EC2 error causes instance to be considered non-existent (safe to orphan)
+	// EC2 error assumes instance exists (safe default to avoid false positives)
+	if resp.Cleaned != 0 {
+		t.Errorf("expected 0 cleaned (EC2 error = assume exists), got %d", resp.Cleaned)
+	}
+	if resp.Message != "All candidate jobs have running instances" {
+		t.Errorf("unexpected message: %s", resp.Message)
+	}
+}
+
+func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidInstanceIDError(t *testing.T) {
+	// InvalidInstanceID.NotFound means instance is definitely gone
+	ec2Client := &mockHousekeepingEC2{
+		err: &mockAPIError{code: "InvalidInstanceID.NotFound", message: "Instance not found"},
+	}
+	dynamoClient := &mockHousekeepingDynamo{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "123"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-gone"},
+				"status":      &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/housekeeping/orphaned-jobs", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp CleanupOrphanedJobsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// InvalidInstanceID.NotFound means instance is gone, safe to cleanup
 	if resp.Cleaned != 1 {
-		t.Errorf("expected 1 cleaned (EC2 error = instance gone), got %d", resp.Cleaned)
+		t.Errorf("expected 1 cleaned (InvalidInstanceID.NotFound = instance gone), got %d", resp.Cleaned)
 	}
 }
 

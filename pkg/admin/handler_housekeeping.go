@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 const (
@@ -307,7 +308,16 @@ func (h *HousekeepingHandler) instanceExists(ctx context.Context, instanceID str
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		return false
+		// InvalidInstanceID.NotFound means instance definitively doesn't exist
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidInstanceID.NotFound" {
+			return false
+		}
+		// For API errors (throttling, AWS outages), assume exists (safe default)
+		h.log.Warn("failed to describe instance, assuming exists",
+			slog.String("instance_id", instanceID),
+			slog.String(logging.KeyError, err.Error()))
+		return true
 	}
 
 	for _, reservation := range output.Reservations {
