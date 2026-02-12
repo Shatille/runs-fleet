@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,6 +19,8 @@ const testInstanceID = "i-123456789"
 type mockEC2Client struct {
 	CreateFleetFunc                   func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
 	CreateTagsFunc                    func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
+	DeleteFleetsFunc                  func(ctx context.Context, params *ec2.DeleteFleetsInput, optFns ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error)
+	DescribeFleetInstancesFunc        func(ctx context.Context, params *ec2.DescribeFleetInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeFleetInstancesOutput, error)
 	DescribeSpotPriceHistoryFunc      func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferingsFunc func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstancesFunc             func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
@@ -35,6 +38,25 @@ func (m *mockEC2Client) CreateTags(ctx context.Context, params *ec2.CreateTagsIn
 		return m.CreateTagsFunc(ctx, params, optFns...)
 	}
 	return &ec2.CreateTagsOutput{}, nil
+}
+
+func (m *mockEC2Client) DeleteFleets(ctx context.Context, params *ec2.DeleteFleetsInput, optFns ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
+	if m.DeleteFleetsFunc != nil {
+		return m.DeleteFleetsFunc(ctx, params, optFns...)
+	}
+	return &ec2.DeleteFleetsOutput{}, nil
+}
+
+func (m *mockEC2Client) DescribeFleetInstances(ctx context.Context, params *ec2.DescribeFleetInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeFleetInstancesOutput, error) {
+	if m.DescribeFleetInstancesFunc != nil {
+		return m.DescribeFleetInstancesFunc(ctx, params, optFns...)
+	}
+	// Default: return one active instance
+	return &ec2.DescribeFleetInstancesOutput{
+		ActiveInstances: []types.ActiveInstance{
+			{InstanceId: aws.String(testInstanceID)},
+		},
+	}, nil
 }
 
 func (m *mockEC2Client) DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
@@ -1217,6 +1239,12 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 								params.SpotOptions.InstanceInterruptionBehavior, tt.wantInterruptionBehavior)
 						}
 					}
+					// FleetTypeMaintain returns FleetId (async), FleetTypeInstant returns Instances (sync)
+					if params.Type == types.FleetTypeMaintain {
+						return &ec2.CreateFleetOutput{
+							FleetId: aws.String("fleet-123"),
+						}, nil
+					}
 					return &ec2.CreateFleetOutput{
 						Instances: []types.CreateFleetInstance{
 							{InstanceIds: []string{testInstanceID}},
@@ -1259,18 +1287,25 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 
 func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
 	tagAttempts := 0
+	deleteFleetsCalled := false
+	deletedFleetID := ""
 
 	mock := &mockEC2Client{
 		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
 			return &ec2.CreateFleetOutput{
-				Instances: []types.CreateFleetInstance{
-					{InstanceIds: []string{testInstanceID}},
-				},
+				FleetId: aws.String("fleet-123"),
 			}, nil
 		},
 		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
 			tagAttempts++
 			return nil, errors.New("simulated CreateTags failure")
+		},
+		DeleteFleetsFunc: func(_ context.Context, params *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
+			deleteFleetsCalled = true
+			if len(params.FleetIds) > 0 {
+				deletedFleetID = params.FleetIds[0]
+			}
+			return &ec2.DeleteFleetsOutput{}, nil
 		},
 	}
 
@@ -1302,6 +1337,109 @@ func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
 	// Verify instanceIDs are returned so caller can clean up orphaned instances
 	if len(instanceIDs) != 1 || instanceIDs[0] != testInstanceID {
 		t.Errorf("instanceIDs should be returned on tagging failure for cleanup, got: %v", instanceIDs)
+	}
+	// Verify fleet is deleted on tagging failure
+	if !deleteFleetsCalled {
+		t.Error("DeleteFleets should be called on tagging failure to clean up fleet")
+	}
+	if deletedFleetID != "fleet-123" {
+		t.Errorf("DeleteFleets should be called with fleet ID 'fleet-123', got: %s", deletedFleetID)
+	}
+}
+
+func TestWaitForFleetInstances_Timeout(t *testing.T) {
+	pollCount := 0
+	mock := &mockEC2Client{
+		DescribeFleetInstancesFunc: func(_ context.Context, _ *ec2.DescribeFleetInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeFleetInstancesOutput, error) {
+			pollCount++
+			// Always return empty to trigger timeout
+			return &ec2.DescribeFleetInstancesOutput{
+				ActiveInstances: []types.ActiveInstance{},
+			}, nil
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config:    &config.Config{},
+	}
+
+	// Use a context with short timeout to speed up test
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := manager.waitForFleetInstances(ctx, "fleet-timeout-test")
+	if err == nil {
+		t.Error("waitForFleetInstances should return error on context timeout")
+	}
+	if pollCount == 0 {
+		t.Error("waitForFleetInstances should have polled at least once")
+	}
+}
+
+func TestWaitForFleetInstances_ContextCancellation(t *testing.T) {
+	pollCount := 0
+	mock := &mockEC2Client{
+		DescribeFleetInstancesFunc: func(_ context.Context, _ *ec2.DescribeFleetInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeFleetInstancesOutput, error) {
+			pollCount++
+			return &ec2.DescribeFleetInstancesOutput{
+				ActiveInstances: []types.ActiveInstance{},
+			}, nil
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config:    &config.Config{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a short delay
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := manager.waitForFleetInstances(ctx, "fleet-cancel-test")
+	if err == nil {
+		t.Error("waitForFleetInstances should return error on context cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error should be context.Canceled, got: %v", err)
+	}
+}
+
+func TestCreateFleet_PersistentSpot_MissingFleetId(t *testing.T) {
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			// Return response without FleetId (contract violation)
+			return &ec2.CreateFleetOutput{
+				FleetId: nil,
+			}, nil
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config: &config.Config{
+			SpotEnabled: true,
+		},
+	}
+
+	spec := &LaunchSpec{
+		RunID:          12345,
+		InstanceType:   "t4g.medium",
+		SubnetID:       "subnet-1",
+		Spot:           true,
+		PersistentSpot: true,
+	}
+
+	_, err := manager.CreateFleet(context.Background(), spec)
+	if err == nil {
+		t.Error("CreateFleet should return error when FleetId is missing")
+	}
+	if !strings.Contains(err.Error(), "FleetId missing") {
+		t.Errorf("error should mention FleetId missing, got: %v", err)
 	}
 }
 
