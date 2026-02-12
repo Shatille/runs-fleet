@@ -3400,6 +3400,228 @@ func TestCreatePoolFleetInstancesSavesSpotRequestID(t *testing.T) {
 	}
 }
 
+func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
+	callCount := 0
+	savedSpotIDs := make(map[string]string)
+
+	mockDB := &MockDBClient{
+		SaveSpotRequestIDFunc: func(_ context.Context, instanceID, spotRequestID string, _ bool) error {
+			savedSpotIDs[instanceID] = spotRequestID
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+			callCount++
+			if callCount == 2 {
+				return "", "", errors.New("capacity error")
+			}
+			return fmt.Sprintf("i-ok%d", callCount), fmt.Sprintf("sir-ok%d", callCount), nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium", DesiredRunning: 3}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 3, poolConfig)
+	if created != 2 {
+		t.Errorf("created = %d, want 2 (1 failed out of 3)", created)
+	}
+	if callCount != 3 {
+		t.Errorf("CreateSpotInstance called %d times, want 3", callCount)
+	}
+	if len(savedSpotIDs) != 2 {
+		t.Errorf("SaveSpotRequestID called %d times, want 2 (skip failed instance)", len(savedSpotIDs))
+	}
+}
+
+func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+			t.Error("CreateSpotInstance should not be called when no subnets configured")
+			return "", "", nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{},
+		PublicSubnetIDs:  []string{},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 2, poolConfig)
+	if created != 0 {
+		t.Errorf("created = %d, want 0 when no subnets", created)
+	}
+}
+
+func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
+	callCount := 0
+
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+			callCount++
+			return "", "", errors.New("every call fails")
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 3, poolConfig)
+	if created != 0 {
+		t.Errorf("created = %d, want 0 when all calls fail", created)
+	}
+	if callCount != 3 {
+		t.Errorf("CreateSpotInstance called %d times, want 3 (should try all)", callCount)
+	}
+}
+
+func TestCreatePoolFleetInstances_EmptySpotRequestID(t *testing.T) {
+	saveCallCount := 0
+
+	mockDB := &MockDBClient{
+		SaveSpotRequestIDFunc: func(_ context.Context, _, _ string, _ bool) error {
+			saveCallCount++
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+			return "i-123", "", nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 1, poolConfig)
+	if created != 1 {
+		t.Errorf("created = %d, want 1", created)
+	}
+	if saveCallCount != 0 {
+		t.Errorf("SaveSpotRequestID called %d times, want 0 when spotReqID is empty", saveCallCount)
+	}
+}
+
+func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
+	var capturedSpec *fleet.LaunchSpec
+
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
+			capturedSpec = spec
+			return testInstanceNewID, testSpotRequestNewID, nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{
+		PoolName:     "my-pool",
+		InstanceType: "c7g.xlarge",
+		Arch:         "arm64",
+	}
+
+	manager.createPoolFleetInstances(context.Background(), "my-pool", 1, poolConfig)
+
+	if capturedSpec == nil {
+		t.Fatal("CreateSpotInstance was not called")
+	}
+	if capturedSpec.Pool != "my-pool" {
+		t.Errorf("Pool = %q, want my-pool", capturedSpec.Pool)
+	}
+	if capturedSpec.InstanceType != "c7g.xlarge" {
+		t.Errorf("InstanceType = %q, want c7g.xlarge", capturedSpec.InstanceType)
+	}
+	if capturedSpec.Arch != "arm64" {
+		t.Errorf("Arch = %q, want arm64", capturedSpec.Arch)
+	}
+	if capturedSpec.SubnetID == "" {
+		t.Error("SubnetID should not be empty")
+	}
+	if capturedSpec.RunID == 0 {
+		t.Error("RunID should not be zero")
+	}
+	// Verify Spot and PersistentSpot are NOT set (CreateSpotInstance handles spot directly)
+	if capturedSpec.Spot {
+		t.Error("Spot should be false (CreateSpotInstance handles spot internally)")
+	}
+}
+
+func TestCreatePoolFleetInstances_SaveSpotRequestIDError(t *testing.T) {
+	saveErrors := 0
+
+	mockDB := &MockDBClient{
+		SaveSpotRequestIDFunc: func(_ context.Context, _, _ string, _ bool) error {
+			saveErrors++
+			return errors.New("dynamo throttle")
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+			return testInstanceNewID, testSpotRequestNewID, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 2, poolConfig)
+	// Instance creation succeeds even if spot ID save fails
+	if created != 2 {
+		t.Errorf("created = %d, want 2 (save failures don't block creation)", created)
+	}
+	if saveErrors != 2 {
+		t.Errorf("SaveSpotRequestID errors = %d, want 2", saveErrors)
+	}
+}
+
+func TestCreatePoolFleetInstances_EmptyInstanceTypes(t *testing.T) {
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+			t.Error("CreateSpotInstance should not be called when no instance types resolved")
+			return "", "", nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	// Empty InstanceType should fail resolvePoolInstanceTypes
+	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: ""}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 2, poolConfig)
+	if created != 0 {
+		t.Errorf("created = %d, want 0 when no instance types resolved", created)
+	}
+}
+
 // TestClaimAndStartPoolInstance_WithSpec tests that spec filtering selects correct instances.
 func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
 	tests := []struct {
