@@ -363,10 +363,17 @@ func (h *HousekeepingHandler) markJobOrphaned(ctx context.Context, jobID int64) 
 }
 
 func (h *HousekeepingHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	buf, err := json.Marshal(data)
+	if err != nil {
+		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	buf = append(buf, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+	if _, err := w.Write(buf); err != nil {
+		h.log.Error("response write failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 
