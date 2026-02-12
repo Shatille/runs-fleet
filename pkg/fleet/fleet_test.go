@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,6 +23,7 @@ type mockEC2Client struct {
 	DescribeSpotPriceHistoryFunc      func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferingsFunc func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstancesFunc             func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	RunInstancesFunc                  func(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 }
 
 func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
@@ -95,6 +95,13 @@ func (m *mockEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		return m.DescribeInstancesFunc(ctx, params, optFns...)
 	}
 	return &ec2.DescribeInstancesOutput{}, nil
+}
+
+func (m *mockEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+	if m.RunInstancesFunc != nil {
+		return m.RunInstancesFunc(ctx, params, optFns...)
+	}
+	return &ec2.RunInstancesOutput{}, nil
 }
 
 func TestCreateFleet(t *testing.T) {
@@ -1111,395 +1118,6 @@ func TestBuildLaunchTemplateConfigs_AllTypesUnavailable(t *testing.T) {
 	}
 }
 
-func TestCreateFleet_PersistentSpot(t *testing.T) {
-	tests := []struct {
-		name                       string
-		spec                       *LaunchSpec
-		config                     *config.Config
-		wantInterruptionBehavior   types.SpotInstanceInterruptionBehavior
-		wantNoInterruptionBehavior bool
-		wantOnDemand               bool
-		wantFleetType              types.FleetType
-		wantCreateTagsCalled       bool
-	}{
-		{
-			name: "Persistent spot sets interruption behavior to stop",
-			spec: &LaunchSpec{
-				RunID:          12345,
-				InstanceType:   "t4g.medium",
-				SubnetID:       "subnet-1",
-				Spot:           true,
-				PersistentSpot: true,
-			},
-			config: &config.Config{
-				SpotEnabled: true,
-			},
-			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
-			wantFleetType:            types.FleetTypeMaintain,
-			wantCreateTagsCalled:     true,
-		},
-		{
-			name: "Non-persistent spot does not set interruption behavior",
-			spec: &LaunchSpec{
-				RunID:          12345,
-				InstanceType:   "t4g.medium",
-				SubnetID:       "subnet-1",
-				Spot:           true,
-				PersistentSpot: false,
-			},
-			config: &config.Config{
-				SpotEnabled: true,
-			},
-			wantNoInterruptionBehavior: true,
-			wantFleetType:              types.FleetTypeInstant,
-			wantCreateTagsCalled:       false,
-		},
-		{
-			name: "Persistent spot with on-demand request ignores persistent flag",
-			spec: &LaunchSpec{
-				RunID:          12345,
-				InstanceType:   "t4g.medium",
-				SubnetID:       "subnet-1",
-				Spot:           false,
-				PersistentSpot: true,
-			},
-			config: &config.Config{
-				SpotEnabled: true,
-			},
-			wantOnDemand:               true,
-			wantNoInterruptionBehavior: true,
-			wantFleetType:              types.FleetTypeInstant,
-			wantCreateTagsCalled:       false,
-		},
-		{
-			name: "Persistent spot with global spot disabled becomes on-demand",
-			spec: &LaunchSpec{
-				RunID:          12345,
-				InstanceType:   "t4g.medium",
-				SubnetID:       "subnet-1",
-				Spot:           true,
-				PersistentSpot: true,
-			},
-			config: &config.Config{
-				SpotEnabled: false,
-			},
-			wantOnDemand:               true,
-			wantNoInterruptionBehavior: true,
-			wantFleetType:              types.FleetTypeInstant,
-			wantCreateTagsCalled:       false,
-		},
-		{
-			name: "Persistent spot with pool",
-			spec: &LaunchSpec{
-				RunID:          12345,
-				InstanceType:   "t4g.medium",
-				SubnetID:       "subnet-1",
-				Spot:           true,
-				PersistentSpot: true,
-				Pool:           "default",
-			},
-			config: &config.Config{
-				SpotEnabled: true,
-			},
-			wantInterruptionBehavior: types.SpotInstanceInterruptionBehaviorStop,
-			wantFleetType:            types.FleetTypeMaintain,
-			wantCreateTagsCalled:     true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			createTagsCalled := false
-			deleteFleetsCalled := false
-			var deleteTerminateInstances *bool
-			var taggedInstanceIDs []string
-			var appliedTags []types.Tag
-
-			mock := &mockEC2Client{
-				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
-					if params.Type != tt.wantFleetType {
-						t.Errorf("FleetType = %v, want %v", params.Type, tt.wantFleetType)
-					}
-
-					if tt.wantOnDemand {
-						if params.TargetCapacitySpecification.DefaultTargetCapacityType != types.DefaultTargetCapacityTypeOnDemand {
-							t.Errorf("TargetCapacityType = %v, want OnDemand", params.TargetCapacitySpecification.DefaultTargetCapacityType)
-						}
-					}
-
-					if tt.wantNoInterruptionBehavior {
-						if params.SpotOptions != nil && params.SpotOptions.InstanceInterruptionBehavior != "" {
-							t.Errorf("InstanceInterruptionBehavior should not be set for non-persistent spot")
-						}
-					} else {
-						if params.SpotOptions == nil {
-							t.Error("SpotOptions should not be nil for spot request")
-						} else if params.SpotOptions.InstanceInterruptionBehavior != tt.wantInterruptionBehavior {
-							t.Errorf("InstanceInterruptionBehavior = %v, want %v",
-								params.SpotOptions.InstanceInterruptionBehavior, tt.wantInterruptionBehavior)
-						}
-					}
-					if params.Type == types.FleetTypeMaintain {
-						return &ec2.CreateFleetOutput{
-							FleetId: aws.String("fleet-123"),
-						}, nil
-					}
-					return &ec2.CreateFleetOutput{
-						Instances: []types.CreateFleetInstance{
-							{InstanceIds: []string{testInstanceID}},
-						},
-					}, nil
-				},
-				CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
-					createTagsCalled = true
-					taggedInstanceIDs = params.Resources
-					appliedTags = params.Tags
-					return &ec2.CreateTagsOutput{}, nil
-				},
-				DeleteFleetsFunc: func(_ context.Context, params *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
-					deleteFleetsCalled = true
-					deleteTerminateInstances = params.TerminateInstances
-					return &ec2.DeleteFleetsOutput{}, nil
-				},
-			}
-
-			manager := &Manager{
-				ec2Client: mock,
-				config:    tt.config,
-			}
-
-			_, err := manager.CreateFleet(context.Background(), tt.spec)
-			if err != nil {
-				t.Errorf("CreateFleet() error = %v", err)
-			}
-
-			if createTagsCalled != tt.wantCreateTagsCalled {
-				t.Errorf("CreateTags called = %v, want %v", createTagsCalled, tt.wantCreateTagsCalled)
-			}
-
-			if tt.wantCreateTagsCalled {
-				if len(taggedInstanceIDs) != 1 || taggedInstanceIDs[0] != testInstanceID {
-					t.Errorf("CreateTags instanceIDs = %v, want [testInstanceID]", taggedInstanceIDs)
-				}
-				if len(appliedTags) == 0 {
-					t.Error("CreateTags should have tags")
-				}
-			}
-
-			wantFleetDetached := tt.wantFleetType == types.FleetTypeMaintain
-			if deleteFleetsCalled != wantFleetDetached {
-				t.Errorf("DeleteFleets called = %v, want %v (maintain fleets must be detached)", deleteFleetsCalled, wantFleetDetached)
-			}
-			if wantFleetDetached && deleteTerminateInstances != nil && *deleteTerminateInstances {
-				t.Error("DeleteFleets should use TerminateInstances=false to detach without killing instances")
-			}
-		})
-	}
-}
-
-func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
-	tagAttempts := 0
-	deleteFleetsCalled := false
-	deletedFleetID := ""
-	var deleteTerminateInstances *bool
-
-	mock := &mockEC2Client{
-		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
-			return &ec2.CreateFleetOutput{
-				FleetId: aws.String("fleet-123"),
-			}, nil
-		},
-		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
-			tagAttempts++
-			return nil, errors.New("simulated CreateTags failure")
-		},
-		DeleteFleetsFunc: func(_ context.Context, params *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
-			deleteFleetsCalled = true
-			deleteTerminateInstances = params.TerminateInstances
-			if len(params.FleetIds) > 0 {
-				deletedFleetID = params.FleetIds[0]
-			}
-			return &ec2.DeleteFleetsOutput{}, nil
-		},
-	}
-
-	manager := &Manager{
-		ec2Client: mock,
-		config: &config.Config{
-			SpotEnabled: true,
-		},
-	}
-
-	spec := &LaunchSpec{
-		RunID:          12345,
-		InstanceType:   "t4g.medium",
-		SubnetID:       "subnet-1",
-		Spot:           true,
-		PersistentSpot: true,
-	}
-
-	instanceIDs, err := manager.CreateFleet(context.Background(), spec)
-	if err == nil {
-		t.Error("CreateFleet should return error when tagging fails")
-	}
-	if !strings.Contains(err.Error(), "tagging failed") {
-		t.Errorf("error should mention tagging failed, got: %v", err)
-	}
-	if tagAttempts != 3 {
-		t.Errorf("CreateTags should be retried 3 times, got %d attempts", tagAttempts)
-	}
-	// Verify instanceIDs are returned so caller can clean up orphaned instances
-	if len(instanceIDs) != 1 || instanceIDs[0] != testInstanceID {
-		t.Errorf("instanceIDs should be returned on tagging failure for cleanup, got: %v", instanceIDs)
-	}
-	// Verify fleet is deleted on tagging failure
-	if !deleteFleetsCalled {
-		t.Error("DeleteFleets should be called on tagging failure to clean up fleet")
-	}
-	if deletedFleetID != "fleet-123" {
-		t.Errorf("DeleteFleets should be called with fleet ID 'fleet-123', got: %s", deletedFleetID)
-	}
-	if deleteTerminateInstances == nil || !*deleteTerminateInstances {
-		t.Error("DeleteFleets should use TerminateInstances=true for error cleanup")
-	}
-}
-
-func TestCreateFleet_PersistentSpot_DetachFailure(t *testing.T) {
-	mock := &mockEC2Client{
-		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
-			return &ec2.CreateFleetOutput{
-				FleetId: aws.String("fleet-123"),
-			}, nil
-		},
-		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
-			return &ec2.CreateTagsOutput{}, nil
-		},
-		DeleteFleetsFunc: func(_ context.Context, _ *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
-			return nil, errors.New("simulated DeleteFleets failure")
-		},
-	}
-
-	manager := &Manager{
-		ec2Client: mock,
-		config:    &config.Config{SpotEnabled: true},
-	}
-
-	spec := &LaunchSpec{
-		RunID:          12345,
-		InstanceType:   "t4g.medium",
-		SubnetID:       "subnet-1",
-		Spot:           true,
-		PersistentSpot: true,
-	}
-
-	instanceIDs, err := manager.CreateFleet(context.Background(), spec)
-	if err == nil {
-		t.Error("CreateFleet should return error when fleet detach fails")
-	}
-	if !strings.Contains(err.Error(), "fleet detach failed") {
-		t.Errorf("error should mention fleet detach failed, got: %v", err)
-	}
-	if len(instanceIDs) != 1 || instanceIDs[0] != testInstanceID {
-		t.Errorf("instanceIDs should still be returned on detach failure, got: %v", instanceIDs)
-	}
-}
-
-func TestWaitForFleetInstances_Timeout(t *testing.T) {
-	pollCount := 0
-	mock := &mockEC2Client{
-		DescribeFleetInstancesFunc: func(_ context.Context, _ *ec2.DescribeFleetInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeFleetInstancesOutput, error) {
-			pollCount++
-			// Always return empty to trigger timeout
-			return &ec2.DescribeFleetInstancesOutput{
-				ActiveInstances: []types.ActiveInstance{},
-			}, nil
-		},
-	}
-
-	manager := &Manager{
-		ec2Client: mock,
-		config:    &config.Config{},
-	}
-
-	// Use a context with short timeout to speed up test
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := manager.waitForFleetInstances(ctx, "fleet-timeout-test")
-	if err == nil {
-		t.Error("waitForFleetInstances should return error on context timeout")
-	}
-	if pollCount == 0 {
-		t.Error("waitForFleetInstances should have polled at least once")
-	}
-}
-
-func TestWaitForFleetInstances_ContextCancellation(t *testing.T) {
-	pollCount := 0
-	mock := &mockEC2Client{
-		DescribeFleetInstancesFunc: func(_ context.Context, _ *ec2.DescribeFleetInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeFleetInstancesOutput, error) {
-			pollCount++
-			return &ec2.DescribeFleetInstancesOutput{
-				ActiveInstances: []types.ActiveInstance{},
-			}, nil
-		},
-	}
-
-	manager := &Manager{
-		ec2Client: mock,
-		config:    &config.Config{},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after a short delay
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
-
-	_, err := manager.waitForFleetInstances(ctx, "fleet-cancel-test")
-	if err == nil {
-		t.Error("waitForFleetInstances should return error on context cancellation")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("error should be context.Canceled, got: %v", err)
-	}
-}
-
-func TestCreateFleet_PersistentSpot_MissingFleetId(t *testing.T) {
-	mock := &mockEC2Client{
-		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
-			// Return response without FleetId (contract violation)
-			return &ec2.CreateFleetOutput{
-				FleetId: nil,
-			}, nil
-		},
-	}
-
-	manager := &Manager{
-		ec2Client: mock,
-		config: &config.Config{
-			SpotEnabled: true,
-		},
-	}
-
-	spec := &LaunchSpec{
-		RunID:          12345,
-		InstanceType:   "t4g.medium",
-		SubnetID:       "subnet-1",
-		Spot:           true,
-		PersistentSpot: true,
-	}
-
-	_, err := manager.CreateFleet(context.Background(), spec)
-	if err == nil {
-		t.Error("CreateFleet should return error when FleetId is missing")
-	}
-	if !strings.Contains(err.Error(), "FleetId missing") {
-		t.Errorf("error should mention FleetId missing, got: %v", err)
-	}
-}
-
 func TestGetSpotRequestIDForInstance(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1809,5 +1427,252 @@ func TestGetSpotRequestIDsForInstances(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func validateRunInstancesParams(t *testing.T, params *ec2.RunInstancesInput, spec *LaunchSpec) {
+	t.Helper()
+
+	if params.InstanceMarketOptions == nil {
+		t.Fatal("InstanceMarketOptions should not be nil")
+	}
+	if params.InstanceMarketOptions.MarketType != types.MarketTypeSpot {
+		t.Errorf("MarketType = %v, want spot", params.InstanceMarketOptions.MarketType)
+	}
+	spotOpts := params.InstanceMarketOptions.SpotOptions
+	if spotOpts == nil {
+		t.Fatal("SpotOptions should not be nil")
+	}
+	if spotOpts.SpotInstanceType != types.SpotInstanceTypePersistent {
+		t.Errorf("SpotInstanceType = %v, want persistent", spotOpts.SpotInstanceType)
+	}
+	if spotOpts.InstanceInterruptionBehavior != types.InstanceInterruptionBehaviorStop {
+		t.Errorf("InstanceInterruptionBehavior = %v, want stop", spotOpts.InstanceInterruptionBehavior)
+	}
+	if params.InstanceType != types.InstanceType(spec.InstanceType) {
+		t.Errorf("InstanceType = %v, want %v", params.InstanceType, spec.InstanceType)
+	}
+	if aws.ToString(params.SubnetId) != spec.SubnetID {
+		t.Errorf("SubnetId = %v, want %v", aws.ToString(params.SubnetId), spec.SubnetID)
+	}
+	if aws.ToInt32(params.MinCount) != 1 {
+		t.Errorf("MinCount = %d, want 1", aws.ToInt32(params.MinCount))
+	}
+	if aws.ToInt32(params.MaxCount) != 1 {
+		t.Errorf("MaxCount = %d, want 1", aws.ToInt32(params.MaxCount))
+	}
+}
+
+func validateRunInstancesTagSpecs(t *testing.T, tagSpecs []types.TagSpecification) {
+	t.Helper()
+
+	if len(tagSpecs) < 2 {
+		t.Fatalf("TagSpecifications should have at least 2 entries, got %d", len(tagSpecs))
+	}
+	hasInstanceTags := false
+	hasSpotRequestTags := false
+	for _, ts := range tagSpecs {
+		if ts.ResourceType == types.ResourceTypeInstance {
+			hasInstanceTags = true
+		}
+		if ts.ResourceType == types.ResourceTypeSpotInstancesRequest {
+			hasSpotRequestTags = true
+		}
+	}
+	if !hasInstanceTags {
+		t.Error("TagSpecifications should include instance tags")
+	}
+	if !hasSpotRequestTags {
+		t.Error("TagSpecifications should include spot-instances-request tags")
+	}
+}
+
+func TestCreateSpotInstance(t *testing.T) {
+	successMock := func(spec *LaunchSpec) *mockEC2Client {
+		return &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				validateRunInstancesParams(t, params, spec)
+				validateRunInstancesTagSpecs(t, params.TagSpecifications)
+
+				if spec.StorageGiB > 0 {
+					if len(params.BlockDeviceMappings) == 0 {
+						t.Error("BlockDeviceMappings should not be empty when StorageGiB > 0")
+					} else if aws.ToInt32(params.BlockDeviceMappings[0].Ebs.VolumeSize) != int32(spec.StorageGiB) {
+						t.Errorf("VolumeSize = %d, want %d", aws.ToInt32(params.BlockDeviceMappings[0].Ebs.VolumeSize), spec.StorageGiB)
+					}
+				}
+
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{
+						InstanceId:            aws.String(testInstanceID),
+						SpotInstanceRequestId: aws.String("sir-123456"),
+					}},
+				}, nil
+			},
+		}
+	}
+
+	t.Run("Creates persistent spot instance", func(t *testing.T) {
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+		manager := &Manager{ec2Client: successMock(spec), config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if instanceID != testInstanceID {
+			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
+		}
+		if spotReqID != "sir-123456" {
+			t.Errorf("spotReqID = %q, want %q", spotReqID, "sir-123456")
+		}
+	})
+
+	t.Run("Creates persistent spot instance with storage", func(t *testing.T) {
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "c7g.xlarge", SubnetID: "subnet-1", Pool: "default", Arch: "arm64", StorageGiB: 100}
+		manager := &Manager{ec2Client: successMock(spec), config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if instanceID != testInstanceID {
+			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
+		}
+		if spotReqID != "sir-123456" {
+			t.Errorf("spotReqID = %q, want %q", spotReqID, "sir-123456")
+		}
+	})
+
+	t.Run("Returns error for unknown instance type architecture", func(t *testing.T) {
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "x99.mystery", SubnetID: "subnet-1", Pool: "default"}
+		manager := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "cannot determine architecture") {
+			t.Errorf("error = %q, want error containing 'cannot determine architecture'", err)
+		}
+	})
+
+	t.Run("Returns error on API failure", func(t *testing.T) {
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				return nil, errors.New("API error")
+			},
+		}
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "failed to run instance") {
+			t.Errorf("error = %q, want error containing 'failed to run instance'", err)
+		}
+	})
+
+	t.Run("Returns error when no instances created", func(t *testing.T) {
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				return &ec2.RunInstancesOutput{Instances: []types.Instance{}}, nil
+			},
+		}
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "no instance created") {
+			t.Errorf("error = %q, want error containing 'no instance created'", err)
+		}
+	})
+}
+
+func TestCreateSpotInstance_Tags(t *testing.T) {
+	var capturedTags []types.TagSpecification
+
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			capturedTags = params.TagSpecifications
+			return &ec2.RunInstancesOutput{
+				Instances: []types.Instance{
+					{
+						InstanceId:            aws.String(testInstanceID),
+						SpotInstanceRequestId: aws.String("sir-123456"),
+					},
+				},
+			}, nil
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config: &config.Config{
+			LaunchTemplateName: "runs-fleet-runner",
+			RunnerImage:        "ghcr.io/org/runner:latest",
+		},
+	}
+
+	spec := &LaunchSpec{
+		RunID:        12345,
+		InstanceType: "t4g.medium",
+		SubnetID:     "subnet-1",
+		Pool:         "test-pool",
+		Arch:         "arm64",
+		Repo:         "my-repo",
+	}
+
+	_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify both instance and spot-request have the same tags
+	var instanceTags, spotReqTags []types.Tag
+	for _, ts := range capturedTags {
+		if ts.ResourceType == types.ResourceTypeInstance {
+			instanceTags = ts.Tags
+		}
+		if ts.ResourceType == types.ResourceTypeSpotInstancesRequest {
+			spotReqTags = ts.Tags
+		}
+	}
+
+	if len(instanceTags) == 0 {
+		t.Error("instance tags should not be empty")
+	}
+	if len(spotReqTags) == 0 {
+		t.Error("spot-request tags should not be empty")
+	}
+	if len(instanceTags) != len(spotReqTags) {
+		t.Errorf("instance tags count (%d) != spot-request tags count (%d)", len(instanceTags), len(spotReqTags))
+	}
+
+	// Verify required tags exist
+	tagMap := make(map[string]string)
+	for _, tag := range instanceTags {
+		tagMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+	}
+
+	expectedTags := map[string]string{
+		"runs-fleet:run-id":  "12345",
+		"runs-fleet:managed": "true",
+		"runs-fleet:pool":    "test-pool",
+		"runs-fleet:arch":    "arm64",
+		"Role":               "my-repo",
+	}
+
+	for key, wantValue := range expectedTags {
+		if gotValue, exists := tagMap[key]; !exists {
+			t.Errorf("tag %q not found", key)
+		} else if gotValue != wantValue {
+			t.Errorf("tag %q = %q, want %q", key, gotValue, wantValue)
+		}
 	}
 }

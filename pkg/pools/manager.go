@@ -49,6 +49,7 @@ type DBClient interface {
 // FleetAPI defines EC2 fleet operations for instance provisioning.
 type FleetAPI interface {
 	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	CreateSpotInstance(ctx context.Context, spec *fleet.LaunchSpec) (instanceID, spotRequestID string, err error)
 	GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error)
 	GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error)
 }
@@ -652,7 +653,7 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 
 	// Cancel persistent spot requests AFTER successful termination to avoid orphaning
 	// If cancellation fails, housekeeping will clean up orphaned spot requests later
-	if m.fleetManager != nil {
+	if m.dbClient != nil {
 		m.cancelSpotRequestsForInstances(ctx, instanceIDs)
 	}
 
@@ -668,21 +669,23 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 }
 
 // cancelSpotRequestsForInstances cancels persistent spot requests for the given instances.
-// Queries EC2 directly for spot request IDs (source of truth) instead of DynamoDB,
-// because pool instances may not have job records when SaveSpotRequestID is called.
 // Logs warnings on failure but does not return errors (best-effort cleanup).
 func (m *Manager) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs []string) {
-	spotReqMap, err := m.fleetManager.GetSpotRequestIDsForInstances(ctx, instanceIDs)
+	spotRequests, err := m.dbClient.GetSpotRequestIDs(ctx, instanceIDs)
 	if err != nil {
-		poolLog.Warn("EC2 spot request lookup failed",
+		poolLog.Warn("spot request lookup failed",
 			slog.String("error", err.Error()))
 		return
 	}
 
+	if len(spotRequests) == 0 {
+		return
+	}
+
 	var spotRequestIDs []string
-	for _, reqID := range spotReqMap {
-		if reqID != "" {
-			spotRequestIDs = append(spotRequestIDs, reqID)
+	for _, info := range spotRequests {
+		if info.SpotRequestID != "" && info.Persistent {
+			spotRequestIDs = append(spotRequestIDs, info.SpotRequestID)
 		}
 	}
 
@@ -969,9 +972,10 @@ func countInstanceStates(instances []PoolInstance, busyIDs []string) (running, s
 	return
 }
 
-// createPoolFleetInstances creates new fleet instances for a pool.
+// createPoolFleetInstances creates new spot instances for a pool.
 // Returns the number of instances successfully created.
-// Pool instances use persistent spot requests (can stop/start) instead of one-time requests.
+// Uses CreateSpotInstance (RunInstances API) instead of CreateFleet with FleetTypeMaintain
+// because maintain-type fleet instances cannot be manually stopped/started.
 func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string, count int, poolConfig *db.PoolConfig) int {
 	instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
 	if len(instanceTypes) == 0 {
@@ -989,44 +993,30 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 			break
 		}
 		spec := &fleet.LaunchSpec{
-			RunID:          time.Now().UnixNano(),
-			InstanceType:   instanceTypes[0],
-			InstanceTypes:  instanceTypes,
-			SubnetID:       subnetID,
-			Pool:           poolName,
-			Spot:           true,
-			Arch:           arch,
-			PersistentSpot: true, // Pool instances use persistent spot (can stop/start)
+			RunID:        time.Now().UnixNano(),
+			InstanceType: instanceTypes[0],
+			SubnetID:     subnetID,
+			Pool:         poolName,
+			Arch:         arch,
 		}
-		instanceIDs, err := m.fleetManager.CreateFleet(ctx, spec)
+		instanceID, spotReqID, err := m.fleetManager.CreateSpotInstance(ctx, spec)
 		if err != nil {
-			poolLog.Error("fleet creation failed",
+			poolLog.Error("spot instance creation failed",
 				slog.String(logging.KeyPoolName, poolName),
 				slog.String("error", err.Error()))
-			if len(instanceIDs) == 0 {
-				continue
-			}
-			// Partial success: instances created but post-creation step (e.g. detach) failed.
-			// Fall through to save spot request IDs for cleanup on termination.
+			continue
 		}
 		created++
 
-		// Store spot request IDs for later cancellation on terminate (batch query)
-		if len(instanceIDs) > 0 {
-			spotReqIDs, err := m.fleetManager.GetSpotRequestIDsForInstances(ctx, instanceIDs)
-			if err != nil {
-				poolLog.Warn("spot request IDs batch query failed",
+		// Store spot request ID for later cancellation on terminate
+		// CreateSpotInstance returns the spot request ID directly (no separate query needed)
+		if spotReqID != "" {
+			if err := m.dbClient.SaveSpotRequestID(ctx, instanceID, spotReqID, true); err != nil {
+				poolLog.Error("spot request ID save failed, may leak on termination",
+					slog.String(logging.KeyInstanceID, instanceID),
+					slog.String("spot_request_id", spotReqID),
 					slog.String(logging.KeyPoolName, poolName),
 					slog.String("error", err.Error()))
-			} else {
-				for instanceID, spotReqID := range spotReqIDs {
-					if err := m.dbClient.SaveSpotRequestID(ctx, instanceID, spotReqID, true); err != nil {
-						poolLog.Warn("spot request ID save failed",
-							slog.String(logging.KeyInstanceID, instanceID),
-							slog.String("spot_request_id", spotReqID),
-							slog.String("error", err.Error()))
-					}
-				}
 			}
 		}
 	}
