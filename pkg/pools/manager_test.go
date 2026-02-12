@@ -3567,6 +3567,52 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	}
 }
 
+func TestCreatePoolFleetInstances_InstanceTypeCycling(t *testing.T) {
+	var capturedTypes []string
+
+	mockFleet := &MockFleetAPI{
+		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
+			capturedTypes = append(capturedTypes, spec.InstanceType)
+			return "i-" + spec.InstanceType, "sir-1", nil
+		},
+	}
+
+	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{
+		PoolName: "test-pool",
+		CPUMin:   4, CPUMax: 8,
+		Arch: "arm64",
+	}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 5, poolConfig)
+	if created != 5 {
+		t.Fatalf("created = %d, want 5", created)
+	}
+
+	if len(capturedTypes) != 5 {
+		t.Fatalf("got %d calls, want 5", len(capturedTypes))
+	}
+
+	// With multiple resolved types, instances should cycle (not all the same)
+	allSame := true
+	for _, typ := range capturedTypes[1:] {
+		if typ != capturedTypes[0] {
+			allSame = false
+			break
+		}
+	}
+	// resolvePoolInstanceTypes with CPUMin/Max returns multiple types for arm64
+	// If multiple types available, cycling should produce variety
+	types, _ := resolvePoolInstanceTypes(poolConfig)
+	if len(types) > 1 && allSame {
+		t.Errorf("all 5 instances used same type %q despite %d types available", capturedTypes[0], len(types))
+	}
+}
+
 func TestCreatePoolFleetInstances_SaveSpotRequestIDError(t *testing.T) {
 	saveErrors := 0
 

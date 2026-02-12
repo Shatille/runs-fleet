@@ -994,7 +994,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 		}
 		spec := &fleet.LaunchSpec{
 			RunID:        time.Now().UnixNano(),
-			InstanceType: instanceTypes[0],
+			InstanceType: instanceTypes[i%len(instanceTypes)],
 			SubnetID:     subnetID,
 			Pool:         poolName,
 			Arch:         arch,
