@@ -6,6 +6,13 @@ import JobStatsCard from '@/components/job-stats';
 import { Job, JobStats } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
+interface CleanupResult {
+  cleaned: number;
+  candidates: number;
+  job_ids?: number[];
+  message: string;
+}
+
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [stats, setStats] = useState<JobStats | null>(null);
@@ -17,6 +24,9 @@ export default function JobsPage() {
   const [poolFilter, setPoolFilter] = useState<string>('');
   const [offset, setOffset] = useState(0);
   const limit = 50;
+
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -63,6 +73,32 @@ export default function JobsPage() {
     fetchStats();
   };
 
+  const handleCleanupOrphanedJobs = async (dryRun: boolean = false) => {
+    try {
+      setCleanupLoading(true);
+      setCleanupResult(null);
+      const params = new URLSearchParams();
+      if (dryRun) params.set('dry_run', 'true');
+
+      const res = await apiFetch(`/api/housekeeping/orphaned-jobs?${params}`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to cleanup orphaned jobs: ${res.statusText}`);
+      }
+      const data = await res.json();
+      setCleanupResult(data);
+      if (!dryRun && data.cleaned > 0) {
+        fetchJobs();
+        fetchStats();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cleanup orphaned jobs');
+    } finally {
+      setCleanupLoading(false);
+    }
+  };
+
   if (error) {
     return (
       <div className="bg-red-50 border border-red-200 rounded-md p-4">
@@ -92,6 +128,39 @@ export default function JobsPage() {
 
       {stats && <JobStatsCard stats={stats} />}
 
+      <div className="mb-4 p-4 bg-white rounded-lg border">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-gray-900">Orphaned Jobs Cleanup</h3>
+            <p className="text-xs text-gray-500">Clean up jobs marked as running but whose instances no longer exist</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleCleanupOrphanedJobs(true)}
+              disabled={cleanupLoading}
+              className="bg-gray-100 text-gray-700 px-3 py-1.5 text-sm rounded-md hover:bg-gray-200 transition-colors disabled:opacity-50"
+            >
+              {cleanupLoading ? 'Checking...' : 'Dry Run'}
+            </button>
+            <button
+              onClick={() => handleCleanupOrphanedJobs(false)}
+              disabled={cleanupLoading}
+              className="bg-red-600 text-white px-3 py-1.5 text-sm rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              {cleanupLoading ? 'Cleaning...' : 'Clean Up'}
+            </button>
+          </div>
+        </div>
+        {cleanupResult && (
+          <div className={`mt-3 p-3 rounded-md text-sm ${cleanupResult.cleaned > 0 ? 'bg-green-50 text-green-800' : 'bg-gray-50 text-gray-700'}`}>
+            <p>{cleanupResult.message}</p>
+            {cleanupResult.job_ids && cleanupResult.job_ids.length > 0 && (
+              <p className="mt-1 text-xs">Job IDs: {cleanupResult.job_ids.join(', ')}</p>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="mb-4 flex gap-4">
         <select
           value={statusFilter}
@@ -109,6 +178,7 @@ export default function JobsPage() {
           <option value="failed">Failed</option>
           <option value="terminated">Terminated</option>
           <option value="requeued">Requeued</option>
+          <option value="orphaned">Orphaned</option>
         </select>
 
         <input

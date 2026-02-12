@@ -333,6 +333,7 @@ const orphanedJobThreshold = 2 * time.Hour
 type orphanedJobCandidate struct {
 	JobID      int64
 	InstanceID string
+	Status     string
 }
 
 // ExecuteOrphanedJobs cleans up jobs with status "running" whose instances no longer exist.
@@ -347,17 +348,20 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 
 	cutoffTime := time.Now().Add(-orphanedJobThreshold).Format(time.RFC3339)
 
+	// Check for jobs in "running" or "claiming" status that are older than threshold
+	// Jobs can get stuck in "claiming" if instance creation failed or webhook retry created duplicates
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(t.config.JobsTableName),
-		FilterExpression: aws.String("#status = :status AND created_at < :cutoff"),
+		FilterExpression: aws.String("(#status = :running OR #status = :claiming) AND created_at < :cutoff"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status": &types.AttributeValueMemberS{Value: "running"},
-			":cutoff": &types.AttributeValueMemberS{Value: cutoffTime},
+			":running":  &types.AttributeValueMemberS{Value: "running"},
+			":claiming": &types.AttributeValueMemberS{Value: "claiming"},
+			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
-		ProjectionExpression: aws.String("job_id, instance_id"),
+		ProjectionExpression: aws.String("job_id, instance_id, #status"),
 	}
 
 	// Collect all candidate jobs first
@@ -375,6 +379,7 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		for _, item := range output.Items {
 			var jobID int64
 			var instanceID string
+			var status string
 
 			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
 				parsed, err := strconv.ParseInt(v.Value, 10, 64)
@@ -386,14 +391,24 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 			if v, ok := item["instance_id"].(*types.AttributeValueMemberS); ok {
 				instanceID = v.Value
 			}
+			if v, ok := item["status"].(*types.AttributeValueMemberS); ok {
+				status = v.Value
+			}
 
-			if jobID == 0 || instanceID == "" {
+			if jobID == 0 {
+				continue
+			}
+
+			// Jobs in "running" status need instance_id to check if instance exists
+			// Jobs in "claiming" status without instance_id are orphaned (instance creation failed)
+			if status == "running" && instanceID == "" {
 				continue
 			}
 
 			candidates = append(candidates, orphanedJobCandidate{
 				JobID:      jobID,
 				InstanceID: instanceID,
+				Status:     status,
 			})
 		}
 
@@ -407,15 +422,32 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		return nil
 	}
 
-	// Batch check instance existence
-	existingInstances := t.batchCheckInstances(ctx, candidates)
+	// Separate candidates into those with instance IDs (need EC2 check) and those without
+	var candidatesWithInstance []orphanedJobCandidate
+	var orphanedCandidates []orphanedJobCandidate
+
+	for _, c := range candidates {
+		if c.InstanceID == "" {
+			// Jobs without instance ID (stuck in claiming) are automatically orphaned
+			orphanedCandidates = append(orphanedCandidates, c)
+		} else {
+			candidatesWithInstance = append(candidatesWithInstance, c)
+		}
+	}
+
+	// Batch check instance existence for candidates with instance IDs
+	if len(candidatesWithInstance) > 0 {
+		existingInstances := t.batchCheckInstances(ctx, candidatesWithInstance)
+		for _, c := range candidatesWithInstance {
+			if !existingInstances[c.InstanceID] {
+				orphanedCandidates = append(orphanedCandidates, c)
+			}
+		}
+	}
 
 	// Mark orphaned jobs
 	var orphanedCount int
-	for _, c := range candidates {
-		if existingInstances[c.InstanceID] {
-			continue
-		}
+	for _, c := range orphanedCandidates {
 
 		if err := t.markJobOrphaned(ctx, c.JobID); err != nil {
 			t.logger().Error("mark job orphaned failed",
@@ -493,7 +525,7 @@ func (t *Tasks) batchCheckInstances(ctx context.Context, candidates []orphanedJo
 	return existing
 }
 
-// markJobOrphaned updates a job's status to "orphaned" if it's still running.
+// markJobOrphaned updates a job's status to "orphaned" if it's still running or claiming.
 // Uses conditional write to prevent race conditions with concurrent job completions.
 func (t *Tasks) markJobOrphaned(ctx context.Context, jobID int64) error {
 	key, err := attributevalue.MarshalMap(map[string]int64{
@@ -503,17 +535,19 @@ func (t *Tasks) markJobOrphaned(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("failed to marshal key: %w", err)
 	}
 
+	// Allow marking as orphaned if status is "running" or "claiming"
 	_, err = t.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(t.config.JobsTableName),
 		Key:                 key,
 		UpdateExpression:    aws.String("SET #status = :orphaned, completed_at = :completed_at"),
-		ConditionExpression: aws.String("#status = :running"),
+		ConditionExpression: aws.String("#status = :running OR #status = :claiming"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":orphaned":     &types.AttributeValueMemberS{Value: "orphaned"},
 			":running":      &types.AttributeValueMemberS{Value: "running"},
+			":claiming":     &types.AttributeValueMemberS{Value: "claiming"},
 			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 		},
 	})

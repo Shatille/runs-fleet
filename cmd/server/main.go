@@ -446,6 +446,9 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	circuitHandler := admin.NewCircuitHandler(dynamoClient, ws.cfg.CircuitBreakerTable, adminAuth)
 	circuitHandler.RegisterRoutes(mux)
 
+	housekeepingHandler := admin.NewHousekeepingHandler(ec2Client, dynamoClient, ws.cfg.JobsTableName, adminAuth)
+	housekeepingHandler.RegisterRoutes(mux)
+
 	mux.Handle("/admin/", admin.UIHandler())
 
 	mux.HandleFunc("/webhook", ws.handleWebhook)
