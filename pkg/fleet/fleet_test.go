@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -102,6 +103,14 @@ func (m *mockEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstanc
 		return m.RunInstancesFunc(ctx, params, optFns...)
 	}
 	return &ec2.RunInstancesOutput{}, nil
+}
+
+type mockCircuitBreaker struct {
+	checkFunc func(ctx context.Context, instanceType string) (circuit.State, error)
+}
+
+func (m *mockCircuitBreaker) CheckCircuit(ctx context.Context, instanceType string) (circuit.State, error) {
+	return m.checkFunc(ctx, instanceType)
 }
 
 func TestCreateFleet(t *testing.T) {
@@ -353,6 +362,206 @@ func TestCreateFleet_Errors(t *testing.T) {
 				t.Errorf("CreateFleet() error = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestCreateFleet_MultipleInstances(t *testing.T) {
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			return &ec2.CreateFleetOutput{
+				Instances: []types.CreateFleetInstance{
+					{InstanceIds: []string{"i-aaa", "i-bbb"}},
+					{InstanceIds: []string{"i-ccc"}},
+				},
+			}, nil
+		},
+	}
+
+	manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}}
+	spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true}
+
+	instanceIDs, err := manager.CreateFleet(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(instanceIDs) != 3 {
+		t.Fatalf("expected 3 instance IDs, got %d: %v", len(instanceIDs), instanceIDs)
+	}
+	want := []string{"i-aaa", "i-bbb", "i-ccc"}
+	for i, id := range instanceIDs {
+		if id != want[i] {
+			t.Errorf("instanceIDs[%d] = %q, want %q", i, id, want[i])
+		}
+	}
+}
+
+func TestCreateFleet_MultipleErrors(t *testing.T) {
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			return &ec2.CreateFleetOutput{
+				Errors: []types.CreateFleetError{
+					{ErrorMessage: aws.String("insufficient capacity in az-1")},
+					{ErrorMessage: aws.String("price too low in az-2")},
+					{ErrorMessage: nil},
+				},
+			}, nil
+		},
+	}
+
+	manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}}
+	spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true}
+
+	_, err := manager.CreateFleet(context.Background(), spec)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "insufficient capacity in az-1") {
+		t.Errorf("error should contain first error message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "price too low in az-2") {
+		t.Errorf("error should contain second error message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown error") {
+		t.Errorf("error should contain 'unknown error' for nil message, got: %v", err)
+	}
+}
+
+func TestCreateFleet_CircuitBreaker(t *testing.T) {
+	t.Run("Open circuit forces on-demand", func(t *testing.T) {
+		var capturedCapType types.DefaultTargetCapacityType
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				capturedCapType = params.TargetCapacitySpecification.DefaultTargetCapacityType
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{{InstanceIds: []string{testInstanceID}}},
+				}, nil
+			},
+		}
+
+		cb := &mockCircuitBreaker{
+			checkFunc: func(_ context.Context, _ string) (circuit.State, error) {
+				return circuit.StateOpen, nil
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}, circuitBreaker: cb}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true}
+
+		_, err := manager.CreateFleet(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedCapType != types.DefaultTargetCapacityTypeOnDemand {
+			t.Errorf("CapacityType = %v, want OnDemand when circuit breaker is open", capturedCapType)
+		}
+	})
+
+	t.Run("Closed circuit uses spot", func(t *testing.T) {
+		var capturedCapType types.DefaultTargetCapacityType
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				capturedCapType = params.TargetCapacitySpecification.DefaultTargetCapacityType
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{{InstanceIds: []string{testInstanceID}}},
+				}, nil
+			},
+		}
+
+		cb := &mockCircuitBreaker{
+			checkFunc: func(_ context.Context, _ string) (circuit.State, error) {
+				return circuit.StateClosed, nil
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}, circuitBreaker: cb}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true}
+
+		_, err := manager.CreateFleet(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedCapType != types.DefaultTargetCapacityTypeSpot {
+			t.Errorf("CapacityType = %v, want Spot when circuit breaker is closed", capturedCapType)
+		}
+	})
+
+	t.Run("Circuit breaker error defaults to spot", func(t *testing.T) {
+		var capturedCapType types.DefaultTargetCapacityType
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				capturedCapType = params.TargetCapacitySpecification.DefaultTargetCapacityType
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{{InstanceIds: []string{testInstanceID}}},
+				}, nil
+			},
+		}
+
+		cb := &mockCircuitBreaker{
+			checkFunc: func(_ context.Context, _ string) (circuit.State, error) {
+				return circuit.StateClosed, errors.New("dynamo error")
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}, circuitBreaker: cb}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true}
+
+		_, err := manager.CreateFleet(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedCapType != types.DefaultTargetCapacityTypeSpot {
+			t.Errorf("CapacityType = %v, want Spot when circuit breaker errors", capturedCapType)
+		}
+	})
+
+	t.Run("Nil circuit breaker uses spot", func(t *testing.T) {
+		var capturedCapType types.DefaultTargetCapacityType
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				capturedCapType = params.TargetCapacitySpecification.DefaultTargetCapacityType
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{{InstanceIds: []string{testInstanceID}}},
+				}, nil
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}, circuitBreaker: nil}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true}
+
+		_, err := manager.CreateFleet(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedCapType != types.DefaultTargetCapacityTypeSpot {
+			t.Errorf("CapacityType = %v, want Spot when no circuit breaker", capturedCapType)
+		}
+	})
+}
+
+func TestCreateFleet_TagSpecUsesInstanceType(t *testing.T) {
+	var capturedTagSpecs []types.TagSpecification
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			capturedTagSpecs = params.TagSpecifications
+			return &ec2.CreateFleetOutput{
+				Instances: []types.CreateFleetInstance{{InstanceIds: []string{testInstanceID}}},
+			}, nil
+		},
+	}
+
+	manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}}
+	spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true, Pool: "test"}
+
+	_, err := manager.CreateFleet(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(capturedTagSpecs) != 1 {
+		t.Fatalf("expected 1 TagSpecification, got %d", len(capturedTagSpecs))
+	}
+	if capturedTagSpecs[0].ResourceType != types.ResourceTypeInstance {
+		t.Errorf("ResourceType = %v, want instance", capturedTagSpecs[0].ResourceType)
 	}
 }
 
@@ -1592,6 +1801,170 @@ func TestCreateSpotInstance(t *testing.T) {
 			t.Errorf("error = %q, want error containing 'no instance created'", err)
 		}
 	})
+}
+
+func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
+	var capturedParams *ec2.RunInstancesInput
+
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			capturedParams = params
+			return &ec2.RunInstancesOutput{
+				Instances: []types.Instance{{
+					InstanceId:            aws.String(testInstanceID),
+					SpotInstanceRequestId: aws.String("sir-123456"),
+				}},
+			}, nil
+		},
+	}
+
+	t.Run("Auto-detects arm64 from instance type", func(t *testing.T) {
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1"}
+
+		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedParams.LaunchTemplate == nil {
+			t.Fatal("LaunchTemplate should not be nil")
+		}
+		if got := aws.ToString(capturedParams.LaunchTemplate.LaunchTemplateName); got != "runs-fleet-runner-arm64" {
+			t.Errorf("LaunchTemplateName = %q, want runs-fleet-runner-arm64", got)
+		}
+	})
+
+	t.Run("Auto-detects amd64 from instance type", func(t *testing.T) {
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "c6i.large", SubnetID: "subnet-1"}
+
+		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := aws.ToString(capturedParams.LaunchTemplate.LaunchTemplateName); got != "runs-fleet-runner-amd64" {
+			t.Errorf("LaunchTemplateName = %q, want runs-fleet-runner-amd64", got)
+		}
+	})
+
+	t.Run("Explicit arch overrides auto-detection", func(t *testing.T) {
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "amd64"}
+
+		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := aws.ToString(capturedParams.LaunchTemplate.LaunchTemplateName); got != "runs-fleet-runner-amd64" {
+			t.Errorf("LaunchTemplateName = %q, want runs-fleet-runner-amd64 (explicit override)", got)
+		}
+	})
+}
+
+func TestCreateSpotInstance_NilSpotRequestID(t *testing.T) {
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			return &ec2.RunInstancesOutput{
+				Instances: []types.Instance{{
+					InstanceId:            aws.String(testInstanceID),
+					SpotInstanceRequestId: nil,
+				}},
+			}, nil
+		},
+	}
+
+	manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+	spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "arm64"}
+
+	instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instanceID != testInstanceID {
+		t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
+	}
+	if spotReqID != "" {
+		t.Errorf("spotReqID = %q, want empty string for nil SpotInstanceRequestId", spotReqID)
+	}
+}
+
+func TestCreateSpotInstance_ContextCancellation(t *testing.T) {
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(ctx context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			return nil, ctx.Err()
+		},
+	}
+
+	manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+	spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "arm64"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := manager.CreateSpotInstance(ctx, spec)
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+	if !strings.Contains(err.Error(), "failed to run instance") {
+		t.Errorf("error = %q, want error containing 'failed to run instance'", err)
+	}
+}
+
+func TestCreateSpotInstance_StorageBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		storageGiB int
+		wantBDM    bool
+	}{
+		{"Zero storage uses template default", 0, false},
+		{"Minimum 1 GiB", 1, true},
+		{"Maximum 16384 GiB", 16384, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedParams *ec2.RunInstancesInput
+			mock := &mockEC2Client{
+				RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+					capturedParams = params
+					return &ec2.RunInstancesOutput{
+						Instances: []types.Instance{{
+							InstanceId:            aws.String(testInstanceID),
+							SpotInstanceRequestId: aws.String("sir-123"),
+						}},
+					}, nil
+				},
+			}
+
+			manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+			spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "arm64", StorageGiB: tt.storageGiB}
+
+			_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			hasBDM := len(capturedParams.BlockDeviceMappings) > 0
+			if hasBDM != tt.wantBDM {
+				t.Errorf("BlockDeviceMappings present = %v, want %v", hasBDM, tt.wantBDM)
+			}
+			if tt.wantBDM {
+				bdm := capturedParams.BlockDeviceMappings[0]
+				if aws.ToInt32(bdm.Ebs.VolumeSize) != int32(tt.storageGiB) {
+					t.Errorf("VolumeSize = %d, want %d", aws.ToInt32(bdm.Ebs.VolumeSize), tt.storageGiB)
+				}
+				if !aws.ToBool(bdm.Ebs.Encrypted) {
+					t.Error("EBS volume should be encrypted")
+				}
+				if !aws.ToBool(bdm.Ebs.DeleteOnTermination) {
+					t.Error("EBS volume should be set to delete on termination")
+				}
+				if bdm.Ebs.VolumeType != types.VolumeTypeGp3 {
+					t.Errorf("VolumeType = %v, want gp3", bdm.Ebs.VolumeType)
+				}
+			}
+		})
+	}
 }
 
 func TestCreateSpotInstance_Tags(t *testing.T) {
