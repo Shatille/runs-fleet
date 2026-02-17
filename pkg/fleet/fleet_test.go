@@ -1195,3 +1195,28 @@ func TestCreatePoolInstance_NoInstances(t *testing.T) {
 		t.Errorf("expected 'no instances returned' in error, got: %v", err)
 	}
 }
+
+func TestCreatePoolInstance_EmptyInstanceID(t *testing.T) {
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			return &ec2.RunInstancesOutput{
+				Instances: []types.Instance{{InstanceId: nil}},
+			}, nil
+		},
+	}
+
+	m := &Manager{ec2Client: mock, config: &config.Config{}}
+	spec := &LaunchSpec{
+		InstanceType: "c7g.xlarge",
+		SubnetID:     "subnet-1",
+		Arch:         "arm64",
+	}
+
+	_, err := m.CreatePoolInstance(context.Background(), spec)
+	if err == nil {
+		t.Fatal("expected error for empty instance ID")
+	}
+	if !strings.Contains(err.Error(), "empty instance ID") {
+		t.Errorf("expected 'empty instance ID' in error, got: %v", err)
+	}
+}

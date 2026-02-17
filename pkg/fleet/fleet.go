@@ -289,6 +289,9 @@ func (m *Manager) CreatePoolInstance(ctx context.Context, spec *LaunchSpec) (str
 	}
 
 	instanceID := aws.ToString(output.Instances[0].InstanceId)
+	if instanceID == "" {
+		return "", fmt.Errorf("empty instance ID from RunInstances")
+	}
 	fleetLog.Info("pool instance created",
 		slog.String("instance_id", instanceID),
 		slog.String("instance_type", primaryType),
