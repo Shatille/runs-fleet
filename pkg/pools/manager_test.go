@@ -3166,42 +3166,33 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 }
 
 // TestTerminateInstancesWithSpotCancellation tests spot request cancellation during termination.
+// Spot request IDs are queried from EC2 directly (source of truth) instead of DynamoDB.
 func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 	tests := []struct {
 		name                       string
 		instanceIDs                []string
-		spotRequestInfo            map[string]db.SpotRequestInfo
+		spotRequestIDs             map[string]string // EC2-sourced: instance ID → spot request ID
 		getSpotRequestIDsError     error
 		cancelSpotError            error
 		wantCancelSpotRequestIDs   []string
 		wantCancelSpotRequestsCall bool
 	}{
 		{
-			name:        "cancels persistent spot requests after termination",
+			name:        "cancels spot requests after termination",
 			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: true},
+			spotRequestIDs: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "sir-bbb",
 			},
 			wantCancelSpotRequestIDs:   []string{"sir-aaa", "sir-bbb"},
 			wantCancelSpotRequestsCall: true,
 		},
 		{
-			name:        "skips non-persistent spot requests",
+			name:        "skips on-demand instances with no spot request ID",
 			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: false}, // one-time
-			},
-			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
-			wantCancelSpotRequestsCall: true,
-		},
-		{
-			name:        "skips instances with empty spot request ID",
-			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "", Persistent: true}, // on-demand
+			spotRequestIDs: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "", // on-demand
 			},
 			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
 			wantCancelSpotRequestsCall: true,
@@ -3209,33 +3200,24 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 		{
 			name:                       "handles no spot requests gracefully",
 			instanceIDs:                []string{"i-123", "i-456"},
-			spotRequestInfo:            map[string]db.SpotRequestInfo{},
+			spotRequestIDs:             map[string]string{},
 			wantCancelSpotRequestsCall: false,
 		},
 		{
-			name:                       "handles GetSpotRequestIDs error gracefully",
+			name:                       "handles EC2 spot request lookup error gracefully",
 			instanceIDs:                []string{"i-123"},
-			getSpotRequestIDsError:     errors.New("db error"),
+			getSpotRequestIDsError:     errors.New("EC2 describe error"),
 			wantCancelSpotRequestsCall: false,
 		},
 		{
 			name:        "continues on CancelSpotInstanceRequests error",
 			instanceIDs: []string{"i-123"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
+			spotRequestIDs: map[string]string{
+				"i-123": "sir-aaa",
 			},
 			cancelSpotError:            errors.New("cancel error"),
 			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
 			wantCancelSpotRequestsCall: true,
-		},
-		{
-			name:        "handles all instances being non-persistent",
-			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: false},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: false},
-			},
-			wantCancelSpotRequestsCall: false,
 		},
 	}
 
@@ -3244,12 +3226,12 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 			var cancelSpotCalled bool
 			var canceledSpotRequestIDs []string
 
-			mockDB := &MockDBClient{
-				GetSpotRequestIDsFunc: func(_ context.Context, _ []string) (map[string]db.SpotRequestInfo, error) {
+			mockFleet := &MockFleetAPI{
+				GetSpotRequestIDsForInstancesFunc: func(_ context.Context, _ []string) (map[string]string, error) {
 					if tt.getSpotRequestIDsError != nil {
 						return nil, tt.getSpotRequestIDsError
 					}
-					return tt.spotRequestInfo, nil
+					return tt.spotRequestIDs, nil
 				},
 			}
 
@@ -3267,7 +3249,7 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 				},
 			}
 
-			manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+			manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{})
 			manager.SetEC2Client(mockEC2)
 
 			err := manager.terminateInstances(context.Background(), tt.instanceIDs)
@@ -3416,6 +3398,48 @@ func TestCreatePoolFleetInstancesSavesSpotRequestID(t *testing.T) {
 					len(savedSpotIDs), len(tt.wantSavedSpotIDs))
 			}
 		})
+	}
+}
+
+// TestCreatePoolFleetInstancesPartialSuccess tests that spot request IDs are saved
+// even when CreateFleet returns instances alongside an error (partial success).
+func TestCreatePoolFleetInstancesPartialSuccess(t *testing.T) {
+	savedSpotIDs := make(map[string]string)
+
+	mockDB := &MockDBClient{
+		SaveSpotRequestIDFunc: func(_ context.Context, instanceID, spotRequestID string, _ bool) error {
+			savedSpotIDs[instanceID] = spotRequestID
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return []string{"i-partial"}, errors.New("detach from fleet failed")
+		},
+		GetSpotRequestIDsForInstancesFunc: func(_ context.Context, _ []string) (map[string]string, error) {
+			return map[string]string{"i-partial": "sir-partial"}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		PrivateSubnetIDs: []string{"subnet-1"},
+	})
+	manager.SetEC2Client(&MockEC2API{})
+
+	poolConfig := &db.PoolConfig{
+		PoolName:       "test-pool",
+		InstanceType:   "t4g.medium",
+		DesiredRunning: 1,
+	}
+
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 1, poolConfig)
+	if created != 1 {
+		t.Fatalf("createPoolFleetInstances() = %d, want 1 (partial success)", created)
+	}
+
+	if savedSpotIDs["i-partial"] != "sir-partial" {
+		t.Errorf("spot request ID not saved for partial success instance: got %q", savedSpotIDs["i-partial"])
 	}
 }
 

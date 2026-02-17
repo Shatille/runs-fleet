@@ -652,7 +652,7 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 
 	// Cancel persistent spot requests AFTER successful termination to avoid orphaning
 	// If cancellation fails, housekeeping will clean up orphaned spot requests later
-	if m.dbClient != nil {
+	if m.fleetManager != nil {
 		m.cancelSpotRequestsForInstances(ctx, instanceIDs)
 	}
 
@@ -668,23 +668,21 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 }
 
 // cancelSpotRequestsForInstances cancels persistent spot requests for the given instances.
+// Queries EC2 directly for spot request IDs (source of truth) instead of DynamoDB,
+// because pool instances may not have job records when SaveSpotRequestID is called.
 // Logs warnings on failure but does not return errors (best-effort cleanup).
 func (m *Manager) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs []string) {
-	spotRequests, err := m.dbClient.GetSpotRequestIDs(ctx, instanceIDs)
+	spotReqMap, err := m.fleetManager.GetSpotRequestIDsForInstances(ctx, instanceIDs)
 	if err != nil {
-		poolLog.Warn("spot request lookup failed",
+		poolLog.Warn("EC2 spot request lookup failed",
 			slog.String("error", err.Error()))
 		return
 	}
 
-	if len(spotRequests) == 0 {
-		return
-	}
-
 	var spotRequestIDs []string
-	for _, info := range spotRequests {
-		if info.SpotRequestID != "" && info.Persistent {
-			spotRequestIDs = append(spotRequestIDs, info.SpotRequestID)
+	for _, reqID := range spotReqMap {
+		if reqID != "" {
+			spotRequestIDs = append(spotRequestIDs, reqID)
 		}
 	}
 
@@ -1005,7 +1003,11 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 			poolLog.Error("fleet creation failed",
 				slog.String(logging.KeyPoolName, poolName),
 				slog.String("error", err.Error()))
-			continue
+			if len(instanceIDs) == 0 {
+				continue
+			}
+			// Partial success: instances created but post-creation step (e.g. detach) failed.
+			// Fall through to save spot request IDs for cleanup on termination.
 		}
 		created++
 
