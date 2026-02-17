@@ -1210,17 +1210,17 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			createTagsCalled := false
+			deleteFleetsCalled := false
+			var deleteTerminateInstances *bool
 			var taggedInstanceIDs []string
 			var appliedTags []types.Tag
 
 			mock := &mockEC2Client{
 				CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
-					// Check fleet type
 					if params.Type != tt.wantFleetType {
 						t.Errorf("FleetType = %v, want %v", params.Type, tt.wantFleetType)
 					}
 
-					// Check on-demand vs spot
 					if tt.wantOnDemand {
 						if params.TargetCapacitySpecification.DefaultTargetCapacityType != types.DefaultTargetCapacityTypeOnDemand {
 							t.Errorf("TargetCapacityType = %v, want OnDemand", params.TargetCapacitySpecification.DefaultTargetCapacityType)
@@ -1239,7 +1239,6 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 								params.SpotOptions.InstanceInterruptionBehavior, tt.wantInterruptionBehavior)
 						}
 					}
-					// FleetTypeMaintain returns FleetId (async), FleetTypeInstant returns Instances (sync)
 					if params.Type == types.FleetTypeMaintain {
 						return &ec2.CreateFleetOutput{
 							FleetId: aws.String("fleet-123"),
@@ -1256,6 +1255,11 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 					taggedInstanceIDs = params.Resources
 					appliedTags = params.Tags
 					return &ec2.CreateTagsOutput{}, nil
+				},
+				DeleteFleetsFunc: func(_ context.Context, params *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
+					deleteFleetsCalled = true
+					deleteTerminateInstances = params.TerminateInstances
+					return &ec2.DeleteFleetsOutput{}, nil
 				},
 			}
 
@@ -1281,6 +1285,14 @@ func TestCreateFleet_PersistentSpot(t *testing.T) {
 					t.Error("CreateTags should have tags")
 				}
 			}
+
+			wantFleetDetached := tt.wantFleetType == types.FleetTypeMaintain
+			if deleteFleetsCalled != wantFleetDetached {
+				t.Errorf("DeleteFleets called = %v, want %v (maintain fleets must be detached)", deleteFleetsCalled, wantFleetDetached)
+			}
+			if wantFleetDetached && deleteTerminateInstances != nil && *deleteTerminateInstances {
+				t.Error("DeleteFleets should use TerminateInstances=false to detach without killing instances")
+			}
 		})
 	}
 }
@@ -1289,6 +1301,7 @@ func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
 	tagAttempts := 0
 	deleteFleetsCalled := false
 	deletedFleetID := ""
+	var deleteTerminateInstances *bool
 
 	mock := &mockEC2Client{
 		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
@@ -1302,6 +1315,7 @@ func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
 		},
 		DeleteFleetsFunc: func(_ context.Context, params *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
 			deleteFleetsCalled = true
+			deleteTerminateInstances = params.TerminateInstances
 			if len(params.FleetIds) > 0 {
 				deletedFleetID = params.FleetIds[0]
 			}
@@ -1344,6 +1358,49 @@ func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
 	}
 	if deletedFleetID != "fleet-123" {
 		t.Errorf("DeleteFleets should be called with fleet ID 'fleet-123', got: %s", deletedFleetID)
+	}
+	if deleteTerminateInstances == nil || !*deleteTerminateInstances {
+		t.Error("DeleteFleets should use TerminateInstances=true for error cleanup")
+	}
+}
+
+func TestCreateFleet_PersistentSpot_DetachFailure(t *testing.T) {
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			return &ec2.CreateFleetOutput{
+				FleetId: aws.String("fleet-123"),
+			}, nil
+		},
+		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			return &ec2.CreateTagsOutput{}, nil
+		},
+		DeleteFleetsFunc: func(_ context.Context, _ *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
+			return nil, errors.New("simulated DeleteFleets failure")
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config:    &config.Config{SpotEnabled: true},
+	}
+
+	spec := &LaunchSpec{
+		RunID:          12345,
+		InstanceType:   "t4g.medium",
+		SubnetID:       "subnet-1",
+		Spot:           true,
+		PersistentSpot: true,
+	}
+
+	instanceIDs, err := manager.CreateFleet(context.Background(), spec)
+	if err == nil {
+		t.Error("CreateFleet should return error when fleet detach fails")
+	}
+	if !strings.Contains(err.Error(), "fleet detach failed") {
+		t.Errorf("error should mention fleet detach failed, got: %v", err)
+	}
+	if len(instanceIDs) != 1 || instanceIDs[0] != testInstanceID {
+		t.Errorf("instanceIDs should still be returned on detach failure, got: %v", instanceIDs)
 	}
 }
 
