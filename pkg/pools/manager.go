@@ -46,6 +46,7 @@ type DBClient interface {
 // FleetAPI defines EC2 fleet operations for instance provisioning.
 type FleetAPI interface {
 	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	CreatePoolInstance(ctx context.Context, spec *fleet.LaunchSpec) (string, error)
 }
 
 // EC2API defines EC2 operations for instance management.
@@ -822,7 +823,9 @@ func countInstanceStates(instances []PoolInstance, busyIDs []string) (running, s
 	return
 }
 
-// createPoolFleetInstances creates new fleet instances for a pool.
+// createPoolFleetInstances creates new stoppable spot instances for a pool.
+// Uses persistent spot requests with stop-on-interruption so instances can be
+// stopped/started by the pool manager (unlike EC2 Fleet instant spot instances).
 // Returns the number of instances successfully created.
 func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string, count int, poolConfig *db.PoolConfig) int {
 	instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
@@ -849,8 +852,8 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 			Spot:          true,
 			Arch:          arch,
 		}
-		if _, err := m.fleetManager.CreateFleet(ctx, spec); err != nil {
-			poolLog.Error("fleet creation failed",
+		if _, err := m.fleetManager.CreatePoolInstance(ctx, spec); err != nil {
+			poolLog.Error("pool instance creation failed",
 				slog.String(logging.KeyPoolName, poolName),
 				slog.String("error", err.Error()))
 		} else {

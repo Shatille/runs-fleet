@@ -14,6 +14,7 @@ import (
 
 type mockEC2Client struct {
 	CreateFleetFunc                    func(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	RunInstancesFunc                   func(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 	DescribeSpotPriceHistoryFunc       func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferingsFunc  func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 }
@@ -23,6 +24,17 @@ func (m *mockEC2Client) CreateFleet(ctx context.Context, params *ec2.CreateFleet
 		return m.CreateFleetFunc(ctx, params, optFns...)
 	}
 	return &ec2.CreateFleetOutput{}, nil
+}
+
+func (m *mockEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+	if m.RunInstancesFunc != nil {
+		return m.RunInstancesFunc(ctx, params, optFns...)
+	}
+	return &ec2.RunInstancesOutput{
+		Instances: []types.Instance{
+			{InstanceId: aws.String("i-pool-instance")},
+		},
+	}, nil
 }
 
 func (m *mockEC2Client) DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
@@ -1067,5 +1079,119 @@ func TestBuildLaunchTemplateConfigs_AllTypesUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no instance types available") {
 		t.Errorf("expected 'no instance types available' error, got: %v", err)
+	}
+}
+
+func TestCreatePoolInstance(t *testing.T) {
+	var capturedInput *ec2.RunInstancesInput
+
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			capturedInput = params
+			return &ec2.RunInstancesOutput{
+				Instances: []types.Instance{
+					{InstanceId: aws.String("i-pool-test")},
+				},
+			}, nil
+		},
+	}
+
+	m := &Manager{ec2Client: mock, config: &config.Config{}}
+	spec := &LaunchSpec{
+		RunID:        12345,
+		InstanceType: "c7g.xlarge",
+		SubnetID:     "subnet-1",
+		Spot:         true,
+		Pool:         "default",
+		Arch:         "arm64",
+	}
+
+	instanceID, err := m.CreatePoolInstance(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instanceID != "i-pool-test" {
+		t.Errorf("expected instance ID i-pool-test, got %s", instanceID)
+	}
+
+	if capturedInput == nil {
+		t.Fatal("RunInstances was not called")
+	}
+
+	// Verify persistent spot with stop behavior
+	if capturedInput.InstanceMarketOptions == nil {
+		t.Fatal("expected InstanceMarketOptions to be set")
+	}
+	spotOpts := capturedInput.InstanceMarketOptions.SpotOptions
+	if spotOpts == nil {
+		t.Fatal("expected SpotOptions to be set")
+	}
+	if spotOpts.SpotInstanceType != types.SpotInstanceTypePersistent {
+		t.Errorf("expected persistent spot type, got %s", spotOpts.SpotInstanceType)
+	}
+	if spotOpts.InstanceInterruptionBehavior != types.InstanceInterruptionBehaviorStop {
+		t.Errorf("expected stop interruption behavior, got %s", spotOpts.InstanceInterruptionBehavior)
+	}
+
+	// Verify instance type and subnet
+	if capturedInput.InstanceType != types.InstanceType("c7g.xlarge") {
+		t.Errorf("expected c7g.xlarge, got %s", capturedInput.InstanceType)
+	}
+	if aws.ToString(capturedInput.SubnetId) != "subnet-1" {
+		t.Errorf("expected subnet-1, got %s", aws.ToString(capturedInput.SubnetId))
+	}
+
+	// Verify launch template
+	if capturedInput.LaunchTemplate == nil {
+		t.Fatal("expected LaunchTemplate to be set")
+	}
+	if aws.ToString(capturedInput.LaunchTemplate.LaunchTemplateName) != "runs-fleet-runner-arm64" {
+		t.Errorf("expected runs-fleet-runner-arm64, got %s", aws.ToString(capturedInput.LaunchTemplate.LaunchTemplateName))
+	}
+}
+
+func TestCreatePoolInstance_Error(t *testing.T) {
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			return nil, errors.New("insufficient capacity")
+		},
+	}
+
+	m := &Manager{ec2Client: mock, config: &config.Config{}}
+	spec := &LaunchSpec{
+		InstanceType: "c7g.xlarge",
+		SubnetID:     "subnet-1",
+		Arch:         "arm64",
+	}
+
+	_, err := m.CreatePoolInstance(context.Background(), spec)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "insufficient capacity") {
+		t.Errorf("expected 'insufficient capacity' in error, got: %v", err)
+	}
+}
+
+func TestCreatePoolInstance_NoInstances(t *testing.T) {
+	mock := &mockEC2Client{
+		RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+			return &ec2.RunInstancesOutput{Instances: []types.Instance{}}, nil
+		},
+	}
+
+	m := &Manager{ec2Client: mock, config: &config.Config{}}
+	spec := &LaunchSpec{
+		InstanceType: "c7g.xlarge",
+		SubnetID:     "subnet-1",
+		Arch:         "arm64",
+	}
+
+	_, err := m.CreatePoolInstance(context.Background(), spec)
+	if err == nil {
+		t.Fatal("expected error for empty instances")
+	}
+	if !strings.Contains(err.Error(), "no instances returned") {
+		t.Errorf("expected 'no instances returned' in error, got: %v", err)
 	}
 }

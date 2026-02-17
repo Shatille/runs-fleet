@@ -17,9 +17,10 @@ import (
 
 // Test constants to satisfy goconst
 const (
-	testStateRunning     = "running"
-	testStateStopped     = "stopped"
+	testStateRunning      = "running"
+	testStateStopped      = "stopped"
 	testInstanceStoppedID = "i-stopped1"
+	testInstanceNewID     = "i-new"
 )
 
 //nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
@@ -101,7 +102,8 @@ func (m *MockDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID stri
 
 // MockFleetAPI implements FleetAPI interface
 type MockFleetAPI struct {
-	CreateFleetFunc func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	CreateFleetFunc        func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	CreatePoolInstanceFunc func(ctx context.Context, spec *fleet.LaunchSpec) (string, error)
 }
 
 func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -109,6 +111,13 @@ func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) 
 		return m.CreateFleetFunc(ctx, spec)
 	}
 	return nil, nil
+}
+
+func (m *MockFleetAPI) CreatePoolInstance(ctx context.Context, spec *fleet.LaunchSpec) (string, error) {
+	if m.CreatePoolInstanceFunc != nil {
+		return m.CreatePoolInstanceFunc(ctx, spec)
+	}
+	return "", nil
 }
 
 func TestReconcileLoop(t *testing.T) {
@@ -834,10 +843,10 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, spec *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
 			capturedSpecs = append(capturedSpecs, spec)
-			return []string{"i-new"}, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -912,9 +921,9 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
-			return []string{"i-new"}, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -986,9 +995,9 @@ func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
-			return []string{"i-new"}, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1134,9 +1143,9 @@ func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled = true
-			return []string{"i-new"}, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1389,8 +1398,8 @@ func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
 
 func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 	// Test warm pool: desiredRunning=0, desiredStopped=1
-	// Should create fleet instances to eventually become stopped
-	fleetCreateCalled := 0
+	// Should create stoppable spot instances to eventually become stopped
+	poolInstanceCreateCalled := 0
 
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
@@ -1409,12 +1418,12 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, spec *fleet.LaunchSpec) ([]string, error) {
-			fleetCreateCalled++
+		CreatePoolInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
+			poolInstanceCreateCalled++
 			if spec.Pool != "warm-pool" {
 				t.Errorf("expected pool warm-pool, got %s", spec.Pool)
 			}
-			return []string{"i-new"}, nil
+			return fmt.Sprintf("i-new-%d", poolInstanceCreateCalled), nil
 		},
 	}
 
@@ -1434,10 +1443,10 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 
 	manager.reconcile(context.Background())
 
-	// Should create 2 fleet instances to fill stopped pool deficit
+	// Should create 2 stoppable spot instances to fill stopped pool deficit
 	// (ready=0 >= desiredRunning=0, and stopped=0 < desiredStopped=2)
-	if fleetCreateCalled != 2 {
-		t.Errorf("expected 2 fleet create calls for warm pool deficit, got %d", fleetCreateCalled)
+	if poolInstanceCreateCalled != 2 {
+		t.Errorf("expected 2 pool instance create calls for warm pool deficit, got %d", poolInstanceCreateCalled)
 	}
 }
 
@@ -1548,9 +1557,9 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 
 	fleetCreateCount := 0
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{"i-new"}, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1637,9 +1646,9 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 
 	fleetCreateCount := 0
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{"i-new"}, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1695,8 +1704,8 @@ func TestReconcilePoolCreateFleetError(_ *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
-			return nil, errors.New("fleet create error")
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return "", errors.New("fleet create error")
 		},
 	}
 
@@ -1837,7 +1846,7 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
 							},
 							{
-								InstanceId:   aws.String("i-new"),
+								InstanceId:   aws.String(testInstanceNewID),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
 							},
@@ -1864,7 +1873,7 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 		switch instances[i].InstanceID {
 		case "i-existing":
 			existing = &instances[i]
-		case "i-new":
+		case testInstanceNewID:
 			newInst = &instances[i]
 		case "i-stopped":
 			stopped = &instances[i]
@@ -1924,9 +1933,9 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -1977,9 +1986,9 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2031,9 +2040,9 @@ func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2085,9 +2094,9 @@ func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2139,9 +2148,9 @@ func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return []string{fmt.Sprintf("i-new%d", fleetCreateCount)}, nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2871,8 +2880,8 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
-			return []string{"i-new"}, nil
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -2950,8 +2959,8 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
-			return []string{"i-new"}, nil
+		CreatePoolInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return testInstanceNewID, nil
 		},
 	}
 

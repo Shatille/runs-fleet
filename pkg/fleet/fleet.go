@@ -22,6 +22,7 @@ var fleetLog = logging.WithComponent(logging.LogTypeFleet, "manager")
 // EC2API defines EC2 operations for fleet management.
 type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
+	RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 }
@@ -224,6 +225,76 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	}
 
 	return instanceIDs, nil
+}
+
+// CreatePoolInstance launches a stoppable spot instance for warm/ephemeral pools.
+// Uses RunInstances with a persistent spot request and stop-on-interruption behavior,
+// so the instance can be stopped/started by the pool manager.
+func (m *Manager) CreatePoolInstance(ctx context.Context, spec *LaunchSpec) (string, error) {
+	primaryType := m.getPrimaryInstanceType(spec)
+	arch := spec.Arch
+	if arch == "" {
+		arch = GetInstanceArch(primaryType)
+		if arch == "" {
+			return "", fmt.Errorf("cannot determine architecture for instance type %q", primaryType)
+		}
+	}
+
+	tags := m.buildTags(spec)
+	tagSpecs := []types.TagSpecification{
+		{ResourceType: types.ResourceTypeInstance, Tags: tags},
+		{ResourceType: types.ResourceTypeVolume, Tags: tags},
+	}
+
+	input := &ec2.RunInstancesInput{
+		LaunchTemplate: &types.LaunchTemplateSpecification{
+			LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(spec.OS, arch)),
+			Version:            aws.String("$Latest"),
+		},
+		InstanceType:      types.InstanceType(primaryType),
+		SubnetId:          aws.String(spec.SubnetID),
+		MinCount:          aws.Int32(1),
+		MaxCount:          aws.Int32(1),
+		TagSpecifications: tagSpecs,
+		InstanceMarketOptions: &types.InstanceMarketOptionsRequest{
+			MarketType: types.MarketTypeSpot,
+			SpotOptions: &types.SpotMarketOptions{
+				SpotInstanceType:             types.SpotInstanceTypePersistent,
+				InstanceInterruptionBehavior: types.InstanceInterruptionBehaviorStop,
+			},
+		},
+	}
+
+	if spec.StorageGiB > 0 {
+		input.BlockDeviceMappings = []types.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/xvda"),
+				Ebs: &types.EbsBlockDevice{
+					VolumeSize:          aws.Int32(int32(spec.StorageGiB)),
+					VolumeType:          types.VolumeTypeGp3,
+					DeleteOnTermination: aws.Bool(true),
+					Encrypted:           aws.Bool(true),
+				},
+			},
+		}
+	}
+
+	output, err := m.ec2Client.RunInstances(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to run instance: %w", err)
+	}
+
+	if len(output.Instances) == 0 {
+		return "", fmt.Errorf("no instances returned from RunInstances")
+	}
+
+	instanceID := aws.ToString(output.Instances[0].InstanceId)
+	fleetLog.Info("pool instance created",
+		slog.String("instance_id", instanceID),
+		slog.String("instance_type", primaryType),
+		slog.String("pool", spec.Pool))
+
+	return instanceID, nil
 }
 
 // getLaunchTemplateForArch returns the launch template name for a specific OS and architecture.
