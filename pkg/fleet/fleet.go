@@ -132,7 +132,9 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	}
 
 	if fleetID != "" {
-		m.detachFleet(ctx, fleetID)
+		if err = m.detachFleet(ctx, fleetID); err != nil {
+			return instanceIDs, fmt.Errorf("instances created but fleet detach failed (zombie fleet %s): %w", fleetID, err)
+		}
 	}
 
 	return instanceIDs, nil
@@ -398,19 +400,17 @@ func (m *Manager) deleteFleetWithInstances(ctx context.Context, fleetID string) 
 // detachFleet deletes a maintain fleet without terminating its instances.
 // FleetTypeMaintain fleets stay active and continuously maintain target capacity,
 // so they must be deleted after instance extraction to prevent zombie fleets.
-func (m *Manager) detachFleet(ctx context.Context, fleetID string) {
+func (m *Manager) detachFleet(ctx context.Context, fleetID string) error {
 	_, err := m.ec2Client.DeleteFleets(ctx, &ec2.DeleteFleetsInput{
 		FleetIds:           []string{fleetID},
 		TerminateInstances: aws.Bool(false),
 	})
 	if err != nil {
-		fleetLog.Error("failed to detach fleet - may cause zombie fleet",
-			slog.String("fleet_id", fleetID),
-			slog.String("error", err.Error()))
-	} else {
-		fleetLog.Debug("maintain fleet detached after instance extraction",
-			slog.String("fleet_id", fleetID))
+		return fmt.Errorf("failed to detach fleet %s: %w", fleetID, err)
 	}
+	fleetLog.Debug("maintain fleet detached after instance extraction",
+		slog.String("fleet_id", fleetID))
+	return nil
 }
 
 // tagInstancesWithRetry applies tags to instances with exponential backoff.

@@ -1364,6 +1364,46 @@ func TestCreateFleet_PersistentSpot_TaggingFailure(t *testing.T) {
 	}
 }
 
+func TestCreateFleet_PersistentSpot_DetachFailure(t *testing.T) {
+	mock := &mockEC2Client{
+		CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+			return &ec2.CreateFleetOutput{
+				FleetId: aws.String("fleet-123"),
+			}, nil
+		},
+		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			return &ec2.CreateTagsOutput{}, nil
+		},
+		DeleteFleetsFunc: func(_ context.Context, _ *ec2.DeleteFleetsInput, _ ...func(*ec2.Options)) (*ec2.DeleteFleetsOutput, error) {
+			return nil, errors.New("simulated DeleteFleets failure")
+		},
+	}
+
+	manager := &Manager{
+		ec2Client: mock,
+		config:    &config.Config{SpotEnabled: true},
+	}
+
+	spec := &LaunchSpec{
+		RunID:          12345,
+		InstanceType:   "t4g.medium",
+		SubnetID:       "subnet-1",
+		Spot:           true,
+		PersistentSpot: true,
+	}
+
+	instanceIDs, err := manager.CreateFleet(context.Background(), spec)
+	if err == nil {
+		t.Error("CreateFleet should return error when fleet detach fails")
+	}
+	if !strings.Contains(err.Error(), "fleet detach failed") {
+		t.Errorf("error should mention fleet detach failed, got: %v", err)
+	}
+	if len(instanceIDs) != 1 || instanceIDs[0] != testInstanceID {
+		t.Errorf("instanceIDs should still be returned on detach failure, got: %v", instanceIDs)
+	}
+}
+
 func TestWaitForFleetInstances_Timeout(t *testing.T) {
 	pollCount := 0
 	mock := &mockEC2Client{
