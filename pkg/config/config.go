@@ -769,7 +769,8 @@ func parseTags(s string) (map[string]string, error) {
 
 func validateTags(tags map[string]string) error {
 	const (
-		// AWS EC2 allows 50 tags max. System adds up to 12 tags:
+		// AWS EC2 allows 50 tags max. System adds up to 13 tags:
+		// - Name (always)
 		// - runs-fleet:run-id (always)
 		// - runs-fleet:managed (always)
 		// - runs-fleet:pool (conditional)
@@ -781,8 +782,9 @@ func validateTags(tags map[string]string) error {
 		// - runs-fleet:runner-image (conditional)
 		// - runs-fleet:termination-queue-url (conditional)
 		// - runs-fleet:cache-url (conditional)
-		// Reserve 14 for system tags to be safe, allowing 36 custom tags
-		maxTags     = 36
+		// Reserve 15 for system tags to be safe, allowing 35 custom tags
+		systemTagReserve = 15
+		maxTags          = 50 - systemTagReserve
 		maxKeyLen   = 128
 		maxValueLen = 256
 	)
