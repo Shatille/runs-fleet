@@ -23,9 +23,9 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   echo "Using Vault secrets backend"
 
   VAULT_ADDR=$(get_tag "runs-fleet:vault-addr")
-  VAULT_KV_MOUNT=$(get_tag "runs-fleet:vault-kv-mount")
+  VAULT_KV_MOUNT=$(get_tag "runs-fleet:vault-kv-mount" | tr -cd 'a-zA-Z0-9/_-')
   VAULT_KV_VERSION=$(get_tag "runs-fleet:vault-kv-version")
-  VAULT_BASE_PATH=$(get_tag "runs-fleet:vault-base-path")
+  VAULT_BASE_PATH=$(get_tag "runs-fleet:vault-base-path" | tr -cd 'a-zA-Z0-9/_-')
   VAULT_AUTH_METHOD=$(get_tag "runs-fleet:vault-auth-method")
   VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role")
 
@@ -40,18 +40,21 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
 
   echo "Authenticating with Vault..."
   VAULT_TOKEN_FILE="/tmp/.vault-token-$$"
+  VAULT_AUTH_ERR="/tmp/.vault-auth-err-$$"
   touch "${VAULT_TOKEN_FILE}"
   chmod 600 "${VAULT_TOKEN_FILE}"
   vault login -token-only -method=aws \
     -address="${VAULT_ADDR}" \
     role="${VAULT_AWS_ROLE}" \
-    2>/dev/null > "${VAULT_TOKEN_FILE}"
+    2>"${VAULT_AUTH_ERR}" > "${VAULT_TOKEN_FILE}"
 
   if [ ! -s "${VAULT_TOKEN_FILE}" ]; then
-    rm -f "${VAULT_TOKEN_FILE}"
     echo "ERROR: Failed to authenticate with Vault"
+    [ -s "${VAULT_AUTH_ERR}" ] && echo "Vault auth error: $(cat "${VAULT_AUTH_ERR}")"
+    rm -f "${VAULT_TOKEN_FILE}" "${VAULT_AUTH_ERR}"
     exit 1
   fi
+  rm -f "${VAULT_AUTH_ERR}"
 
   if [ "$VAULT_KV_VERSION" = "1" ]; then
     VAULT_API_PATH="v1/${VAULT_KV_MOUNT}/${VAULT_BASE_PATH}/${INSTANCE_ID}"
@@ -93,9 +96,14 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   fi
 
   if [ "$VAULT_KV_VERSION" = "1" ]; then
-    CONFIG=$(echo "$RESPONSE" | jq -re '.data') || { echo "ERROR: Failed to extract config from Vault response"; exit 1; }
+    CONFIG=$(echo "$RESPONSE" | jq -re '.data // empty') || { echo "ERROR: Failed to extract config from Vault response"; exit 1; }
   else
-    CONFIG=$(echo "$RESPONSE" | jq -re '.data.data') || { echo "ERROR: Failed to extract config from Vault response"; exit 1; }
+    CONFIG=$(echo "$RESPONSE" | jq -re '.data.data // empty') || { echo "ERROR: Failed to extract config from Vault response"; exit 1; }
+  fi
+
+  if [ -z "$CONFIG" ] || [ "$CONFIG" = "null" ]; then
+    echo "ERROR: Vault response contained no config data"
+    exit 1
   fi
 else
   SSM_PARAM="/runs-fleet/runners/${INSTANCE_ID}/config"
