@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,7 @@ type FleetAPI interface {
 	CreateSpotInstance(ctx context.Context, spec *fleet.LaunchSpec) (instanceID, spotRequestID string, err error)
 	GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error)
 	GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error)
+	RankInstanceTypesByPrice(ctx context.Context, instanceTypes []string) []string
 }
 
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -117,6 +119,7 @@ type Manager struct {
 	instanceIdle  map[string]time.Time // Tracks when instances became idle
 	poolInstances map[string][]string  // Cache of instance IDs per pool
 	subnetIndex   uint64
+	randIntn      func(int) int
 }
 
 // NewManager creates pool manager with DB and fleet clients.
@@ -129,6 +132,7 @@ func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *M
 		instanceID:    uuid.New().String(),
 		instanceIdle:  make(map[string]time.Time),
 		poolInstances: make(map[string][]string),
+		randIntn:      rand.IntN,
 	}
 }
 
@@ -984,6 +988,8 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 		return 0
 	}
 
+	ranked := m.fleetManager.RankInstanceTypesByPrice(ctx, instanceTypes)
+
 	var created int
 	for i := 0; i < count; i++ {
 		subnetID := m.selectSubnet()
@@ -994,7 +1000,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 		}
 		spec := &fleet.LaunchSpec{
 			RunID:        time.Now().UnixNano(),
-			InstanceType: instanceTypes[i%len(instanceTypes)],
+			InstanceType: ranked[m.randIntn(len(ranked))],
 			SubnetID:     subnetID,
 			Pool:         poolName,
 			Arch:         arch,

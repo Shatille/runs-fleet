@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -693,6 +695,101 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 		total += price
 	}
 	return total / float64(len(latestPrices))
+}
+
+// RankInstanceTypesByPrice returns an interleaved sequence weighted by inverse spot price.
+// Cheaper types appear more frequently. Caller randomly selects from the pool.
+// Falls back to original order when no price data is available.
+func (m *Manager) RankInstanceTypesByPrice(ctx context.Context, instanceTypes []string) []string {
+	if len(instanceTypes) <= 1 {
+		return instanceTypes
+	}
+
+	m.spotCache.mu.RLock()
+	cacheValid := time.Now().Before(m.spotCache.expires) && len(m.spotCache.prices) > 0
+	m.spotCache.mu.RUnlock()
+
+	if !cacheValid {
+		m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+	}
+
+	m.spotCache.mu.RLock()
+	defer m.spotCache.mu.RUnlock()
+
+	var items []weightedType
+	var maxPrice float64
+	for _, t := range instanceTypes {
+		p, ok := m.spotCache.prices[t]
+		if !ok {
+			items = append(items, weightedType{typ: t, price: 0})
+			continue
+		}
+		items = append(items, weightedType{typ: t, price: p})
+		if p > maxPrice {
+			maxPrice = p
+		}
+	}
+
+	if maxPrice == 0 {
+		return instanceTypes
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].price == 0 && items[j].price == 0 {
+			return false
+		}
+		if items[i].price == 0 {
+			return false
+		}
+		if items[j].price == 0 {
+			return true
+		}
+		return items[i].price < items[j].price
+	})
+
+	const maxWeight = 5
+	for i := range items {
+		if items[i].price == 0 {
+			items[i].weight = 1
+			continue
+		}
+		w := int(math.Round(maxPrice / items[i].price))
+		if w < 1 {
+			w = 1
+		}
+		if w > maxWeight {
+			w = maxWeight
+		}
+		items[i].weight = w
+	}
+
+	return interleaveWeighted(items)
+}
+
+type weightedType struct {
+	typ    string
+	price  float64
+	weight int
+}
+
+func interleaveWeighted(items []weightedType) []string {
+	remaining := make([]int, len(items))
+	var total int
+	for i, it := range items {
+		remaining[i] = it.weight
+		total += it.weight
+	}
+
+	seq := make([]string, 0, total)
+	for len(seq) < total {
+		for i, it := range items {
+			if remaining[i] > 0 {
+				seq = append(seq, it.typ)
+				remaining[i]--
+			}
+		}
+	}
+	return seq
 }
 
 // filterAvailableInstanceTypes filters instance types to only those available in the region.

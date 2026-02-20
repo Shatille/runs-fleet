@@ -20,8 +20,9 @@ const (
 	testStateRunning      = "running"
 	testStateStopped      = "stopped"
 	testInstanceStoppedID = "i-stopped1"
-	testInstanceNewID     = "i-new"
-	testSpotRequestNewID  = "sir-new"
+	testInstanceNewID      = "i-new"
+	testSpotRequestNewID   = "sir-new"
+	testInstanceTypeC7gXL  = "c7g.xlarge"
 )
 
 //nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
@@ -123,6 +124,7 @@ type MockFleetAPI struct {
 	CreateSpotInstanceFunc             func(ctx context.Context, spec *fleet.LaunchSpec) (string, string, error)
 	GetSpotRequestIDForInstanceFunc    func(ctx context.Context, instanceID string) (string, error)
 	GetSpotRequestIDsForInstancesFunc  func(ctx context.Context, instanceIDs []string) (map[string]string, error)
+	RankInstanceTypesByPriceFunc       func(ctx context.Context, instanceTypes []string) []string
 }
 
 func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -151,6 +153,13 @@ func (m *MockFleetAPI) GetSpotRequestIDsForInstances(ctx context.Context, instan
 		return m.GetSpotRequestIDsForInstancesFunc(ctx, instanceIDs)
 	}
 	return nil, nil
+}
+
+func (m *MockFleetAPI) RankInstanceTypesByPrice(_ context.Context, instanceTypes []string) []string {
+	if m.RankInstanceTypesByPriceFunc != nil {
+		return m.RankInstanceTypesByPriceFunc(nil, instanceTypes)
+	}
+	return instanceTypes
 }
 
 func TestReconcileLoop(t *testing.T) {
@@ -3537,7 +3546,7 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 
 	poolConfig := &db.PoolConfig{
 		PoolName:     "my-pool",
-		InstanceType: "c7g.xlarge",
+		InstanceType: testInstanceTypeC7gXL,
 		Arch:         "arm64",
 	}
 
@@ -3549,8 +3558,8 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	if capturedSpec.Pool != "my-pool" {
 		t.Errorf("Pool = %q, want my-pool", capturedSpec.Pool)
 	}
-	if capturedSpec.InstanceType != "c7g.xlarge" {
-		t.Errorf("InstanceType = %q, want c7g.xlarge", capturedSpec.InstanceType)
+	if capturedSpec.InstanceType != testInstanceTypeC7gXL {
+		t.Errorf("InstanceType = %q, want %s", capturedSpec.InstanceType, testInstanceTypeC7gXL)
 	}
 	if capturedSpec.Arch != "arm64" {
 		t.Errorf("Arch = %q, want arm64", capturedSpec.Arch)
@@ -3567,13 +3576,17 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	}
 }
 
-func TestCreatePoolFleetInstances_InstanceTypeCycling(t *testing.T) {
+func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
 	var capturedTypes []string
 
+	weightedPool := []string{"t4g.xlarge", "t4g.xlarge", "t4g.xlarge", testInstanceTypeC7gXL, "m7g.xlarge"}
 	mockFleet := &MockFleetAPI{
 		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
 			capturedTypes = append(capturedTypes, spec.InstanceType)
 			return "i-" + spec.InstanceType, "sir-1", nil
+		},
+		RankInstanceTypesByPriceFunc: func(_ context.Context, _ []string) []string {
+			return weightedPool
 		},
 	}
 
@@ -3581,6 +3594,16 @@ func TestCreatePoolFleetInstances_InstanceTypeCycling(t *testing.T) {
 		PrivateSubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
+
+	callCount := 0
+	manager.randIntn = func(n int) int {
+		if n != len(weightedPool) {
+			t.Errorf("randIntn called with %d, want %d", n, len(weightedPool))
+		}
+		idx := callCount % n
+		callCount++
+		return idx
+	}
 
 	poolConfig := &db.PoolConfig{
 		PoolName: "test-pool",
@@ -3593,23 +3616,11 @@ func TestCreatePoolFleetInstances_InstanceTypeCycling(t *testing.T) {
 		t.Fatalf("created = %d, want 5", created)
 	}
 
-	if len(capturedTypes) != 5 {
-		t.Fatalf("got %d calls, want 5", len(capturedTypes))
-	}
-
-	// With multiple resolved types, instances should cycle (not all the same)
-	allSame := true
-	for _, typ := range capturedTypes[1:] {
-		if typ != capturedTypes[0] {
-			allSame = false
-			break
+	want := []string{"t4g.xlarge", "t4g.xlarge", "t4g.xlarge", testInstanceTypeC7gXL, "m7g.xlarge"}
+	for i, typ := range capturedTypes {
+		if typ != want[i] {
+			t.Errorf("instance %d: got %q, want %q", i, typ, want[i])
 		}
-	}
-	// resolvePoolInstanceTypes with CPUMin/Max returns multiple types for arm64
-	// If multiple types available, cycling should produce variety
-	types, _ := resolvePoolInstanceTypes(poolConfig)
-	if len(types) > 1 && allSame {
-		t.Errorf("all 5 instances used same type %q despite %d types available", capturedTypes[0], len(types))
 	}
 }
 

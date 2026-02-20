@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -2047,5 +2048,83 @@ func TestCreateSpotInstance_Tags(t *testing.T) {
 		} else if gotValue != wantValue {
 			t.Errorf("tag %q = %q, want %q", key, gotValue, wantValue)
 		}
+	}
+}
+
+func TestRankInstanceTypesByPrice(t *testing.T) {
+	tests := []struct {
+		name          string
+		instanceTypes []string
+		prices        map[string]float64
+		want          []string
+	}{
+		{
+			name:          "weighted interleave cheapest first",
+			instanceTypes: []string{"c7g.xlarge", "m7g.xlarge", "t4g.xlarge"},
+			prices: map[string]float64{
+				"c7g.xlarge": 0.0435,
+				"m7g.xlarge": 0.0520,
+				"t4g.xlarge": 0.0202,
+			},
+			// t4g: round(0.052/0.0202)=3, c7g: round(0.052/0.0435)=1, m7g: 1
+			want: []string{"t4g.xlarge", "c7g.xlarge", "m7g.xlarge", "t4g.xlarge", "t4g.xlarge"},
+		},
+		{
+			name:          "no prices preserves order",
+			instanceTypes: []string{"c7g.xlarge", "m7g.xlarge"},
+			prices:        nil,
+			want:          []string{"c7g.xlarge", "m7g.xlarge"},
+		},
+		{
+			name:          "single type returns it",
+			instanceTypes: []string{"t4g.medium"},
+			prices:        map[string]float64{"t4g.medium": 0.01},
+			want:          []string{"t4g.medium"},
+		},
+		{
+			name:          "unpriced types get weight 1",
+			instanceTypes: []string{"c7g.xlarge", "unknown.type", "t4g.xlarge"},
+			prices: map[string]float64{
+				"c7g.xlarge": 0.0435,
+				"t4g.xlarge": 0.0202,
+			},
+			// t4g: round(0.0435/0.0202)=2, c7g: 1, unknown: 1
+			want: []string{"t4g.xlarge", "c7g.xlarge", "unknown.type", "t4g.xlarge"},
+		},
+		{
+			name:          "equal prices equal weights",
+			instanceTypes: []string{"a.large", "b.large"},
+			prices: map[string]float64{
+				"a.large": 0.05,
+				"b.large": 0.05,
+			},
+			want: []string{"a.large", "b.large"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := &Manager{
+				ec2Client: &mockEC2Client{},
+				config:    &config.Config{},
+			}
+
+			if tt.prices != nil {
+				mgr.spotCache.mu.Lock()
+				mgr.spotCache.prices = tt.prices
+				mgr.spotCache.expires = time.Now().Add(5 * time.Minute)
+				mgr.spotCache.mu.Unlock()
+			}
+
+			got := mgr.RankInstanceTypesByPrice(context.Background(), tt.instanceTypes)
+			if len(got) != len(tt.want) {
+				t.Fatalf("RankInstanceTypesByPrice() returned %d types, want %d: got %v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("index %d: got %q, want %q (full: %v)", i, got[i], tt.want[i], got)
+				}
+			}
+		})
 	}
 }
