@@ -57,8 +57,8 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   fi
 
   echo "Authenticating with Vault..."
-  VAULT_TOKEN_FILE="/tmp/.vault-token-$$"
-  VAULT_AUTH_ERR="/tmp/.vault-auth-err-$$"
+  VAULT_TOKEN_FILE="/opt/runs-fleet/.vault-token-$$"
+  VAULT_AUTH_ERR="/opt/runs-fleet/.vault-auth-err-$$"
   touch "${VAULT_TOKEN_FILE}"
   chmod 600 "${VAULT_TOKEN_FILE}"
   if ! vault login -token-only -method=aws \
@@ -150,7 +150,13 @@ else
         echo "No job config found, instance in pool standby"
         exit 0
       fi
-      echo "Attempt $i: SSM error: $(cat "${SSM_ERR}" 2>/dev/null)"
+      SSM_ERR_MSG=$(cat "${SSM_ERR}" 2>/dev/null)
+      echo "Attempt $i: SSM error: ${SSM_ERR_MSG}"
+      if echo "${SSM_ERR_MSG}" | grep -qE "AccessDenied|InvalidKeyId|ValidationException"; then
+        rm -f "${SSM_ERR}"
+        echo "ERROR: Permanent SSM error, not retrying"
+        exit 1
+      fi
     fi
     rm -f "${SSM_ERR}"
     echo "Attempt $i: Waiting for SSM parameter..."
@@ -163,10 +169,13 @@ else
   fi
 fi
 
-if ! echo "$CONFIG" | jq empty 2>/dev/null; then
-  echo "ERROR: Configuration is not valid JSON"
+JQ_ERR="/tmp/jq-err-$$"
+if ! echo "$CONFIG" | jq empty 2>"${JQ_ERR}"; then
+  echo "ERROR: Configuration is not valid JSON: $(cat "${JQ_ERR}" 2>/dev/null)"
+  rm -f "${JQ_ERR}"
   exit 1
 fi
+rm -f "${JQ_ERR}"
 
 JIT_TOKEN=$(echo "$CONFIG" | jq -r '.jit_token // empty')
 if [ -z "$JIT_TOKEN" ]; then

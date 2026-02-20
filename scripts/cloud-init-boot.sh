@@ -40,6 +40,10 @@ if [ -n "$TERMINATION_QUEUE_URL" ]; then
   rm -f "${SQS_ERR}"
 fi
 
-aws ec2 terminate-instances \
+TERM_ERR="/tmp/terminate-err-$$"
+if ! aws ec2 terminate-instances \
   --instance-ids "$INSTANCE_ID" \
-  --region "$REGION" 2>/dev/null || echo "CRITICAL: Failed to self-terminate instance ${INSTANCE_ID}"
+  --region "$REGION" 2>"${TERM_ERR}"; then
+  echo "CRITICAL: Failed to self-terminate instance ${INSTANCE_ID}: $(cat "${TERM_ERR}" 2>/dev/null)"
+fi
+rm -f "${TERM_ERR}"
