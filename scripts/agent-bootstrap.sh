@@ -24,8 +24,19 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
 
   VAULT_ADDR=$(get_tag "runs-fleet:vault-addr")
   VAULT_KV_MOUNT=$(get_tag "runs-fleet:vault-kv-mount" | tr -cd 'a-zA-Z0-9/_-')
+  if [[ "$VAULT_KV_MOUNT" =~ \.\. ]]; then
+    echo "ERROR: Invalid VAULT_KV_MOUNT: contains path traversal"
+    exit 1
+  fi
   VAULT_KV_VERSION=$(get_tag "runs-fleet:vault-kv-version")
+  if [ -z "$VAULT_KV_VERSION" ]; then
+    VAULT_KV_VERSION="2"
+  fi
   VAULT_BASE_PATH=$(get_tag "runs-fleet:vault-base-path" | tr -cd 'a-zA-Z0-9/_-')
+  if [[ "$VAULT_BASE_PATH" =~ \.\. ]]; then
+    echo "ERROR: Invalid VAULT_BASE_PATH: contains path traversal"
+    exit 1
+  fi
   VAULT_AUTH_METHOD=$(get_tag "runs-fleet:vault-auth-method")
   VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role")
 
@@ -140,20 +151,31 @@ if ! echo "$CONFIG" | jq empty 2>/dev/null; then
   exit 1
 fi
 
+JIT_TOKEN=$(echo "$CONFIG" | jq -r '.jit_token // empty')
+if [ -z "$JIT_TOKEN" ]; then
+  echo "ERROR: Missing required field 'jit_token' in config"
+  exit 1
+fi
+
+RUN_ID=$(echo "$CONFIG" | jq -r '.run_id // empty')
+if [ -z "$RUN_ID" ]; then
+  echo "ERROR: Missing required field 'run_id' in config"
+  exit 1
+fi
+
 if [ "$SECRETS_BACKEND" = "vault" ]; then
-  # Vault: agent can't re-authenticate, so pass all config via env vars
   cat > /opt/runs-fleet/env <<EOF
 RUNS_FLEET_SECRETS_BACKEND=env
-RUNS_FLEET_RUN_ID=$(echo "$CONFIG" | jq -r '.run_id')
+RUNS_FLEET_RUN_ID=${RUN_ID}
 RUNS_FLEET_JOB_ID=$(echo "$CONFIG" | jq -r '.job_id // empty')
 RUNS_FLEET_INSTANCE_ID=${INSTANCE_ID}
 AWS_REGION=${REGION}
 RUNS_FLEET_CACHE_URL=$(echo "$CONFIG" | jq -r '.cache_url // empty')
 RUNS_FLEET_CACHE_TOKEN=$(echo "$CONFIG" | jq -r '.cache_token // empty')
-RUNS_FLEET_JIT_TOKEN=$(echo "$CONFIG" | jq -r '.jit_token')
-RUNS_FLEET_ORG=$(echo "$CONFIG" | jq -r '.org')
+RUNS_FLEET_JIT_TOKEN=${JIT_TOKEN}
+RUNS_FLEET_ORG=$(echo "$CONFIG" | jq -r '.org // empty')
 RUNS_FLEET_REPO=$(echo "$CONFIG" | jq -r '.repo // empty')
-RUNS_FLEET_LABELS=$(echo "$CONFIG" | jq -r '.labels | if type == "array" then join(",") else . end')
+RUNS_FLEET_LABELS=$(echo "$CONFIG" | jq -r '.labels // empty | if type == "array" then join(",") else . end')
 RUNS_FLEET_TERMINATION_QUEUE_URL=$(echo "$CONFIG" | jq -r '.termination_queue_url // empty')
 RUNS_FLEET_RUNNER_NAME=$(echo "$CONFIG" | jq -r '.runner_name // empty')
 RUNS_FLEET_IS_ORG=$(echo "$CONFIG" | jq -r '.is_org // false')
