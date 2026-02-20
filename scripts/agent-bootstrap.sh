@@ -206,4 +206,8 @@ EOF
 fi
 
 systemctl start runs-fleet-agent
+if ! systemctl is-active --quiet runs-fleet-agent; then
+  echo "ERROR: runs-fleet-agent service failed to start"
+  exit 1
+fi
 echo "Agent service started for instance ${INSTANCE_ID}"

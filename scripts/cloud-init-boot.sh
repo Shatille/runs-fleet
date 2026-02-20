@@ -29,11 +29,15 @@ if [ -n "$TERMINATION_QUEUE_URL" ]; then
     --arg status "bootstrap_failed" \
     --arg err "agent bootstrap failed on boot" \
     '{instance_id: $id, status: $status, error: $err}')
-  aws sqs send-message \
+  SQS_ERR="/tmp/sqs-err-$$"
+  if ! aws sqs send-message \
     --queue-url "$TERMINATION_QUEUE_URL" \
     --message-body "$MESSAGE" \
     --message-group-id "$INSTANCE_ID" \
-    --region "$REGION" 2>/dev/null || true
+    --region "$REGION" 2>"${SQS_ERR}"; then
+    echo "[$(date)] WARN: Failed to send SQS notification: $(cat "${SQS_ERR}" 2>/dev/null)"
+  fi
+  rm -f "${SQS_ERR}"
 fi
 
 aws ec2 terminate-instances \
