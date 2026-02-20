@@ -109,7 +109,10 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerCo
 
 	runnerName := config.RunnerName
 	if runnerName == "" {
-		hostname, _ := os.Hostname()
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "unknown"
+		}
 		runnerName = fmt.Sprintf("runs-fleet-%s", hostname)
 	}
 	args = append(args, "--name", runnerName)
