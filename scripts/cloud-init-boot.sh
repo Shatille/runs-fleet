@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+TOKEN=$(curl -sfX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300") || { echo "ERROR: Failed to fetch IMDSv2 token"; exit 1; }
+INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id) || { echo "ERROR: Failed to fetch instance-id"; exit 1; }
+REGION=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region) || { echo "ERROR: Failed to fetch region"; exit 1; }
 
 echo "[$(date)] runs-fleet boot script starting for ${INSTANCE_ID}"
 
