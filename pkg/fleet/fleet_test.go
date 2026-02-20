@@ -820,6 +820,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -832,6 +833,7 @@ func TestBuildTags(t *testing.T) {
 				Pool:  "default",
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet-default",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:pool":    "default",
@@ -850,6 +852,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"team":               "platform",
@@ -866,6 +869,7 @@ func TestBuildTags(t *testing.T) {
 				Arch:  "arm64",
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:os":      "linux",
@@ -880,7 +884,8 @@ func TestBuildTags(t *testing.T) {
 				Environment: "production",
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":  "12345",
+				"Name":                   "runs-fleet",
+				"runs-fleet:run-id":      "12345",
 				"runs-fleet:managed":     "true",
 				"runs-fleet:environment": "production",
 				"Environment":            "production",
@@ -894,6 +899,7 @@ func TestBuildTags(t *testing.T) {
 				Pool:  "",
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -907,6 +913,7 @@ func TestBuildTags(t *testing.T) {
 				Region: "us-west-2",
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:region":  "us-west-2",
@@ -920,6 +927,7 @@ func TestBuildTags(t *testing.T) {
 				Region: "",
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -936,11 +944,12 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"runs-fleet:run-id":               "12345",
-				"runs-fleet:managed":              "true",
-				"runs-fleet:runner-image":         "ghcr.io/org/runner:latest",
+				"Name":                             "runs-fleet",
+				"runs-fleet:run-id":                "12345",
+				"runs-fleet:managed":               "true",
+				"runs-fleet:runner-image":           "ghcr.io/org/runner:latest",
 				"runs-fleet:termination-queue-url": "https://sqs.us-west-2.amazonaws.com/123/term-queue",
-				"runs-fleet:cache-url":            "https://cache.example.com",
+				"runs-fleet:cache-url":             "https://cache.example.com",
 			},
 		},
 		{
@@ -950,6 +959,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
+				"Name":               "runs-fleet",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
