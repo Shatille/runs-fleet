@@ -31,6 +31,7 @@ func TestEnvStore_Get(t *testing.T) {
 				"RUNS_FLEET_TERMINATION_QUEUE_URL": "https://sqs.example.com/queue",
 				"RUNS_FLEET_LABELS":               "self-hosted,linux,arm64",
 				"RUNS_FLEET_IS_ORG":               "true",
+				"RUNS_FLEET_RUNNER_NAME":           "runs-fleet-default-myrepo-arm64-12345",
 			},
 			wantErr: false,
 			validate: func(t *testing.T, cfg *RunnerConfig) {
@@ -51,6 +52,9 @@ func TestEnvStore_Get(t *testing.T) {
 				}
 				if !cfg.IsOrg {
 					t.Error("IsOrg = false, want true")
+				}
+				if cfg.RunnerName != "runs-fleet-default-myrepo-arm64-12345" {
+					t.Errorf("RunnerName = %q, want %q", cfg.RunnerName, "runs-fleet-default-myrepo-arm64-12345")
 				}
 			},
 		},
@@ -136,6 +140,7 @@ func TestEnvStore_Get(t *testing.T) {
 				"RUNS_FLEET_RUN_ID", "RUNS_FLEET_JOB_ID", "RUNS_FLEET_CACHE_TOKEN",
 				"RUNS_FLEET_CACHE_URL", "RUNS_FLEET_TERMINATION_QUEUE_URL",
 				"RUNS_FLEET_LABELS", "RUNS_FLEET_IS_ORG", "RUNS_FLEET_RUNNER_GROUP",
+				"RUNS_FLEET_RUNNER_NAME",
 			}
 			for _, key := range envKeys {
 				_ = os.Unsetenv(key)

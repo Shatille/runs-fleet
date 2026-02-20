@@ -46,6 +46,7 @@ func (s *EnvStore) Get(_ context.Context, _ string) (*RunnerConfig, error) {
 		CacheURL:            os.Getenv("RUNS_FLEET_CACHE_URL"),
 		TerminationQueueURL: os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL"),
 		RunnerGroup:         os.Getenv("RUNS_FLEET_RUNNER_GROUP"),
+		RunnerName:          os.Getenv("RUNS_FLEET_RUNNER_NAME"),
 	}
 
 	// Parse labels from comma-separated string
