@@ -8,11 +8,18 @@ REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/la
 
 get_tag() {
   local tag_name="$1"
-  aws ec2 describe-tags \
+  local result
+  if ! result=$(aws ec2 describe-tags \
     --region "${REGION}" \
     --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=${tag_name}" \
     --query 'Tags[0].Value' \
-    --output text 2>/dev/null | grep -v "^None$" || true
+    --output text 2>/tmp/get-tag-err-$$); then
+    [ -s /tmp/get-tag-err-$$ ] && echo "WARN: Failed to fetch tag ${tag_name}: $(cat /tmp/get-tag-err-$$)" >&2
+    rm -f /tmp/get-tag-err-$$
+    return 0
+  fi
+  rm -f /tmp/get-tag-err-$$
+  echo "$result" | grep -v "^None$" || true
 }
 
 SECRETS_BACKEND=$(get_tag "runs-fleet:secrets-backend")
@@ -54,14 +61,18 @@ if [ "$SECRETS_BACKEND" = "vault" ]; then
   VAULT_AUTH_ERR="/tmp/.vault-auth-err-$$"
   touch "${VAULT_TOKEN_FILE}"
   chmod 600 "${VAULT_TOKEN_FILE}"
-  vault login -token-only -method=aws \
+  if ! vault login -token-only -method=aws \
     -address="${VAULT_ADDR}" \
     role="${VAULT_AWS_ROLE}" \
-    2>"${VAULT_AUTH_ERR}" > "${VAULT_TOKEN_FILE}"
+    2>"${VAULT_AUTH_ERR}" > "${VAULT_TOKEN_FILE}"; then
+    echo "ERROR: Vault authentication command failed"
+    [ -s "${VAULT_AUTH_ERR}" ] && echo "Vault auth error: $(cat "${VAULT_AUTH_ERR}")"
+    rm -f "${VAULT_TOKEN_FILE}" "${VAULT_AUTH_ERR}"
+    exit 1
+  fi
 
   if [ ! -s "${VAULT_TOKEN_FILE}" ]; then
-    echo "ERROR: Failed to authenticate with Vault"
-    [ -s "${VAULT_AUTH_ERR}" ] && echo "Vault auth error: $(cat "${VAULT_AUTH_ERR}")"
+    echo "ERROR: Vault authentication produced no token"
     rm -f "${VAULT_TOKEN_FILE}" "${VAULT_AUTH_ERR}"
     exit 1
   fi
@@ -121,21 +132,27 @@ else
   echo "Checking SSM for config: ${SSM_PARAM}"
 
   for i in {1..5}; do
-    RESULT=$(aws ssm get-parameter \
+    SSM_ERR="/tmp/ssm-err-$$"
+    if RESULT=$(aws ssm get-parameter \
       --name "${SSM_PARAM}" \
       --with-decryption \
       --region "${REGION}" \
       --query 'Parameter.Value' \
-      --output text 2>&1) && {
+      --output text 2>"${SSM_ERR}"); then
       if [ -n "$RESULT" ] && [ "$RESULT" != "null" ]; then
         CONFIG="$RESULT"
+        rm -f "${SSM_ERR}"
         break
       fi
-    }
-    if echo "$RESULT" | grep -q "ParameterNotFound"; then
-      echo "No job config found, instance in pool standby"
-      exit 0
+    else
+      if grep -q "ParameterNotFound" "${SSM_ERR}" 2>/dev/null; then
+        rm -f "${SSM_ERR}"
+        echo "No job config found, instance in pool standby"
+        exit 0
+      fi
+      echo "Attempt $i: SSM error: $(cat "${SSM_ERR}" 2>/dev/null)"
     fi
+    rm -f "${SSM_ERR}"
     echo "Attempt $i: Waiting for SSM parameter..."
     sleep 2
   done

@@ -14,11 +14,14 @@ fi
 
 echo "[$(date)] Bootstrap failed, notifying and self-terminating"
 
+TAG_ERR="/tmp/tag-err-$$"
 TERMINATION_QUEUE_URL=$(aws ec2 describe-tags \
   --region "${REGION}" \
   --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=runs-fleet:termination-queue-url" \
   --query 'Tags[0].Value' \
-  --output text 2>/dev/null | grep -v "^None$" || true)
+  --output text 2>"${TAG_ERR}" | grep -v "^None$" || true)
+[ -s "${TAG_ERR}" ] && echo "[$(date)] WARN: Failed to fetch termination queue tag: $(cat "${TAG_ERR}")"
+rm -f "${TAG_ERR}"
 
 if [ -n "$TERMINATION_QUEUE_URL" ]; then
   MESSAGE=$(jq -n \
