@@ -648,17 +648,18 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 		return nil
 	}
 
+	// Cancel persistent spot requests BEFORE terminating instances.
+	// Cancelling first ensures atomic cleanup without relying on eventual housekeeping.
+	// If cancellation fails, housekeeping will clean up orphaned spot requests later.
+	if m.fleetManager != nil {
+		m.cancelSpotRequestsForInstances(ctx, instanceIDs)
+	}
+
 	_, err := m.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: instanceIDs,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to terminate instances: %w", err)
-	}
-
-	// Cancel persistent spot requests AFTER successful termination to avoid orphaning
-	// If cancellation fails, housekeeping will clean up orphaned spot requests later
-	if m.dbClient != nil {
-		m.cancelSpotRequestsForInstances(ctx, instanceIDs)
 	}
 
 	// Remove from idle tracking
@@ -673,23 +674,21 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 }
 
 // cancelSpotRequestsForInstances cancels persistent spot requests for the given instances.
+// Queries EC2 directly for spot request IDs (source of truth) instead of DynamoDB,
+// because DynamoDB records may be missing if SaveSpotRequestID failed.
 // Logs warnings on failure but does not return errors (best-effort cleanup).
 func (m *Manager) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs []string) {
-	spotRequests, err := m.dbClient.GetSpotRequestIDs(ctx, instanceIDs)
+	spotReqMap, err := m.fleetManager.GetSpotRequestIDsForInstances(ctx, instanceIDs)
 	if err != nil {
-		poolLog.Warn("spot request lookup failed",
+		poolLog.Warn("EC2 spot request lookup failed",
 			slog.String("error", err.Error()))
 		return
 	}
 
-	if len(spotRequests) == 0 {
-		return
-	}
-
 	var spotRequestIDs []string
-	for _, info := range spotRequests {
-		if info.SpotRequestID != "" && info.Persistent {
-			spotRequestIDs = append(spotRequestIDs, info.SpotRequestID)
+	for _, reqID := range spotReqMap {
+		if reqID != "" {
+			spotRequestIDs = append(spotRequestIDs, reqID)
 		}
 	}
 

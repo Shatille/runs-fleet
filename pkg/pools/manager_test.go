@@ -3189,38 +3189,28 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 	tests := []struct {
 		name                       string
 		instanceIDs                []string
-		spotRequestInfo            map[string]db.SpotRequestInfo
+		spotRequestMap             map[string]string
 		getSpotRequestIDsError     error
 		cancelSpotError            error
 		wantCancelSpotRequestIDs   []string
 		wantCancelSpotRequestsCall bool
 	}{
 		{
-			name:        "cancels persistent spot requests after termination",
+			name:        "cancels spot requests before termination",
 			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: true},
+			spotRequestMap: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "sir-bbb",
 			},
 			wantCancelSpotRequestIDs:   []string{"sir-aaa", "sir-bbb"},
 			wantCancelSpotRequestsCall: true,
 		},
 		{
-			name:        "skips non-persistent spot requests",
-			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: false},
-			},
-			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
-			wantCancelSpotRequestsCall: true,
-		},
-		{
 			name:        "skips instances with empty spot request ID",
 			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "", Persistent: true},
+			spotRequestMap: map[string]string{
+				"i-123": "sir-aaa",
+				"i-456": "",
 			},
 			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
 			wantCancelSpotRequestsCall: true,
@@ -3228,33 +3218,24 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 		{
 			name:                       "handles no spot requests gracefully",
 			instanceIDs:                []string{"i-123", "i-456"},
-			spotRequestInfo:            map[string]db.SpotRequestInfo{},
+			spotRequestMap:             map[string]string{},
 			wantCancelSpotRequestsCall: false,
 		},
 		{
-			name:                       "handles GetSpotRequestIDs error gracefully",
+			name:                       "handles EC2 query error gracefully",
 			instanceIDs:                []string{"i-123"},
-			getSpotRequestIDsError:     errors.New("db error"),
+			getSpotRequestIDsError:     errors.New("ec2 error"),
 			wantCancelSpotRequestsCall: false,
 		},
 		{
 			name:        "continues on CancelSpotInstanceRequests error",
 			instanceIDs: []string{"i-123"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: true},
+			spotRequestMap: map[string]string{
+				"i-123": "sir-aaa",
 			},
 			cancelSpotError:            errors.New("cancel error"),
 			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
 			wantCancelSpotRequestsCall: true,
-		},
-		{
-			name:        "handles all instances being non-persistent",
-			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestInfo: map[string]db.SpotRequestInfo{
-				"i-123": {InstanceID: "i-123", SpotRequestID: "sir-aaa", Persistent: false},
-				"i-456": {InstanceID: "i-456", SpotRequestID: "sir-bbb", Persistent: false},
-			},
-			wantCancelSpotRequestsCall: false,
 		},
 	}
 
@@ -3263,12 +3244,12 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 			var cancelSpotCalled bool
 			var canceledSpotRequestIDs []string
 
-			mockDB := &MockDBClient{
-				GetSpotRequestIDsFunc: func(_ context.Context, _ []string) (map[string]db.SpotRequestInfo, error) {
+			mockFleet := &MockFleetAPI{
+				GetSpotRequestIDsForInstancesFunc: func(_ context.Context, _ []string) (map[string]string, error) {
 					if tt.getSpotRequestIDsError != nil {
 						return nil, tt.getSpotRequestIDsError
 					}
-					return tt.spotRequestInfo, nil
+					return tt.spotRequestMap, nil
 				},
 			}
 
@@ -3286,7 +3267,7 @@ func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
 				},
 			}
 
-			manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+			manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{})
 			manager.SetEC2Client(mockEC2)
 
 			err := manager.terminateInstances(context.Background(), tt.instanceIDs)
