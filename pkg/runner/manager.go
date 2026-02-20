@@ -43,6 +43,8 @@ type PrepareRunnerRequest struct {
 	RunID      string
 	Repo       string // owner/repo format for repo-level registration
 	Labels     []string
+	Pool       string
+	Arch       string
 }
 
 // PrepareRunner stores runner configuration in the secrets backend.
@@ -57,9 +59,10 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		return fmt.Errorf("invalid repo format, expected owner/repo: %s", req.Repo)
 	}
 	org := parts[0]
+	repoName := parts[1]
 
-	// Generate runner name
-	runnerName := fmt.Sprintf("runs-fleet-%s", req.InstanceID)
+	// Build descriptive runner name: runs-fleet-{pool}-{repo}-{arch}-{job_id}
+	runnerName := buildRunnerName(req.Pool, repoName, req.Arch, req.JobID)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
 	runnerLog.Info("fetching registration token",
@@ -84,6 +87,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		RunID:               req.RunID,
 		JITToken:            regResult.Token,
 		Labels:              req.Labels,
+		RunnerName:          runnerName,
 		JobID:               req.JobID,
 		CacheToken:          cacheToken,
 		CacheURL:            m.config.CacheURL,
@@ -113,4 +117,15 @@ func (m *Manager) CleanupRunner(ctx context.Context, instanceID string) error {
 // EC2 backend uses PrepareRunner instead (handles SSM storage).
 func (m *Manager) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
 	return m.github.GetRegistrationToken(ctx, repo)
+}
+
+// buildRunnerName creates a descriptive runner name from job attributes.
+// Format: runs-fleet-{pool}-{repo}-{arch}-{job_id} (pool jobs)
+//
+//	runs-fleet-{repo}-{arch}-{job_id} (cold-start jobs)
+func buildRunnerName(pool, repoName, arch, jobID string) string {
+	if pool != "" {
+		return fmt.Sprintf("runs-fleet-%s-%s-%s-%s", pool, repoName, arch, jobID)
+	}
+	return fmt.Sprintf("runs-fleet-%s-%s-%s", repoName, arch, jobID)
 }

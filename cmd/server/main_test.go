@@ -556,12 +556,13 @@ func TestHandleJobFailure_ExceedsRetryLimit(t *testing.T) {
 	}
 }
 
-func TestHandleJobFailure_InstanceIDExtraction(t *testing.T) {
+func TestHandleJobFailure_RunnerNamePrefixCheck(t *testing.T) {
 	tests := []struct {
 		runnerName string
 		wantPrefix bool
 	}{
-		{"runs-fleet-i-1234567890abcdef0", true},
+		{"runs-fleet-default-myapp-arm64-12345", true},
+		{"runs-fleet-myapp-amd64-99999", true},
 		{"runs-fleet-i-abc", true},
 		{"github-runner", false},
 		{"", false},

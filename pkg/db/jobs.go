@@ -607,17 +607,75 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 	return instanceIDs, nil
 }
 
-// MarkJobRequeued atomically marks a job as "requeued" if its current status is "running".
-// Returns true if the job was successfully marked (was in "running" state).
-// Returns false if the job was already in another state (terminating, requeued, etc.).
-// This prevents duplicate re-queuing from concurrent webhook handlers.
-func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, error) {
-	if instanceID == "" {
-		return false, fmt.Errorf("instance ID cannot be empty")
+// GetJobByJobID retrieves job information by job ID (partition key lookup, O(1)).
+func (c *Client) GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInfo, error) {
+	if jobID == 0 {
+		return nil, fmt.Errorf("job ID cannot be zero")
 	}
 
 	if c.jobsTable == "" {
-		return false, fmt.Errorf("jobs table not configured")
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	output, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job: %w", err)
+	}
+
+	if output.Item == nil {
+		return nil, nil
+	}
+
+	var record jobRecord
+	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
+	}
+
+	return &events.JobInfo{
+		JobID:        record.JobID,
+		RunID:        record.RunID,
+		Repo:         record.Repo,
+		InstanceType: record.InstanceType,
+		Pool:         record.Pool,
+		Spot:         record.Spot,
+		RetryCount:   record.RetryCount,
+	}, nil
+}
+
+// MarkJobRequeuedByJobID atomically marks a job as "requeued" using the job_id partition key.
+// Returns true if the job was successfully marked (was in "running" state).
+// Returns false if the job was already in another state (terminating, requeued, etc.).
+func (c *Client) MarkJobRequeuedByJobID(ctx context.Context, jobID int64) (bool, error) {
+	if jobID == 0 {
+		return false, fmt.Errorf("job ID cannot be zero")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	return c.markJobRequeued(ctx, key)
+}
+
+// MarkJobRequeued atomically marks a job as "requeued" if its current status is "running".
+// Deprecated: Uses instance_id as key which doesn't match the job_id partition key.
+// Use MarkJobRequeuedByJobID instead.
+func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, error) {
+	if instanceID == "" {
+		return false, fmt.Errorf("instance ID cannot be empty")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
@@ -625,6 +683,14 @@ func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, 
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	return c.markJobRequeued(ctx, key)
+}
+
+func (c *Client) markJobRequeued(ctx context.Context, key map[string]types.AttributeValue) (bool, error) {
+	if c.jobsTable == "" {
+		return false, fmt.Errorf("jobs table not configured")
 	}
 
 	update := "SET #status = :new_status, requeued_at = :requeued_at"

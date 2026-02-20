@@ -214,6 +214,8 @@ func TestPrepareRunnerRequest_Structure(t *testing.T) {
 		RunID:      "run-456",
 		Repo:       "myorg/myrepo",
 		Labels:     []string{"self-hosted", "linux"},
+		Pool:       "default",
+		Arch:       "arm64",
 	}
 
 	if req.InstanceID != "i-12345" {
@@ -230,6 +232,12 @@ func TestPrepareRunnerRequest_Structure(t *testing.T) {
 	}
 	if len(req.Labels) != 2 {
 		t.Errorf("expected 2 labels, got %d", len(req.Labels))
+	}
+	if req.Pool != "default" {
+		t.Errorf("expected Pool 'default', got '%s'", req.Pool)
+	}
+	if req.Arch != "arm64" {
+		t.Errorf("expected Arch 'arm64', got '%s'", req.Arch)
 	}
 }
 
@@ -317,6 +325,10 @@ func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req Prepar
 		return errors.New("invalid repo format, expected owner/repo: " + req.Repo)
 	}
 	org := parts[0]
+	repoName := parts[1]
+
+	// Build descriptive runner name
+	runnerName := buildRunnerName(req.Pool, repoName, req.Arch, req.JobID)
 
 	// Get registration token from mock GitHub client
 	regResult, err := tm.ghClient.GetRegistrationToken(ctx, req.Repo)
@@ -337,6 +349,7 @@ func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req Prepar
 		RunID:               req.RunID,
 		JITToken:            regResult.Token,
 		Labels:              req.Labels,
+		RunnerName:          runnerName,
 		JobID:               req.JobID,
 		CacheToken:          cacheToken,
 		CacheURL:            tm.config.CacheURL,
@@ -649,6 +662,105 @@ func TestSplitRepo(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildRunnerName(t *testing.T) {
+	tests := []struct {
+		name     string
+		pool     string
+		repoName string
+		arch     string
+		jobID    string
+		want     string
+	}{
+		{
+			name:     "pool job",
+			pool:     "default",
+			repoName: "myapp",
+			arch:     "arm64",
+			jobID:    "12345678",
+			want:     "runs-fleet-default-myapp-arm64-12345678",
+		},
+		{
+			name:     "cold-start job",
+			pool:     "",
+			repoName: "myapp",
+			arch:     "amd64",
+			jobID:    "98765432",
+			want:     "runs-fleet-myapp-amd64-98765432",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRunnerName(tt.pool, tt.repoName, tt.arch, tt.jobID)
+			if got != tt.want {
+				t.Errorf("buildRunnerName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "test-token",
+		isOrg:    true,
+	}
+
+	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
+		CacheSecret: "secret",
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-12345",
+		JobID:      "99999",
+		RunID:      "run-456",
+		Repo:       "org/myapp",
+		Labels:     []string{"self-hosted"},
+		Pool:       "default",
+		Arch:       "arm64",
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+	if storedConfig.RunnerName != "runs-fleet-default-myapp-arm64-99999" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-default-myapp-arm64-99999")
+	}
+}
+
+func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClientForManager{
+		regToken: "test-token",
+		isOrg:    true,
+	}
+
+	tm := newTestableManager(mockStore, mockGH, ManagerConfig{})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-12345",
+		JobID:      "88888",
+		RunID:      "run-456",
+		Repo:       "org/myapp",
+		Labels:     []string{"self-hosted"},
+		Pool:       "",
+		Arch:       "amd64",
+	}
+
+	err := tm.PrepareRunnerWithMock(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+	if storedConfig.RunnerName != "runs-fleet-myapp-amd64-88888" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-myapp-amd64-88888")
 	}
 }
 

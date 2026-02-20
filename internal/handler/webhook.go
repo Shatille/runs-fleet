@@ -162,7 +162,6 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 	if len(runnerName) <= len(runnerNamePrefix) || runnerName[:len(runnerNamePrefix)] != runnerNamePrefix {
 		return false, nil
 	}
-	instanceID := runnerName[len(runnerNamePrefix):]
 
 	_, err := gh.ParseLabels(job.Labels)
 	if err != nil {
@@ -173,13 +172,14 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		return false, nil
 	}
 
-	jobInfo, err := dbc.GetJobByInstance(ctx, instanceID)
+	ghJobID := job.GetID()
+	jobInfo, err := dbc.GetJobByJobID(ctx, ghJobID)
 	if err != nil {
-		return false, fmt.Errorf("failed to get job for instance %s: %w", instanceID, err)
+		return false, fmt.Errorf("failed to get job %d: %w", ghJobID, err)
 	}
 
 	if jobInfo == nil {
-		webhookLog.Warn("no job record for requeue", slog.String(logging.KeyInstanceID, instanceID))
+		webhookLog.Warn("no job record for requeue", slog.Int64(logging.KeyJobID, ghJobID))
 		return false, nil
 	}
 	if jobInfo.RetryCount >= maxJobRetries {
@@ -193,7 +193,7 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		return false, nil
 	}
 
-	marked, err := dbc.MarkJobRequeued(ctx, instanceID)
+	marked, err := dbc.MarkJobRequeuedByJobID(ctx, ghJobID)
 	if err != nil {
 		return false, fmt.Errorf("failed to mark job requeued: %w", err)
 	}
@@ -218,7 +218,6 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 
 	webhookLog.Info("job requeued",
 		slog.Int64(logging.KeyJobID, jobInfo.JobID),
-		slog.String(logging.KeyInstanceID, instanceID),
 		slog.Int("retry_count", requeueMsg.RetryCount))
 
 	if err := m.PublishJobQueued(ctx); err != nil {
