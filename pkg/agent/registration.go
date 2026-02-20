@@ -107,8 +107,11 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerCo
 		args = append(args, "--runnergroup", config.RunnerGroup)
 	}
 
-	hostname, _ := os.Hostname()
-	runnerName := fmt.Sprintf("runs-fleet-%s", hostname)
+	runnerName := config.RunnerName
+	if runnerName == "" {
+		hostname, _ := os.Hostname()
+		runnerName = fmt.Sprintf("runs-fleet-%s", hostname)
+	}
 	args = append(args, "--name", runnerName)
 
 	args = append(args, "--replace")

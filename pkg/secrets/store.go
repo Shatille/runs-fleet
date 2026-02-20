@@ -15,6 +15,7 @@ type RunnerConfig struct {
 	JITToken            string   `json:"jit_token"`
 	Labels              []string `json:"labels"`
 	RunnerGroup         string   `json:"runner_group,omitempty"`
+	RunnerName          string   `json:"runner_name,omitempty"`
 	JobID               string   `json:"job_id,omitempty"`
 	CacheToken          string   `json:"cache_token,omitempty"`
 	CacheURL            string   `json:"cache_url,omitempty"`

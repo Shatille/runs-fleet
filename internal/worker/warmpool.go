@@ -98,6 +98,8 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		RunID:      fmt.Sprintf("%d", job.RunID),
 		Repo:       job.Repo,
 		Labels:     []string{label},
+		Pool:       job.Pool,
+		Arch:       job.Arch,
 	}
 
 	if err := w.Runner.PrepareRunner(ctx, prepareReq); err != nil {

@@ -138,6 +138,8 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				RunID:      fmt.Sprintf("%d", job.RunID),
 				Repo:       job.Repo,
 				Labels:     []string{label},
+				Pool:       job.Pool,
+				Arch:       job.Arch,
 			}
 			if err := p.Runner.PrepareRunner(ctx, prepareReq); err != nil {
 				directLog.Error("runner config preparation failed",

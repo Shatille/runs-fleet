@@ -316,6 +316,8 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 			RunID:      fmt.Sprintf("%d", job.RunID),
 			Repo:       job.Repo,
 			Labels:     []string{label},
+			Pool:       job.Pool,
+			Arch:       job.Arch,
 		}
 		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
 			ec2Log.Error("runner config preparation failed",
