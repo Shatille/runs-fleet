@@ -783,7 +783,8 @@ func validateTags(tags map[string]string) error {
 		// - runs-fleet:termination-queue-url (conditional)
 		// - runs-fleet:cache-url (conditional)
 		// Reserve 15 for system tags to be safe, allowing 35 custom tags
-		maxTags     = 35
+		systemTagReserve = 15
+		maxTags          = 50 - systemTagReserve
 		maxKeyLen   = 128
 		maxValueLen = 256
 	)
