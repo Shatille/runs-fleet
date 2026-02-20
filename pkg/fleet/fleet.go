@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,7 @@ type EC2API interface {
 	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 }
 
 // CircuitBreaker defines circuit breaker operations.
@@ -53,6 +56,7 @@ type availabilityCache struct {
 
 const spotPriceCacheTTL = 5 * time.Minute
 const availabilityCacheTTL = 24 * time.Hour
+const archARM64 = "arm64"
 
 // Manager orchestrates EC2 fleet creation for runner instances.
 type Manager struct {
@@ -78,31 +82,32 @@ func (m *Manager) SetCircuitBreaker(cb CircuitBreaker) {
 
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
-	RunID          int64
-	InstanceType   string   // Primary instance type (used if InstanceTypes is empty)
-	InstanceTypes  []string // Multiple instance types for spot diversification (Phase 10)
-	SubnetID       string
-	Spot           bool
-	Pool           string
-	Repo           string // Repository name for cost allocation (Role tag)
-	ForceOnDemand  bool   // Force on-demand even if spot is preferred (for retries)
-	RetryCount     int    // Number of times this job has been retried
-	Region         string // Target AWS region (Phase 3: Multi-region)
-	Environment    string // Environment tag (Phase 6: Per-stack environments)
-	OS             string // Operating system: linux, windows (Phase 4: Windows support)
-	Arch           string // Architecture: amd64, arm64
-	StorageGiB     int    // Disk storage in GiB (0 = use launch template default)
-	PersistentSpot bool   // Use persistent spot request (can stop/start) vs one-time (terminate only)
+	RunID         int64
+	InstanceType  string   // Primary instance type (used if InstanceTypes is empty)
+	InstanceTypes []string // Multiple instance types for spot diversification (Phase 10)
+	SubnetID      string
+	Spot          bool
+	Pool          string
+	Repo          string // Repository name for cost allocation (Role tag)
+	ForceOnDemand bool   // Force on-demand even if spot is preferred (for retries)
+	RetryCount    int    // Number of times this job has been retried
+	Region        string // Target AWS region (Phase 3: Multi-region)
+	Environment   string // Environment tag (Phase 6: Per-stack environments)
+	OS            string // Operating system: linux, windows (Phase 4: Windows support)
+	Arch          string // Architecture: amd64, arm64
+	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
 }
 
-// CreateFleet launches EC2 instances using spot or on-demand capacity.
+// CreateFleet launches EC2 instances using spot or on-demand capacity via FleetTypeInstant.
 // When multiple instance types are specified and spot is enabled, EC2 Fleet
 // will select from the pool with the best price-capacity balance.
 // When arch is empty and instance types span multiple architectures, multiple
 // launch template configs are created to let EC2 Fleet choose the best option.
+//
+// For warm pool instances that need stop/start capability, use CreateSpotInstance instead,
+// which uses RunInstances API with persistent spot requests.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
 	useSpot := m.shouldUseSpot(ctx, spec)
-	usePersistentSpot := useSpot && spec.PersistentSpot
 	tags := m.buildTags(spec)
 
 	req, err := m.buildFleetRequest(ctx, spec, useSpot, tags)
@@ -119,22 +124,13 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		return nil, err
 	}
 
-	instanceIDs, fleetID, err := m.extractInstanceIDs(ctx, output, usePersistentSpot)
-	if err != nil {
-		return nil, err
+	if len(output.Instances) == 0 {
+		return nil, fmt.Errorf("no instances were created")
 	}
 
-	if err = m.tagPersistentSpotInstances(ctx, usePersistentSpot, instanceIDs, tags); err != nil {
-		if fleetID != "" {
-			m.deleteFleetWithInstances(ctx, fleetID)
-		}
-		return instanceIDs, err
-	}
-
-	if fleetID != "" {
-		if err = m.detachFleet(ctx, fleetID); err != nil {
-			return instanceIDs, fmt.Errorf("instances created but fleet detach failed (zombie fleet %s): %w", fleetID, err)
-		}
+	instanceIDs := make([]string, 0, len(output.Instances))
+	for _, inst := range output.Instances {
+		instanceIDs = append(instanceIDs, inst.InstanceIds...)
 	}
 
 	return instanceIDs, nil
@@ -172,7 +168,6 @@ func (m *Manager) buildFleetRequest(ctx context.Context, spec *LaunchSpec, useSp
 	}
 
 	targetCapacity := int32(1)
-	usePersistentSpot := useSpot && spec.PersistentSpot
 
 	req := &ec2.CreateFleetInput{
 		LaunchTemplateConfigs: launchTemplateConfigs,
@@ -181,23 +176,16 @@ func (m *Manager) buildFleetRequest(ctx context.Context, spec *LaunchSpec, useSp
 			DefaultTargetCapacityType: types.DefaultTargetCapacityTypeSpot,
 		},
 		Type: types.FleetTypeInstant,
+		TagSpecifications: []types.TagSpecification{{
+			ResourceType: types.ResourceTypeInstance,
+			Tags:         tags,
+		}},
 	}
-
-	req.TagSpecifications = m.buildTagSpecifications(usePersistentSpot, tags)
 
 	if !useSpot {
 		return m.configureOnDemandRequest(req, spec)
 	}
 	return m.configureSpotRequest(req, spec, launchTemplateConfigs)
-}
-
-// buildTagSpecifications creates tag specifications based on fleet type.
-func (m *Manager) buildTagSpecifications(usePersistentSpot bool, tags []types.Tag) []types.TagSpecification {
-	resourceType := types.ResourceTypeInstance
-	if usePersistentSpot {
-		resourceType = types.ResourceTypeFleet
-	}
-	return []types.TagSpecification{{ResourceType: resourceType, Tags: tags}}
 }
 
 // configureOnDemandRequest configures the fleet request for on-demand instances.
@@ -247,14 +235,10 @@ func (m *Manager) configureOnDemandRequest(req *ec2.CreateFleetInput, spec *Laun
 	return req, nil
 }
 
-// configureSpotRequest configures the fleet request for spot instances.
-func (m *Manager) configureSpotRequest(req *ec2.CreateFleetInput, spec *LaunchSpec, launchTemplateConfigs []types.FleetLaunchTemplateConfigRequest) (*ec2.CreateFleetInput, error) {
+// configureSpotRequest configures the fleet request for spot instances with FleetTypeInstant.
+func (m *Manager) configureSpotRequest(req *ec2.CreateFleetInput, _ *LaunchSpec, launchTemplateConfigs []types.FleetLaunchTemplateConfigRequest) (*ec2.CreateFleetInput, error) {
 	req.SpotOptions = &types.SpotOptionsRequest{
 		AllocationStrategy: types.SpotAllocationStrategyPriceCapacityOptimized,
-	}
-	if spec.PersistentSpot {
-		req.Type = types.FleetTypeMaintain
-		req.SpotOptions.InstanceInterruptionBehavior = types.SpotInstanceInterruptionBehaviorStop
 	}
 
 	totalTypes := 0
@@ -283,169 +267,6 @@ func (m *Manager) checkFleetErrors(output *ec2.CreateFleetOutput) error {
 		}
 	}
 	return fmt.Errorf("fleet creation had errors: %s", strings.Join(errMsgs, ", "))
-}
-
-// extractInstanceIDs extracts instance IDs from fleet output, polling for maintain fleets.
-// Returns fleetID as second value for cleanup purposes.
-func (m *Manager) extractInstanceIDs(ctx context.Context, output *ec2.CreateFleetOutput, usePersistentSpot bool) ([]string, string, error) {
-	if usePersistentSpot {
-		if output.FleetId == nil || *output.FleetId == "" {
-			return nil, "", fmt.Errorf("fleet created but FleetId missing from response")
-		}
-		fleetID := *output.FleetId
-		instanceIDs, err := m.waitForFleetInstances(ctx, fleetID)
-		if err != nil {
-			m.deleteFleetWithInstances(ctx, fleetID)
-			return nil, "", fmt.Errorf("failed waiting for fleet instances: %w", err)
-		}
-		return instanceIDs, fleetID, nil
-	}
-
-	if len(output.Instances) == 0 {
-		return nil, "", fmt.Errorf("no instances were created")
-	}
-	instanceIDs := make([]string, 0, len(output.Instances))
-	for _, inst := range output.Instances {
-		instanceIDs = append(instanceIDs, inst.InstanceIds...)
-	}
-	return instanceIDs, "", nil
-}
-
-// tagPersistentSpotInstances tags instances for persistent spot fleets.
-func (m *Manager) tagPersistentSpotInstances(ctx context.Context, usePersistentSpot bool, instanceIDs []string, tags []types.Tag) error {
-	if !usePersistentSpot || len(instanceIDs) == 0 || len(tags) == 0 {
-		return nil
-	}
-	if err := m.tagInstancesWithRetry(ctx, instanceIDs, tags); err != nil {
-		fleetLog.Error("failed to tag persistent spot instances after retries",
-			slog.String("error", err.Error()),
-			slog.Int("instance_count", len(instanceIDs)),
-			slog.Any("instance_ids", instanceIDs))
-		return fmt.Errorf("instances created but tagging failed: %w", err)
-	}
-	return nil
-}
-
-// waitForFleetInstances polls DescribeFleetInstances until instances appear or timeout.
-// FleetTypeMaintain launches instances asynchronously, so we must poll.
-// Uses exponential backoff: 1s, 2s, 4s, 8s, 10s (capped) to avoid rate limiting.
-func (m *Manager) waitForFleetInstances(ctx context.Context, fleetID string) ([]string, error) {
-	const maxAttempts = 60
-	const maxInterval = 10 * time.Second
-
-	interval := 1 * time.Second
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		if attempt > 0 {
-			select {
-			case <-time.After(interval):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			interval *= 2
-			if interval > maxInterval {
-				interval = maxInterval
-			}
-		}
-
-		output, err := m.ec2Client.DescribeFleetInstances(ctx, &ec2.DescribeFleetInstancesInput{
-			FleetId: aws.String(fleetID),
-		})
-		if err != nil {
-			fleetLog.Warn("describe fleet instances failed",
-				slog.String("fleet_id", fleetID),
-				slog.String("error", err.Error()),
-				slog.Int("attempt", attempt+1))
-			continue
-		}
-
-		if len(output.ActiveInstances) > 0 {
-			instanceIDs := make([]string, len(output.ActiveInstances))
-			for i, inst := range output.ActiveInstances {
-				instanceIDs[i] = aws.ToString(inst.InstanceId)
-			}
-			fleetLog.Debug("fleet instances ready",
-				slog.String("fleet_id", fleetID),
-				slog.Int("instance_count", len(instanceIDs)),
-				slog.Int("attempts", attempt+1))
-			return instanceIDs, nil
-		}
-	}
-
-	return nil, fmt.Errorf("timeout waiting for fleet %s instances after %d attempts", fleetID, maxAttempts)
-}
-
-// deleteFleetWithInstances deletes a fleet and terminates any instances it created.
-// Used for cleanup when fleet creation or instance tagging fails.
-func (m *Manager) deleteFleetWithInstances(ctx context.Context, fleetID string) {
-	_, err := m.ec2Client.DeleteFleets(ctx, &ec2.DeleteFleetsInput{
-		FleetIds:           []string{fleetID},
-		TerminateInstances: aws.Bool(true),
-	})
-	if err != nil {
-		fleetLog.Error("failed to delete fleet during cleanup - manual intervention required",
-			slog.String("fleet_id", fleetID),
-			slog.String("error", err.Error()))
-	} else {
-		fleetLog.Info("fleet deleted during cleanup",
-			slog.String("fleet_id", fleetID))
-	}
-}
-
-// detachFleet deletes a maintain fleet without terminating its instances.
-// FleetTypeMaintain fleets stay active and continuously maintain target capacity,
-// so they must be deleted after instance extraction to prevent zombie fleets.
-func (m *Manager) detachFleet(ctx context.Context, fleetID string) error {
-	_, err := m.ec2Client.DeleteFleets(ctx, &ec2.DeleteFleetsInput{
-		FleetIds:           []string{fleetID},
-		TerminateInstances: aws.Bool(false),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to detach fleet %s: %w", fleetID, err)
-	}
-	fleetLog.Debug("maintain fleet detached after instance extraction",
-		slog.String("fleet_id", fleetID))
-	return nil
-}
-
-// tagInstancesWithRetry applies tags to instances with exponential backoff.
-// EC2 has eventual consistency - instances may not be immediately taggable after creation.
-// Retries with 1s, 2s, 4s delays between attempts.
-func (m *Manager) tagInstancesWithRetry(ctx context.Context, instanceIDs []string, tags []types.Tag) error {
-	const maxAttempts = 3
-	delays := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
-
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			backoffIdx := attempt - 1
-			fleetLog.Debug("retrying instance tagging",
-				slog.Int("attempt", attempt+1),
-				slog.Int("max_attempts", maxAttempts),
-				slog.Duration("delay", delays[backoffIdx]))
-			select {
-			case <-time.After(delays[backoffIdx]):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		_, err := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
-			Resources: instanceIDs,
-			Tags:      tags,
-		})
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-	}
-
-	return fmt.Errorf("failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // getLaunchTemplateForArch returns the launch template name for a specific OS and architecture.
@@ -754,9 +575,9 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 
 	if len(archPrices) == 0 {
 		// Couldn't get prices, default to arm64 (generally cheaper)
-		if _, ok := groupedTypes["arm64"]; ok {
+		if _, ok := groupedTypes[archARM64]; ok {
 			fleetLog.Info("spot prices unavailable, defaulting to arm64")
-			return "arm64"
+			return archARM64
 		}
 		for arch := range groupedTypes {
 			return arch
@@ -874,6 +695,101 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 		total += price
 	}
 	return total / float64(len(latestPrices))
+}
+
+// RankInstanceTypesByPrice returns an interleaved sequence weighted by inverse spot price.
+// Cheaper types appear more frequently. Caller randomly selects from the pool.
+// Falls back to original order when no price data is available.
+func (m *Manager) RankInstanceTypesByPrice(ctx context.Context, instanceTypes []string) []string {
+	if len(instanceTypes) <= 1 {
+		return instanceTypes
+	}
+
+	m.spotCache.mu.RLock()
+	cacheValid := time.Now().Before(m.spotCache.expires) && len(m.spotCache.prices) > 0
+	m.spotCache.mu.RUnlock()
+
+	if !cacheValid {
+		m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+	}
+
+	m.spotCache.mu.RLock()
+	defer m.spotCache.mu.RUnlock()
+
+	var items []weightedType
+	var maxPrice float64
+	for _, t := range instanceTypes {
+		p, ok := m.spotCache.prices[t]
+		if !ok {
+			items = append(items, weightedType{typ: t, price: 0})
+			continue
+		}
+		items = append(items, weightedType{typ: t, price: p})
+		if p > maxPrice {
+			maxPrice = p
+		}
+	}
+
+	if maxPrice == 0 {
+		return instanceTypes
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].price == 0 && items[j].price == 0 {
+			return false
+		}
+		if items[i].price == 0 {
+			return false
+		}
+		if items[j].price == 0 {
+			return true
+		}
+		return items[i].price < items[j].price
+	})
+
+	const maxWeight = 5
+	for i := range items {
+		if items[i].price == 0 {
+			items[i].weight = 1
+			continue
+		}
+		w := int(math.Round(maxPrice / items[i].price))
+		if w < 1 {
+			w = 1
+		}
+		if w > maxWeight {
+			w = maxWeight
+		}
+		items[i].weight = w
+	}
+
+	return interleaveWeighted(items)
+}
+
+type weightedType struct {
+	typ    string
+	price  float64
+	weight int
+}
+
+func interleaveWeighted(items []weightedType) []string {
+	remaining := make([]int, len(items))
+	var total int
+	for i, it := range items {
+		remaining[i] = it.weight
+		total += it.weight
+	}
+
+	seq := make([]string, 0, total)
+	for len(seq) < total {
+		for i, it := range items {
+			if remaining[i] > 0 {
+				seq = append(seq, it.typ)
+				remaining[i]--
+			}
+		}
+	}
+	return seq
 }
 
 // filterAvailableInstanceTypes filters instance types to only those available in the region.
@@ -1014,4 +930,91 @@ func (m *Manager) GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs
 	}
 
 	return result, nil
+}
+
+// CreateSpotInstance launches a single persistent spot instance using RunInstances API.
+// Unlike CreateFleet with FleetTypeMaintain, instances created via RunInstances can be
+// manually stopped/started, which is required for warm pool operation.
+//
+// Returns the instance ID and spot request ID on success.
+// The spot request is created with SpotInstanceType=persistent and
+// InstanceInterruptionBehavior=stop, allowing the instance to be stopped/started
+// without terminating the spot request.
+func (m *Manager) CreateSpotInstance(ctx context.Context, spec *LaunchSpec) (instanceID, spotRequestID string, err error) {
+	tags := m.buildTags(spec)
+
+	// Determine launch template and architecture
+	arch := spec.Arch
+	if arch == "" {
+		arch = GetInstanceArch(spec.InstanceType)
+		if arch == "" {
+			return "", "", fmt.Errorf("cannot determine architecture for instance type %q", spec.InstanceType)
+		}
+	}
+	launchTemplateName := m.getLaunchTemplateForArch(spec.OS, arch)
+
+	// Build RunInstances request
+	input := &ec2.RunInstancesInput{
+		LaunchTemplate: &types.LaunchTemplateSpecification{
+			LaunchTemplateName: aws.String(launchTemplateName),
+			Version:            aws.String("$Latest"),
+		},
+		InstanceType: types.InstanceType(spec.InstanceType),
+		SubnetId:     aws.String(spec.SubnetID),
+		MinCount:     aws.Int32(1),
+		MaxCount:     aws.Int32(1),
+		InstanceMarketOptions: &types.InstanceMarketOptionsRequest{
+			MarketType: types.MarketTypeSpot,
+			SpotOptions: &types.SpotMarketOptions{
+				SpotInstanceType:             types.SpotInstanceTypePersistent,
+				InstanceInterruptionBehavior: types.InstanceInterruptionBehaviorStop,
+			},
+		},
+		TagSpecifications: []types.TagSpecification{
+			{
+				ResourceType: types.ResourceTypeInstance,
+				Tags:         tags,
+			},
+			{
+				ResourceType: types.ResourceTypeSpotInstancesRequest,
+				Tags:         tags,
+			},
+		},
+	}
+
+	// Add block device mappings if custom storage is specified
+	if spec.StorageGiB > 0 {
+		input.BlockDeviceMappings = []types.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/xvda"),
+				Ebs: &types.EbsBlockDevice{
+					VolumeSize:          aws.Int32(int32(spec.StorageGiB)),
+					VolumeType:          types.VolumeTypeGp3,
+					DeleteOnTermination: aws.Bool(true),
+					Encrypted:           aws.Bool(true),
+				},
+			},
+		}
+	}
+
+	output, err := m.ec2Client.RunInstances(ctx, input)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to run instance: %w", err)
+	}
+
+	if len(output.Instances) == 0 {
+		return "", "", fmt.Errorf("no instance created")
+	}
+
+	instance := output.Instances[0]
+	instanceID = aws.ToString(instance.InstanceId)
+	spotRequestID = aws.ToString(instance.SpotInstanceRequestId)
+
+	fleetLog.Info("persistent spot instance created",
+		slog.String(logging.KeyInstanceID, instanceID),
+		slog.String("spot_request_id", spotRequestID),
+		slog.String("instance_type", spec.InstanceType),
+		slog.String("pool", spec.Pool))
+
+	return instanceID, spotRequestID, nil
 }
