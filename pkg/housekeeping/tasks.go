@@ -247,14 +247,9 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 		end := min(i+maxInstanceIDsPerSpotQuery, len(instanceIDs))
 		batch := instanceIDs[i:end]
 
-		output, err := t.ec2Client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
-			Filters: []ec2types.Filter{
-				{Name: aws.String("instance-id"), Values: batch},
-				{Name: aws.String("state"), Values: []string{"open", "active", "disabled"}},
-			},
-		})
+		output, err := t.describeSpotRequestsWithRetry(ctx, batch)
 		if err != nil {
-			t.logger().Error("failed to describe spot requests for orphaned instances",
+			t.logger().Error("failed to describe spot requests for orphaned instances after retry",
 				slog.String("error", err.Error()),
 				slog.Int("batch_size", len(batch)))
 			continue
@@ -277,11 +272,8 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 		end := min(i+cancelBatchSize, len(spotRequestIDs))
 		batch := spotRequestIDs[i:end]
 
-		_, err := t.ec2Client.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
-			SpotInstanceRequestIds: batch,
-		})
-		if err != nil {
-			t.logger().Error("failed to cancel spot requests for orphaned instances",
+		if err := t.cancelSpotRequestsWithRetry(ctx, batch); err != nil {
+			t.logger().Error("failed to cancel spot requests for orphaned instances after retry",
 				slog.String("error", err.Error()),
 				slog.Int("batch_size", len(batch)),
 				slog.Any("spot_request_ids", batch))
@@ -294,6 +286,40 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 		t.logger().Info("cancelled spot requests for orphaned instances",
 			slog.Int("count", cancelledCount))
 	}
+}
+
+func (t *Tasks) describeSpotRequestsWithRetry(ctx context.Context, instanceIDs []string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+	input := &ec2.DescribeSpotInstanceRequestsInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("instance-id"), Values: instanceIDs},
+			{Name: aws.String("state"), Values: []string{"open", "active", "disabled"}},
+		},
+	}
+	output, err := t.ec2Client.DescribeSpotInstanceRequests(ctx, input)
+	if err == nil {
+		return output, nil
+	}
+	t.logger().Warn("describe spot requests failed, retrying",
+		slog.String("error", err.Error()),
+		slog.Int("batch_size", len(instanceIDs)))
+	time.Sleep(2 * time.Second)
+	return t.ec2Client.DescribeSpotInstanceRequests(ctx, input)
+}
+
+func (t *Tasks) cancelSpotRequestsWithRetry(ctx context.Context, spotRequestIDs []string) error {
+	input := &ec2.CancelSpotInstanceRequestsInput{
+		SpotInstanceRequestIds: spotRequestIDs,
+	}
+	_, err := t.ec2Client.CancelSpotInstanceRequests(ctx, input)
+	if err == nil {
+		return nil
+	}
+	t.logger().Warn("cancel spot requests failed, retrying",
+		slog.String("error", err.Error()),
+		slog.Int("batch_size", len(spotRequestIDs)))
+	time.Sleep(2 * time.Second)
+	_, err = t.ec2Client.CancelSpotInstanceRequests(ctx, input)
+	return err
 }
 
 func extractOrphanIDs(output *ec2.DescribeInstancesOutput, cutoffTime time.Time) []string {
