@@ -9,11 +9,10 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
 ARG VERSION=dev
-ARG DOCKER_CLI_VERSION=v27.5.1
 
 WORKDIR /build
 
-RUN apk add --no-cache git ca-certificates make bash
+RUN apk add --no-cache git ca-certificates
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -25,13 +24,20 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-agent ./cmd/agent
 
-# Build Docker CLI from source to control Go version (CVE-2025-68121 fix)
-RUN git clone --depth 1 --branch ${DOCKER_CLI_VERSION} https://github.com/docker/cli.git /tmp/docker-cli \
-    && cd /tmp/docker-cli \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
-        -trimpath -ldflags "-s -w" \
-        -o /bin/docker ./cmd/docker \
-    && rm -rf /tmp/docker-cli
+# Stage 1b: Build Docker CLI from source (separate stage to avoid go.mod conflicts)
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS docker-builder
+
+ARG TARGETARCH
+ARG DOCKER_CLI_VERSION=v27.5.1
+
+RUN apk add --no-cache git
+RUN git clone --depth 1 --branch ${DOCKER_CLI_VERSION} https://github.com/docker/cli.git /docker-cli
+
+WORKDIR /docker-cli
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+    -trimpath -ldflags "-s -w" \
+    -o /bin/docker ./cmd/docker
 
 # Stage 2: Runner image
 FROM ubuntu:24.04
@@ -60,8 +66,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Docker CLI built from source in builder stage (controls Go version for CVE fixes)
-COPY --from=builder /bin/docker /usr/local/bin/docker
+# Docker CLI built from source (controls Go version for CVE-2025-68121 fix)
+COPY --from=docker-builder /bin/docker /usr/local/bin/docker
 
 # Create runner user with restricted sudo (apt only for workflow package installs)
 # SECURITY NOTE: Sudo access is intentional to support workflows needing build deps.
