@@ -35,7 +35,9 @@ RUN git clone --depth 1 --branch ${DOCKER_CLI_VERSION} https://github.com/docker
 
 WORKDIR /docker-cli
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+# Docker CLI uses vendor.mod/vendor.sum instead of go.mod/go.sum
+RUN cp vendor.mod go.mod && cp vendor.sum go.sum
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -mod=vendor \
     -trimpath -ldflags "-s -w" \
     -o /bin/docker ./cmd/docker
 
