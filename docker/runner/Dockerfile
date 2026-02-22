@@ -35,8 +35,10 @@ RUN git clone --depth 1 --branch ${DOCKER_CLI_VERSION} https://github.com/docker
 
 WORKDIR /docker-cli
 
-# Docker CLI uses vendor.mod/vendor.sum instead of go.mod/go.sum
-RUN cp vendor.mod go.mod && cp vendor.sum go.sum
+# Docker CLI uses vendor.mod/vendor.sum; patch vendored x/crypto CVEs before build
+RUN cp vendor.mod go.mod && cp vendor.sum go.sum \
+    && go get golang.org/x/crypto@v0.35.0 \
+    && go mod vendor
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -mod=vendor \
     -trimpath -ldflags "-s -w" \
     -o /bin/docker ./cmd/docker
