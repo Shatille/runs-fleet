@@ -7,6 +7,7 @@ on:
     paths:
       - "cmd/agent/**"
       - "pkg/agent/**"
+      - "scripts/**"
       - "packer/**"
   workflow_dispatch:
 

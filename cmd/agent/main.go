@@ -60,16 +60,8 @@ func main() {
 
 	ctx := context.Background()
 
-	runID := os.Getenv("RUNS_FLEET_RUN_ID")
-	if runID == "" {
-		log.Fatal("RUNS_FLEET_RUN_ID environment variable is required")
-	}
-
 	instanceID := getInstanceID(isK8s)
 	maxRuntimeMinutes := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
-
-	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, k8s=%v, max_runtime=%dm",
-		runID, instanceID, isK8s, maxRuntimeMinutes)
 
 	// Initialize components based on backend mode
 	var ac *agentConfig
@@ -77,11 +69,25 @@ func main() {
 	if isK8s {
 		ac, err = initK8sMode(ctx, logger)
 	} else {
-		ac, err = initEC2Mode(ctx, instanceID, runID, logger)
+		ac, err = initEC2Mode(ctx, instanceID, logger)
 	}
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
+
+	// Resolve run ID: env var takes precedence, then secrets store config.
+	// In SSM mode the bootstrap only sets INSTANCE_ID and REGION — the run_id
+	// comes from the config fetched by initEC2Mode.
+	runID := os.Getenv("RUNS_FLEET_RUN_ID")
+	if runID == "" && ac.runnerConfig != nil {
+		runID = ac.runnerConfig.RunID
+	}
+	if runID == "" {
+		log.Fatal("RUNS_FLEET_RUN_ID not set and not found in runner config")
+	}
+
+	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, k8s=%v, max_runtime=%dm",
+		runID, instanceID, isK8s, maxRuntimeMinutes)
 	if ac.cleanup != nil {
 		defer ac.cleanup()
 	}
@@ -178,7 +184,7 @@ func getK8sNamespace() string {
 }
 
 // initEC2Mode initializes components for EC2 mode.
-func initEC2Mode(ctx context.Context, instanceID, runID string, logger *stdLogger) (*agentConfig, error) {
+func initEC2Mode(ctx context.Context, instanceID string, logger *stdLogger) (*agentConfig, error) {
 	ac := &agentConfig{}
 
 	region := os.Getenv("AWS_REGION")
@@ -191,14 +197,6 @@ func initEC2Mode(ctx context.Context, instanceID, runID string, logger *stdLogge
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 	ac.awsCfg = awsCfg
-
-	// SQS telemetry
-	terminationQueueURL := os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL")
-	if terminationQueueURL != "" {
-		ac.telemetry = agent.NewSQSTelemetry(awsCfg, terminationQueueURL, logger)
-	}
-
-	ac.terminator = agent.NewEC2Terminator(awsCfg, ac.telemetry, logger)
 
 	// Initialize secrets store
 	secretsCfg := secrets.LoadConfig()
@@ -215,10 +213,21 @@ func initEC2Mode(ctx context.Context, instanceID, runID string, logger *stdLogge
 	}
 	ac.runnerConfig = runnerConfig
 
+	// SQS telemetry — resolve from env var first, then from runner config (SSM mode)
+	terminationQueueURL := os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL")
+	if terminationQueueURL == "" {
+		terminationQueueURL = runnerConfig.TerminationQueueURL
+	}
+	if terminationQueueURL != "" {
+		ac.telemetry = agent.NewSQSTelemetry(awsCfg, terminationQueueURL, logger)
+	}
+
+	ac.terminator = agent.NewEC2Terminator(awsCfg, ac.telemetry, logger)
+
 	// CloudWatch logging (EC2 only)
 	logGroup := os.Getenv("RUNS_FLEET_LOG_GROUP")
 	if logGroup != "" {
-		logStream := fmt.Sprintf("%s/%s", instanceID, runID)
+		logStream := fmt.Sprintf("%s/%s", instanceID, runnerConfig.RunID)
 		cwLogger := agent.NewCloudWatchLogger(awsCfg, logGroup, logStream, logger)
 		if startErr := cwLogger.Start(ctx); startErr != nil {
 			logger.Printf("Warning: failed to start CloudWatch logger: %v", startErr)
