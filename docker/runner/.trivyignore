@@ -8,10 +8,6 @@ CVE-2024-21538
 # glob command injection - in runner's bundled npm
 CVE-2025-64756
 
-# crypto/tls session resumption - in Docker CLI binary (docker-ce-cli package)
-# Waiting for Docker to release CLI built with Go 1.25.7+
-CVE-2025-68121
-
 # node-tar hardlink arbitrary file read/write - in runner's bundled corepack
 # Current patch applies 7.5.7; upstream fix is 7.5.8 (will update Dockerfile patch)
 CVE-2026-26960

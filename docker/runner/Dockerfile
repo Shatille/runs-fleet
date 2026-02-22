@@ -9,10 +9,11 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
 ARG VERSION=dev
+ARG DOCKER_CLI_VERSION=v27.5.1
 
 WORKDIR /build
 
-RUN apk add --no-cache git ca-certificates
+RUN apk add --no-cache git ca-certificates make bash
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -23,6 +24,14 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-agent ./cmd/agent
+
+# Build Docker CLI from source to control Go version (CVE-2025-68121 fix)
+RUN git clone --depth 1 --branch ${DOCKER_CLI_VERSION} https://github.com/docker/cli.git /tmp/docker-cli \
+    && cd /tmp/docker-cli \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+        -trimpath -ldflags "-s -w" \
+        -o /bin/docker ./cmd/docker \
+    && rm -rf /tmp/docker-cli
 
 # Stage 2: Runner image
 FROM ubuntu:24.04
@@ -51,12 +60,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Docker CLI (for docker-in-docker workflows)
-RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli \
-    && rm -rf /var/lib/apt/lists/*
+# Docker CLI built from source in builder stage (controls Go version for CVE fixes)
+COPY --from=builder /bin/docker /usr/local/bin/docker
 
 # Create runner user with restricted sudo (apt only for workflow package installs)
 # SECURITY NOTE: Sudo access is intentional to support workflows needing build deps.
