@@ -117,6 +117,11 @@ func (p *CloudWatchPublisher) PublishOrphanedJobsCleanedUp(ctx context.Context, 
 	return p.putMetric(ctx, "OrphanedJobsCleanedUp", float64(count), types.StandardUnitCount)
 }
 
+// PublishStaleJobsReconciled publishes stale jobs reconciled metric.
+func (p *CloudWatchPublisher) PublishStaleJobsReconciled(ctx context.Context, count int) error {
+	return p.putMetric(ctx, "StaleJobsReconciled", float64(count), types.StandardUnitCount)
+}
+
 // PublishPoolUtilization publishes pool utilization metric with pool name dimension.
 func (p *CloudWatchPublisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{

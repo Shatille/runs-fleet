@@ -30,6 +30,7 @@ type PrometheusPublisher struct {
 	ssmParametersDeleted        prometheus.Counter
 	jobRecordsArchived          prometheus.Counter
 	orphanedJobsCleanedUp       prometheus.Counter
+	staleJobsReconciled         prometheus.Counter
 	poolUtilization             *prometheus.GaugeVec
 	poolRunningJobs             *prometheus.GaugeVec
 	schedulingFailure           *prometheus.CounterVec
@@ -134,6 +135,11 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 			Name:      "orphaned_jobs_cleaned_up_total",
 			Help:      "Total number of orphaned job records cleaned up",
 		}),
+		staleJobsReconciled: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: cfg.Namespace,
+			Name:      "stale_jobs_reconciled_total",
+			Help:      "Total number of stale jobs reconciled via GitHub API",
+		}),
 		poolUtilization: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: cfg.Namespace,
 			Name:      "pool_utilization_percent",
@@ -187,6 +193,7 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 		p.ssmParametersDeleted,
 		p.jobRecordsArchived,
 		p.orphanedJobsCleanedUp,
+		p.staleJobsReconciled,
 		p.poolUtilization,
 		p.poolRunningJobs,
 		p.schedulingFailure,
@@ -289,6 +296,11 @@ func (p *PrometheusPublisher) PublishJobRecordsArchived(_ context.Context, count
 
 func (p *PrometheusPublisher) PublishOrphanedJobsCleanedUp(_ context.Context, count int) error { //nolint:revive
 	p.orphanedJobsCleanedUp.Add(float64(count))
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishStaleJobsReconciled(_ context.Context, count int) error { //nolint:revive
+	p.staleJobsReconciled.Add(float64(count))
 	return nil
 }
 

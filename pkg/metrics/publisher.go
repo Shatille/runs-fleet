@@ -54,6 +54,9 @@ type Publisher interface {
 	// PublishOrphanedJobsCleanedUp publishes count of orphaned job records cleaned up.
 	PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error
 
+	// PublishStaleJobsReconciled publishes count of stale jobs reconciled via GitHub API.
+	PublishStaleJobsReconciled(ctx context.Context, count int) error
+
 	// PublishPoolUtilization publishes pool utilization percentage with pool name dimension.
 	PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error
 
@@ -137,6 +140,9 @@ func (NoopPublisher) PublishJobRecordsArchived(context.Context, int) error { ret
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishOrphanedJobsCleanedUp(context.Context, int) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishStaleJobsReconciled(context.Context, int) error { return nil }
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishPoolUtilization(context.Context, string, float64) error { return nil }

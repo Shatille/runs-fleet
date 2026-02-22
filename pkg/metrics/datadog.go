@@ -171,6 +171,10 @@ func (p *DatadogPublisher) PublishOrphanedJobsCleanedUp(_ context.Context, count
 	return p.client.Count("orphaned_jobs_cleaned_up", int64(count), nil, 1)
 }
 
+func (p *DatadogPublisher) PublishStaleJobsReconciled(_ context.Context, count int) error { //nolint:revive
+	return p.client.Count("stale_jobs_reconciled", int64(count), nil, 1)
+}
+
 func (p *DatadogPublisher) PublishPoolUtilization(_ context.Context, poolName string, utilization float64) error { //nolint:revive
 	return p.client.Gauge("pool_utilization_percent", utilization, []string{"pool_name:" + poolName}, 1)
 }
