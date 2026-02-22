@@ -255,7 +255,8 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 		})
 		if err != nil {
 			t.logger().Error("failed to describe spot requests for orphaned instances",
-				slog.String("error", err.Error()))
+				slog.String("error", err.Error()),
+				slog.Int("batch_size", len(batch)))
 			continue
 		}
 
@@ -282,7 +283,8 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 		if err != nil {
 			t.logger().Error("failed to cancel spot requests for orphaned instances",
 				slog.String("error", err.Error()),
-				slog.Int("count", len(batch)))
+				slog.Int("batch_size", len(batch)),
+				slog.Any("spot_request_ids", batch))
 			continue
 		}
 		cancelledCount += len(batch)
