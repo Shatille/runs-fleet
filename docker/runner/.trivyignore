@@ -7,3 +7,7 @@ CVE-2024-21538
 
 # glob command injection - in runner's bundled npm
 CVE-2025-64756
+
+# crypto/tls session resumption - in Docker CLI binary (docker-ce-cli package)
+# Waiting for Docker to release CLI built with Go 1.25.7+
+CVE-2025-68121
