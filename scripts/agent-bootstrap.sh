@@ -207,9 +207,12 @@ RUNS_FLEET_RUNNER_NAME=$(echo "$CONFIG" | jq -r '.runner_name // empty')
 RUNS_FLEET_IS_ORG=$(echo "$CONFIG" | jq -r '.is_org // false')
 EOF
 else
-  # SSM: agent reads full config from SSM directly (preserves all fields including runner_name)
+  # SSM: agent reads full config from SSM directly, but needs run_id and
+  # termination_queue_url available as env vars before SSM fetch completes.
   cat > /opt/runs-fleet/env <<EOF
 RUNS_FLEET_INSTANCE_ID=${INSTANCE_ID}
+RUNS_FLEET_RUN_ID=${RUN_ID}
+RUNS_FLEET_TERMINATION_QUEUE_URL=$(echo "$CONFIG" | jq -r '.termination_queue_url // empty')
 AWS_REGION=${REGION}
 EOF
 fi
