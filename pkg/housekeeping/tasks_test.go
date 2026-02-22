@@ -372,6 +372,193 @@ func TestExecuteOrphanedInstances_TerminateError(t *testing.T) {
 	}
 }
 
+func TestExecuteOrphanedInstances_UntaggedZombies(t *testing.T) {
+	oldLaunchTime := time.Now().Add(-2 * time.Hour)
+
+	// Mock that returns different results based on call count:
+	// Call 1 (tag-based): no instances found
+	// Call 2 (profile-based): untagged zombie found
+	describeCalls := 0
+	ec2Client := &funcEC2API{
+		describeInstancesFn: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			describeCalls++
+			if describeCalls == 1 {
+				// Tag-based query: no tagged instances
+				return &ec2.DescribeInstancesOutput{}, nil
+			}
+			// Profile-based query: return untagged zombie
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{
+					Instances: []ec2types.Instance{{
+						InstanceId: strPtr("i-zombie-1"),
+						LaunchTime: &oldLaunchTime,
+						Tags:       nil, // No tags at all
+					}},
+				}},
+			}, nil
+		},
+		terminateInstancesFn: func(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != "i-zombie-1" {
+				t.Errorf("expected to terminate i-zombie-1, got %v", params.InstanceIds)
+			}
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+		describeSpotInstanceRequestsFn: func(_ context.Context, _ *ec2.DescribeSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+			return &ec2.DescribeSpotInstanceRequestsOutput{
+				SpotInstanceRequests: []ec2types.SpotInstanceRequest{{
+					SpotInstanceRequestId: strPtr("sir-zombie"),
+					InstanceId:            strPtr("i-zombie-1"),
+				}},
+			}, nil
+		},
+		cancelSpotInstanceRequestsFn: func(_ context.Context, params *ec2.CancelSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+			if len(params.SpotInstanceRequestIds) != 1 || params.SpotInstanceRequestIds[0] != "sir-zombie" {
+				t.Errorf("expected to cancel sir-zombie, got %v", params.SpotInstanceRequestIds)
+			}
+			return &ec2.CancelSpotInstanceRequestsOutput{}, nil
+		},
+	}
+
+	metrics := &mockTaskMetricsAPI{}
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		metrics:   metrics,
+		config: &config.Config{
+			MaxRuntimeMinutes:  60,
+			InstanceProfileARN: "arn:aws:iam::123456789:instance-profile/runs-fleet-runner",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if metrics.orphanedCount != 1 {
+		t.Errorf("expected orphaned metric count 1, got %d", metrics.orphanedCount)
+	}
+}
+
+func TestExecuteOrphanedInstances_ProfileSkipsTaggedInstances(t *testing.T) {
+	oldLaunchTime := time.Now().Add(-2 * time.Hour)
+
+	describeCalls := 0
+	ec2Client := &funcEC2API{
+		describeInstancesFn: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			describeCalls++
+			if describeCalls == 1 {
+				// Tag-based: found the tagged orphan
+				return &ec2.DescribeInstancesOutput{
+					Reservations: []ec2types.Reservation{{
+						Instances: []ec2types.Instance{{
+							InstanceId: strPtr("i-tagged-orphan"),
+							LaunchTime: &oldLaunchTime,
+							Tags: []ec2types.Tag{
+								{Key: strPtr("runs-fleet:managed"), Value: strPtr("true")},
+							},
+						}},
+					}},
+				}, nil
+			}
+			// Profile-based: same instance + an unrelated one with managed tag
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{
+					Instances: []ec2types.Instance{
+						{
+							InstanceId: strPtr("i-tagged-orphan"),
+							LaunchTime: &oldLaunchTime,
+							Tags: []ec2types.Tag{
+								{Key: strPtr("runs-fleet:managed"), Value: strPtr("true")},
+							},
+						},
+					},
+				}},
+			}, nil
+		},
+		terminateInstancesFn: func(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			if len(params.InstanceIds) != 1 || params.InstanceIds[0] != "i-tagged-orphan" {
+				t.Errorf("expected to terminate only i-tagged-orphan, got %v", params.InstanceIds)
+			}
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+		describeSpotInstanceRequestsFn: func(_ context.Context, _ *ec2.DescribeSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+			return &ec2.DescribeSpotInstanceRequestsOutput{}, nil
+		},
+		cancelSpotInstanceRequestsFn: func(_ context.Context, _ *ec2.CancelSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+			return &ec2.CancelSpotInstanceRequestsOutput{}, nil
+		},
+	}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		metrics:   &mockTaskMetricsAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:  60,
+			InstanceProfileARN: "arn:aws:iam::123456789:instance-profile/runs-fleet-runner",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteOrphanedInstances_NoProfileARN_SkipsPhase2(t *testing.T) {
+	oldLaunchTime := time.Now().Add(-2 * time.Hour)
+
+	ec2Client := &mockEC2API{
+		instances: []ec2types.Reservation{{
+			Instances: []ec2types.Instance{{
+				InstanceId: strPtr("i-orphan-1"),
+				LaunchTime: &oldLaunchTime,
+			}},
+		}},
+	}
+	metrics := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		metrics:   metrics,
+		config: &config.Config{
+			MaxRuntimeMinutes: 60,
+			// No InstanceProfileARN set
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Only 1 DescribeInstances call (tag-based), no profile-based call
+	if ec2Client.describeCalls != 1 {
+		t.Errorf("expected 1 describe call (tag-based only), got %d", ec2Client.describeCalls)
+	}
+}
+
+// funcEC2API is a function-based mock for tests that need per-call behavior.
+type funcEC2API struct {
+	describeInstancesFn            func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	terminateInstancesFn           func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	describeSpotInstanceRequestsFn func(ctx context.Context, params *ec2.DescribeSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error)
+	cancelSpotInstanceRequestsFn   func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
+}
+
+func (f *funcEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	return f.describeInstancesFn(ctx, params, optFns...)
+}
+
+func (f *funcEC2API) TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+	return f.terminateInstancesFn(ctx, params, optFns...)
+}
+
+func (f *funcEC2API) DescribeSpotInstanceRequests(ctx context.Context, params *ec2.DescribeSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+	return f.describeSpotInstanceRequestsFn(ctx, params, optFns...)
+}
+
+func (f *funcEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
+	return f.cancelSpotInstanceRequestsFn(ctx, params, optFns...)
+}
+
 func TestExecuteStaleSecrets_NoStaleConfigs(t *testing.T) {
 	now := time.Now()
 

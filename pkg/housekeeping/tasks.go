@@ -109,47 +109,43 @@ func NewTasks(cfg aws.Config, appConfig *config.Config, secretsStore secrets.Sto
 }
 
 // ExecuteOrphanedInstances detects and terminates orphaned instances.
+// Uses two detection strategies:
+//  1. Tag-based: finds tagged instances (runs-fleet:managed=true) that exceeded max runtime
+//  2. Profile-based: finds ANY instance using the runner IAM profile that exceeded max runtime,
+//     catching untagged zombies from persistent spot tag propagation failures
 func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	maxRuntime := time.Duration(t.config.MaxRuntimeMinutes+10) * time.Minute
 	cutoffTime := time.Now().Add(-maxRuntime)
 
-	input := &ec2.DescribeInstancesInput{
-		Filters: []ec2types.Filter{
-			{
-				Name:   aws.String("tag:runs-fleet:managed"),
-				Values: []string{"true"},
-			},
-			{
-				Name:   aws.String("instance-state-name"),
-				Values: []string{"running", "pending"},
-			},
-		},
-	}
+	// Phase 1: Tag-based detection (fast, targeted)
+	taggedOrphans, tagErr := t.findOrphansByTag(ctx, cutoffTime)
 
-	output, err := t.ec2Client.DescribeInstances(ctx, input)
-	if err != nil {
-		return fmt.Errorf("failed to describe instances: %w", err)
-	}
+	// Phase 2: Profile-based detection (catches untagged zombies from persistent spot tag failures)
+	untaggedOrphans := t.findOrphansByProfile(ctx, cutoffTime)
 
-	var orphanedIDs []string
-	for _, reservation := range output.Reservations {
-		for _, instance := range reservation.Instances {
-			if instance.LaunchTime != nil && instance.LaunchTime.Before(cutoffTime) {
-				if instance.InstanceId != nil {
-					orphanedIDs = append(orphanedIDs, *instance.InstanceId)
-				}
-			}
-		}
-	}
+	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans)
 
+	// If tag-based detection failed and profile-based found nothing, propagate the error
+	if tagErr != nil && len(orphanedIDs) == 0 {
+		return tagErr
+	}
 	if len(orphanedIDs) == 0 {
 		t.logger().Debug("no orphaned instances found")
 		return nil
 	}
 
+	if len(untaggedOrphans) > 0 {
+		t.logger().Warn("found untagged orphaned instances (persistent spot tag propagation failure)",
+			slog.Int("untagged_count", len(untaggedOrphans)),
+			slog.Any("untagged_ids", untaggedOrphans))
+	}
+
+	// Cancel persistent spot requests before termination to prevent zombie resurrection
+	t.cancelSpotRequestsForInstances(ctx, orphanedIDs)
+
 	t.logger().Info("terminating orphaned instances", slog.Int(logging.KeyCount, len(orphanedIDs)))
 
-	_, err = t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+	_, err := t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: orphanedIDs,
 	})
 	if err != nil {
@@ -164,6 +160,192 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 		slog.Int(logging.KeyCount, len(orphanedIDs)),
 		slog.Any("instance_ids", orphanedIDs))
 	return nil
+}
+
+func (t *Tasks) findOrphansByTag(ctx context.Context, cutoffTime time.Time) ([]string, error) {
+	input := &ec2.DescribeInstancesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("tag:runs-fleet:managed"), Values: []string{"true"}},
+			{Name: aws.String("instance-state-name"), Values: []string{"running", "pending"}},
+		},
+	}
+
+	var allOrphans []string
+	for {
+		output, err := t.ec2Client.DescribeInstances(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to describe instances: %w", err)
+		}
+		allOrphans = append(allOrphans, extractOrphanIDs(output, cutoffTime)...)
+		if output.NextToken == nil {
+			break
+		}
+		input.NextToken = output.NextToken
+	}
+	return allOrphans, nil
+}
+
+// findOrphansByProfile detects untagged zombie instances via IAM instance profile.
+// Includes "stopped" state because untagged stopped instances are invisible to pool
+// reconciliation and will never be started or cleaned up — they leak EBS costs.
+// Tagged stopped instances are excluded (they're legitimate warm pool members).
+func (t *Tasks) findOrphansByProfile(ctx context.Context, cutoffTime time.Time) []string {
+	if t.config.InstanceProfileARN == "" {
+		return nil
+	}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("iam-instance-profile.arn"), Values: []string{t.config.InstanceProfileARN}},
+			{Name: aws.String("instance-state-name"), Values: []string{"running", "pending", "stopped"}},
+		},
+	}
+
+	var orphanIDs []string
+	for {
+		output, err := t.ec2Client.DescribeInstances(ctx, input)
+		if err != nil {
+			t.logger().Error("failed to describe profile-based instances", slog.String("error", err.Error()))
+			return orphanIDs
+		}
+
+		for _, reservation := range output.Reservations {
+			for _, instance := range reservation.Instances {
+				if instance.LaunchTime == nil || !instance.LaunchTime.Before(cutoffTime) || instance.InstanceId == nil {
+					continue
+				}
+				hasManaged := false
+				for _, tag := range instance.Tags {
+					if aws.ToString(tag.Key) == "runs-fleet:managed" {
+						hasManaged = true
+						break
+					}
+				}
+				if !hasManaged {
+					orphanIDs = append(orphanIDs, *instance.InstanceId)
+				}
+			}
+		}
+
+		if output.NextToken == nil {
+			break
+		}
+		input.NextToken = output.NextToken
+	}
+	return orphanIDs
+}
+
+const maxInstanceIDsPerSpotQuery = 200
+
+func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs []string) {
+	if len(instanceIDs) == 0 {
+		return
+	}
+
+	var spotRequestIDs []string
+	for i := 0; i < len(instanceIDs); i += maxInstanceIDsPerSpotQuery {
+		end := min(i+maxInstanceIDsPerSpotQuery, len(instanceIDs))
+		batch := instanceIDs[i:end]
+
+		output, err := t.describeSpotRequestsWithRetry(ctx, batch)
+		if err != nil {
+			t.logger().Error("failed to describe spot requests for orphaned instances after retry",
+				slog.String("error", err.Error()),
+				slog.Int("batch_size", len(batch)))
+			continue
+		}
+
+		for _, req := range output.SpotInstanceRequests {
+			if req.SpotInstanceRequestId != nil {
+				spotRequestIDs = append(spotRequestIDs, *req.SpotInstanceRequestId)
+			}
+		}
+	}
+
+	if len(spotRequestIDs) == 0 {
+		return
+	}
+
+	const cancelBatchSize = 100
+	var cancelledCount int
+	for i := 0; i < len(spotRequestIDs); i += cancelBatchSize {
+		end := min(i+cancelBatchSize, len(spotRequestIDs))
+		batch := spotRequestIDs[i:end]
+
+		if err := t.cancelSpotRequestsWithRetry(ctx, batch); err != nil {
+			t.logger().Error("failed to cancel spot requests for orphaned instances after retry",
+				slog.String("error", err.Error()),
+				slog.Int("batch_size", len(batch)),
+				slog.Any("spot_request_ids", batch))
+			continue
+		}
+		cancelledCount += len(batch)
+	}
+
+	if cancelledCount > 0 {
+		t.logger().Info("cancelled spot requests for orphaned instances",
+			slog.Int("count", cancelledCount))
+	}
+}
+
+func (t *Tasks) describeSpotRequestsWithRetry(ctx context.Context, instanceIDs []string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
+	input := &ec2.DescribeSpotInstanceRequestsInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("instance-id"), Values: instanceIDs},
+			{Name: aws.String("state"), Values: []string{"open", "active", "disabled"}},
+		},
+	}
+	output, err := t.ec2Client.DescribeSpotInstanceRequests(ctx, input)
+	if err == nil {
+		return output, nil
+	}
+	t.logger().Warn("describe spot requests failed, retrying",
+		slog.String("error", err.Error()),
+		slog.Int("batch_size", len(instanceIDs)))
+	time.Sleep(2 * time.Second)
+	return t.ec2Client.DescribeSpotInstanceRequests(ctx, input)
+}
+
+func (t *Tasks) cancelSpotRequestsWithRetry(ctx context.Context, spotRequestIDs []string) error {
+	input := &ec2.CancelSpotInstanceRequestsInput{
+		SpotInstanceRequestIds: spotRequestIDs,
+	}
+	_, err := t.ec2Client.CancelSpotInstanceRequests(ctx, input)
+	if err == nil {
+		return nil
+	}
+	t.logger().Warn("cancel spot requests failed, retrying",
+		slog.String("error", err.Error()),
+		slog.Int("batch_size", len(spotRequestIDs)))
+	time.Sleep(2 * time.Second)
+	_, err = t.ec2Client.CancelSpotInstanceRequests(ctx, input)
+	return err
+}
+
+func extractOrphanIDs(output *ec2.DescribeInstancesOutput, cutoffTime time.Time) []string {
+	var ids []string
+	for _, reservation := range output.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.LaunchTime != nil && instance.LaunchTime.Before(cutoffTime) && instance.InstanceId != nil {
+				ids = append(ids, *instance.InstanceId)
+			}
+		}
+	}
+	return ids
+}
+
+func mergeUniqueIDs(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, list := range lists {
+		for _, id := range list {
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				result = append(result, id)
+			}
+		}
+	}
+	return result
 }
 
 // ExecuteStaleSecrets cleans up stale runner secrets.

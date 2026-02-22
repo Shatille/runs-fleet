@@ -1019,6 +1019,20 @@ func (m *Manager) CreateSpotInstance(ctx context.Context, spec *LaunchSpec) (ins
 	instanceID = aws.ToString(instance.InstanceId)
 	spotRequestID = aws.ToString(instance.SpotInstanceRequestId)
 
+	// Explicitly apply tags via CreateTags as a fallback.
+	// RunInstances TagSpecifications with persistent spot requests do not reliably
+	// propagate tags to the instance — the spot request gets tagged but the instance
+	// may end up with zero tags. Without tags, pool reconciliation can't find the
+	// instance and housekeeping can't detect it as an orphan, causing zombie buildup.
+	if _, tagErr := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
+		Resources: []string{instanceID},
+		Tags:      tags,
+	}); tagErr != nil {
+		fleetLog.Error("failed to apply tags to spot instance, instance may become orphaned",
+			slog.String(logging.KeyInstanceID, instanceID),
+			slog.String("error", tagErr.Error()))
+	}
+
 	fleetLog.Info("persistent spot instance created",
 		slog.String(logging.KeyInstanceID, instanceID),
 		slog.String("spot_request_id", spotRequestID),

@@ -15,6 +15,7 @@ import (
 )
 
 const testInstanceID = "i-123456789"
+const testSpotRequestID = "sir-123456"
 
 //nolint:dupl // Intentionally mirrors EC2API interface for testing
 type mockEC2Client struct {
@@ -1725,7 +1726,7 @@ func TestCreateSpotInstance(t *testing.T) {
 				return &ec2.RunInstancesOutput{
 					Instances: []types.Instance{{
 						InstanceId:            aws.String(testInstanceID),
-						SpotInstanceRequestId: aws.String("sir-123456"),
+						SpotInstanceRequestId: aws.String(testSpotRequestID),
 					}},
 				}, nil
 			},
@@ -1743,8 +1744,8 @@ func TestCreateSpotInstance(t *testing.T) {
 		if instanceID != testInstanceID {
 			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
 		}
-		if spotReqID != "sir-123456" {
-			t.Errorf("spotReqID = %q, want %q", spotReqID, "sir-123456")
+		if spotReqID != testSpotRequestID {
+			t.Errorf("spotReqID = %q, want %q", spotReqID, testSpotRequestID)
 		}
 	})
 
@@ -1759,8 +1760,8 @@ func TestCreateSpotInstance(t *testing.T) {
 		if instanceID != testInstanceID {
 			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
 		}
-		if spotReqID != "sir-123456" {
-			t.Errorf("spotReqID = %q, want %q", spotReqID, "sir-123456")
+		if spotReqID != testSpotRequestID {
+			t.Errorf("spotReqID = %q, want %q", spotReqID, testSpotRequestID)
 		}
 	})
 
@@ -1823,7 +1824,7 @@ func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
 			return &ec2.RunInstancesOutput{
 				Instances: []types.Instance{{
 					InstanceId:            aws.String(testInstanceID),
-					SpotInstanceRequestId: aws.String("sir-123456"),
+					SpotInstanceRequestId: aws.String(testSpotRequestID),
 				}},
 			}, nil
 		},
@@ -1988,7 +1989,7 @@ func TestCreateSpotInstance_Tags(t *testing.T) {
 				Instances: []types.Instance{
 					{
 						InstanceId:            aws.String(testInstanceID),
-						SpotInstanceRequestId: aws.String("sir-123456"),
+						SpotInstanceRequestId: aws.String(testSpotRequestID),
 					},
 				},
 			}, nil
@@ -2059,6 +2060,92 @@ func TestCreateSpotInstance_Tags(t *testing.T) {
 			t.Errorf("tag %q = %q, want %q", key, gotValue, wantValue)
 		}
 	}
+}
+
+func TestCreateSpotInstance_CreateTagsFallback(t *testing.T) {
+	t.Run("Calls CreateTags after RunInstances", func(t *testing.T) {
+		var createTagsCalled bool
+		var taggedResourceID string
+		var taggedTags []types.Tag
+
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{
+						InstanceId:            aws.String(testInstanceID),
+						SpotInstanceRequestId: aws.String(testSpotRequestID),
+					}},
+				}, nil
+			},
+			CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+				createTagsCalled = true
+				if len(params.Resources) > 0 {
+					taggedResourceID = params.Resources[0]
+				}
+				taggedTags = params.Tags
+				return &ec2.CreateTagsOutput{}, nil
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+
+		instanceID, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !createTagsCalled {
+			t.Fatal("CreateTags was not called after RunInstances")
+		}
+		if taggedResourceID != instanceID {
+			t.Errorf("CreateTags resource = %q, want %q", taggedResourceID, instanceID)
+		}
+
+		tagMap := make(map[string]string)
+		for _, tag := range taggedTags {
+			tagMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+		}
+		if tagMap["runs-fleet:managed"] != "true" {
+			t.Error("CreateTags missing runs-fleet:managed tag")
+		}
+		if tagMap["runs-fleet:pool"] != "default" {
+			t.Error("CreateTags missing runs-fleet:pool tag")
+		}
+		if tagMap["Name"] != "runs-fleet-default" {
+			t.Errorf("CreateTags Name = %q, want %q", tagMap["Name"], "runs-fleet-default")
+		}
+	})
+
+	t.Run("Succeeds even when CreateTags fails", func(t *testing.T) {
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{
+						InstanceId:            aws.String(testInstanceID),
+						SpotInstanceRequestId: aws.String(testSpotRequestID),
+					}},
+				}, nil
+			},
+			CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+				return nil, errors.New("CreateTags API error")
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+
+		instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("CreateSpotInstance should succeed even if CreateTags fails: %v", err)
+		}
+		if instanceID != testInstanceID {
+			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
+		}
+		if spotReqID != testSpotRequestID {
+			t.Errorf("spotReqID = %q, want %q", spotReqID, testSpotRequestID)
+		}
+	})
 }
 
 func TestRankInstanceTypesByPrice(t *testing.T) {
