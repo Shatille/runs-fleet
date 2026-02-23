@@ -274,7 +274,7 @@ func TestRegistrar_RegisterRunner_UsesConfigRunnerName(t *testing.T) {
 	config := &secrets.RunnerConfig{
 		Repo:       "org/myapp",
 		JITToken:   "token",
-		RunnerName: "runs-fleet-default-myapp-arm64-12345",
+		RunnerName: "runs-fleet-runner-default-myapp-arm64-12345",
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
@@ -288,7 +288,7 @@ func TestRegistrar_RegisterRunner_UsesConfigRunnerName(t *testing.T) {
 	}
 
 	argsStr := string(argsContent)
-	if !contains(argsStr, "--name runs-fleet-default-myapp-arm64-12345") {
+	if !contains(argsStr, "--name runs-fleet-runner-default-myapp-arm64-12345") {
 		t.Errorf("expected runner name from config, got args: %s", argsStr)
 	}
 }
@@ -322,7 +322,7 @@ func TestRegistrar_RegisterRunner_FallbackToHostname(t *testing.T) {
 	}
 
 	argsStr := string(argsContent)
-	if !contains(argsStr, "--name runs-fleet-") {
+	if !contains(argsStr, "--name runs-fleet-runner-") {
 		t.Errorf("expected hostname-based runner name, got args: %s", argsStr)
 	}
 }

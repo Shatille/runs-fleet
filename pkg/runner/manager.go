@@ -61,7 +61,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	org := parts[0]
 	repoName := parts[1]
 
-	// Build descriptive runner name: runs-fleet-{pool}-{repo}-{arch}-{job_id}
+	// Build descriptive runner name: runs-fleet-runner-{pool}-{repo}-{arch}-{job_id}
 	runnerName := buildRunnerName(req.Pool, repoName, req.Arch, req.JobID)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
@@ -120,12 +120,12 @@ func (m *Manager) GetRegistrationToken(ctx context.Context, repo string) (*Regis
 }
 
 // buildRunnerName creates a descriptive runner name from job attributes.
-// Format: runs-fleet-{pool}-{repo}-{arch}-{job_id} (pool jobs)
+// Format: runs-fleet-runner-{pool}-{repo}-{arch}-{job_id} (pool jobs)
 //
-//	runs-fleet-{repo}-{arch}-{job_id} (cold-start jobs)
+//	runs-fleet-runner-{repo}-{arch}-{job_id} (cold-start jobs)
 func buildRunnerName(pool, repoName, arch, jobID string) string {
 	if pool != "" {
-		return fmt.Sprintf("runs-fleet-%s-%s-%s-%s", pool, repoName, arch, jobID)
+		return fmt.Sprintf("runs-fleet-runner-%s-%s-%s-%s", pool, repoName, arch, jobID)
 	}
-	return fmt.Sprintf("runs-fleet-%s-%s-%s", repoName, arch, jobID)
+	return fmt.Sprintf("runs-fleet-runner-%s-%s-%s", repoName, arch, jobID)
 }
