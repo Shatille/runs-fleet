@@ -821,7 +821,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -834,7 +834,7 @@ func TestBuildTags(t *testing.T) {
 				Pool:  "default",
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet-default",
+				"Name":               "runs-fleet-runner-default",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:pool":    "default",
@@ -853,7 +853,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"team":               "platform",
@@ -870,7 +870,7 @@ func TestBuildTags(t *testing.T) {
 				Arch:  "arm64",
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:os":      "linux",
@@ -885,7 +885,7 @@ func TestBuildTags(t *testing.T) {
 				Environment: "production",
 			},
 			wantTags: map[string]string{
-				"Name":                   "runs-fleet",
+				"Name":                   "runs-fleet-runner",
 				"runs-fleet:run-id":      "12345",
 				"runs-fleet:managed":     "true",
 				"runs-fleet:environment": "production",
@@ -900,7 +900,7 @@ func TestBuildTags(t *testing.T) {
 				Pool:  "",
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -914,7 +914,7 @@ func TestBuildTags(t *testing.T) {
 				Region: "us-west-2",
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:region":  "us-west-2",
@@ -928,7 +928,7 @@ func TestBuildTags(t *testing.T) {
 				Region: "",
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -945,7 +945,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"Name":                             "runs-fleet",
+				"Name":                             "runs-fleet-runner",
 				"runs-fleet:run-id":                "12345",
 				"runs-fleet:managed":               "true",
 				"runs-fleet:runner-image":           "ghcr.io/org/runner:latest",
@@ -960,7 +960,7 @@ func TestBuildTags(t *testing.T) {
 				RunID: 12345,
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet",
+				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 			},
@@ -2112,8 +2112,8 @@ func TestCreateSpotInstance_CreateTagsFallback(t *testing.T) {
 		if tagMap["runs-fleet:pool"] != "default" {
 			t.Error("CreateTags missing runs-fleet:pool tag")
 		}
-		if tagMap["Name"] != "runs-fleet-default" {
-			t.Errorf("CreateTags Name = %q, want %q", tagMap["Name"], "runs-fleet-default")
+		if tagMap["Name"] != "runs-fleet-runner-default" {
+			t.Errorf("CreateTags Name = %q, want %q", tagMap["Name"], "runs-fleet-runner-default")
 		}
 	})
 

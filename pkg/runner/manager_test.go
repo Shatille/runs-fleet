@@ -680,7 +680,7 @@ func TestBuildRunnerName(t *testing.T) {
 			repoName: "myapp",
 			arch:     "arm64",
 			jobID:    "12345678",
-			want:     "runs-fleet-default-myapp-arm64-12345678",
+			want:     "runs-fleet-runner-default-myapp-arm64-12345678",
 		},
 		{
 			name:     "cold-start job",
@@ -688,7 +688,7 @@ func TestBuildRunnerName(t *testing.T) {
 			repoName: "myapp",
 			arch:     "amd64",
 			jobID:    "98765432",
-			want:     "runs-fleet-myapp-amd64-98765432",
+			want:     "runs-fleet-runner-myapp-amd64-98765432",
 		},
 	}
 
@@ -729,8 +729,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-default-myapp-arm64-99999" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-default-myapp-arm64-99999")
+	if storedConfig.RunnerName != "runs-fleet-runner-default-myapp-arm64-99999" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-myapp-arm64-99999")
 	}
 }
 
@@ -759,8 +759,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-myapp-amd64-88888" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-myapp-amd64-88888")
+	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-88888" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-88888")
 	}
 }
 

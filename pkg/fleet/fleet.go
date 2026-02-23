@@ -391,9 +391,9 @@ func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string,
 
 // buildTags creates the tag set for the fleet resources.
 func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
-	name := "runs-fleet"
+	name := "runs-fleet-runner"
 	if spec.Pool != "" {
-		name = "runs-fleet-" + spec.Pool
+		name = "runs-fleet-runner-" + spec.Pool
 	}
 
 	tags := []types.Tag{
