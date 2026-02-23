@@ -54,6 +54,10 @@ type SchedulerConfig struct {
 	// EphemeralPoolCleanupInterval is how often to cleanup stale ephemeral pools.
 	// Default: 1 hour
 	EphemeralPoolCleanupInterval time.Duration
+
+	// StaleJobsInterval is how often to check for stale jobs via GitHub API.
+	// Default: 5 minutes
+	StaleJobsInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default scheduler configuration.
@@ -67,6 +71,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		CostReportInterval:           24 * time.Hour,
 		DLQRedriveInterval:           1 * time.Minute,
 		EphemeralPoolCleanupInterval: 1 * time.Hour,
+		StaleJobsInterval:           5 * time.Minute,
 	}
 }
 
@@ -119,6 +124,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	costTicker := time.NewTicker(s.config.CostReportInterval)
 	dlqTicker := time.NewTicker(s.config.DLQRedriveInterval)
 	ephemeralPoolTicker := time.NewTicker(s.config.EphemeralPoolCleanupInterval)
+	staleJobsTicker := time.NewTicker(s.config.StaleJobsInterval)
 
 	defer orphanedTicker.Stop()
 	defer ssmTicker.Stop()
@@ -128,6 +134,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer costTicker.Stop()
 	defer dlqTicker.Stop()
 	defer ephemeralPoolTicker.Stop()
+	defer staleJobsTicker.Stop()
 
 	s.scheduleTask(ctx, TaskOrphanedInstances)
 	s.scheduleTask(ctx, TaskDLQRedrive)
@@ -160,6 +167,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-ephemeralPoolTicker.C:
 			s.scheduleTask(ctx, TaskEphemeralPoolCleanup)
+
+		case <-staleJobsTicker.C:
+			s.scheduleTask(ctx, TaskStaleJobs)
 		}
 	}
 }

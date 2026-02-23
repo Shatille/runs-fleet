@@ -109,6 +109,9 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 	if cfg.DLQRedriveInterval != 1*time.Minute {
 		t.Errorf("expected DLQRedriveInterval 1m, got %v", cfg.DLQRedriveInterval)
 	}
+	if cfg.StaleJobsInterval != 5*time.Minute {
+		t.Errorf("expected StaleJobsInterval 5m, got %v", cfg.StaleJobsInterval)
+	}
 }
 
 func TestNewScheduler(t *testing.T) {
@@ -305,6 +308,7 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 		CostReportInterval:           100 * time.Millisecond,
 		DLQRedriveInterval:           100 * time.Millisecond,
 		EphemeralPoolCleanupInterval: 100 * time.Millisecond,
+		StaleJobsInterval:           100 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -343,6 +347,7 @@ func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 		CostReportInterval:           1 * time.Hour,
 		DLQRedriveInterval:           1 * time.Hour,
 		EphemeralPoolCleanupInterval: 1 * time.Hour,
+		StaleJobsInterval:           1 * time.Hour,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -442,6 +447,7 @@ func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
 		CostReportInterval:           10 * time.Millisecond,
 		DLQRedriveInterval:           10 * time.Millisecond,
 		EphemeralPoolCleanupInterval: 10 * time.Millisecond,
+		StaleJobsInterval:           10 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -519,6 +525,7 @@ func TestScheduler_Structure(t *testing.T) {
 		CostReportInterval:           6 * time.Minute,
 		DLQRedriveInterval:           7 * time.Minute,
 		EphemeralPoolCleanupInterval: 8 * time.Minute,
+		StaleJobsInterval:            9 * time.Minute,
 	}
 	queueURL := "https://sqs.example.com/test-queue"
 
@@ -550,6 +557,9 @@ func TestScheduler_Structure(t *testing.T) {
 	}
 	if scheduler.config.EphemeralPoolCleanupInterval != 8*time.Minute {
 		t.Errorf("EphemeralPoolCleanupInterval = %v, want 8m", scheduler.config.EphemeralPoolCleanupInterval)
+	}
+	if scheduler.config.StaleJobsInterval != 9*time.Minute {
+		t.Errorf("StaleJobsInterval = %v, want 9m", scheduler.config.StaleJobsInterval)
 	}
 }
 
@@ -616,6 +626,9 @@ func TestSchedulerConfig_ZeroValues(t *testing.T) {
 	}
 	if cfg.EphemeralPoolCleanupInterval != 0 {
 		t.Error("EphemeralPoolCleanupInterval should be zero by default")
+	}
+	if cfg.StaleJobsInterval != 0 {
+		t.Error("StaleJobsInterval should be zero by default")
 	}
 }
 

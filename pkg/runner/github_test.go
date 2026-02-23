@@ -1153,3 +1153,129 @@ func TestIsRetryableError_AllStatusCodes(t *testing.T) {
 		})
 	}
 }
+
+const testPathWorkflowJob = "/repos/myorg/myrepo/actions/jobs/99999"
+
+func TestGetWorkflowJobByID_Success(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      123,
+				"account": map[string]string{"type": "Organization"},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "test-token"})
+		case testPathWorkflowJob:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":         99999,
+				"status":     "completed",
+				"conclusion": "success",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	client.baseURL = server.URL
+
+	info, err := client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if info.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", info.Status)
+	}
+	if info.Conclusion != "success" {
+		t.Errorf("expected conclusion 'success', got %q", info.Conclusion)
+	}
+}
+
+func TestGetWorkflowJobByID_NotFound(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      123,
+				"account": map[string]string{"type": "Organization"},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "test-token"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	client.baseURL = server.URL
+
+	_, err = client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+}
+
+func TestGetWorkflowJobByID_InvalidRepo(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = client.GetWorkflowJobByID(context.Background(), "invalid", 99999)
+	if err == nil {
+		t.Fatal("expected error for invalid repo format")
+	}
+}
+
+func TestGetWorkflowJobByID_TokenError(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      123,
+				"account": map[string]string{"type": "Organization"},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message": "forbidden"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	client.baseURL = server.URL
+
+	_, err = client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
+	if err == nil {
+		t.Fatal("expected error for token failure")
+	}
+}

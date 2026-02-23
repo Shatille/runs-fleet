@@ -161,6 +161,7 @@ type mockTaskMetricsAPI struct {
 	ssmCount          int
 	jobCount          int
 	orphanedJobsCount int
+	staleJobsCount    int
 	poolUtilizations  map[string]float64
 	err               error
 }
@@ -182,6 +183,11 @@ func (m *mockTaskMetricsAPI) PublishJobRecordsArchived(_ context.Context, count 
 
 func (m *mockTaskMetricsAPI) PublishOrphanedJobsCleanedUp(_ context.Context, count int) error {
 	m.orphanedJobsCount = count
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishStaleJobsReconciled(_ context.Context, count int) error {
+	m.staleJobsCount = count
 	return m.err
 }
 
@@ -1830,5 +1836,409 @@ func TestExecuteOrphanedSpotRequests_DescribeInstancesError(t *testing.T) {
 	// Since describe failed and fallback treats as not existing, the spot request should be cancelled
 	if len(ec2Client.cancelledSpotReqIDs) != 1 {
 		t.Errorf("expected 1 spot request cancelled when describe fails, got %d", len(ec2Client.cancelledSpotReqIDs))
+	}
+}
+
+// mockGitHubJobChecker implements GitHubJobChecker for testing.
+type mockGitHubJobChecker struct {
+	statuses map[int64]*GitHubJobStatus
+	err      error
+	calls    int
+}
+
+func (m *mockGitHubJobChecker) GetWorkflowJobStatus(_ context.Context, _, _ string, jobID int64) (*GitHubJobStatus, error) {
+	m.calls++
+	if m.err != nil {
+		return nil, m.err
+	}
+	if s, ok := m.statuses[jobID]; ok {
+		return s, nil
+	}
+	return &GitHubJobStatus{Completed: false}, nil
+}
+
+func TestExecuteStaleJobs_NoJobsTable(t *testing.T) {
+	tasks := &Tasks{
+		config: &config.Config{
+			JobsTableName: "",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteStaleJobs_NoGitHubChecker(t *testing.T) {
+	tasks := &Tasks{
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+		gitHubChecker: nil,
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteStaleJobs_NoStaleJobs(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{},
+	}
+	checker := &mockGitHubJobChecker{}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 0 {
+		t.Errorf("expected 0 GitHub API calls, got %d", checker.calls)
+	}
+}
+
+func TestExecuteStaleJobs_ReconcilesCompletedJobs(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: true, Conclusion: "success"},
+		},
+	}
+	metricsClient := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		metrics:       metricsClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 1 {
+		t.Errorf("expected 1 GitHub API call, got %d", checker.calls)
+	}
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 DDB update, got %d", dynamoClient.updateCalls)
+	}
+	if metricsClient.staleJobsCount != 1 {
+		t.Errorf("expected stale jobs metric 1, got %d", metricsClient.staleJobsCount)
+	}
+}
+
+func TestExecuteStaleJobs_SkipsStillRunningJobs(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: false},
+		},
+	}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 1 {
+		t.Errorf("expected 1 GitHub API call, got %d", checker.calls)
+	}
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 DDB updates for still-running job, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteStaleJobs_HandlesGitHubAPIError(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{
+		err: errors.New("GitHub API rate limited"),
+	}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 DDB updates on API error, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteStaleJobs_SkipsInvalidRepo(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: "invalid-repo"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 0 {
+		t.Errorf("expected 0 GitHub API calls for invalid repo, got %d", checker.calls)
+	}
+}
+
+func TestExecuteStaleJobs_ScanError(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		scanErr: errors.New("scan error"),
+	}
+	checker := &mockGitHubJobChecker{}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err == nil {
+		t.Fatal("expected error from scan")
+	}
+}
+
+func TestExecuteStaleJobs_ConditionalWriteRace(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+		updateErr: &types.ConditionalCheckFailedException{},
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: true, Conclusion: "success"},
+		},
+	}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteStaleJobs_MultipleJobs(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "111"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo1"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "222"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo2"},
+				"status": &types.AttributeValueMemberS{Value: "claiming"},
+			},
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "333"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo3"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			111: {Completed: true, Conclusion: "failure"},
+			222: {Completed: true, Conclusion: "cancelled"},
+			333: {Completed: false},
+		},
+	}
+	metricsClient := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		metrics:       metricsClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 3 {
+		t.Errorf("expected 3 GitHub API calls, got %d", checker.calls)
+	}
+	if dynamoClient.updateCalls != 2 {
+		t.Errorf("expected 2 DDB updates (2 completed), got %d", dynamoClient.updateCalls)
+	}
+	if metricsClient.staleJobsCount != 2 {
+		t.Errorf("expected stale jobs metric 2, got %d", metricsClient.staleJobsCount)
+	}
+}
+
+func TestExecuteStaleJobs_SkipsJobsWithEmptyRepo(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: ""},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 0 {
+		t.Errorf("expected 0 GitHub API calls for empty repo, got %d", checker.calls)
+	}
+}
+
+func TestExecuteStaleJobs_UpdateError(t *testing.T) {
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
+				"status": &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+		updateErr: errors.New("DDB write error"),
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: true, Conclusion: "success"},
+		},
+	}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteStaleJobs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error (should continue on individual update errors): %v", err)
+	}
+
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 update attempt, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestSplitRepo(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantOwner string
+		wantName  string
+		wantOK    bool
+	}{
+		{"org/repo", "org", "repo", true},
+		{"user/my-repo", "user", "my-repo", true},
+		{"invalid", "", "", false},
+		{"/repo", "", "", false},
+		{"org/", "", "", false},
+		{"", "", "", false},
+	}
+
+	for _, tt := range tests {
+		owner, name, ok := splitRepo(tt.input)
+		if owner != tt.wantOwner || name != tt.wantName || ok != tt.wantOK {
+			t.Errorf("splitRepo(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tt.input, owner, name, ok, tt.wantOwner, tt.wantName, tt.wantOK)
+		}
 	}
 }

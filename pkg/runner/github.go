@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -332,4 +333,69 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 	}
 
 	return nil, fmt.Errorf("exhausted retries: %w", lastErr)
+}
+
+// WorkflowJobInfo contains the status of a GitHub Actions workflow job.
+type WorkflowJobInfo struct {
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", "timed_out", etc.
+}
+
+// GetWorkflowJobByID retrieves a workflow job by its ID from GitHub API.
+// The repo parameter must be in "owner/repo" format.
+func (c *GitHubClient) GetWorkflowJobByID(ctx context.Context, repo string, jobID int64) (*WorkflowJobInfo, error) {
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+	}
+	owner := parts[0]
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryDelay(attempt - 1)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		token, err := c.getInstallationToken(ctx, owner)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to get installation token: %w", err)
+			continue
+		}
+
+		client := github.NewClient(c.httpClient).WithAuthToken(token)
+		if c.baseURL != "https://api.github.com" {
+			u, parseErr := url.Parse(c.baseURL + "/")
+			if parseErr != nil {
+				return nil, fmt.Errorf("invalid base URL %q: %w", c.baseURL, parseErr)
+			}
+			client.BaseURL = u
+		}
+
+		job, resp, err := client.Actions.GetWorkflowJobByID(ctx, parts[0], parts[1], jobID)
+		if err != nil {
+			var httpResp *http.Response
+			if resp != nil {
+				httpResp = resp.Response
+			}
+			if httpResp != nil && httpResp.StatusCode == http.StatusNotFound {
+				return nil, fmt.Errorf("job %d not found in %s", jobID, repo)
+			}
+			lastErr = fmt.Errorf("failed to get workflow job: %w", err)
+			if !isRetryableError(httpResp, err) {
+				return nil, lastErr
+			}
+			continue
+		}
+
+		return &WorkflowJobInfo{
+			Status:     job.GetStatus(),
+			Conclusion: job.GetConclusion(),
+		}, nil
+	}
+	return nil, lastErr
 }

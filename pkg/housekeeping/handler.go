@@ -47,6 +47,8 @@ const (
 	TaskEphemeralPoolCleanup TaskType = "ephemeral_pool_cleanup"
 	// TaskOrphanedJobs cleans up jobs whose instances no longer exist.
 	TaskOrphanedJobs TaskType = "orphaned_jobs"
+	// TaskStaleJobs detects jobs stuck in running/claiming by checking GitHub API.
+	TaskStaleJobs TaskType = "stale_jobs"
 )
 
 // Message represents a housekeeping task message.
@@ -62,6 +64,7 @@ type TaskExecutor interface {
 	ExecuteStaleSecrets(ctx context.Context) error
 	ExecuteOldJobs(ctx context.Context) error
 	ExecuteOrphanedJobs(ctx context.Context) error
+	ExecuteStaleJobs(ctx context.Context) error
 	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
 	ExecuteDLQRedrive(ctx context.Context) error
@@ -177,6 +180,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		err = h.taskExecutor.ExecuteOldJobs(taskCtx)
 	case TaskOrphanedJobs:
 		err = h.taskExecutor.ExecuteOrphanedJobs(taskCtx)
+	case TaskStaleJobs:
+		err = h.taskExecutor.ExecuteStaleJobs(taskCtx)
 	case TaskPoolAudit:
 		err = h.taskExecutor.ExecutePoolAudit(taskCtx)
 	case TaskCostReport:

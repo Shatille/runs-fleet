@@ -45,6 +45,7 @@ type mockTaskExecutor struct {
 	ssmErr            error
 	jobsErr           error
 	orphanedJobsErr   error
+	staleJobsErr      error
 	poolErr           error
 	costErr           error
 	dlqErr            error
@@ -53,6 +54,7 @@ type mockTaskExecutor struct {
 	ssmCall           int
 	jobsCall          int
 	orphanedJobsCall  int
+	staleJobsCall     int
 	poolCall          int
 	costCall          int
 	dlqCall           int
@@ -77,6 +79,11 @@ func (m *mockTaskExecutor) ExecuteOldJobs(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteOrphanedJobs(_ context.Context) error {
 	m.orphanedJobsCall++
 	return m.orphanedJobsErr
+}
+
+func (m *mockTaskExecutor) ExecuteStaleJobs(_ context.Context) error {
+	m.staleJobsCall++
+	return m.staleJobsErr
 }
 
 func (m *mockTaskExecutor) ExecutePoolAudit(_ context.Context) error {
@@ -307,6 +314,33 @@ func TestHandler_ProcessMessage_DLQRedriveError(t *testing.T) {
 	}
 	if executor.dlqCall != 1 {
 		t.Errorf("expected 1 dlq call, got %d", executor.dlqCall)
+	}
+}
+
+func TestHandler_ProcessMessage_StaleJobs(t *testing.T) {
+	q := &mockQueueAPI{}
+	executor := &mockTaskExecutor{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, executor, cfg)
+
+	msg := Message{
+		TaskType:  TaskStaleJobs,
+		Timestamp: time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceipt,
+	}
+
+	err := handler.processMessage(context.Background(), queueMsg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if executor.staleJobsCall != 1 {
+		t.Errorf("expected 1 stale jobs call, got %d", executor.staleJobsCall)
 	}
 }
 

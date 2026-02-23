@@ -316,6 +316,16 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 		tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
 	}
 
+	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
+		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
+		if err != nil {
+			hkLog := logging.WithComponent(logging.LogTypeServer, "housekeeping")
+			hkLog.Error("failed to initialize GitHub client for stale job detection", slog.String("error", err.Error()))
+		} else {
+			tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})
+		}
+	}
+
 	h := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
 
 	if dbClient != nil {
@@ -547,6 +557,10 @@ func (h *housekeepingMetricsAdapter) PublishOrphanedJobsCleanedUp(ctx context.Co
 	return h.publisher.PublishOrphanedJobsCleanedUp(ctx, count)
 }
 
+func (h *housekeepingMetricsAdapter) PublishStaleJobsReconciled(ctx context.Context, count int) error {
+	return h.publisher.PublishStaleJobsReconciled(ctx, count)
+}
+
 func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
 	return h.publisher.PublishPoolUtilization(ctx, poolName, utilization)
 }
@@ -577,4 +591,20 @@ func (p *poolDBAdapter) GetPoolConfig(ctx context.Context, poolName string) (*ho
 
 func (p *poolDBAdapter) DeletePoolConfig(ctx context.Context, poolName string) error {
 	return p.client.DeletePoolConfig(ctx, poolName)
+}
+
+// githubJobCheckerAdapter adapts runner.GitHubClient to housekeeping.GitHubJobChecker.
+type githubJobCheckerAdapter struct {
+	client *runner.GitHubClient
+}
+
+func (g *githubJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, _ string, repo string, jobID int64) (*housekeeping.GitHubJobStatus, error) {
+	info, err := g.client.GetWorkflowJobByID(ctx, repo, jobID)
+	if err != nil {
+		return nil, err
+	}
+	return &housekeeping.GitHubJobStatus{
+		Completed:  info.Status == "completed",
+		Conclusion: info.Conclusion,
+	}, nil
 }

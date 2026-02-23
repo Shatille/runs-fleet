@@ -45,12 +45,24 @@ type MetricsAPI interface {
 	PublishSSMParametersDeleted(ctx context.Context, count int) error
 	PublishJobRecordsArchived(ctx context.Context, count int) error
 	PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error
+	PublishStaleJobsReconciled(ctx context.Context, count int) error
 	PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error
 }
 
 // CostReporter generates cost reports.
 type CostReporter interface {
 	GenerateDailyReport(ctx context.Context) error
+}
+
+// GitHubJobStatus represents the status of a job as reported by GitHub.
+type GitHubJobStatus struct {
+	Completed  bool
+	Conclusion string // "success", "failure", "cancelled", "timed_out", etc.
+}
+
+// GitHubJobChecker queries GitHub for workflow job status.
+type GitHubJobChecker interface {
+	GetWorkflowJobStatus(ctx context.Context, owner, repo string, jobID int64) (*GitHubJobStatus, error)
 }
 
 // SQSAPI defines SQS operations for housekeeping.
@@ -75,15 +87,16 @@ type PoolDBAPI interface {
 
 // Tasks implements housekeeping task execution.
 type Tasks struct {
-	ec2Client    EC2API
-	secretsStore secrets.Store
-	dynamoClient DynamoDBAPI
-	sqsClient    SQSAPI
-	poolDB       PoolDBAPI
-	metrics      MetricsAPI
-	costReporter CostReporter
-	config       *config.Config
-	log          *logging.Logger
+	ec2Client      EC2API
+	secretsStore   secrets.Store
+	dynamoClient   DynamoDBAPI
+	sqsClient      SQSAPI
+	poolDB         PoolDBAPI
+	gitHubChecker  GitHubJobChecker
+	metrics        MetricsAPI
+	costReporter   CostReporter
+	config         *config.Config
+	log            *logging.Logger
 }
 
 // logger returns the logger, using a default if not initialized.
@@ -863,6 +876,212 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 // SetPoolDB sets the pool database client for ephemeral pool cleanup.
 func (t *Tasks) SetPoolDB(poolDB PoolDBAPI) {
 	t.poolDB = poolDB
+}
+
+// SetGitHubJobChecker sets the GitHub job checker for stale job detection.
+func (t *Tasks) SetGitHubJobChecker(checker GitHubJobChecker) {
+	t.gitHubChecker = checker
+}
+
+// staleJobThreshold is the minimum age for running/claiming jobs to be checked against GitHub.
+// Jobs younger than this are likely still legitimately starting up.
+const staleJobThreshold = 10 * time.Minute
+
+// maxStaleJobChecks limits GitHub API calls per cycle to stay within rate limits.
+// At 5-min intervals: 30 * 12 = 360 calls/hour, well within 5000/hour.
+const maxStaleJobChecks = 30
+
+// staleJobCandidate holds job info for stale job detection.
+type staleJobCandidate struct {
+	JobID  int64
+	Repo   string
+	Status string
+}
+
+// ExecuteStaleJobs detects jobs stuck in running/claiming by querying GitHub API for actual status.
+// Resolves stale jobs in ~10 minutes instead of waiting for the 6h orphan detection window.
+func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
+	if t.config.JobsTableName == "" {
+		return nil
+	}
+	if t.gitHubChecker == nil {
+		t.logger().Warn("stale job detection disabled: GitHub job checker not configured")
+		return nil
+	}
+
+	cutoffTime := time.Now().Add(-staleJobThreshold).Format(time.RFC3339)
+
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(t.config.JobsTableName),
+		FilterExpression: aws.String("(#status = :running OR #status = :claiming) AND created_at < :cutoff"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":running":  &types.AttributeValueMemberS{Value: "running"},
+			":claiming": &types.AttributeValueMemberS{Value: "claiming"},
+			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
+		},
+		ProjectionExpression: aws.String("job_id, repo, #status"),
+	}
+
+	var candidates []staleJobCandidate
+	var lastEvaluatedKey map[string]types.AttributeValue
+
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := t.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return fmt.Errorf("failed to scan jobs: %w", err)
+		}
+
+		for _, item := range output.Items {
+			var jobID int64
+			var repo, status string
+
+			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
+				parsed, err := strconv.ParseInt(v.Value, 10, 64)
+				if err != nil {
+					continue
+				}
+				jobID = parsed
+			}
+			if v, ok := item["repo"].(*types.AttributeValueMemberS); ok {
+				repo = v.Value
+			}
+			if v, ok := item["status"].(*types.AttributeValueMemberS); ok {
+				status = v.Value
+			}
+
+			if jobID == 0 || repo == "" {
+				t.logger().Debug("skipping stale job candidate with missing fields",
+					slog.Int64("job_id", jobID),
+					slog.String("repo", repo))
+				continue
+			}
+
+			candidates = append(candidates, staleJobCandidate{
+				JobID:  jobID,
+				Repo:   repo,
+				Status: status,
+			})
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	checked := 0
+	reconciled := 0
+	for _, c := range candidates {
+		if checked >= maxStaleJobChecks {
+			t.logger().Info("stale jobs check limit reached",
+				slog.Int("checked", checked),
+				slog.Int("remaining", len(candidates)-checked))
+			break
+		}
+
+		owner, _, ok := splitRepo(c.Repo)
+		if !ok {
+			t.logger().Debug("skipping stale job with invalid repo format",
+				slog.Int64("job_id", c.JobID),
+				slog.String("repo", c.Repo))
+			continue
+		}
+
+		checked++
+		ghStatus, err := t.gitHubChecker.GetWorkflowJobStatus(ctx, owner, c.Repo, c.JobID)
+		if err != nil {
+			t.logger().Warn("github job status check failed",
+				slog.Int64("job_id", c.JobID),
+				slog.String("error", err.Error()))
+			continue
+		}
+
+		if ghStatus == nil || !ghStatus.Completed {
+			continue
+		}
+
+		if err := t.markJobCompleted(ctx, c.JobID, ghStatus.Conclusion); err != nil {
+			t.logger().Error("mark stale job completed failed",
+				slog.Int64("job_id", c.JobID),
+				slog.String("error", err.Error()))
+			continue
+		}
+
+		reconciled++
+		t.logger().Info("stale job reconciled",
+			slog.Int64("job_id", c.JobID),
+			slog.String("conclusion", ghStatus.Conclusion))
+	}
+
+	if t.metrics != nil && reconciled > 0 {
+		if err := t.metrics.PublishStaleJobsReconciled(ctx, reconciled); err != nil {
+			t.logger().Warn("failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
+		}
+	}
+
+	if reconciled > 0 {
+		t.logger().Info("stale jobs reconciled", slog.Int(logging.KeyCount, reconciled))
+	}
+	return nil
+}
+
+// markJobCompleted updates a job's status to "completed" with the real GitHub conclusion.
+// Uses conditional write to prevent race with concurrent normal job completion.
+func (t *Tasks) markJobCompleted(ctx context.Context, jobID int64, conclusion string) error {
+	key, err := attributevalue.MarshalMap(map[string]int64{
+		"job_id": jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = t.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           aws.String(t.config.JobsTableName),
+		Key:                 key,
+		UpdateExpression:    aws.String("SET #status = :completed, completed_at = :completed_at, conclusion = :conclusion"),
+		ConditionExpression: aws.String("#status = :running OR #status = :claiming"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":completed":    &types.AttributeValueMemberS{Value: "completed"},
+			":running":      &types.AttributeValueMemberS{Value: "running"},
+			":claiming":     &types.AttributeValueMemberS{Value: "claiming"},
+			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+			":conclusion":   &types.AttributeValueMemberS{Value: conclusion},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			t.logger().Debug("stale job already completed concurrently", slog.Int64("job_id", jobID))
+			return nil
+		}
+		return fmt.Errorf("failed to update job: %w", err)
+	}
+
+	return nil
+}
+
+// splitRepo splits "owner/repo" into owner and repo components.
+func splitRepo(repo string) (owner, name string, ok bool) {
+	if strings.Count(repo, "/") != 1 {
+		return "", "", false
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	if parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // EphemeralPoolTTL is the duration after which inactive ephemeral pools are deleted.
