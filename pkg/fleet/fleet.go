@@ -104,8 +104,7 @@ type LaunchSpec struct {
 // When arch is empty and instance types span multiple architectures, multiple
 // launch template configs are created to let EC2 Fleet choose the best option.
 //
-// For warm pool instances that need stop/start capability, use CreateSpotInstance instead,
-// which uses RunInstances API with persistent spot requests.
+// For warm pool instances that need stop/start capability, use CreateOnDemandInstance instead.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
 	useSpot := m.shouldUseSpot(ctx, spec)
 	tags := m.buildTags(spec)
@@ -878,91 +877,20 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 	return nil
 }
 
-// GetSpotRequestIDForInstance queries EC2 to get the spot request ID for an instance.
-// Returns empty string if the instance is not a spot instance or doesn't exist.
-func (m *Manager) GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error) {
-	if instanceID == "" {
-		return "", fmt.Errorf("instance ID cannot be empty")
-	}
-
-	output, err := m.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-		InstanceIds: []string{instanceID},
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to describe instance: %w", err)
-	}
-
-	for _, reservation := range output.Reservations {
-		for _, instance := range reservation.Instances {
-			if aws.ToString(instance.InstanceId) == instanceID {
-				return aws.ToString(instance.SpotInstanceRequestId), nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("instance not found: %s", instanceID)
-}
-
-// GetSpotRequestIDsForInstances queries EC2 to get spot request IDs for multiple instances.
-// Returns a map of instanceID -> spotRequestID.
-// Instances without spot request IDs or not found are omitted from the result.
-// Handles batching for AWS API limits (max 1000 instances per request).
-func (m *Manager) GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error) {
-	if len(instanceIDs) == 0 {
-		return nil, nil
-	}
-
-	result := make(map[string]string)
-	const maxBatchSize = 1000 // AWS DescribeInstances API limit
-
-	for i := 0; i < len(instanceIDs); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(instanceIDs) {
-			end = len(instanceIDs)
-		}
-		batch := instanceIDs[i:end]
-
-		output, err := m.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: batch,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to describe instances: %w", err)
-		}
-
-		for _, reservation := range output.Reservations {
-			for _, instance := range reservation.Instances {
-				if instance.SpotInstanceRequestId != nil && *instance.SpotInstanceRequestId != "" {
-					result[aws.ToString(instance.InstanceId)] = *instance.SpotInstanceRequestId
-				}
-			}
-		}
-	}
-
-	return result, nil
-}
-
-// CreateSpotInstance launches a single persistent spot instance using RunInstances API.
-// Unlike CreateFleet with FleetTypeMaintain, instances created via RunInstances can be
-// manually stopped/started, which is required for warm pool operation.
-//
-// Returns the instance ID and spot request ID on success.
-// The spot request is created with SpotInstanceType=persistent and
-// InstanceInterruptionBehavior=stop, allowing the instance to be stopped/started
-// without terminating the spot request.
-func (m *Manager) CreateSpotInstance(ctx context.Context, spec *LaunchSpec) (instanceID, spotRequestID string, err error) {
+// CreateOnDemandInstance launches a single on-demand instance using RunInstances API.
+// Used for warm pool instances where stop/start reliability matters more than spot savings.
+func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) (string, error) {
 	tags := m.buildTags(spec)
 
-	// Determine launch template and architecture
 	arch := spec.Arch
 	if arch == "" {
 		arch = GetInstanceArch(spec.InstanceType)
 		if arch == "" {
-			return "", "", fmt.Errorf("cannot determine architecture for instance type %q", spec.InstanceType)
+			return "", fmt.Errorf("cannot determine architecture for instance type %q", spec.InstanceType)
 		}
 	}
 	launchTemplateName := m.getLaunchTemplateForArch(spec.OS, arch)
 
-	// Build RunInstances request
 	input := &ec2.RunInstancesInput{
 		LaunchTemplate: &types.LaunchTemplateSpecification{
 			LaunchTemplateName: aws.String(launchTemplateName),
@@ -972,26 +900,14 @@ func (m *Manager) CreateSpotInstance(ctx context.Context, spec *LaunchSpec) (ins
 		SubnetId:     aws.String(spec.SubnetID),
 		MinCount:     aws.Int32(1),
 		MaxCount:     aws.Int32(1),
-		InstanceMarketOptions: &types.InstanceMarketOptionsRequest{
-			MarketType: types.MarketTypeSpot,
-			SpotOptions: &types.SpotMarketOptions{
-				SpotInstanceType:             types.SpotInstanceTypePersistent,
-				InstanceInterruptionBehavior: types.InstanceInterruptionBehaviorStop,
-			},
-		},
 		TagSpecifications: []types.TagSpecification{
 			{
 				ResourceType: types.ResourceTypeInstance,
 				Tags:         tags,
 			},
-			{
-				ResourceType: types.ResourceTypeSpotInstancesRequest,
-				Tags:         tags,
-			},
 		},
 	}
 
-	// Add block device mappings if custom storage is specified
 	if spec.StorageGiB > 0 {
 		input.BlockDeviceMappings = []types.BlockDeviceMapping{
 			{
@@ -1008,36 +924,19 @@ func (m *Manager) CreateSpotInstance(ctx context.Context, spec *LaunchSpec) (ins
 
 	output, err := m.ec2Client.RunInstances(ctx, input)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to run instance: %w", err)
+		return "", fmt.Errorf("failed to run instance: %w", err)
 	}
 
 	if len(output.Instances) == 0 {
-		return "", "", fmt.Errorf("no instance created")
+		return "", fmt.Errorf("no instance created")
 	}
 
-	instance := output.Instances[0]
-	instanceID = aws.ToString(instance.InstanceId)
-	spotRequestID = aws.ToString(instance.SpotInstanceRequestId)
+	instanceID := aws.ToString(output.Instances[0].InstanceId)
 
-	// Explicitly apply tags via CreateTags as a fallback.
-	// RunInstances TagSpecifications with persistent spot requests do not reliably
-	// propagate tags to the instance — the spot request gets tagged but the instance
-	// may end up with zero tags. Without tags, pool reconciliation can't find the
-	// instance and housekeeping can't detect it as an orphan, causing zombie buildup.
-	if _, tagErr := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
-		Resources: []string{instanceID},
-		Tags:      tags,
-	}); tagErr != nil {
-		fleetLog.Error("failed to apply tags to spot instance, instance may become orphaned",
-			slog.String(logging.KeyInstanceID, instanceID),
-			slog.String("error", tagErr.Error()))
-	}
-
-	fleetLog.Info("persistent spot instance created",
+	fleetLog.Info("on-demand pool instance created",
 		slog.String(logging.KeyInstanceID, instanceID),
-		slog.String("spot_request_id", spotRequestID),
 		slog.String("instance_type", spec.InstanceType),
 		slog.String("pool", spec.Pool))
 
-	return instanceID, spotRequestID, nil
+	return instanceID, nil
 }

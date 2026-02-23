@@ -43,16 +43,12 @@ type DBClient interface {
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
 	ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error
-	SaveSpotRequestID(ctx context.Context, instanceID, spotRequestID string, persistent bool) error
-	GetSpotRequestIDs(ctx context.Context, instanceIDs []string) (map[string]db.SpotRequestInfo, error)
 }
 
 // FleetAPI defines EC2 fleet operations for instance provisioning.
 type FleetAPI interface {
 	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
-	CreateSpotInstance(ctx context.Context, spec *fleet.LaunchSpec) (instanceID, spotRequestID string, err error)
-	GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error)
-	GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error)
+	CreateOnDemandInstance(ctx context.Context, spec *fleet.LaunchSpec) (string, error)
 	RankInstanceTypesByPrice(ctx context.Context, instanceTypes []string) []string
 }
 
@@ -63,7 +59,6 @@ type EC2API interface {
 	StartInstances(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
 	StopInstances(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
-	CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
 	CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
 
@@ -648,13 +643,6 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 		return nil
 	}
 
-	// Cancel persistent spot requests BEFORE terminating instances.
-	// Cancelling first ensures atomic cleanup without relying on eventual housekeeping.
-	// If cancellation fails, housekeeping will clean up orphaned spot requests later.
-	if m.fleetManager != nil {
-		m.cancelSpotRequestsForInstances(ctx, instanceIDs)
-	}
-
 	_, err := m.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: instanceIDs,
 	})
@@ -671,43 +659,6 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 		slog.Int(logging.KeyCount, len(instanceIDs)),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
-}
-
-// cancelSpotRequestsForInstances cancels persistent spot requests for the given instances.
-// Queries EC2 directly for spot request IDs (source of truth) instead of DynamoDB,
-// because DynamoDB records may be missing if SaveSpotRequestID failed.
-// Logs warnings on failure but does not return errors (best-effort cleanup).
-func (m *Manager) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs []string) {
-	spotReqMap, err := m.fleetManager.GetSpotRequestIDsForInstances(ctx, instanceIDs)
-	if err != nil {
-		poolLog.Warn("EC2 spot request lookup failed",
-			slog.String("error", err.Error()))
-		return
-	}
-
-	var spotRequestIDs []string
-	for _, reqID := range spotReqMap {
-		if reqID != "" {
-			spotRequestIDs = append(spotRequestIDs, reqID)
-		}
-	}
-
-	if len(spotRequestIDs) == 0 {
-		return
-	}
-
-	_, err = m.ec2Client.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
-		SpotInstanceRequestIds: spotRequestIDs,
-	})
-	if err != nil {
-		poolLog.Warn("spot request cancellation failed",
-			slog.Int("count", len(spotRequestIDs)),
-			slog.String("error", err.Error()))
-		return
-	}
-
-	poolLog.Info("spot requests cancelled",
-		slog.Int("count", len(spotRequestIDs)))
 }
 
 // MarkInstanceBusy marks an instance as busy (has an assigned job).
@@ -975,10 +926,10 @@ func countInstanceStates(instances []PoolInstance, busyIDs []string) (running, s
 	return
 }
 
-// createPoolFleetInstances creates new spot instances for a pool.
+// createPoolFleetInstances creates new on-demand instances for a pool.
 // Returns the number of instances successfully created.
-// Uses CreateSpotInstance (RunInstances API) instead of CreateFleet with FleetTypeMaintain
-// because maintain-type fleet instances cannot be manually stopped/started.
+// Uses on-demand instances for warm pools because stop/start reliability
+// matters more than spot savings on short-lived job execution.
 func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string, count int, poolConfig *db.PoolConfig) int {
 	instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
 	if len(instanceTypes) == 0 {
@@ -1004,26 +955,13 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 			Pool:         poolName,
 			Arch:         arch,
 		}
-		instanceID, spotReqID, err := m.fleetManager.CreateSpotInstance(ctx, spec)
-		if err != nil {
-			poolLog.Error("spot instance creation failed",
+		if _, err := m.fleetManager.CreateOnDemandInstance(ctx, spec); err != nil {
+			poolLog.Error("on-demand instance creation failed",
 				slog.String(logging.KeyPoolName, poolName),
 				slog.String("error", err.Error()))
 			continue
 		}
 		created++
-
-		// Store spot request ID for later cancellation on terminate
-		// CreateSpotInstance returns the spot request ID directly (no separate query needed)
-		if spotReqID != "" {
-			if err := m.dbClient.SaveSpotRequestID(ctx, instanceID, spotReqID, true); err != nil {
-				poolLog.Error("spot request ID save failed, may leak on termination",
-					slog.String(logging.KeyInstanceID, instanceID),
-					slog.String("spot_request_id", spotReqID),
-					slog.String(logging.KeyPoolName, poolName),
-					slog.String("error", err.Error()))
-			}
-		}
 	}
 	return created
 }

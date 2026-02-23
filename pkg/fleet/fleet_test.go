@@ -15,7 +15,6 @@ import (
 )
 
 const testInstanceID = "i-123456789"
-const testSpotRequestID = "sir-123456"
 
 //nolint:dupl // Intentionally mirrors EC2API interface for testing
 type mockEC2Client struct {
@@ -1339,437 +1338,81 @@ func TestBuildLaunchTemplateConfigs_AllTypesUnavailable(t *testing.T) {
 	}
 }
 
-func TestGetSpotRequestIDForInstance(t *testing.T) {
-	tests := []struct {
-		name           string
-		instanceID     string
-		mockResponse   *ec2.DescribeInstancesOutput
-		mockError      error
-		wantSpotReqID  string
-		wantErr        bool
-		wantErrContains string
-	}{
-		{
-			name:       "Returns spot request ID for spot instance",
-			instanceID: testInstanceID,
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{
-					{
-						Instances: []types.Instance{
-							{
-								InstanceId:            aws.String(testInstanceID),
-								SpotInstanceRequestId: aws.String("sir-abcdef12"),
-							},
-						},
-					},
-				},
-			},
-			wantSpotReqID: "sir-abcdef12",
-		},
-		{
-			name:       "Returns empty string for on-demand instance",
-			instanceID: testInstanceID,
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{
-					{
-						Instances: []types.Instance{
-							{
-								InstanceId:            aws.String(testInstanceID),
-								SpotInstanceRequestId: nil,
-							},
-						},
-					},
-				},
-			},
-			wantSpotReqID: "",
-		},
-		{
-			name:            "Returns error for empty instance ID",
-			instanceID:     "",
-			wantErr:        true,
-			wantErrContains: "instance ID cannot be empty",
-		},
-		{
-			name:        "Returns error on API failure",
-			instanceID:  testInstanceID,
-			mockError:   errors.New("API error"),
-			wantErr:        true,
-			wantErrContains: "failed to describe instance",
-		},
-		{
-			name:       "Returns error when instance not found",
-			instanceID: "i-nonexistent",
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{},
-			},
-			wantErr:        true,
-			wantErrContains: "instance not found",
-		},
-		{
-			name:       "Returns error when reservations have no instances",
-			instanceID: testInstanceID,
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{
-					{
-						Instances: []types.Instance{},
-					},
-				},
-			},
-			wantErr:        true,
-			wantErrContains: "instance not found",
-		},
-		{
-			name:       "Returns empty string when SpotInstanceRequestId is empty",
-			instanceID: testInstanceID,
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{
-					{
-						Instances: []types.Instance{
-							{
-								InstanceId:            aws.String(testInstanceID),
-								SpotInstanceRequestId: aws.String(""),
-							},
-						},
-					},
-				},
-			},
-			wantSpotReqID: "",
-		},
-		{
-			name:       "Finds instance across multiple reservations",
-			instanceID: "i-target",
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{
-					{
-						Instances: []types.Instance{
-							{
-								InstanceId:            aws.String("i-other1"),
-								SpotInstanceRequestId: aws.String("sir-other1"),
-							},
-						},
-					},
-					{
-						Instances: []types.Instance{
-							{
-								InstanceId:            aws.String("i-target"),
-								SpotInstanceRequestId: aws.String("sir-target"),
-							},
-						},
-					},
-				},
-			},
-			wantSpotReqID: "sir-target",
-		},
-		{
-			name:       "Finds instance among multiple in same reservation",
-			instanceID: "i-target",
-			mockResponse: &ec2.DescribeInstancesOutput{
-				Reservations: []types.Reservation{
-					{
-						Instances: []types.Instance{
-							{
-								InstanceId:            aws.String("i-other"),
-								SpotInstanceRequestId: aws.String("sir-other"),
-							},
-							{
-								InstanceId:            aws.String("i-target"),
-								SpotInstanceRequestId: aws.String("sir-target"),
-							},
-						},
-					},
-				},
-			},
-			wantSpotReqID: "sir-target",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mock := &mockEC2Client{
-				DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-					if tt.mockError != nil {
-						return nil, tt.mockError
-					}
-					return tt.mockResponse, nil
-				},
-			}
-
-			manager := &Manager{
-				ec2Client: mock,
-				config:    &config.Config{},
-			}
-
-			spotReqID, err := manager.GetSpotRequestIDForInstance(context.Background(), tt.instanceID)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if tt.wantErrContains != "" && !strings.Contains(err.Error(), tt.wantErrContains) {
-					t.Errorf("error = %q, want error containing %q", err, tt.wantErrContains)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if spotReqID != tt.wantSpotReqID {
-				t.Errorf("spotReqID = %q, want %q", spotReqID, tt.wantSpotReqID)
-			}
-		})
-	}
-}
-
-func TestGetSpotRequestIDsForInstances(t *testing.T) {
-	tests := []struct {
-		name          string
-		instanceIDs   []string
-		mockResponses []*ec2.DescribeInstancesOutput
-		mockError     error
-		wantResult    map[string]string
-		wantErr       bool
-		wantAPICalls  int
-	}{
-		{
-			name:         "empty input returns nil",
-			instanceIDs:  []string{},
-			wantResult:   nil,
-			wantAPICalls: 0,
-		},
-		{
-			name:        "single instance with spot request",
-			instanceIDs: []string{"i-123"},
-			mockResponses: []*ec2.DescribeInstancesOutput{
-				{
-					Reservations: []types.Reservation{
-						{
-							Instances: []types.Instance{
-								{
-									InstanceId:            aws.String("i-123"),
-									SpotInstanceRequestId: aws.String("sir-abc"),
-								},
-							},
-						},
-					},
-				},
-			},
-			wantResult:   map[string]string{"i-123": "sir-abc"},
-			wantAPICalls: 1,
-		},
-		{
-			name:        "multiple instances mixed spot and on-demand",
-			instanceIDs: []string{"i-123", "i-456", "i-789"},
-			mockResponses: []*ec2.DescribeInstancesOutput{
-				{
-					Reservations: []types.Reservation{
-						{
-							Instances: []types.Instance{
-								{
-									InstanceId:            aws.String("i-123"),
-									SpotInstanceRequestId: aws.String("sir-abc"),
-								},
-								{
-									InstanceId:            aws.String("i-456"),
-									SpotInstanceRequestId: nil, // on-demand
-								},
-								{
-									InstanceId:            aws.String("i-789"),
-									SpotInstanceRequestId: aws.String("sir-xyz"),
-								},
-							},
-						},
-					},
-				},
-			},
-			wantResult: map[string]string{
-				"i-123": "sir-abc",
-				"i-789": "sir-xyz",
-			},
-			wantAPICalls: 1,
-		},
-		{
-			name:         "API error returns error",
-			instanceIDs:  []string{"i-123"},
-			mockError:    errors.New("API error"),
-			wantErr:      true,
-			wantAPICalls: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			apiCalls := 0
-			responseIdx := 0
-			mock := &mockEC2Client{
-				DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-					apiCalls++
-					if tt.mockError != nil {
-						return nil, tt.mockError
-					}
-					if responseIdx < len(tt.mockResponses) {
-						resp := tt.mockResponses[responseIdx]
-						responseIdx++
-						return resp, nil
-					}
-					return &ec2.DescribeInstancesOutput{}, nil
-				},
-			}
-
-			manager := &Manager{
-				ec2Client: mock,
-				config:    &config.Config{},
-			}
-
-			result, err := manager.GetSpotRequestIDsForInstances(context.Background(), tt.instanceIDs)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if apiCalls != tt.wantAPICalls {
-				t.Errorf("API calls = %d, want %d", apiCalls, tt.wantAPICalls)
-			}
-
-			if len(result) != len(tt.wantResult) {
-				t.Errorf("result length = %d, want %d", len(result), len(tt.wantResult))
-			}
-
-			for instanceID, wantSpotID := range tt.wantResult {
-				if result[instanceID] != wantSpotID {
-					t.Errorf("result[%s] = %q, want %q", instanceID, result[instanceID], wantSpotID)
-				}
-			}
-		})
-	}
-}
-
-func validateRunInstancesParams(t *testing.T, params *ec2.RunInstancesInput, spec *LaunchSpec) {
-	t.Helper()
-
-	if params.InstanceMarketOptions == nil {
-		t.Fatal("InstanceMarketOptions should not be nil")
-	}
-	if params.InstanceMarketOptions.MarketType != types.MarketTypeSpot {
-		t.Errorf("MarketType = %v, want spot", params.InstanceMarketOptions.MarketType)
-	}
-	spotOpts := params.InstanceMarketOptions.SpotOptions
-	if spotOpts == nil {
-		t.Fatal("SpotOptions should not be nil")
-	}
-	if spotOpts.SpotInstanceType != types.SpotInstanceTypePersistent {
-		t.Errorf("SpotInstanceType = %v, want persistent", spotOpts.SpotInstanceType)
-	}
-	if spotOpts.InstanceInterruptionBehavior != types.InstanceInterruptionBehaviorStop {
-		t.Errorf("InstanceInterruptionBehavior = %v, want stop", spotOpts.InstanceInterruptionBehavior)
-	}
-	if params.InstanceType != types.InstanceType(spec.InstanceType) {
-		t.Errorf("InstanceType = %v, want %v", params.InstanceType, spec.InstanceType)
-	}
-	if aws.ToString(params.SubnetId) != spec.SubnetID {
-		t.Errorf("SubnetId = %v, want %v", aws.ToString(params.SubnetId), spec.SubnetID)
-	}
-	if aws.ToInt32(params.MinCount) != 1 {
-		t.Errorf("MinCount = %d, want 1", aws.ToInt32(params.MinCount))
-	}
-	if aws.ToInt32(params.MaxCount) != 1 {
-		t.Errorf("MaxCount = %d, want 1", aws.ToInt32(params.MaxCount))
-	}
-}
-
-func validateRunInstancesTagSpecs(t *testing.T, tagSpecs []types.TagSpecification) {
-	t.Helper()
-
-	if len(tagSpecs) < 2 {
-		t.Fatalf("TagSpecifications should have at least 2 entries, got %d", len(tagSpecs))
-	}
-	hasInstanceTags := false
-	hasSpotRequestTags := false
-	for _, ts := range tagSpecs {
-		if ts.ResourceType == types.ResourceTypeInstance {
-			hasInstanceTags = true
-		}
-		if ts.ResourceType == types.ResourceTypeSpotInstancesRequest {
-			hasSpotRequestTags = true
-		}
-	}
-	if !hasInstanceTags {
-		t.Error("TagSpecifications should include instance tags")
-	}
-	if !hasSpotRequestTags {
-		t.Error("TagSpecifications should include spot-instances-request tags")
-	}
-}
-
-func TestCreateSpotInstance(t *testing.T) {
-	successMock := func(spec *LaunchSpec) *mockEC2Client {
-		return &mockEC2Client{
+func TestCreateOnDemandInstance(t *testing.T) {
+	t.Run("Creates on-demand instance", func(t *testing.T) {
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+		mock := &mockEC2Client{
 			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-				validateRunInstancesParams(t, params, spec)
-				validateRunInstancesTagSpecs(t, params.TagSpecifications)
-
-				if spec.StorageGiB > 0 {
-					if len(params.BlockDeviceMappings) == 0 {
-						t.Error("BlockDeviceMappings should not be empty when StorageGiB > 0")
-					} else if aws.ToInt32(params.BlockDeviceMappings[0].Ebs.VolumeSize) != int32(spec.StorageGiB) {
-						t.Errorf("VolumeSize = %d, want %d", aws.ToInt32(params.BlockDeviceMappings[0].Ebs.VolumeSize), spec.StorageGiB)
-					}
+				if params.InstanceMarketOptions != nil {
+					t.Error("InstanceMarketOptions should be nil for on-demand")
 				}
-
+				if params.InstanceType != types.InstanceType(spec.InstanceType) {
+					t.Errorf("InstanceType = %v, want %v", params.InstanceType, spec.InstanceType)
+				}
+				if aws.ToString(params.SubnetId) != spec.SubnetID {
+					t.Errorf("SubnetId = %v, want %v", aws.ToString(params.SubnetId), spec.SubnetID)
+				}
+				if aws.ToInt32(params.MinCount) != 1 || aws.ToInt32(params.MaxCount) != 1 {
+					t.Errorf("MinCount/MaxCount should be 1")
+				}
+				if len(params.TagSpecifications) != 1 {
+					t.Fatalf("TagSpecifications should have 1 entry (instance only), got %d", len(params.TagSpecifications))
+				}
+				if params.TagSpecifications[0].ResourceType != types.ResourceTypeInstance {
+					t.Errorf("TagSpecification resource type = %v, want instance", params.TagSpecifications[0].ResourceType)
+				}
 				return &ec2.RunInstancesOutput{
-					Instances: []types.Instance{{
-						InstanceId:            aws.String(testInstanceID),
-						SpotInstanceRequestId: aws.String(testSpotRequestID),
-					}},
+					Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
 				}, nil
 			},
 		}
-	}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 
-	t.Run("Creates persistent spot instance", func(t *testing.T) {
-		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
-		manager := &Manager{ec2Client: successMock(spec), config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
-
-		instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
+		instanceID, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if instanceID != testInstanceID {
 			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
 		}
-		if spotReqID != testSpotRequestID {
-			t.Errorf("spotReqID = %q, want %q", spotReqID, testSpotRequestID)
-		}
 	})
 
-	t.Run("Creates persistent spot instance with storage", func(t *testing.T) {
+	t.Run("Creates on-demand instance with storage", func(t *testing.T) {
 		spec := &LaunchSpec{RunID: 12345, InstanceType: "c7g.xlarge", SubnetID: "subnet-1", Pool: "default", Arch: "arm64", StorageGiB: 100}
-		manager := &Manager{ec2Client: successMock(spec), config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				if len(params.BlockDeviceMappings) == 0 {
+					t.Error("BlockDeviceMappings should not be empty when StorageGiB > 0")
+				} else {
+					bdm := params.BlockDeviceMappings[0]
+					if aws.ToInt32(bdm.Ebs.VolumeSize) != 100 {
+						t.Errorf("VolumeSize = %d, want 100", aws.ToInt32(bdm.Ebs.VolumeSize))
+					}
+					if !aws.ToBool(bdm.Ebs.Encrypted) {
+						t.Error("EBS volume should be encrypted")
+					}
+					if bdm.Ebs.VolumeType != types.VolumeTypeGp3 {
+						t.Errorf("VolumeType = %v, want gp3", bdm.Ebs.VolumeType)
+					}
+				}
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
+				}, nil
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 
-		instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if instanceID != testInstanceID {
-			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
-		}
-		if spotReqID != testSpotRequestID {
-			t.Errorf("spotReqID = %q, want %q", spotReqID, testSpotRequestID)
-		}
 	})
 
-	t.Run("Returns error for unknown instance type architecture", func(t *testing.T) {
+	t.Run("Returns error for unknown architecture", func(t *testing.T) {
 		spec := &LaunchSpec{RunID: 12345, InstanceType: "x99.mystery", SubnetID: "subnet-1", Pool: "default"}
 		manager := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 
-		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -1787,7 +1430,7 @@ func TestCreateSpotInstance(t *testing.T) {
 		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
 		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 
-		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -1805,7 +1448,7 @@ func TestCreateSpotInstance(t *testing.T) {
 		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
 		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 
-		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -1815,17 +1458,14 @@ func TestCreateSpotInstance(t *testing.T) {
 	})
 }
 
-func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
+func TestCreateOnDemandInstance_ArchAutoDetection(t *testing.T) {
 	var capturedParams *ec2.RunInstancesInput
 
 	mock := &mockEC2Client{
 		RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
 			capturedParams = params
 			return &ec2.RunInstancesOutput{
-				Instances: []types.Instance{{
-					InstanceId:            aws.String(testInstanceID),
-					SpotInstanceRequestId: aws.String(testSpotRequestID),
-				}},
+				Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
 			}, nil
 		},
 	}
@@ -1834,12 +1474,9 @@ func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
 		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1"}
 
-		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
-		}
-		if capturedParams.LaunchTemplate == nil {
-			t.Fatal("LaunchTemplate should not be nil")
 		}
 		if got := aws.ToString(capturedParams.LaunchTemplate.LaunchTemplateName); got != "runs-fleet-runner-arm64" {
 			t.Errorf("LaunchTemplateName = %q, want runs-fleet-runner-arm64", got)
@@ -1850,7 +1487,7 @@ func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
 		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 		spec := &LaunchSpec{RunID: 1, InstanceType: "c6i.large", SubnetID: "subnet-1"}
 
-		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1863,7 +1500,7 @@ func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
 		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "amd64"}
 
-		_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1873,34 +1510,7 @@ func TestCreateSpotInstance_ArchAutoDetection(t *testing.T) {
 	})
 }
 
-func TestCreateSpotInstance_NilSpotRequestID(t *testing.T) {
-	mock := &mockEC2Client{
-		RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-			return &ec2.RunInstancesOutput{
-				Instances: []types.Instance{{
-					InstanceId:            aws.String(testInstanceID),
-					SpotInstanceRequestId: nil,
-				}},
-			}, nil
-		},
-	}
-
-	manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
-	spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "arm64"}
-
-	instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if instanceID != testInstanceID {
-		t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
-	}
-	if spotReqID != "" {
-		t.Errorf("spotReqID = %q, want empty string for nil SpotInstanceRequestId", spotReqID)
-	}
-}
-
-func TestCreateSpotInstance_ContextCancellation(t *testing.T) {
+func TestCreateOnDemandInstance_ContextCancellation(t *testing.T) {
 	mock := &mockEC2Client{
 		RunInstancesFunc: func(ctx context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
 			return nil, ctx.Err()
@@ -1913,7 +1523,7 @@ func TestCreateSpotInstance_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, err := manager.CreateSpotInstance(ctx, spec)
+	_, err := manager.CreateOnDemandInstance(ctx, spec)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
@@ -1922,7 +1532,7 @@ func TestCreateSpotInstance_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestCreateSpotInstance_StorageBoundaries(t *testing.T) {
+func TestCreateOnDemandInstance_StorageBoundaries(t *testing.T) {
 	tests := []struct {
 		name       string
 		storageGiB int
@@ -1940,10 +1550,7 @@ func TestCreateSpotInstance_StorageBoundaries(t *testing.T) {
 				RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
 					capturedParams = params
 					return &ec2.RunInstancesOutput{
-						Instances: []types.Instance{{
-							InstanceId:            aws.String(testInstanceID),
-							SpotInstanceRequestId: aws.String("sir-123"),
-						}},
+						Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
 					}, nil
 				},
 			}
@@ -1951,7 +1558,7 @@ func TestCreateSpotInstance_StorageBoundaries(t *testing.T) {
 			manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
 			spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Arch: "arm64", StorageGiB: tt.storageGiB}
 
-			_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+			_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1979,19 +1586,14 @@ func TestCreateSpotInstance_StorageBoundaries(t *testing.T) {
 	}
 }
 
-func TestCreateSpotInstance_Tags(t *testing.T) {
+func TestCreateOnDemandInstance_Tags(t *testing.T) {
 	var capturedTags []types.TagSpecification
 
 	mock := &mockEC2Client{
 		RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
 			capturedTags = params.TagSpecifications
 			return &ec2.RunInstancesOutput{
-				Instances: []types.Instance{
-					{
-						InstanceId:            aws.String(testInstanceID),
-						SpotInstanceRequestId: aws.String(testSpotRequestID),
-					},
-				},
+				Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
 			}, nil
 		},
 	}
@@ -2013,35 +1615,20 @@ func TestCreateSpotInstance_Tags(t *testing.T) {
 		Repo:         "my-repo",
 	}
 
-	_, _, err := manager.CreateSpotInstance(context.Background(), spec)
+	_, err := manager.CreateOnDemandInstance(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify both instance and spot-request have the same tags
-	var instanceTags, spotReqTags []types.Tag
-	for _, ts := range capturedTags {
-		if ts.ResourceType == types.ResourceTypeInstance {
-			instanceTags = ts.Tags
-		}
-		if ts.ResourceType == types.ResourceTypeSpotInstancesRequest {
-			spotReqTags = ts.Tags
-		}
+	if len(capturedTags) != 1 {
+		t.Fatalf("TagSpecifications should have 1 entry (instance only), got %d", len(capturedTags))
+	}
+	if capturedTags[0].ResourceType != types.ResourceTypeInstance {
+		t.Errorf("ResourceType = %v, want instance", capturedTags[0].ResourceType)
 	}
 
-	if len(instanceTags) == 0 {
-		t.Error("instance tags should not be empty")
-	}
-	if len(spotReqTags) == 0 {
-		t.Error("spot-request tags should not be empty")
-	}
-	if len(instanceTags) != len(spotReqTags) {
-		t.Errorf("instance tags count (%d) != spot-request tags count (%d)", len(instanceTags), len(spotReqTags))
-	}
-
-	// Verify required tags exist
 	tagMap := make(map[string]string)
-	for _, tag := range instanceTags {
+	for _, tag := range capturedTags[0].Tags {
 		tagMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 	}
 
@@ -2060,92 +1647,6 @@ func TestCreateSpotInstance_Tags(t *testing.T) {
 			t.Errorf("tag %q = %q, want %q", key, gotValue, wantValue)
 		}
 	}
-}
-
-func TestCreateSpotInstance_CreateTagsFallback(t *testing.T) {
-	t.Run("Calls CreateTags after RunInstances", func(t *testing.T) {
-		var createTagsCalled bool
-		var taggedResourceID string
-		var taggedTags []types.Tag
-
-		mock := &mockEC2Client{
-			RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-				return &ec2.RunInstancesOutput{
-					Instances: []types.Instance{{
-						InstanceId:            aws.String(testInstanceID),
-						SpotInstanceRequestId: aws.String(testSpotRequestID),
-					}},
-				}, nil
-			},
-			CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
-				createTagsCalled = true
-				if len(params.Resources) > 0 {
-					taggedResourceID = params.Resources[0]
-				}
-				taggedTags = params.Tags
-				return &ec2.CreateTagsOutput{}, nil
-			},
-		}
-
-		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
-		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
-
-		instanceID, _, err := manager.CreateSpotInstance(context.Background(), spec)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		if !createTagsCalled {
-			t.Fatal("CreateTags was not called after RunInstances")
-		}
-		if taggedResourceID != instanceID {
-			t.Errorf("CreateTags resource = %q, want %q", taggedResourceID, instanceID)
-		}
-
-		tagMap := make(map[string]string)
-		for _, tag := range taggedTags {
-			tagMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-		if tagMap["runs-fleet:managed"] != "true" {
-			t.Error("CreateTags missing runs-fleet:managed tag")
-		}
-		if tagMap["runs-fleet:pool"] != "default" {
-			t.Error("CreateTags missing runs-fleet:pool tag")
-		}
-		if tagMap["Name"] != "runs-fleet-runner-default" {
-			t.Errorf("CreateTags Name = %q, want %q", tagMap["Name"], "runs-fleet-runner-default")
-		}
-	})
-
-	t.Run("Succeeds even when CreateTags fails", func(t *testing.T) {
-		mock := &mockEC2Client{
-			RunInstancesFunc: func(_ context.Context, _ *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-				return &ec2.RunInstancesOutput{
-					Instances: []types.Instance{{
-						InstanceId:            aws.String(testInstanceID),
-						SpotInstanceRequestId: aws.String(testSpotRequestID),
-					}},
-				}, nil
-			},
-			CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
-				return nil, errors.New("CreateTags API error")
-			},
-		}
-
-		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
-		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
-
-		instanceID, spotReqID, err := manager.CreateSpotInstance(context.Background(), spec)
-		if err != nil {
-			t.Fatalf("CreateSpotInstance should succeed even if CreateTags fails: %v", err)
-		}
-		if instanceID != testInstanceID {
-			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
-		}
-		if spotReqID != testSpotRequestID {
-			t.Errorf("spotReqID = %q, want %q", spotReqID, testSpotRequestID)
-		}
-	})
 }
 
 func TestRankInstanceTypesByPrice(t *testing.T) {

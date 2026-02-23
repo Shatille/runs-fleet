@@ -20,9 +20,8 @@ const (
 	testStateRunning      = "running"
 	testStateStopped      = "stopped"
 	testInstanceStoppedID = "i-stopped1"
-	testInstanceNewID      = "i-new"
-	testSpotRequestNewID   = "sir-new"
-	testInstanceTypeC7gXL  = "c7g.xlarge"
+	testInstanceNewID     = "i-new"
+	testInstanceTypeC7gXL = "c7g.xlarge"
 )
 
 //nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
@@ -37,8 +36,6 @@ type MockDBClient struct {
 	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
 	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
 	ReleaseInstanceClaimFunc     func(ctx context.Context, instanceID string, jobID int64) error
-	SaveSpotRequestIDFunc        func(ctx context.Context, instanceID, spotRequestID string, persistent bool) error
-	GetSpotRequestIDsFunc        func(ctx context.Context, instanceIDs []string) (map[string]db.SpotRequestInfo, error)
 }
 
 func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -104,27 +101,11 @@ func (m *MockDBClient) ReleaseInstanceClaim(ctx context.Context, instanceID stri
 	return nil
 }
 
-func (m *MockDBClient) SaveSpotRequestID(ctx context.Context, instanceID, spotRequestID string, persistent bool) error {
-	if m.SaveSpotRequestIDFunc != nil {
-		return m.SaveSpotRequestIDFunc(ctx, instanceID, spotRequestID, persistent)
-	}
-	return nil
-}
-
-func (m *MockDBClient) GetSpotRequestIDs(ctx context.Context, instanceIDs []string) (map[string]db.SpotRequestInfo, error) {
-	if m.GetSpotRequestIDsFunc != nil {
-		return m.GetSpotRequestIDsFunc(ctx, instanceIDs)
-	}
-	return make(map[string]db.SpotRequestInfo), nil
-}
-
 // MockFleetAPI implements FleetAPI interface
 type MockFleetAPI struct {
-	CreateFleetFunc                    func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
-	CreateSpotInstanceFunc             func(ctx context.Context, spec *fleet.LaunchSpec) (string, string, error)
-	GetSpotRequestIDForInstanceFunc    func(ctx context.Context, instanceID string) (string, error)
-	GetSpotRequestIDsForInstancesFunc  func(ctx context.Context, instanceIDs []string) (map[string]string, error)
-	RankInstanceTypesByPriceFunc       func(ctx context.Context, instanceTypes []string) []string
+	CreateFleetFunc              func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+	CreateOnDemandInstanceFunc   func(ctx context.Context, spec *fleet.LaunchSpec) (string, error)
+	RankInstanceTypesByPriceFunc func(ctx context.Context, instanceTypes []string) []string
 }
 
 func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -134,25 +115,11 @@ func (m *MockFleetAPI) CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) 
 	return nil, nil
 }
 
-func (m *MockFleetAPI) CreateSpotInstance(ctx context.Context, spec *fleet.LaunchSpec) (string, string, error) {
-	if m.CreateSpotInstanceFunc != nil {
-		return m.CreateSpotInstanceFunc(ctx, spec)
-	}
-	return "", "", nil
-}
-
-func (m *MockFleetAPI) GetSpotRequestIDForInstance(ctx context.Context, instanceID string) (string, error) {
-	if m.GetSpotRequestIDForInstanceFunc != nil {
-		return m.GetSpotRequestIDForInstanceFunc(ctx, instanceID)
+func (m *MockFleetAPI) CreateOnDemandInstance(ctx context.Context, spec *fleet.LaunchSpec) (string, error) {
+	if m.CreateOnDemandInstanceFunc != nil {
+		return m.CreateOnDemandInstanceFunc(ctx, spec)
 	}
 	return "", nil
-}
-
-func (m *MockFleetAPI) GetSpotRequestIDsForInstances(ctx context.Context, instanceIDs []string) (map[string]string, error) {
-	if m.GetSpotRequestIDsForInstancesFunc != nil {
-		return m.GetSpotRequestIDsForInstancesFunc(ctx, instanceIDs)
-	}
-	return nil, nil
 }
 
 func (m *MockFleetAPI) RankInstanceTypesByPrice(_ context.Context, instanceTypes []string) []string {
@@ -313,9 +280,8 @@ type MockEC2API struct {
 	DescribeInstancesFunc          func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	StartInstancesFunc             func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
 	StopInstancesFunc              func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
-	TerminateInstancesFunc         func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
-	CancelSpotInstanceRequestsFunc func(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
-	CreateTagsFunc                 func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
+	TerminateInstancesFunc func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	CreateTagsFunc         func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
 
 func (m *MockEC2API) DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -344,13 +310,6 @@ func (m *MockEC2API) TerminateInstances(ctx context.Context, params *ec2.Termina
 		return m.TerminateInstancesFunc(ctx, params, optFns...)
 	}
 	return &ec2.TerminateInstancesOutput{}, nil
-}
-
-func (m *MockEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
-	if m.CancelSpotInstanceRequestsFunc != nil {
-		return m.CancelSpotInstanceRequestsFunc(ctx, params, optFns...)
-	}
-	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
 }
 
 func (m *MockEC2API) CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
@@ -902,10 +861,10 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
 			capturedSpecs = append(capturedSpecs, spec)
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -980,9 +939,9 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1054,9 +1013,9 @@ func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1202,9 +1161,9 @@ func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled = true
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1477,12 +1436,12 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
 			fleetCreateCalled++
 			if spec.Pool != "warm-pool" {
 				t.Errorf("expected pool warm-pool, got %s", spec.Pool)
 			}
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1616,9 +1575,9 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 
 	fleetCreateCount := 0
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1705,9 +1664,9 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 
 	fleetCreateCount := 0
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -1763,8 +1722,8 @@ func TestReconcilePoolCreateFleetError(_ *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			return "", "", errors.New("fleet create error")
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return "", errors.New("fleet create error")
 		},
 	}
 
@@ -1992,9 +1951,9 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return fmt.Sprintf("i-new%d", fleetCreateCount), fmt.Sprintf("sir-new%d", fleetCreateCount), nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2045,9 +2004,9 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return fmt.Sprintf("i-new%d", fleetCreateCount), fmt.Sprintf("sir-new%d", fleetCreateCount), nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2099,9 +2058,9 @@ func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return fmt.Sprintf("i-new%d", fleetCreateCount), fmt.Sprintf("sir-new%d", fleetCreateCount), nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2153,9 +2112,9 @@ func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return fmt.Sprintf("i-new%d", fleetCreateCount), fmt.Sprintf("sir-new%d", fleetCreateCount), nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -2207,9 +2166,9 @@ func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			fleetCreateCount++
-			return fmt.Sprintf("i-new%d", fleetCreateCount), fmt.Sprintf("sir-new%d", fleetCreateCount), nil
+			return fmt.Sprintf("i-new%d", fleetCreateCount), nil
 		},
 	}
 
@@ -3052,8 +3011,8 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			return testInstanceNewID, testSpotRequestNewID, nil
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -3131,8 +3090,8 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			return testInstanceNewID, testSpotRequestNewID, nil
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -3184,234 +3143,21 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 	}
 }
 
-// TestTerminateInstancesWithSpotCancellation tests spot request cancellation during termination.
-func TestTerminateInstancesWithSpotCancellation(t *testing.T) {
-	tests := []struct {
-		name                       string
-		instanceIDs                []string
-		spotRequestMap             map[string]string
-		getSpotRequestIDsError     error
-		cancelSpotError            error
-		wantCancelSpotRequestIDs   []string
-		wantCancelSpotRequestsCall bool
-	}{
-		{
-			name:        "cancels spot requests before termination",
-			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestMap: map[string]string{
-				"i-123": "sir-aaa",
-				"i-456": "sir-bbb",
-			},
-			wantCancelSpotRequestIDs:   []string{"sir-aaa", "sir-bbb"},
-			wantCancelSpotRequestsCall: true,
-		},
-		{
-			name:        "skips instances with empty spot request ID",
-			instanceIDs: []string{"i-123", "i-456"},
-			spotRequestMap: map[string]string{
-				"i-123": "sir-aaa",
-				"i-456": "",
-			},
-			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
-			wantCancelSpotRequestsCall: true,
-		},
-		{
-			name:                       "handles no spot requests gracefully",
-			instanceIDs:                []string{"i-123", "i-456"},
-			spotRequestMap:             map[string]string{},
-			wantCancelSpotRequestsCall: false,
-		},
-		{
-			name:                       "handles EC2 query error gracefully",
-			instanceIDs:                []string{"i-123"},
-			getSpotRequestIDsError:     errors.New("ec2 error"),
-			wantCancelSpotRequestsCall: false,
-		},
-		{
-			name:        "continues on CancelSpotInstanceRequests error",
-			instanceIDs: []string{"i-123"},
-			spotRequestMap: map[string]string{
-				"i-123": "sir-aaa",
-			},
-			cancelSpotError:            errors.New("cancel error"),
-			wantCancelSpotRequestIDs:   []string{"sir-aaa"},
-			wantCancelSpotRequestsCall: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var cancelSpotCalled bool
-			var canceledSpotRequestIDs []string
-
-			mockFleet := &MockFleetAPI{
-				GetSpotRequestIDsForInstancesFunc: func(_ context.Context, _ []string) (map[string]string, error) {
-					if tt.getSpotRequestIDsError != nil {
-						return nil, tt.getSpotRequestIDsError
-					}
-					return tt.spotRequestMap, nil
-				},
-			}
-
-			mockEC2 := &MockEC2API{
-				TerminateInstancesFunc: func(_ context.Context, _ *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
-					return &ec2.TerminateInstancesOutput{}, nil
-				},
-				CancelSpotInstanceRequestsFunc: func(_ context.Context, params *ec2.CancelSpotInstanceRequestsInput, _ ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error) {
-					cancelSpotCalled = true
-					canceledSpotRequestIDs = params.SpotInstanceRequestIds
-					if tt.cancelSpotError != nil {
-						return nil, tt.cancelSpotError
-					}
-					return &ec2.CancelSpotInstanceRequestsOutput{}, nil
-				},
-			}
-
-			manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{})
-			manager.SetEC2Client(mockEC2)
-
-			err := manager.terminateInstances(context.Background(), tt.instanceIDs)
-			if err != nil {
-				t.Fatalf("terminateInstances() unexpected error: %v", err)
-			}
-
-			if cancelSpotCalled != tt.wantCancelSpotRequestsCall {
-				t.Errorf("CancelSpotInstanceRequests called = %v, want %v", cancelSpotCalled, tt.wantCancelSpotRequestsCall)
-			}
-
-			if tt.wantCancelSpotRequestsCall && tt.wantCancelSpotRequestIDs != nil {
-				if len(canceledSpotRequestIDs) != len(tt.wantCancelSpotRequestIDs) {
-					t.Errorf("cancelled spot request IDs count = %d, want %d",
-						len(canceledSpotRequestIDs), len(tt.wantCancelSpotRequestIDs))
-				}
-
-				wantSet := make(map[string]bool)
-				for _, id := range tt.wantCancelSpotRequestIDs {
-					wantSet[id] = true
-				}
-				for _, id := range canceledSpotRequestIDs {
-					if !wantSet[id] {
-						t.Errorf("unexpected spot request ID cancelled: %s", id)
-					}
-				}
-			}
-		})
-	}
-}
-
-// TestCreatePoolFleetInstancesSavesSpotRequestID tests that spot request IDs are saved during instance creation.
-// CreateSpotInstance returns the spot request ID directly (no separate query needed).
-func TestCreatePoolFleetInstancesSavesSpotRequestID(t *testing.T) {
-	tests := []struct {
-		name             string
-		count            int
-		instanceID       string
-		spotRequestID    string
-		saveSpotError    error
-		wantSavedSpotIDs map[string]string
-	}{
-		{
-			name:          "saves spot request ID from CreateSpotInstance",
-			count:         1,
-			instanceID:    "i-123",
-			spotRequestID: "sir-aaa",
-			wantSavedSpotIDs: map[string]string{
-				"i-123": "sir-aaa",
-			},
-		},
-		{
-			name:             "handles SaveSpotRequestID error gracefully",
-			count:            1,
-			instanceID:       "i-123",
-			spotRequestID:    "sir-aaa",
-			saveSpotError:    errors.New("save error"),
-			wantSavedSpotIDs: map[string]string{},
-		},
-		{
-			name:             "skips save when spot request ID is empty",
-			count:            1,
-			instanceID:       "i-123",
-			spotRequestID:    "",
-			wantSavedSpotIDs: map[string]string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			savedSpotIDs := make(map[string]string)
-
-			mockDB := &MockDBClient{
-				SaveSpotRequestIDFunc: func(_ context.Context, instanceID, spotRequestID string, persistent bool) error {
-					if tt.saveSpotError != nil {
-						return tt.saveSpotError
-					}
-					if !persistent {
-						t.Errorf("SaveSpotRequestID called with persistent=false for pool instance")
-					}
-					savedSpotIDs[instanceID] = spotRequestID
-					return nil
-				},
-			}
-
-			mockFleet := &MockFleetAPI{
-				CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-					return tt.instanceID, tt.spotRequestID, nil
-				},
-			}
-
-			manager := NewManager(mockDB, mockFleet, &config.Config{
-				PrivateSubnetIDs: []string{"subnet-1"},
-			})
-			manager.SetEC2Client(&MockEC2API{})
-
-			poolConfig := &db.PoolConfig{
-				PoolName:       "test-pool",
-				InstanceType:   "t4g.medium",
-				DesiredRunning: 2,
-			}
-
-			created := manager.createPoolFleetInstances(context.Background(), "test-pool", tt.count, poolConfig)
-			if created != tt.count {
-				t.Fatalf("createPoolFleetInstances() created %d instances, want %d", created, tt.count)
-			}
-
-			for wantInstance, wantSpotID := range tt.wantSavedSpotIDs {
-				if savedSpotIDs[wantInstance] != wantSpotID {
-					t.Errorf("SaveSpotRequestID for %s = %q, want %q",
-						wantInstance, savedSpotIDs[wantInstance], wantSpotID)
-				}
-			}
-
-			if len(savedSpotIDs) != len(tt.wantSavedSpotIDs) {
-				t.Errorf("SaveSpotRequestID called for %d instances, want %d",
-					len(savedSpotIDs), len(tt.wantSavedSpotIDs))
-			}
-		})
-	}
-}
 
 func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
 	callCount := 0
-	savedSpotIDs := make(map[string]string)
-
-	mockDB := &MockDBClient{
-		SaveSpotRequestIDFunc: func(_ context.Context, instanceID, spotRequestID string, _ bool) error {
-			savedSpotIDs[instanceID] = spotRequestID
-			return nil
-		},
-	}
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			callCount++
 			if callCount == 2 {
-				return "", "", errors.New("capacity error")
+				return "", errors.New("capacity error")
 			}
-			return fmt.Sprintf("i-ok%d", callCount), fmt.Sprintf("sir-ok%d", callCount), nil
+			return fmt.Sprintf("i-ok%d", callCount), nil
 		},
 	}
 
-	manager := NewManager(mockDB, mockFleet, &config.Config{
+	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
 		PrivateSubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
@@ -3423,18 +3169,15 @@ func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
 		t.Errorf("created = %d, want 2 (1 failed out of 3)", created)
 	}
 	if callCount != 3 {
-		t.Errorf("CreateSpotInstance called %d times, want 3", callCount)
-	}
-	if len(savedSpotIDs) != 2 {
-		t.Errorf("SaveSpotRequestID called %d times, want 2 (skip failed instance)", len(savedSpotIDs))
+		t.Errorf("CreateOnDemandInstance called %d times, want 3", callCount)
 	}
 }
 
 func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			t.Error("CreateSpotInstance should not be called when no subnets configured")
-			return "", "", nil
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			t.Error("CreateOnDemandInstance should not be called when no subnets configured")
+			return "", nil
 		},
 	}
 
@@ -3456,9 +3199,9 @@ func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
 	callCount := 0
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			callCount++
-			return "", "", errors.New("every call fails")
+			return "", errors.New("every call fails")
 		},
 	}
 
@@ -3474,39 +3217,7 @@ func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
 		t.Errorf("created = %d, want 0 when all calls fail", created)
 	}
 	if callCount != 3 {
-		t.Errorf("CreateSpotInstance called %d times, want 3 (should try all)", callCount)
-	}
-}
-
-func TestCreatePoolFleetInstances_EmptySpotRequestID(t *testing.T) {
-	saveCallCount := 0
-
-	mockDB := &MockDBClient{
-		SaveSpotRequestIDFunc: func(_ context.Context, _, _ string, _ bool) error {
-			saveCallCount++
-			return nil
-		},
-	}
-
-	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			return "i-123", "", nil
-		},
-	}
-
-	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
-	})
-	manager.SetEC2Client(&MockEC2API{})
-
-	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
-
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 1, poolConfig)
-	if created != 1 {
-		t.Errorf("created = %d, want 1", created)
-	}
-	if saveCallCount != 0 {
-		t.Errorf("SaveSpotRequestID called %d times, want 0 when spotReqID is empty", saveCallCount)
+		t.Errorf("CreateOnDemandInstance called %d times, want 3 (should try all)", callCount)
 	}
 }
 
@@ -3514,9 +3225,9 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	var capturedSpec *fleet.LaunchSpec
 
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
 			capturedSpec = spec
-			return testInstanceNewID, testSpotRequestNewID, nil
+			return testInstanceNewID, nil
 		},
 	}
 
@@ -3534,7 +3245,7 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	manager.createPoolFleetInstances(context.Background(), "my-pool", 1, poolConfig)
 
 	if capturedSpec == nil {
-		t.Fatal("CreateSpotInstance was not called")
+		t.Fatal("CreateOnDemandInstance was not called")
 	}
 	if capturedSpec.Pool != "my-pool" {
 		t.Errorf("Pool = %q, want my-pool", capturedSpec.Pool)
@@ -3551,9 +3262,8 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	if capturedSpec.RunID == 0 {
 		t.Error("RunID should not be zero")
 	}
-	// Verify Spot and PersistentSpot are NOT set (CreateSpotInstance handles spot directly)
 	if capturedSpec.Spot {
-		t.Error("Spot should be false (CreateSpotInstance handles spot internally)")
+		t.Error("Spot should be false for on-demand pool instances")
 	}
 }
 
@@ -3562,9 +3272,9 @@ func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
 
 	weightedPool := []string{"t4g.xlarge", "t4g.xlarge", "t4g.xlarge", testInstanceTypeC7gXL, "m7g.xlarge"}
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, string, error) {
+		CreateOnDemandInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
 			capturedTypes = append(capturedTypes, spec.InstanceType)
-			return "i-" + spec.InstanceType, "sir-1", nil
+			return "i-" + spec.InstanceType, nil
 		},
 		RankInstanceTypesByPriceFunc: func(_ context.Context, _ []string) []string {
 			return weightedPool
@@ -3605,44 +3315,11 @@ func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
 	}
 }
 
-func TestCreatePoolFleetInstances_SaveSpotRequestIDError(t *testing.T) {
-	saveErrors := 0
-
-	mockDB := &MockDBClient{
-		SaveSpotRequestIDFunc: func(_ context.Context, _, _ string, _ bool) error {
-			saveErrors++
-			return errors.New("dynamo throttle")
-		},
-	}
-
-	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			return testInstanceNewID, testSpotRequestNewID, nil
-		},
-	}
-
-	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
-	})
-	manager.SetEC2Client(&MockEC2API{})
-
-	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
-
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 2, poolConfig)
-	// Instance creation succeeds even if spot ID save fails
-	if created != 2 {
-		t.Errorf("created = %d, want 2 (save failures don't block creation)", created)
-	}
-	if saveErrors != 2 {
-		t.Errorf("SaveSpotRequestID errors = %d, want 2", saveErrors)
-	}
-}
-
 func TestCreatePoolFleetInstances_EmptyInstanceTypes(t *testing.T) {
 	mockFleet := &MockFleetAPI{
-		CreateSpotInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, string, error) {
-			t.Error("CreateSpotInstance should not be called when no instance types resolved")
-			return "", "", nil
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			t.Error("CreateOnDemandInstance should not be called when no instance types resolved")
+			return "", nil
 		},
 	}
 
