@@ -1005,7 +1005,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			continue
 		}
 
-		if !ghStatus.Completed {
+		if ghStatus == nil || !ghStatus.Completed {
 			continue
 		}
 
