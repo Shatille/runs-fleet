@@ -1063,6 +1063,7 @@ func (t *Tasks) markJobCompleted(ctx context.Context, jobID int64, conclusion st
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
+			t.logger().Debug("stale job already completed concurrently", slog.Int64("job_id", jobID))
 			return nil
 		}
 		return fmt.Errorf("failed to update job: %w", err)
@@ -1073,8 +1074,11 @@ func (t *Tasks) markJobCompleted(ctx context.Context, jobID int64, conclusion st
 
 // splitRepo splits "owner/repo" into owner and repo components.
 func splitRepo(repo string) (owner, name string, ok bool) {
+	if strings.Count(repo, "/") != 1 {
+		return "", "", false
+	}
 	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if parts[0] == "" || parts[1] == "" {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
