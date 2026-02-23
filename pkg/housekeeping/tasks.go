@@ -901,7 +901,11 @@ type staleJobCandidate struct {
 // ExecuteStaleJobs detects jobs stuck in running/claiming by querying GitHub API for actual status.
 // Resolves stale jobs in ~10 minutes instead of waiting for the 6h orphan detection window.
 func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
-	if t.config.JobsTableName == "" || t.gitHubChecker == nil {
+	if t.config.JobsTableName == "" {
+		return nil
+	}
+	if t.gitHubChecker == nil {
+		t.logger().Warn("stale job detection disabled: GitHub job checker not configured")
 		return nil
 	}
 
@@ -951,6 +955,9 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			}
 
 			if jobID == 0 || repo == "" {
+				t.logger().Debug("skipping stale job candidate with missing fields",
+					slog.Int64("job_id", jobID),
+					slog.String("repo", repo))
 				continue
 			}
 
@@ -983,6 +990,9 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 
 		owner, _, ok := splitRepo(c.Repo)
 		if !ok {
+			t.logger().Debug("skipping stale job with invalid repo format",
+				slog.Int64("job_id", c.JobID),
+				slog.String("repo", c.Repo))
 			continue
 		}
 
@@ -1013,7 +1023,9 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 	}
 
 	if t.metrics != nil && reconciled > 0 {
-		_ = t.metrics.PublishStaleJobsReconciled(ctx, reconciled)
+		if err := t.metrics.PublishStaleJobsReconciled(ctx, reconciled); err != nil {
+			t.logger().Warn("failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
+		}
 	}
 
 	if reconciled > 0 {
