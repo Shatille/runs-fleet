@@ -327,8 +327,7 @@ func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req Prepar
 	org := parts[0]
 	repoName := parts[1]
 
-	// Build descriptive runner name
-	runnerName := buildRunnerName(req.Pool, repoName, req.Arch, req.JobID)
+	runnerName := buildRunnerName(req.Pool, repoName, req.Arch)
 
 	// Get registration token from mock GitHub client
 	regResult, err := tm.ghClient.GetRegistrationToken(ctx, req.Repo)
@@ -671,32 +670,53 @@ func TestBuildRunnerName(t *testing.T) {
 		pool     string
 		repoName string
 		arch     string
-		jobID    string
 		want     string
 	}{
 		{
-			name:     "pool job",
+			name:     "warm pool uses pool name only",
 			pool:     "default",
 			repoName: "myapp",
 			arch:     "arm64",
-			jobID:    "12345678",
-			want:     "runs-fleet-runner-default-myapp-arm64-12345678",
+			want:     "runs-fleet-runner-default",
 		},
 		{
-			name:     "cold-start job",
+			name:     "cold-start uses repo and arch",
 			pool:     "",
 			repoName: "myapp",
 			arch:     "amd64",
-			jobID:    "98765432",
-			want:     "runs-fleet-runner-myapp-amd64-98765432",
+			want:     "runs-fleet-runner-myapp-amd64",
+		},
+		{
+			name:     "cold-start without arch",
+			pool:     "",
+			repoName: "myapp",
+			arch:     "",
+			want:     "runs-fleet-runner-myapp",
+		},
+		{
+			name:     "no pool no repo falls back",
+			pool:     "",
+			repoName: "",
+			arch:     "",
+			want:     "runs-fleet-runner",
+		},
+		{
+			name:     "truncates to 64 chars",
+			pool:     "",
+			repoName: "a-very-long-repository-name-that-exceeds-the-sixty-four-char-limit",
+			arch:     "arm64",
+			want:     "runs-fleet-runner-a-very-long-repository-name-that-exceeds-the-s",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRunnerName(tt.pool, tt.repoName, tt.arch, tt.jobID)
+			got := buildRunnerName(tt.pool, tt.repoName, tt.arch)
 			if got != tt.want {
 				t.Errorf("buildRunnerName() = %q, want %q", got, tt.want)
+			}
+			if len(got) > 64 {
+				t.Errorf("buildRunnerName() length = %d, exceeds 64 chars", len(got))
 			}
 		})
 	}
@@ -729,8 +749,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-default-myapp-arm64-99999" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-myapp-arm64-99999")
+	if storedConfig.RunnerName != "runs-fleet-runner-default" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default")
 	}
 }
 
@@ -759,8 +779,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-88888" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-88888")
+	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64")
 	}
 }
 

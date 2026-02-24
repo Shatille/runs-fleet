@@ -892,6 +892,22 @@ func TestBuildTags(t *testing.T) {
 			},
 		},
 		{
+			name:   "Cold-start with repo and arch",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: 12345,
+				Repo:  "org/myapp",
+				Arch:  "arm64",
+			},
+			wantTags: map[string]string{
+				"Name":               "runs-fleet-runner-myapp-arm64",
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+				"runs-fleet:arch":    "arm64",
+				"Role":               "org/myapp",
+			},
+		},
+		{
 			name:   "Empty pool should not create tag",
 			config: &config.Config{},
 			spec: &LaunchSpec{

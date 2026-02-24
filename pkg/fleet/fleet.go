@@ -390,10 +390,8 @@ func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string,
 
 // buildTags creates the tag set for the fleet resources.
 func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
-	name := "runs-fleet-runner"
-	if spec.Pool != "" {
-		name = "runs-fleet-runner-" + spec.Pool
-	}
+	name := buildInstanceName(spec.Pool, spec.Repo, spec.Arch)
+
 
 	tags := []types.Tag{
 		{
@@ -939,4 +937,31 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 		slog.String("pool", spec.Pool))
 
 	return instanceID, nil
+}
+
+const instanceNameMaxLen = 64
+
+func buildInstanceName(pool, repo, arch string) string {
+	const prefix = "runs-fleet-runner-"
+
+	var name string
+	if pool != "" {
+		name = prefix + pool
+	} else if repo != "" {
+		repoName := repo
+		if idx := strings.LastIndex(repo, "/"); idx >= 0 {
+			repoName = repo[idx+1:]
+		}
+		name = prefix + repoName
+		if arch != "" {
+			name += "-" + arch
+		}
+	} else {
+		return "runs-fleet-runner"
+	}
+
+	if len(name) > instanceNameMaxLen {
+		name = name[:instanceNameMaxLen]
+	}
+	return name
 }
