@@ -892,15 +892,16 @@ func TestBuildTags(t *testing.T) {
 			},
 		},
 		{
-			name:   "Cold-start with repo and arch",
+			name:   "Cold-start with repo and conditions",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				RunID: 12345,
-				Repo:  "org/myapp",
-				Arch:  "arm64",
+				RunID:      12345,
+				Repo:       "org/myapp",
+				Arch:       "arm64",
+				Conditions: "arm64-cpu4",
 			},
 			wantTags: map[string]string{
-				"Name":               "runs-fleet-runner-myapp-arm64",
+				"Name":               "runs-fleet-runner-myapp-arm64-cpu4",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
 				"runs-fleet:arch":    "arm64",

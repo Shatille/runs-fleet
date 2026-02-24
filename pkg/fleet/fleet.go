@@ -96,6 +96,7 @@ type LaunchSpec struct {
 	OS            string // Operating system: linux, windows (Phase 4: Windows support)
 	Arch          string // Architecture: amd64, arm64
 	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
+	Conditions    string // Resource conditions for instance naming (e.g., "arm64-cpu4-ram16")
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity via FleetTypeInstant.
@@ -390,7 +391,7 @@ func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string,
 
 // buildTags creates the tag set for the fleet resources.
 func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
-	name := buildInstanceName(spec.Pool, spec.Repo, spec.Arch)
+	name := buildInstanceName(spec.Pool, spec.Repo, spec.Conditions)
 
 
 	tags := []types.Tag{
@@ -941,7 +942,7 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 
 const instanceNameMaxLen = 64
 
-func buildInstanceName(pool, repo, arch string) string {
+func buildInstanceName(pool, repo, conditions string) string {
 	const prefix = "runs-fleet-runner-"
 
 	var name string
@@ -953,8 +954,8 @@ func buildInstanceName(pool, repo, arch string) string {
 			repoName = repo[idx+1:]
 		}
 		name = prefix + repoName
-		if arch != "" {
-			name += "-" + arch
+		if conditions != "" {
+			name += "-" + conditions
 		}
 	} else {
 		return "runs-fleet-runner"

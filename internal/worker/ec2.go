@@ -190,6 +190,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		OS:            job.OS,
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
+		Conditions:    BuildRunnerConditions(&job),
 	}
 
 	instanceIDs, err := CreateFleetWithRetry(ctx, deps.Fleet, spec)
@@ -317,7 +318,7 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 			Repo:       job.Repo,
 			Labels:     []string{label},
 			Pool:       job.Pool,
-			Arch:       job.Arch,
+			Conditions: BuildRunnerConditions(job),
 		}
 		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
 			ec2Log.Error("runner config preparation failed",

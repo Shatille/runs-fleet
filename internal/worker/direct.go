@@ -92,6 +92,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		OS:            job.OS,
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
+		Conditions:    BuildRunnerConditions(job),
 	}
 
 	instanceIDs, err := CreateFleetWithRetry(ctx, p.Fleet, spec)
@@ -139,7 +140,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				Repo:       job.Repo,
 				Labels:     []string{label},
 				Pool:       job.Pool,
-				Arch:       job.Arch,
+				Conditions: BuildRunnerConditions(job),
 			}
 			if err := p.Runner.PrepareRunner(ctx, prepareReq); err != nil {
 				directLog.Error("runner config preparation failed",
