@@ -113,7 +113,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 **Warm pool:**
 1. Webhook with `pool=` label → Pool queue (batch processing)
 2. Pool manager assigns running instance OR starts stopped instance OR overflows to cold-start
-3. After job: instance detached, pool reconciliation creates replacement
+3. After job: instance detached, pool reconciliation creates on-demand replacement
 
 **Spot interruption:**
 1. EventBridge 2-min warning → Mark instance "terminating"
@@ -286,7 +286,8 @@ terraform apply
 
 ## Design Principles
 
-- Spot-first with on-demand fallback (cost optimization)
+- Cold-start: spot-first with on-demand fallback (cost optimization)
+- Warm pool: on-demand only (stop/start reliability over negligible spot savings)
 - Ephemeral instances (no reuse, no state accumulation)
 - Eventual consistency (DynamoDB, SQS, EC2 API)
 - Graceful degradation (spot interruptions, API throttling)

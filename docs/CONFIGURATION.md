@@ -52,7 +52,7 @@ Required when `RUNS_FLEET_MODE=ec2`.
 | `RUNS_FLEET_INSTANCE_PROFILE_ARN` | | IAM instance profile ARN (required) |
 | `RUNS_FLEET_RUNNER_IMAGE` | | ECR image URL for runners (required) |
 | `RUNS_FLEET_KEY_NAME` | | EC2 key pair name (optional) |
-| `RUNS_FLEET_SPOT_ENABLED` | `true` | Enable spot instances |
+| `RUNS_FLEET_SPOT_ENABLED` | `true` | Enable spot instances (cold-start only; warm pool always uses on-demand) |
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |

@@ -23,7 +23,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
 | `family=<list>` | Instance families (e.g., `family=c7g+m7g`) |
 | `disk=<size>` | Disk size in GiB (1-16384) |
 | `pool=<name>` | Warm pool for fast start (~10s vs ~60s) |
-| `spot=false` | Force on-demand (skip spot instances) |
+| `spot=false` | Force on-demand for cold-start (warm pool is always on-demand) |
 | `public=true` | Request public IP (uses public subnet; default: private) |
 | `backend=<ec2\|k8s>` | Override default compute backend |
 | `region=<region>` | Target AWS region (multi-region deployments) |
@@ -114,12 +114,13 @@ jobs:
     runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=amd64"
 ```
 
-### Force on-demand instance
+### Force on-demand instance (cold-start)
 
 ```yaml
 jobs:
   critical-deploy:
-    # Skip spot for critical jobs that can't tolerate interruption
+    # Skip spot for cold-start jobs that can't tolerate interruption
+    # (warm pool jobs are always on-demand)
     runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/spot=false"
 ```
 
