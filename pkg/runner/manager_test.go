@@ -215,7 +215,7 @@ func TestPrepareRunnerRequest_Structure(t *testing.T) {
 		Repo:       "myorg/myrepo",
 		Labels:     []string{"self-hosted", "linux"},
 		Pool:       "default",
-		Arch:       "arm64",
+		Conditions: "arm64",
 	}
 
 	if req.InstanceID != "i-12345" {
@@ -236,8 +236,8 @@ func TestPrepareRunnerRequest_Structure(t *testing.T) {
 	if req.Pool != "default" {
 		t.Errorf("expected Pool 'default', got '%s'", req.Pool)
 	}
-	if req.Arch != "arm64" {
-		t.Errorf("expected Arch 'arm64', got '%s'", req.Arch)
+	if req.Conditions != "arm64" {
+		t.Errorf("expected Conditions 'arm64', got '%s'", req.Conditions)
 	}
 }
 
@@ -327,8 +327,7 @@ func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req Prepar
 	org := parts[0]
 	repoName := parts[1]
 
-	// Build descriptive runner name
-	runnerName := buildRunnerName(req.Pool, repoName, req.Arch, req.JobID)
+	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions)
 
 	// Get registration token from mock GitHub client
 	regResult, err := tm.ghClient.GetRegistrationToken(ctx, req.Repo)
@@ -667,36 +666,64 @@ func TestSplitRepo(t *testing.T) {
 
 func TestBuildRunnerName(t *testing.T) {
 	tests := []struct {
-		name     string
-		pool     string
-		repoName string
-		arch     string
-		jobID    string
-		want     string
+		name       string
+		pool       string
+		repoName   string
+		conditions string
+		want       string
 	}{
 		{
-			name:     "pool job",
-			pool:     "default",
-			repoName: "myapp",
-			arch:     "arm64",
-			jobID:    "12345678",
-			want:     "runs-fleet-runner-default-myapp-arm64-12345678",
+			name:       "warm pool uses pool name only",
+			pool:       "default",
+			repoName:   "myapp",
+			conditions: "arm64-cpu4",
+			want:       "runs-fleet-runner-default",
 		},
 		{
-			name:     "cold-start job",
-			pool:     "",
-			repoName: "myapp",
-			arch:     "amd64",
-			jobID:    "98765432",
-			want:     "runs-fleet-runner-myapp-amd64-98765432",
+			name:       "cold-start with all conditions",
+			pool:       "",
+			repoName:   "myapp",
+			conditions: "amd64-cpu8-ram16",
+			want:       "runs-fleet-runner-myapp-amd64-cpu8-ram16",
+		},
+		{
+			name:       "cold-start arch only",
+			pool:       "",
+			repoName:   "myapp",
+			conditions: "arm64",
+			want:       "runs-fleet-runner-myapp-arm64",
+		},
+		{
+			name:       "cold-start without conditions",
+			pool:       "",
+			repoName:   "myapp",
+			conditions: "",
+			want:       "runs-fleet-runner-myapp",
+		},
+		{
+			name:       "no pool no repo falls back",
+			pool:       "",
+			repoName:   "",
+			conditions: "",
+			want:       "runs-fleet-runner",
+		},
+		{
+			name:       "truncates to 64 chars",
+			pool:       "",
+			repoName:   "my-repository",
+			conditions: "arm64-cpu4-ram16-disk200-c7g-m7g-r7g-gen8-extra-padding",
+			want:       "runs-fleet-runner-my-repository-arm64-cpu4-ram16-disk200-c7g-m7g",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRunnerName(tt.pool, tt.repoName, tt.arch, tt.jobID)
+			got := buildRunnerName(tt.pool, tt.repoName, tt.conditions)
 			if got != tt.want {
 				t.Errorf("buildRunnerName() = %q, want %q", got, tt.want)
+			}
+			if len(got) > 64 {
+				t.Errorf("buildRunnerName() length = %d, exceeds 64 chars", len(got))
 			}
 		})
 	}
@@ -720,7 +747,7 @@ func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
 		Repo:       "org/myapp",
 		Labels:     []string{"self-hosted"},
 		Pool:       "default",
-		Arch:       "arm64",
+		Conditions: "arm64-cpu4",
 	}
 
 	err := tm.PrepareRunnerWithMock(context.Background(), req)
@@ -729,8 +756,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-default-myapp-arm64-99999" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-myapp-arm64-99999")
+	if storedConfig.RunnerName != "runs-fleet-runner-default" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default")
 	}
 }
 
@@ -750,7 +777,7 @@ func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
 		Repo:       "org/myapp",
 		Labels:     []string{"self-hosted"},
 		Pool:       "",
-		Arch:       "amd64",
+		Conditions: "amd64-cpu8",
 	}
 
 	err := tm.PrepareRunnerWithMock(context.Background(), req)
@@ -759,8 +786,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-88888" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-88888")
+	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8")
 	}
 }
 

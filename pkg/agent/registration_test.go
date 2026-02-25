@@ -274,7 +274,7 @@ func TestRegistrar_RegisterRunner_UsesConfigRunnerName(t *testing.T) {
 	config := &secrets.RunnerConfig{
 		Repo:       "org/myapp",
 		JITToken:   "token",
-		RunnerName: "runs-fleet-runner-default-myapp-arm64-12345",
+		RunnerName: "runs-fleet-runner-default",
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
@@ -288,12 +288,12 @@ func TestRegistrar_RegisterRunner_UsesConfigRunnerName(t *testing.T) {
 	}
 
 	argsStr := string(argsContent)
-	if !contains(argsStr, "--name runs-fleet-runner-default-myapp-arm64-12345") {
+	if !contains(argsStr, "--name runs-fleet-runner-default") {
 		t.Errorf("expected runner name from config, got args: %s", argsStr)
 	}
 }
 
-func TestRegistrar_RegisterRunner_FallbackToHostname(t *testing.T) {
+func TestRegistrar_RegisterRunner_FallbackToDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	configScript := filepath.Join(tmpDir, "config.sh")
 	scriptContent := "#!/bin/bash\necho \"$@\" > " + filepath.Join(tmpDir, "args.txt") + "\n"
@@ -308,7 +308,7 @@ func TestRegistrar_RegisterRunner_FallbackToHostname(t *testing.T) {
 	config := &secrets.RunnerConfig{
 		Repo:       "org/myapp",
 		JITToken:   "token",
-		RunnerName: "", // Empty - should fall back to hostname
+		RunnerName: "",
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
@@ -322,7 +322,7 @@ func TestRegistrar_RegisterRunner_FallbackToHostname(t *testing.T) {
 	}
 
 	argsStr := string(argsContent)
-	if !contains(argsStr, "--name runs-fleet-runner-") {
-		t.Errorf("expected hostname-based runner name, got args: %s", argsStr)
+	if !contains(argsStr, "--name runs-fleet-runner") {
+		t.Errorf("expected default runner name, got args: %s", argsStr)
 	}
 }

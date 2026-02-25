@@ -44,7 +44,7 @@ type PrepareRunnerRequest struct {
 	Repo       string // owner/repo format for repo-level registration
 	Labels     []string
 	Pool       string
-	Arch       string
+	Conditions string // resource conditions for runner naming (e.g., "arm64-cpu4-ram16")
 }
 
 // PrepareRunner stores runner configuration in the secrets backend.
@@ -61,8 +61,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	org := parts[0]
 	repoName := parts[1]
 
-	// Build descriptive runner name: runs-fleet-runner-{pool}-{repo}-{arch}-{job_id}
-	runnerName := buildRunnerName(req.Pool, repoName, req.Arch, req.JobID)
+	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
 	runnerLog.Info("fetching registration token",
@@ -119,13 +118,25 @@ func (m *Manager) GetRegistrationToken(ctx context.Context, repo string) (*Regis
 	return m.github.GetRegistrationToken(ctx, repo)
 }
 
-// buildRunnerName creates a descriptive runner name from job attributes.
-// Format: runs-fleet-runner-{pool}-{repo}-{arch}-{job_id} (pool jobs)
-//
-//	runs-fleet-runner-{repo}-{arch}-{job_id} (cold-start jobs)
-func buildRunnerName(pool, repoName, arch, jobID string) string {
+const runnerNameMaxLen = 64
+
+func buildRunnerName(pool, repoName, conditions string) string {
+	const prefix = "runs-fleet-runner-"
+
+	var name string
 	if pool != "" {
-		return fmt.Sprintf("runs-fleet-runner-%s-%s-%s-%s", pool, repoName, arch, jobID)
+		name = prefix + pool
+	} else if repoName != "" {
+		name = prefix + repoName
+		if conditions != "" {
+			name += "-" + conditions
+		}
+	} else {
+		return "runs-fleet-runner"
 	}
-	return fmt.Sprintf("runs-fleet-runner-%s-%s-%s", repoName, arch, jobID)
+
+	if len(name) > runnerNameMaxLen {
+		name = name[:runnerNameMaxLen]
+	}
+	return name
 }
