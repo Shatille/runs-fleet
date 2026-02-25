@@ -91,6 +91,11 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
 build {
   sources = ["source.amazon-ebs.runs_fleet_runner_amd64"]
 
+  provisioner "file" {
+    source      = "${path.root}/../scripts/agent-bootstrap.sh"
+    destination = "/tmp/agent-bootstrap.sh"
+  }
+
   provisioner "shell" {
     environment_vars = [
       "RUNNER_ARCH=x64"
