@@ -96,6 +96,11 @@ build {
     destination = "/tmp/agent-bootstrap.sh"
   }
 
+  provisioner "file" {
+    source      = "${path.root}/../scripts/cloud-init-boot.sh"
+    destination = "/tmp/cloud-init-boot.sh"
+  }
+
   provisioner "shell" {
     environment_vars = [
       "RUNNER_ARCH=arm64"

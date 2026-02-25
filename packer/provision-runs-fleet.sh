@@ -107,6 +107,11 @@ sudo cp /tmp/agent-bootstrap.sh /opt/runs-fleet/agent-bootstrap.sh
 sudo chmod +x /opt/runs-fleet/agent-bootstrap.sh
 sudo chown ec2-user:ec2-user /opt/runs-fleet/agent-bootstrap.sh
 
+echo "==> Installing cloud-init per-boot script"
+sudo mkdir -p /var/lib/cloud/scripts/per-boot
+sudo cp /tmp/cloud-init-boot.sh /var/lib/cloud/scripts/per-boot/runs-fleet-bootstrap.sh
+sudo chmod +x /var/lib/cloud/scripts/per-boot/runs-fleet-bootstrap.sh
+
 echo "==> Updating CloudWatch agent config for runs-fleet"
 sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json > /dev/null <<'CWCONFIG'
 {
