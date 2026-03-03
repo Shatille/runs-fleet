@@ -61,7 +61,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	org := parts[0]
 	repoName := parts[1]
 
-	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions)
+	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions, req.JobID)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
 	runnerLog.Info("fetching registration token",
@@ -120,7 +120,7 @@ func (m *Manager) GetRegistrationToken(ctx context.Context, repo string) (*Regis
 
 const runnerNameMaxLen = 64
 
-func buildRunnerName(pool, repoName, conditions string) string {
+func buildRunnerName(pool, repoName, conditions, jobID string) string {
 	const prefix = "runs-fleet-runner-"
 
 	var name string
@@ -132,7 +132,17 @@ func buildRunnerName(pool, repoName, conditions string) string {
 			name += "-" + conditions
 		}
 	} else {
-		return "runs-fleet-runner"
+		name = "runs-fleet-runner"
+	}
+
+	// Append short job ID suffix to guarantee uniqueness when multiple jobs
+	// in the same workflow run share identical runs-on labels.
+	if jobID != "" {
+		suffix := jobID
+		if len(suffix) > 6 {
+			suffix = suffix[len(suffix)-6:]
+		}
+		name += "-" + suffix
 	}
 
 	if len(name) > runnerNameMaxLen {
