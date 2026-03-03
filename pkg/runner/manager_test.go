@@ -327,7 +327,7 @@ func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req Prepar
 	org := parts[0]
 	repoName := parts[1]
 
-	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions)
+	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions, req.JobID)
 
 	// Get registration token from mock GitHub client
 	regResult, err := tm.ghClient.GetRegistrationToken(ctx, req.Repo)
@@ -670,55 +670,86 @@ func TestBuildRunnerName(t *testing.T) {
 		pool       string
 		repoName   string
 		conditions string
+		jobID      string
 		want       string
 	}{
 		{
-			name:       "warm pool uses pool name only",
+			name:       "warm pool with job ID suffix",
 			pool:       "default",
 			repoName:   "myapp",
 			conditions: "arm64-cpu4",
-			want:       "runs-fleet-runner-default",
+			jobID:      "65558617323",
+			want:       "runs-fleet-runner-default-617323",
 		},
 		{
 			name:       "cold-start with all conditions",
 			pool:       "",
 			repoName:   "myapp",
 			conditions: "amd64-cpu8-ram16",
-			want:       "runs-fleet-runner-myapp-amd64-cpu8-ram16",
+			jobID:      "12345",
+			want:       "runs-fleet-runner-myapp-amd64-cpu8-ram16-12345",
 		},
 		{
 			name:       "cold-start arch only",
 			pool:       "",
 			repoName:   "myapp",
 			conditions: "arm64",
-			want:       "runs-fleet-runner-myapp-arm64",
+			jobID:      "99999",
+			want:       "runs-fleet-runner-myapp-arm64-99999",
 		},
 		{
 			name:       "cold-start without conditions",
 			pool:       "",
 			repoName:   "myapp",
 			conditions: "",
-			want:       "runs-fleet-runner-myapp",
+			jobID:      "88888",
+			want:       "runs-fleet-runner-myapp-88888",
 		},
 		{
 			name:       "no pool no repo falls back",
 			pool:       "",
 			repoName:   "",
 			conditions: "",
-			want:       "runs-fleet-runner",
+			jobID:      "77777",
+			want:       "runs-fleet-runner-77777",
+		},
+		{
+			name:       "empty job ID omits suffix",
+			pool:       "default",
+			repoName:   "myapp",
+			conditions: "",
+			jobID:      "",
+			want:       "runs-fleet-runner-default",
+		},
+		{
+			name:       "short job ID used as-is",
+			pool:       "",
+			repoName:   "myapp",
+			conditions: "arm64",
+			jobID:      "123",
+			want:       "runs-fleet-runner-myapp-arm64-123",
 		},
 		{
 			name:       "truncates to 64 chars",
 			pool:       "",
 			repoName:   "my-repository",
-			conditions: "arm64-cpu4-ram16-disk200-c7g-m7g-r7g-gen8-extra-padding",
+			conditions: "arm64-cpu4-ram16-disk200-c7g-m7g-r7g-gen8",
+			jobID:      "65558617323",
 			want:       "runs-fleet-runner-my-repository-arm64-cpu4-ram16-disk200-c7g-m7g",
+		},
+		{
+			name:       "different job IDs produce different names",
+			pool:       "",
+			repoName:   "cygnus",
+			conditions: "cpu4",
+			jobID:      "65558617323",
+			want:       "runs-fleet-runner-cygnus-cpu4-617323",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRunnerName(tt.pool, tt.repoName, tt.conditions)
+			got := buildRunnerName(tt.pool, tt.repoName, tt.conditions, tt.jobID)
 			if got != tt.want {
 				t.Errorf("buildRunnerName() = %q, want %q", got, tt.want)
 			}
@@ -726,6 +757,13 @@ func TestBuildRunnerName(t *testing.T) {
 				t.Errorf("buildRunnerName() length = %d, exceeds 64 chars", len(got))
 			}
 		})
+	}
+
+	// Verify uniqueness: same spec but different job IDs produce different names
+	name1 := buildRunnerName("", "cygnus", "cpu4", "65558617323")
+	name2 := buildRunnerName("", "cygnus", "cpu4", "65558617355")
+	if name1 == name2 {
+		t.Errorf("different job IDs should produce different names: %q == %q", name1, name2)
 	}
 }
 
@@ -756,8 +794,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-default" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default")
+	if storedConfig.RunnerName != "runs-fleet-runner-default-99999" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-99999")
 	}
 }
 
@@ -786,8 +824,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8")
+	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8-88888" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8-88888")
 	}
 }
 
