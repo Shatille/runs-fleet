@@ -236,8 +236,9 @@ func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName 
 		return "", err
 	}
 
-	// Create client with installation token
-	client := github.NewClient(c.httpClient).WithAuthToken(token)
+	// Create a separate http.Client to avoid go-github's WithAuthToken corrupting
+	// c.httpClient's transport (it wraps the transport with a token-injecting RoundTripper).
+	client := github.NewClient(&http.Client{Timeout: c.httpClient.Timeout}).WithAuthToken(token)
 
 	// Create JIT runner config
 	req := &github.GenerateJITConfigRequest{
@@ -367,16 +368,16 @@ func (c *GitHubClient) GetWorkflowJobByID(ctx context.Context, repo string, jobI
 			continue
 		}
 
-		client := github.NewClient(c.httpClient).WithAuthToken(token)
+		ghClient := github.NewClient(&http.Client{Timeout: c.httpClient.Timeout}).WithAuthToken(token)
 		if c.baseURL != "https://api.github.com" {
 			u, parseErr := url.Parse(c.baseURL + "/")
 			if parseErr != nil {
 				return nil, fmt.Errorf("invalid base URL %q: %w", c.baseURL, parseErr)
 			}
-			client.BaseURL = u
+			ghClient.BaseURL = u
 		}
 
-		job, resp, err := client.Actions.GetWorkflowJobByID(ctx, parts[0], parts[1], jobID)
+		job, resp, err := ghClient.Actions.GetWorkflowJobByID(ctx, parts[0], parts[1], jobID)
 		if err != nil {
 			var httpResp *http.Response
 			if resp != nil {

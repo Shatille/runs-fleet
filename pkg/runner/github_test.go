@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1277,5 +1278,64 @@ func TestGetWorkflowJobByID_TokenError(t *testing.T) {
 	_, err = client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
 	if err == nil {
 		t.Fatal("expected error for token failure")
+	}
+}
+
+func TestGetWorkflowJobByID_DoesNotCorruptHTTPTransport(t *testing.T) {
+	keyBase64 := generateTestKey(t)
+
+	var installationCallCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathOrgInstallation:
+			installationCallCount++
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer eyJ") {
+				t.Errorf("installation request #%d: expected JWT Bearer token, got %q", installationCallCount, auth[:min(len(auth), 40)])
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      123,
+				"account": map[string]string{"type": "Organization"},
+			})
+		case testPathAccessTokens123:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "inst-token-123"})
+		case testPathWorkflowJob:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":         99999,
+				"status":     "completed",
+				"conclusion": "success",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewGitHubClient("12345", keyBase64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	client.baseURL = server.URL
+
+	// First call succeeds and must not corrupt the httpClient transport.
+	_, err = client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+
+	// Second call must also succeed — the installation endpoint must still receive a JWT,
+	// not the installation token from the previous go-github WithAuthToken call.
+	_, err = client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
+	if err != nil {
+		t.Fatalf("second call failed (transport likely corrupted): %v", err)
+	}
+
+	if installationCallCount < 2 {
+		t.Errorf("expected at least 2 installation lookups, got %d", installationCallCount)
 	}
 }
