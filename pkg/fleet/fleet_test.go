@@ -772,6 +772,86 @@ func TestCreateFleet_Storage(t *testing.T) {
 	}
 }
 
+func TestCreateFleet_CreateTagsFallback(t *testing.T) {
+	t.Run("applies tags after fleet creation", func(t *testing.T) {
+		var createTagsCalled bool
+		var taggedResources []string
+		var appliedTags []types.Tag
+
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{
+						{InstanceIds: []string{"i-abc", "i-def"}},
+					},
+				}, nil
+			},
+			CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+				createTagsCalled = true
+				taggedResources = params.Resources
+				appliedTags = params.Tags
+				return &ec2.CreateTagsOutput{}, nil
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{}}
+		ids, err := manager.CreateFleet(context.Background(), &LaunchSpec{
+			RunID:        12345,
+			InstanceType: "t4g.medium",
+			SubnetID:     "subnet-1",
+		})
+		if err != nil {
+			t.Fatalf("CreateFleet() error = %v", err)
+		}
+		if len(ids) != 2 {
+			t.Fatalf("got %d instances, want 2", len(ids))
+		}
+		if !createTagsCalled {
+			t.Fatal("CreateTags was not called after fleet creation")
+		}
+		if len(taggedResources) != 2 || taggedResources[0] != "i-abc" || taggedResources[1] != "i-def" {
+			t.Errorf("tagged resources = %v, want [i-abc i-def]", taggedResources)
+		}
+		hasManagedTag := false
+		for _, tag := range appliedTags {
+			if aws.ToString(tag.Key) == "runs-fleet:managed" && aws.ToString(tag.Value) == "true" {
+				hasManagedTag = true
+			}
+		}
+		if !hasManagedTag {
+			t.Error("CreateTags missing runs-fleet:managed=true tag")
+		}
+	})
+
+	t.Run("succeeds even if CreateTags fails", func(t *testing.T) {
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, _ *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{
+						{InstanceIds: []string{testInstanceID}},
+					},
+				}, nil
+			},
+			CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+				return nil, errors.New("access denied")
+			},
+		}
+
+		manager := &Manager{ec2Client: mock, config: &config.Config{}}
+		ids, err := manager.CreateFleet(context.Background(), &LaunchSpec{
+			RunID:        12345,
+			InstanceType: "t4g.medium",
+			SubnetID:     "subnet-1",
+		})
+		if err != nil {
+			t.Fatalf("CreateFleet() should succeed despite CreateTags failure, got error = %v", err)
+		}
+		if len(ids) != 1 {
+			t.Fatalf("got %d instances, want 1", len(ids))
+		}
+	})
+}
+
 func TestIsValidWindowsInstanceType(t *testing.T) {
 	tests := []struct {
 		instanceType string

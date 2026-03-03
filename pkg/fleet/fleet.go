@@ -133,6 +133,18 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		instanceIDs = append(instanceIDs, inst.InstanceIds...)
 	}
 
+	// Ensure tags are applied even if CreateFleet TagSpecifications fails to propagate
+	// (observed with spot instances). Without the runs-fleet:managed tag, IAM policies
+	// block housekeeping from terminating orphaned instances.
+	if _, tagErr := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
+		Resources: instanceIDs,
+		Tags:      tags,
+	}); tagErr != nil {
+		fleetLog.Warn("failed to apply tags to fleet instances",
+			slog.String("error", tagErr.Error()),
+			slog.Any("instance_ids", instanceIDs))
+	}
+
 	return instanceIDs, nil
 }
 
