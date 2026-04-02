@@ -5,6 +5,8 @@ import (
 )
 
 func TestMessage_Structure(t *testing.T) {
+	t.Parallel()
+
 	msg := Message{
 		ID:     "test-id",
 		Body:   "test-body",
@@ -30,6 +32,8 @@ func TestMessage_Structure(t *testing.T) {
 }
 
 func TestJobMessage_Fields(t *testing.T) {
+	t.Parallel()
+
 	job := JobMessage{
 		JobID:         123,
 		RunID:         456,

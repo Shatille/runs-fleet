@@ -17,6 +17,8 @@ import (
 )
 
 func TestProvider_Name(t *testing.T) {
+	t.Parallel()
+
 	p := &Provider{}
 	if got := p.Name(); got != "k8s" {
 		t.Errorf("Name() = %v, want k8s", got)
@@ -24,6 +26,8 @@ func TestProvider_Name(t *testing.T) {
 }
 
 func TestProvider_CreateRunner(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		spec    *provider.RunnerSpec
@@ -73,6 +77,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			cfg := &config.Config{
 				KubeNamespace:      "runs-fleet",
@@ -113,6 +119,8 @@ func TestProvider_CreateRunner(t *testing.T) {
 }
 
 func TestProvider_TerminateRunner(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		runnerID string
@@ -142,6 +150,8 @@ func TestProvider_TerminateRunner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
@@ -160,6 +170,8 @@ func TestProvider_TerminateRunner(t *testing.T) {
 }
 
 func TestProvider_DescribeRunner(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	tests := []struct {
@@ -231,6 +243,8 @@ func TestProvider_DescribeRunner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
@@ -254,6 +268,8 @@ func TestProvider_DescribeRunner(t *testing.T) {
 }
 
 func TestMapPodPhase(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		phase corev1.PodPhase
 		want  string
@@ -267,6 +283,8 @@ func TestMapPodPhase(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.phase), func(t *testing.T) {
+			t.Parallel()
+
 			if got := mapPodPhase(tt.phase); got != tt.want {
 				t.Errorf("mapPodPhase(%v) = %v, want %v", tt.phase, got, tt.want)
 			}
@@ -275,6 +293,8 @@ func TestMapPodPhase(t *testing.T) {
 }
 
 func TestGetResourceRequirements(t *testing.T) {
+	t.Parallel()
+
 	cfg := &config.Config{}
 	p := NewProviderWithClient(nil, cfg)
 
@@ -318,6 +338,8 @@ func TestGetResourceRequirements(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			resources := p.getResourceRequirements(tt.spec)
 
 			// Check requests (storage handled via PVC, not ephemeral)
@@ -346,6 +368,8 @@ func TestGetResourceRequirements(t *testing.T) {
 }
 
 func TestProvider_CreateRunner_Error(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 
 	// Add reactor to simulate creation error
@@ -371,6 +395,8 @@ func TestProvider_CreateRunner_Error(t *testing.T) {
 }
 
 func TestProvider_WaitForPodRunning(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		podName   string
@@ -462,6 +488,8 @@ func TestProvider_WaitForPodRunning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
@@ -486,6 +514,8 @@ func TestProvider_WaitForPodRunning(t *testing.T) {
 }
 
 func TestSanitizePodName(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		jobID string
@@ -504,6 +534,8 @@ func TestSanitizePodName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := sanitizePodName(tt.jobID)
 			if len(got) > 63 {
 				t.Errorf("sanitizePodName(%q) length = %d, exceeds 63", tt.jobID, len(got))
@@ -520,6 +552,8 @@ func TestSanitizePodName(t *testing.T) {
 }
 
 func TestCreateRunner_MultipleJobsSameWorkflow(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -583,6 +617,8 @@ func TestCreateRunner_MultipleJobsSameWorkflow(t *testing.T) {
 }
 
 func TestBuildTolerations(t *testing.T) {
+	t.Parallel()
+
 	cfg := &config.Config{
 		KubeNamespace:   "runs-fleet",
 		KubeRunnerImage: "runner:latest",
@@ -616,6 +652,8 @@ func TestBuildTolerations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			tolerations := p.buildTolerations(tt.spec)
 			if len(tolerations) != tt.wantCount {
 				t.Errorf("buildTolerations() count = %d, want %d", len(tolerations), tt.wantCount)
@@ -637,6 +675,8 @@ func TestBuildTolerations(t *testing.T) {
 }
 
 func TestCreateRunner_CreatesPVC(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -696,6 +736,8 @@ func TestCreateRunner_CreatesPVC(t *testing.T) {
 }
 
 func TestTerminateRunner_DeletesPVC(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -740,6 +782,8 @@ func TestTerminateRunner_DeletesPVC(t *testing.T) {
 }
 
 func TestCreateRunner_PVCDefaultStorage(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -775,6 +819,8 @@ func TestCreateRunner_PVCDefaultStorage(t *testing.T) {
 }
 
 func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -810,6 +856,8 @@ func TestCreateRunner_PVCWithStorageClass(t *testing.T) {
 }
 
 func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:           "runs-fleet",
@@ -842,6 +890,8 @@ func TestCreateRunner_ValidatesDaemonJSONConfigMap(t *testing.T) {
 }
 
 func TestCreateRunner_IdempotentOnAlreadyExists(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -878,6 +928,8 @@ func TestCreateRunner_IdempotentOnAlreadyExists(t *testing.T) {
 }
 
 func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -918,6 +970,8 @@ func TestCreateRunner_IdempotentOnPodAlreadyExists(t *testing.T) {
 }
 
 func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
+	t.Parallel()
+
 	cfg := &config.Config{
 		KubeNamespace:       "runs-fleet",
 		KubeRunnerImage:     "runner:latest",
@@ -981,6 +1035,8 @@ func TestBuildPodSpec_DockerGIDConsistency(t *testing.T) {
 }
 
 func TestMergeLabels(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		defaults map[string]string
@@ -1039,6 +1095,8 @@ func TestMergeLabels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := mergeLabels(tt.defaults, tt.custom)
 
 			if len(got) != len(tt.want) {
@@ -1057,6 +1115,8 @@ func TestMergeLabels(t *testing.T) {
 }
 
 func TestCreateRunner_CustomLabels(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",
@@ -1141,6 +1201,8 @@ func verifyCustomLabels(t *testing.T, resourceType string, labels map[string]str
 }
 
 func TestCreateRunner_CustomLabelsCannotOverrideDefaults(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace:      "runs-fleet",

@@ -55,6 +55,8 @@ func (m *mockPresignClient) PresignGetObject(ctx context.Context, params *s3.Get
 }
 
 func TestHandler_ReserveCacheEntry(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		requestBody    string
@@ -97,6 +99,8 @@ func TestHandler_ReserveCacheEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockPresign := &mockPresignClient{
 				presignPutFunc: func(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 					if tt.presignErr != nil {
@@ -133,6 +137,8 @@ func TestHandler_ReserveCacheEntry(t *testing.T) {
 }
 
 func TestHandler_CommitCacheEntry(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		cacheID        string
@@ -161,6 +167,8 @@ func TestHandler_CommitCacheEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 			handler := cache.NewHandler(server)
 
@@ -178,6 +186,8 @@ func TestHandler_CommitCacheEntry(t *testing.T) {
 }
 
 func TestHandler_GetCacheEntry(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		queryKeys      string
@@ -234,6 +244,8 @@ func TestHandler_GetCacheEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockS3 := &mockS3Client{headObjectFunc: tt.headObjectFunc}
 			mockPresign := &mockPresignClient{}
 
@@ -268,6 +280,8 @@ func TestHandler_GetCacheEntry(t *testing.T) {
 }
 
 func TestHandler_DownloadCacheArtifact(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		cacheID        string
@@ -298,6 +312,8 @@ func TestHandler_DownloadCacheArtifact(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockPresign := &mockPresignClient{
 				presignGetFunc: func(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 					if tt.presignErr != nil {
@@ -330,6 +346,8 @@ func TestHandler_DownloadCacheArtifact(t *testing.T) {
 }
 
 func TestHandler_IsAuthEnabled(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		cacheSecret string
@@ -349,6 +367,8 @@ func TestHandler_IsAuthEnabled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 			handler := cache.NewHandlerWithAuth(server, nil, tt.cacheSecret)
 
@@ -361,6 +381,8 @@ func TestHandler_IsAuthEnabled(t *testing.T) {
 }
 
 func TestHandler_NewHandlerWithMetrics(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandlerWithMetrics(server, nil)
 
@@ -370,6 +392,8 @@ func TestHandler_NewHandlerWithMetrics(t *testing.T) {
 }
 
 func TestHandler_NewHandlerWithAuth(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandlerWithAuth(server, nil, "test-secret")
 
@@ -382,6 +406,8 @@ func TestHandler_NewHandlerWithAuth(t *testing.T) {
 }
 
 func TestHandler_RegisterRoutes(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandler(server)
 	mux := http.NewServeMux()
@@ -412,6 +438,8 @@ func TestHandler_RegisterRoutes(t *testing.T) {
 }
 
 func TestHandler_RegisterRoutes_WithAuth(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandlerWithAuth(server, nil, "test-secret")
 	mux := http.NewServeMux()
@@ -430,6 +458,8 @@ func TestHandler_RegisterRoutes_WithAuth(t *testing.T) {
 }
 
 func TestHandler_ReserveCacheEntry_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandler(server)
 
@@ -445,6 +475,8 @@ func TestHandler_ReserveCacheEntry_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandler_GetCacheEntry_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandler(server)
 
@@ -460,6 +492,8 @@ func TestHandler_GetCacheEntry_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandler_DownloadCacheArtifact_InvalidKey(t *testing.T) {
+	t.Parallel()
+
 	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
 	handler := cache.NewHandler(server)
 

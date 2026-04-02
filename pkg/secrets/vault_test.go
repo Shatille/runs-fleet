@@ -11,6 +11,8 @@ import (
 )
 
 func TestVaultStore_secretPath(t *testing.T) {
+	t.Parallel()
+
 	store := &VaultStore{
 		kvMount:   "secret",
 		basePath:  "runs-fleet/runners",
@@ -27,6 +29,8 @@ func TestVaultStore_secretPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.runnerID, func(t *testing.T) {
+			t.Parallel()
+
 			path := store.secretPath(tt.runnerID)
 			if path != tt.wantPath {
 				t.Errorf("secretPath(%s) = %s, want %s", tt.runnerID, path, tt.wantPath)
@@ -36,6 +40,8 @@ func TestVaultStore_secretPath(t *testing.T) {
 }
 
 func TestVaultStore_secretPathCustomMount(t *testing.T) {
+	t.Parallel()
+
 	store := &VaultStore{
 		kvMount:   "custom-kv",
 		basePath:  "myapp/runners",
@@ -50,6 +56,8 @@ func TestVaultStore_secretPathCustomMount(t *testing.T) {
 }
 
 func TestNewVaultStoreWithClient_defaults(t *testing.T) {
+	t.Parallel()
+
 	store := NewVaultStoreWithClient(nil, "", "", 0)
 
 	if store.kvMount != "secret" {
@@ -64,6 +72,8 @@ func TestNewVaultStoreWithClient_defaults(t *testing.T) {
 }
 
 func TestNewVaultStoreWithClient_customValues(t *testing.T) {
+	t.Parallel()
+
 	store := NewVaultStoreWithClient(nil, "custom-kv", "custom/path", 1)
 
 	if store.kvMount != "custom-kv" {
@@ -78,6 +88,8 @@ func TestNewVaultStoreWithClient_customValues(t *testing.T) {
 }
 
 func TestVaultConfig_defaults(t *testing.T) {
+	t.Parallel()
+
 	cfg := VaultConfig{}
 
 	if cfg.KVMount != "" {
@@ -92,6 +104,8 @@ func TestVaultConfig_defaults(t *testing.T) {
 }
 
 func TestIsNotFoundError(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		err      error
@@ -131,6 +145,8 @@ func TestIsNotFoundError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := isNotFoundError(tt.err)
 			if result != tt.expected {
 				t.Errorf("isNotFoundError(%v) = %v, want %v", tt.err, result, tt.expected)
@@ -151,6 +167,8 @@ func TestVaultStore_Close(_ *testing.T) {
 }
 
 func TestVaultStore_Close_WithWaitGroup(t *testing.T) {
+	t.Parallel()
+
 	store := &VaultStore{}
 	store.renewWg.Add(1)
 
@@ -180,6 +198,8 @@ func mockVaultServer(handlers map[string]http.HandlerFunc) *httptest.Server {
 }
 
 func TestVaultStore_Put(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		kvVersion int
@@ -192,6 +212,8 @@ func TestVaultStore_Put(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			putCalled := false
 			server := mockVaultServer(map[string]http.HandlerFunc{
 				tt.path: func(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +254,8 @@ func TestVaultStore_Put(t *testing.T) {
 }
 
 func TestVaultStore_Get_KVv2(t *testing.T) {
+	t.Parallel()
+
 	expectedConfig := RunnerConfig{
 		Org:      "testorg",
 		Repo:     "testorg/testrepo",
@@ -279,6 +303,8 @@ func TestVaultStore_Get_KVv2(t *testing.T) {
 }
 
 func TestVaultStore_Get_KVv1(t *testing.T) {
+	t.Parallel()
+
 	expectedConfig := RunnerConfig{
 		Org:      "testorg",
 		Repo:     "testorg/testrepo",
@@ -319,6 +345,8 @@ func TestVaultStore_Get_KVv1(t *testing.T) {
 }
 
 func TestVaultStore_Get_NotFound(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/data/runs-fleet/runners/i-notfound": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -341,6 +369,8 @@ func TestVaultStore_Get_NotFound(t *testing.T) {
 }
 
 func TestVaultStore_Delete(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		kvVersion int
@@ -352,6 +382,8 @@ func TestVaultStore_Delete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			deleteCalled := false
 			server := mockVaultServer(map[string]http.HandlerFunc{
 				tt.path: func(w http.ResponseWriter, r *http.Request) {
@@ -385,6 +417,8 @@ func TestVaultStore_Delete(t *testing.T) {
 }
 
 func TestVaultStore_Delete_NotFound_Ignored(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/metadata/runs-fleet/runners/i-notfound": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -408,6 +442,8 @@ func TestVaultStore_Delete_NotFound_Ignored(t *testing.T) {
 }
 
 func TestVaultStore_List_KVv2(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/metadata/runs-fleet/runners": func(w http.ResponseWriter, r *http.Request) {
 			// Vault LIST is sent as GET with X-Vault-Request header
@@ -444,6 +480,8 @@ func TestVaultStore_List_KVv2(t *testing.T) {
 }
 
 func TestVaultStore_List_Empty(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/metadata/runs-fleet/runners": func(w http.ResponseWriter, _ *http.Request) {
 			// Empty data response
@@ -477,6 +515,8 @@ func TestVaultStore_List_Empty(t *testing.T) {
 }
 
 func TestVaultStore_List_SkipsDirectories(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/metadata/runs-fleet/runners": func(w http.ResponseWriter, _ *http.Request) {
 			response := map[string]interface{}{
@@ -510,6 +550,8 @@ func TestVaultStore_List_SkipsDirectories(t *testing.T) {
 }
 
 func TestVaultStore_Put_Error(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/data/runs-fleet/runners/i-error": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -534,6 +576,8 @@ func TestVaultStore_Put_Error(t *testing.T) {
 }
 
 func TestVaultStore_Delete_OtherError(t *testing.T) {
+	t.Parallel()
+
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/metadata/runs-fleet/runners/i-error": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
@@ -557,6 +601,8 @@ func TestVaultStore_Delete_OtherError(t *testing.T) {
 }
 
 func TestVaultStore_detectKVVersion(t *testing.T) {
+	t.Parallel()
+
 	type pathResponse struct {
 		status int
 		body   string
@@ -672,6 +718,8 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			handlers := make(map[string]http.HandlerFunc)
 			for path, resp := range tt.responses {
 				resp := resp
@@ -711,6 +759,8 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 }
 
 func TestVaultStore_detectKVVersion_ProbeNetworkError(t *testing.T) {
+	t.Parallel()
+
 	// Test that probe network failure propagates error
 	server := mockVaultServer(map[string]http.HandlerFunc{
 		"/v1/secret/config": func(w http.ResponseWriter, _ *http.Request) {

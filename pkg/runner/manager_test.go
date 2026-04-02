@@ -74,6 +74,8 @@ func (m *mockGitHubClientForManager) GetRegistrationToken(_ context.Context, _ s
 }
 
 func TestNewManager(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	config := ManagerConfig{
 		CacheSecret:         "test-secret",
@@ -92,6 +94,8 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestManager_PrepareRunner_EmptyRepo(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 
 	manager := &Manager{
@@ -114,6 +118,8 @@ func TestManager_PrepareRunner_EmptyRepo(t *testing.T) {
 }
 
 func TestManager_PrepareRunner_InvalidRepoFormat(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 
 	manager := &Manager{
@@ -132,6 +138,8 @@ func TestManager_PrepareRunner_InvalidRepoFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := PrepareRunnerRequest{
 				InstanceID: "i-12345",
 				JobID:      "job-123",
@@ -147,6 +155,8 @@ func TestManager_PrepareRunner_InvalidRepoFormat(t *testing.T) {
 }
 
 func TestManager_CleanupRunner_Success(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 
 	manager := &Manager{
@@ -165,6 +175,8 @@ func TestManager_CleanupRunner_Success(t *testing.T) {
 }
 
 func TestManager_CleanupRunner_Error(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{
 		deleteFunc: func(_ context.Context, _ string) error {
 			return errors.New("delete error")
@@ -187,6 +199,8 @@ func TestManager_CleanupRunner_Error(t *testing.T) {
 }
 
 func TestManager_CleanupRunner_MultipleInstances(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 
 	manager := &Manager{
@@ -208,6 +222,8 @@ func TestManager_CleanupRunner_MultipleInstances(t *testing.T) {
 }
 
 func TestPrepareRunnerRequest_Structure(t *testing.T) {
+	t.Parallel()
+
 	req := PrepareRunnerRequest{
 		InstanceID: "i-12345",
 		JobID:      "job-123",
@@ -242,6 +258,8 @@ func TestPrepareRunnerRequest_Structure(t *testing.T) {
 }
 
 func TestManagerConfig_Structure(t *testing.T) {
+	t.Parallel()
+
 	config := ManagerConfig{
 		CacheSecret:         "my-secret",
 		CacheURL:            "https://cache.example.com",
@@ -269,6 +287,8 @@ func contains(s, substr string) bool {
 }
 
 func TestMockGitHubClientForManager(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockGitHubClientForManager{
 		regToken: "mock-token",
 		isOrg:    true,
@@ -288,6 +308,8 @@ func TestMockGitHubClientForManager(t *testing.T) {
 }
 
 func TestMockGitHubClientForManager_Error(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockGitHubClientForManager{
 		regErr: errors.New("mock error"),
 	}
@@ -374,6 +396,8 @@ func splitRepo(repo string) []string {
 }
 
 func TestManager_PrepareRunnerWithMock_Success(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regToken: "test-registration-token",
@@ -437,6 +461,8 @@ func TestManager_PrepareRunnerWithMock_Success(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_GitHubError(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regErr: errors.New("GitHub API rate limit exceeded"),
@@ -471,6 +497,8 @@ func TestManager_PrepareRunnerWithMock_GitHubError(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_StoreError(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{
 		putFunc: func(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
 			return errors.New("secrets store unavailable")
@@ -505,6 +533,8 @@ func TestManager_PrepareRunnerWithMock_StoreError(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_NoCacheSecret(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regToken: "test-token",
@@ -539,6 +569,8 @@ func TestManager_PrepareRunnerWithMock_NoCacheSecret(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_UserRepo(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regToken: "user-token",
@@ -574,6 +606,8 @@ func TestManager_PrepareRunnerWithMock_UserRepo(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_MultipleLabels(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regToken: "test-token",
@@ -611,6 +645,8 @@ func TestManager_PrepareRunnerWithMock_MultipleLabels(t *testing.T) {
 }
 
 func TestManager_PrepareRunner_SpecialRepoNames(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		repo       string
@@ -626,6 +662,8 @@ func TestManager_PrepareRunner_SpecialRepoNames(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			parts := splitRepo(tt.repo)
 			hasValidFormat := len(parts) == 2 && parts[0] != "" && parts[1] != ""
 			if hasValidFormat != tt.validParts {
@@ -636,6 +674,8 @@ func TestManager_PrepareRunner_SpecialRepoNames(t *testing.T) {
 }
 
 func TestSplitRepo(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input    string
 		expected []string
@@ -650,6 +690,8 @@ func TestSplitRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+
 			result := splitRepo(tt.input)
 			if len(result) != len(tt.expected) {
 				t.Errorf("splitRepo(%q) length = %d, want %d", tt.input, len(result), len(tt.expected))
@@ -665,6 +707,8 @@ func TestSplitRepo(t *testing.T) {
 }
 
 func TestBuildRunnerName(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		pool       string
@@ -749,6 +793,8 @@ func TestBuildRunnerName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := buildRunnerName(tt.pool, tt.repoName, tt.conditions, tt.jobID)
 			if got != tt.want {
 				t.Errorf("buildRunnerName() = %q, want %q", got, tt.want)
@@ -768,6 +814,8 @@ func TestBuildRunnerName(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regToken: "test-token",
@@ -800,6 +848,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
 }
 
 func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
+	t.Parallel()
+
 	mockStore := &mockSecretsStore{}
 	mockGH := &mockGitHubClientForManager{
 		regToken: "test-token",
@@ -830,6 +880,8 @@ func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
 }
 
 func TestRegistrationResult_Fields(t *testing.T) {
+	t.Parallel()
+
 	result := &RegistrationResult{
 		Token: "test-token-12345",
 		IsOrg: true,

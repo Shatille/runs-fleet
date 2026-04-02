@@ -6,6 +6,8 @@ import (
 )
 
 func TestTimeoutConstants(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		got      time.Duration
@@ -40,6 +42,8 @@ func TestTimeoutConstants(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			if tt.got != tt.want {
 				t.Errorf("%s = %v, want %v", tt.name, tt.got, tt.want)
 			}
@@ -53,6 +57,8 @@ func TestTimeoutConstants(t *testing.T) {
 }
 
 func TestMaxBodySize(t *testing.T) {
+	t.Parallel()
+
 	// MaxBodySize should be 1MB
 	expectedSize := int64(1 << 20) // 1MB = 1048576 bytes
 
@@ -72,6 +78,8 @@ func TestMaxBodySize(t *testing.T) {
 }
 
 func TestTimeoutRelationships(t *testing.T) {
+	t.Parallel()
+
 	// MessageReceiveTimeout should be shorter than MessageProcessTimeout
 	// This ensures we don't timeout waiting for messages while processing
 	if MessageReceiveTimeout >= MessageProcessTimeout {

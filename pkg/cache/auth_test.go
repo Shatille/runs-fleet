@@ -10,6 +10,8 @@ const testSecret = "test-secret"
 const testScope = "org/repo"
 
 func TestGenerateCacheToken(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		secret     string
@@ -62,6 +64,8 @@ func TestGenerateCacheToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			token := GenerateCacheToken(tt.secret, tt.jobID, tt.instanceID, tt.scope)
 			if tt.wantEmpty && token != "" {
 				t.Errorf("expected empty token, got %q", token)
@@ -74,6 +78,8 @@ func TestGenerateCacheToken(t *testing.T) {
 }
 
 func TestGenerateCacheToken_Deterministic(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	jobID := "job-123"
 	instanceID := "i-abc123"
@@ -88,6 +94,8 @@ func TestGenerateCacheToken_Deterministic(t *testing.T) {
 }
 
 func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	scope := testScope
 
@@ -108,6 +116,8 @@ func TestGenerateCacheToken_DifferentInputs(t *testing.T) {
 }
 
 func TestGenerateCacheToken_Format(t *testing.T) {
+	t.Parallel()
+
 	token := GenerateCacheToken("secret", "job-123", "i-abc", "org/repo")
 
 	// Token should be in format: base64.hmac
@@ -128,6 +138,8 @@ func TestGenerateCacheToken_Format(t *testing.T) {
 }
 
 func TestParseCacheToken(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		token          string
@@ -176,6 +188,8 @@ func TestParseCacheToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			jobID, instanceID, scope, ok := ParseCacheToken(tt.token)
 			if ok != tt.wantOK {
 				t.Errorf("ParseCacheToken() ok = %v, want %v", ok, tt.wantOK)
@@ -196,6 +210,8 @@ func TestParseCacheToken(t *testing.T) {
 }
 
 func TestValidateCacheToken(t *testing.T) {
+	t.Parallel()
+
 	secret := "my-secret-key"
 	jobID := "job-123"
 	instanceID := "i-abc123"
@@ -254,6 +270,8 @@ func TestValidateCacheToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := ValidateCacheToken(tt.secret, tt.token)
 			if got != tt.want {
 				t.Errorf("ValidateCacheToken() = %v, want %v", got, tt.want)
@@ -263,6 +281,8 @@ func TestValidateCacheToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Disabled(t *testing.T) {
+	t.Parallel()
+
 	// Empty secret disables auth
 	middleware := NewAuthMiddleware("")
 
@@ -290,6 +310,8 @@ func TestAuthMiddleware_Disabled(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
+	t.Parallel()
+
 	middleware := NewAuthMiddleware(testSecret)
 
 	if !middleware.IsEnabled() {
@@ -314,6 +336,8 @@ func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
+	t.Parallel()
+
 	middleware := NewAuthMiddleware(testSecret)
 
 	called := false
@@ -335,6 +359,8 @@ func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
@@ -361,6 +387,8 @@ func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_BearerToken(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
@@ -387,6 +415,8 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
@@ -415,6 +445,8 @@ func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
 }
 
 func TestAuthMiddleware_WrongSecret(t *testing.T) {
+	t.Parallel()
+
 	// Server has one secret
 	middleware := NewAuthMiddleware("server-secret")
 
@@ -440,6 +472,8 @@ func TestAuthMiddleware_WrongSecret(t *testing.T) {
 }
 
 func TestAuthMiddleware_ScopeInContext(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 
@@ -463,6 +497,8 @@ func TestAuthMiddleware_ScopeInContext(t *testing.T) {
 }
 
 func TestScopeFromContext_NoScope(t *testing.T) {
+	t.Parallel()
+
 	secret := testSecret
 	middleware := NewAuthMiddleware(secret)
 

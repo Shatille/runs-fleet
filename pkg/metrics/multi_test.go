@@ -47,6 +47,8 @@ func (t *trackingPublisher) Close() error {
 }
 
 func TestNewMultiPublisher(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{}
 	pub2 := &trackingPublisher{}
 
@@ -62,6 +64,8 @@ func TestNewMultiPublisher(t *testing.T) {
 }
 
 func TestMultiPublisher_Add(t *testing.T) {
+	t.Parallel()
+
 	multi := NewMultiPublisher()
 	if len(multi.Publishers()) != 0 {
 		t.Errorf("Publishers() = %d, want 0", len(multi.Publishers()))
@@ -76,6 +80,8 @@ func TestMultiPublisher_Add(t *testing.T) {
 }
 
 func TestMultiPublisher_Publishers(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{}
 	pub2 := &trackingPublisher{}
 	multi := NewMultiPublisher(pub1, pub2)
@@ -87,6 +93,8 @@ func TestMultiPublisher_Publishers(t *testing.T) {
 }
 
 func TestMultiPublisher_Close(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{}
 	pub2 := &trackingPublisher{}
 	multi := NewMultiPublisher(pub1, pub2)
@@ -105,6 +113,8 @@ func TestMultiPublisher_Close(t *testing.T) {
 }
 
 func TestMultiPublisher_CloseWithErrors(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{shouldError: true}
 	pub2 := &trackingPublisher{shouldError: true}
 	multi := NewMultiPublisher(pub1, pub2)
@@ -117,6 +127,8 @@ func TestMultiPublisher_CloseWithErrors(t *testing.T) {
 
 //nolint:dupl // Test tables are intentionally similar - testing different publishers
 func TestMultiPublisher_PublishMethods(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{}
 	pub2 := &trackingPublisher{}
 	multi := NewMultiPublisher(pub1, pub2)
@@ -148,6 +160,8 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := tt.publish()
 			if err != nil {
 				t.Errorf("%s() error = %v", tt.name, err)
@@ -157,6 +171,8 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 }
 
 func TestMultiPublisher_PublishWithErrors(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{shouldError: true}
 	pub2 := &trackingPublisher{}
 	multi := NewMultiPublisher(pub1, pub2)
@@ -174,6 +190,8 @@ func TestMultiPublisher_PublishWithErrors(t *testing.T) {
 }
 
 func TestMultiPublisher_FanOutsToAll(t *testing.T) {
+	t.Parallel()
+
 	pub1 := &trackingPublisher{}
 	pub2 := &trackingPublisher{}
 	multi := NewMultiPublisher(pub1, pub2)

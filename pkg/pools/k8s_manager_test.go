@@ -68,6 +68,8 @@ func createTestDeployment(name string, replicas int32) *appsv1.Deployment {
 }
 
 func TestK8sManager_ScalePool(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -119,6 +121,8 @@ func TestK8sManager_ScalePool(t *testing.T) {
 }
 
 func TestK8sManager_CreatePool(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{
@@ -155,6 +159,8 @@ func TestK8sManager_CreatePool(t *testing.T) {
 }
 
 func TestK8sManager_CreatePoolInvalidName(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
@@ -171,6 +177,8 @@ func TestK8sManager_CreatePoolInvalidName(t *testing.T) {
 }
 
 func TestK8sManager_CreatePoolNegativeReplicas(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
@@ -189,6 +197,8 @@ func TestK8sManager_CreatePoolNegativeReplicas(t *testing.T) {
 }
 
 func TestK8sManager_DeletePool(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -227,6 +237,8 @@ func TestK8sManager_DeletePool(t *testing.T) {
 }
 
 func TestK8sManager_DeletePoolInvalidName(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	clientset := fake.NewClientset()
 	stateStore := newMockStateStore()
@@ -240,6 +252,8 @@ func TestK8sManager_DeletePoolInvalidName(t *testing.T) {
 }
 
 func TestK8sManager_SetSchedule(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	stateStore.pools[DefaultPoolName] = &state.K8sPoolConfig{
@@ -281,6 +295,8 @@ func TestK8sManager_SetSchedule(t *testing.T) {
 }
 
 func TestK8sManager_SetScheduleNonexistent(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
@@ -295,6 +311,8 @@ func TestK8sManager_SetScheduleNonexistent(t *testing.T) {
 }
 
 func TestK8sManager_SetScheduleInvalidName(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	cfg := &config.Config{KubeNamespace: testNamespace}
@@ -308,6 +326,8 @@ func TestK8sManager_SetScheduleInvalidName(t *testing.T) {
 }
 
 func TestK8sManager_SetScheduleInvalidHours(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	stateStore := newMockStateStore()
 	stateStore.pools[DefaultPoolName] = &state.K8sPoolConfig{
@@ -367,6 +387,8 @@ func TestK8sManager_SetScheduleInvalidHours(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := manager.SetSchedule(ctx, DefaultPoolName, tt.schedules)
 			if err == nil {
 				t.Error("expected validation error")
@@ -376,6 +398,8 @@ func TestK8sManager_SetScheduleInvalidHours(t *testing.T) {
 }
 
 func TestK8sManager_ScheduleMatching(t *testing.T) {
+	t.Parallel()
+
 	manager := &K8sManager{}
 
 	tests := []struct {
@@ -463,6 +487,8 @@ func TestK8sManager_ScheduleMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := manager.scheduleMatches(tt.schedule, tt.hour, tt.day)
 			if result != tt.expected {
 				t.Errorf("scheduleMatches() = %v, expected %v", result, tt.expected)
@@ -472,6 +498,8 @@ func TestK8sManager_ScheduleMatching(t *testing.T) {
 }
 
 func TestK8sManager_GetScheduledDesiredCounts(t *testing.T) {
+	t.Parallel()
+
 	manager := &K8sManager{}
 
 	tests := []struct {
@@ -510,6 +538,8 @@ func TestK8sManager_GetScheduledDesiredCounts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			arm64, amd64 := manager.getScheduledDesiredCounts(tt.config)
 			if arm64 != tt.expectedArm64 {
 				t.Errorf("arm64 = %d, expected %d", arm64, tt.expectedArm64)
@@ -522,6 +552,8 @@ func TestK8sManager_GetScheduledDesiredCounts(t *testing.T) {
 }
 
 func TestK8sManager_PlaceholderDeploymentName(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		releaseName string
 		arch        string
@@ -541,6 +573,8 @@ func TestK8sManager_PlaceholderDeploymentName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.expected, func(t *testing.T) {
+			t.Parallel()
+
 			manager := &K8sManager{releaseName: tt.releaseName}
 			result := manager.placeholderDeploymentName(tt.arch)
 			if result != tt.expected {
@@ -551,6 +585,8 @@ func TestK8sManager_PlaceholderDeploymentName(t *testing.T) {
 }
 
 func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	arm64Deploy := createTestDeployment("runs-fleet-placeholder-arm64",3)
@@ -587,6 +623,8 @@ func TestK8sManager_GetPlaceholderStatus(t *testing.T) {
 }
 
 func TestK8sManager_ReconcileScalesDeployments(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -622,6 +660,8 @@ func TestK8sManager_ReconcileScalesDeployments(t *testing.T) {
 }
 
 func TestK8sManager_ReconcilePoolNotConfigured(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -648,6 +688,8 @@ func TestK8sManager_ReconcilePoolNotConfigured(t *testing.T) {
 }
 
 func TestK8sManager_ScaleToZero(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -686,6 +728,8 @@ func TestK8sManager_ScaleToZero(t *testing.T) {
 }
 
 func TestK8sManager_ScalePoolInvalidName(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	clientset := fake.NewClientset()
 	stateStore := newMockStateStore()
@@ -699,6 +743,8 @@ func TestK8sManager_ScalePoolInvalidName(t *testing.T) {
 }
 
 func TestK8sManager_ScalePoolNegativeReplicas(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	clientset := fake.NewClientset()
 	stateStore := newMockStateStore()
@@ -717,6 +763,8 @@ func TestK8sManager_ScalePoolNegativeReplicas(t *testing.T) {
 }
 
 func TestK8sManager_ScalePoolCreateNew(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -763,6 +811,8 @@ func (e *errorStateStore) GetK8sPoolConfig(_ context.Context, poolName string) (
 }
 
 func TestK8sManager_ReconcileGetConfigError(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -792,6 +842,8 @@ func TestK8sManager_ReconcileGetConfigError(t *testing.T) {
 }
 
 func TestK8sManager_GetCurrentReplicas(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -818,6 +870,8 @@ func TestK8sManager_GetCurrentReplicas(t *testing.T) {
 }
 
 func TestK8sManager_ScaleDeploymentNoChange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset(
@@ -842,6 +896,8 @@ func TestK8sManager_ScaleDeploymentNoChange(t *testing.T) {
 }
 
 func TestK8sManager_ScaleDeploymentNotFound(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	clientset := fake.NewClientset()
@@ -860,6 +916,8 @@ func TestK8sManager_ScaleDeploymentNotFound(t *testing.T) {
 }
 
 func TestValidateReplicaCounts(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		arm64   int
@@ -878,6 +936,8 @@ func TestValidateReplicaCounts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := validateReplicaCounts(tt.arm64, tt.amd64)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateReplicaCounts() error = %v, wantErr %v", err, tt.wantErr)
@@ -887,6 +947,8 @@ func TestValidateReplicaCounts(t *testing.T) {
 }
 
 func TestValidateSchedules(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		schedules []state.K8sPoolSchedule
@@ -911,6 +973,8 @@ func TestValidateSchedules(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := validateSchedules(tt.schedules)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateSchedules() error = %v, wantErr %v", err, tt.wantErr)

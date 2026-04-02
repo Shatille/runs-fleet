@@ -61,6 +61,8 @@ func (m *mockPoolProvider) MarkRunnerIdle(_ string) {}
 // Tests
 
 func TestProviderInterface(t *testing.T) {
+	t.Parallel()
+
 	var p Provider = &mockProvider{name: "test-provider"}
 
 	ctx := context.Background()
@@ -94,6 +96,8 @@ func TestProviderInterface(t *testing.T) {
 }
 
 func TestPoolProviderInterface(t *testing.T) {
+	t.Parallel()
+
 	var pp PoolProvider = &mockPoolProvider{}
 
 	ctx := context.Background()
@@ -124,6 +128,8 @@ func TestPoolProviderInterface(t *testing.T) {
 }
 
 func TestRunnerSpec_AllFields(t *testing.T) {
+	t.Parallel()
+
 	spec := RunnerSpec{
 		RunID:         123,
 		JobID:         456,
@@ -166,6 +172,8 @@ func TestRunnerSpec_AllFields(t *testing.T) {
 }
 
 func TestRunnerResult_Fields(t *testing.T) {
+	t.Parallel()
+
 	result := RunnerResult{
 		RunnerIDs: []string{"runner-1", "runner-2"},
 		ProviderData: map[string]string{
@@ -184,6 +192,8 @@ func TestRunnerResult_Fields(t *testing.T) {
 }
 
 func TestRunnerState_Fields(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	state := RunnerState{
 		RunnerID:     "runner-1",
@@ -207,6 +217,8 @@ func TestRunnerState_Fields(t *testing.T) {
 }
 
 func TestPoolRunner_Fields(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	runner := PoolRunner{
 		RunnerID:     "pool-runner-1",
@@ -228,6 +240,8 @@ func TestPoolRunner_Fields(t *testing.T) {
 }
 
 func TestJob_Fields(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	job := Job{
 		JobID:        123,
@@ -258,6 +272,8 @@ func TestJob_Fields(t *testing.T) {
 }
 
 func TestPoolConfig_Fields(t *testing.T) {
+	t.Parallel()
+
 	config := PoolConfig{
 		PoolName:           "default",
 		InstanceType:       "t4g.medium",
@@ -293,6 +309,8 @@ func TestPoolConfig_Fields(t *testing.T) {
 }
 
 func TestPoolSchedule_Fields(t *testing.T) {
+	t.Parallel()
+
 	schedule := PoolSchedule{
 		Name:           "weekend",
 		StartHour:      10,

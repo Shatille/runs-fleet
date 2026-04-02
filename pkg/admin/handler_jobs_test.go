@@ -44,6 +44,8 @@ func (m *mockJobsDB) GetJobStatsForAdmin(_ context.Context, _ time.Time) (*db.Ad
 }
 
 func TestJobsHandler_ListJobs(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	mockDB := &mockJobsDB{
 		jobs: []db.AdminJobEntry{
@@ -97,6 +99,8 @@ func TestJobsHandler_ListJobs(t *testing.T) {
 }
 
 func TestJobsHandler_GetJob(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	mockDB := &mockJobsDB{
 		jobs: []db.AdminJobEntry{
@@ -117,6 +121,8 @@ func TestJobsHandler_GetJob(t *testing.T) {
 	handler.RegisterRoutes(mux)
 
 	t.Run("existing job", func(t *testing.T) {
+		t.Parallel()
+
 		req := httptest.NewRequest("GET", "/api/jobs/123", nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -136,6 +142,8 @@ func TestJobsHandler_GetJob(t *testing.T) {
 	})
 
 	t.Run("job not found", func(t *testing.T) {
+		t.Parallel()
+
 		req := httptest.NewRequest("GET", "/api/jobs/999", nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -146,6 +154,8 @@ func TestJobsHandler_GetJob(t *testing.T) {
 	})
 
 	t.Run("invalid job ID", func(t *testing.T) {
+		t.Parallel()
+
 		req := httptest.NewRequest("GET", "/api/jobs/invalid", nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -157,6 +167,8 @@ func TestJobsHandler_GetJob(t *testing.T) {
 }
 
 func TestJobsHandler_GetJobStats(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &mockJobsDB{
 		stats: &db.AdminJobStats{
 			Total:       100,
@@ -199,6 +211,8 @@ func TestJobsHandler_GetJobStats(t *testing.T) {
 }
 
 func TestJobsHandler_WithAuth(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &mockJobsDB{
 		jobs: []db.AdminJobEntry{},
 	}
@@ -210,6 +224,8 @@ func TestJobsHandler_WithAuth(t *testing.T) {
 	handler.RegisterRoutes(mux)
 
 	t.Run("without auth header", func(t *testing.T) {
+		t.Parallel()
+
 		req := httptest.NewRequest("GET", "/api/jobs", nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -220,6 +236,8 @@ func TestJobsHandler_WithAuth(t *testing.T) {
 	})
 
 	t.Run("with auth header", func(t *testing.T) {
+		t.Parallel()
+
 		req := httptest.NewRequest("GET", "/api/jobs", nil)
 		req.Header.Set(HeaderUser, "test-user")
 		rec := httptest.NewRecorder()

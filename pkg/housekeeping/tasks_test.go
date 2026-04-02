@@ -248,6 +248,8 @@ func (m *mockTaskSQSAPI) StartMessageMoveTask(_ context.Context, _ *sqs.StartMes
 }
 
 func TestExecuteOrphanedInstances_NoOrphans(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	ec2Client := &mockEC2API{
@@ -284,6 +286,8 @@ func TestExecuteOrphanedInstances_NoOrphans(t *testing.T) {
 }
 
 func TestExecuteOrphanedInstances_WithOrphans(t *testing.T) {
+	t.Parallel()
+
 	// Create an old launch time (older than max_runtime + 10 min)
 	oldLaunchTime := time.Now().Add(-2 * time.Hour)
 
@@ -331,6 +335,8 @@ func TestExecuteOrphanedInstances_WithOrphans(t *testing.T) {
 }
 
 func TestExecuteOrphanedInstances_DescribeError(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockEC2API{
 		describeErr: errors.New("describe error"),
 	}
@@ -349,6 +355,8 @@ func TestExecuteOrphanedInstances_DescribeError(t *testing.T) {
 }
 
 func TestExecuteOrphanedInstances_TerminateError(t *testing.T) {
+	t.Parallel()
+
 	oldLaunchTime := time.Now().Add(-2 * time.Hour)
 
 	ec2Client := &mockEC2API{
@@ -379,6 +387,8 @@ func TestExecuteOrphanedInstances_TerminateError(t *testing.T) {
 }
 
 func TestExecuteOrphanedInstances_UntaggedZombies(t *testing.T) {
+	t.Parallel()
+
 	oldLaunchTime := time.Now().Add(-2 * time.Hour)
 
 	// Mock that returns different results based on call count:
@@ -445,6 +455,8 @@ func TestExecuteOrphanedInstances_UntaggedZombies(t *testing.T) {
 }
 
 func TestExecuteOrphanedInstances_ProfileSkipsTaggedInstances(t *testing.T) {
+	t.Parallel()
+
 	oldLaunchTime := time.Now().Add(-2 * time.Hour)
 
 	describeCalls := 0
@@ -510,6 +522,8 @@ func TestExecuteOrphanedInstances_ProfileSkipsTaggedInstances(t *testing.T) {
 }
 
 func TestExecuteOrphanedInstances_NoProfileARN_SkipsPhase2(t *testing.T) {
+	t.Parallel()
+
 	oldLaunchTime := time.Now().Add(-2 * time.Hour)
 
 	ec2Client := &mockEC2API{
@@ -566,6 +580,8 @@ func (f *funcEC2API) CancelSpotInstanceRequests(ctx context.Context, params *ec2
 }
 
 func TestExecuteStaleSecrets_NoStaleConfigs(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	secretsStore := &mockSecretsStore{
@@ -605,6 +621,8 @@ func TestExecuteStaleSecrets_NoStaleConfigs(t *testing.T) {
 }
 
 func TestExecuteStaleSecrets_ListError(t *testing.T) {
+	t.Parallel()
+
 	secretsStore := &mockSecretsStore{
 		listErr: errors.New("list error"),
 	}
@@ -621,6 +639,8 @@ func TestExecuteStaleSecrets_ListError(t *testing.T) {
 }
 
 func TestExecuteStaleSecrets_NoSecretsStore(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		secretsStore: nil,
 		config:       &config.Config{},
@@ -633,6 +653,8 @@ func TestExecuteStaleSecrets_NoSecretsStore(t *testing.T) {
 }
 
 func TestExecuteStaleSecrets_WithStaleConfigs(t *testing.T) {
+	t.Parallel()
+
 	secretsStore := &mockSecretsStore{
 		runnerIDs: []string{"i-terminated", "i-exists"},
 	}
@@ -678,6 +700,8 @@ func TestExecuteStaleSecrets_WithStaleConfigs(t *testing.T) {
 }
 
 func TestExecuteOldJobs_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			JobsTableName: "",
@@ -691,6 +715,8 @@ func TestExecuteOldJobs_NoJobsTable(t *testing.T) {
 }
 
 func TestExecuteOldJobs_NoOldJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{},
 	}
@@ -713,6 +739,8 @@ func TestExecuteOldJobs_NoOldJobs(t *testing.T) {
 }
 
 func TestExecuteOldJobs_WithOldJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{"job_id": &types.AttributeValueMemberS{Value: "job-1"}},
@@ -744,6 +772,8 @@ func TestExecuteOldJobs_WithOldJobs(t *testing.T) {
 }
 
 func TestExecuteOldJobs_ScanError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		scanErr: errors.New("scan error"),
 	}
@@ -762,6 +792,8 @@ func TestExecuteOldJobs_ScanError(t *testing.T) {
 }
 
 func TestExecuteOrphanedJobs_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			JobsTableName: "",
@@ -775,6 +807,8 @@ func TestExecuteOrphanedJobs_NoJobsTable(t *testing.T) {
 }
 
 func TestExecuteOrphanedJobs_NoOrphanedJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{},
 	}
@@ -797,6 +831,8 @@ func TestExecuteOrphanedJobs_NoOrphanedJobs(t *testing.T) {
 }
 
 func TestExecuteOrphanedJobs_WithOrphanedJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -835,6 +871,8 @@ func TestExecuteOrphanedJobs_WithOrphanedJobs(t *testing.T) {
 }
 
 func TestExecuteOrphanedJobs_InstanceExists(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -881,6 +919,8 @@ func TestExecuteOrphanedJobs_InstanceExists(t *testing.T) {
 }
 
 func TestExecuteOrphanedJobs_ScanError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		scanErr: errors.New("scan error"),
 	}
@@ -899,6 +939,8 @@ func TestExecuteOrphanedJobs_ScanError(t *testing.T) {
 }
 
 func TestExecutePoolAudit_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			PoolsTableName: "",
@@ -912,6 +954,8 @@ func TestExecutePoolAudit_NoPoolsTable(t *testing.T) {
 }
 
 func TestExecutePoolAudit_Success(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -943,6 +987,8 @@ func TestExecutePoolAudit_Success(t *testing.T) {
 }
 
 func TestExecutePoolAudit_ScanError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		scanErr: errors.New("scan error"),
 	}
@@ -961,6 +1007,8 @@ func TestExecutePoolAudit_ScanError(t *testing.T) {
 }
 
 func TestExecuteCostReport_NoCostReporter(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		costReporter: nil,
 		config:       &config.Config{},
@@ -973,6 +1021,8 @@ func TestExecuteCostReport_NoCostReporter(t *testing.T) {
 }
 
 func TestExecuteCostReport_TypedNilPointer(t *testing.T) {
+	t.Parallel()
+
 	// Regression test: passing a typed nil pointer (*mockCostReporter)(nil)
 	// creates a non-nil interface with nil concrete value, which bypasses
 	// the nil check and causes a panic when methods are called.
@@ -991,6 +1041,8 @@ func TestExecuteCostReport_TypedNilPointer(t *testing.T) {
 }
 
 func TestExecuteCostReport_Success(t *testing.T) {
+	t.Parallel()
+
 	costReporter := &mockCostReporter{}
 
 	tasks := &Tasks{
@@ -1009,6 +1061,8 @@ func TestExecuteCostReport_Success(t *testing.T) {
 }
 
 func TestExecuteCostReport_Error(t *testing.T) {
+	t.Parallel()
+
 	costReporter := &mockCostReporter{
 		err: errors.New("report error"),
 	}
@@ -1025,12 +1079,16 @@ func TestExecuteCostReport_Error(t *testing.T) {
 }
 
 func TestInstanceTerminationGracePeriod(t *testing.T) {
+	t.Parallel()
+
 	if instanceTerminationGracePeriod != 10*time.Minute {
 		t.Errorf("expected grace period 10m, got %v", instanceTerminationGracePeriod)
 	}
 }
 
 func TestExecuteDLQRedrive_NoDLQURL(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			QueueDLQURL: "",
@@ -1045,6 +1103,8 @@ func TestExecuteDLQRedrive_NoDLQURL(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_NoMainQueueURL(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			QueueDLQURL: "https://sqs.example.com/dlq",
@@ -1059,6 +1119,8 @@ func TestExecuteDLQRedrive_NoMainQueueURL(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_EmptyDLQ(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
 			{
@@ -1092,6 +1154,8 @@ func TestExecuteDLQRedrive_EmptyDLQ(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_Success(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
 			// First call - DLQ attributes
@@ -1132,6 +1196,8 @@ func TestExecuteDLQRedrive_Success(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_GetDLQAttributesError(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsErrors: []error{errors.New("failed to get DLQ attributes")},
 	}
@@ -1151,6 +1217,8 @@ func TestExecuteDLQRedrive_GetDLQAttributesError(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_StartMoveTaskError(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
 			// First call - DLQ attributes
@@ -1185,6 +1253,8 @@ func TestExecuteDLQRedrive_StartMoveTaskError(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_EmptyDLQArn(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
 			{
@@ -1211,6 +1281,8 @@ func TestExecuteDLQRedrive_EmptyDLQArn(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_EmptyMainQueueArn(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
 			// First call - DLQ attributes
@@ -1244,6 +1316,8 @@ func TestExecuteDLQRedrive_EmptyMainQueueArn(t *testing.T) {
 }
 
 func TestExecuteDLQRedrive_GetMainQueueAttributesError(t *testing.T) {
+	t.Parallel()
+
 	sqsClient := &mockTaskSQSAPI{
 		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
 			// First call - DLQ attributes success
@@ -1308,6 +1382,8 @@ func (m *mockPoolDBAPI) DeletePoolConfig(_ context.Context, poolName string) err
 }
 
 func TestExecuteEphemeralPoolCleanup_NoPoolDB(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{},
 	}
@@ -1319,6 +1395,8 @@ func TestExecuteEphemeralPoolCleanup_NoPoolDB(t *testing.T) {
 }
 
 func TestExecuteEphemeralPoolCleanup_NoPools(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		pools: []string{},
 	}
@@ -1339,6 +1417,8 @@ func TestExecuteEphemeralPoolCleanup_NoPools(t *testing.T) {
 }
 
 func TestExecuteEphemeralPoolCleanup_NonEphemeralPoolsSkipped(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		pools: []string{"persistent-pool"},
 		poolConfigs: map[string]*PoolConfig{
@@ -1366,6 +1446,8 @@ func TestExecuteEphemeralPoolCleanup_NonEphemeralPoolsSkipped(t *testing.T) {
 }
 
 func TestExecuteEphemeralPoolCleanup_ActiveEphemeralPoolsSkipped(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		pools: []string{"active-ephemeral"},
 		poolConfigs: map[string]*PoolConfig{
@@ -1393,6 +1475,8 @@ func TestExecuteEphemeralPoolCleanup_ActiveEphemeralPoolsSkipped(t *testing.T) {
 }
 
 func TestExecuteEphemeralPoolCleanup_InactiveEphemeralPoolsDeleted(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		pools: []string{"stale-ephemeral-1", "stale-ephemeral-2", "active-ephemeral"},
 		poolConfigs: map[string]*PoolConfig{
@@ -1442,6 +1526,8 @@ func TestExecuteEphemeralPoolCleanup_InactiveEphemeralPoolsDeleted(t *testing.T)
 }
 
 func TestExecuteEphemeralPoolCleanup_ListPoolsError(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		listErr: errors.New("list pools error"),
 	}
@@ -1458,6 +1544,8 @@ func TestExecuteEphemeralPoolCleanup_ListPoolsError(t *testing.T) {
 }
 
 func TestExecuteEphemeralPoolCleanup_GetPoolConfigError(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		pools:  []string{"pool1"},
 		getErr: errors.New("get pool config error"),
@@ -1476,6 +1564,8 @@ func TestExecuteEphemeralPoolCleanup_GetPoolConfigError(t *testing.T) {
 }
 
 func TestExecuteEphemeralPoolCleanup_DeletePoolConfigError(t *testing.T) {
+	t.Parallel()
+
 	poolDB := &mockPoolDBAPI{
 		pools: []string{"stale-pool"},
 		poolConfigs: map[string]*PoolConfig{
@@ -1501,6 +1591,8 @@ func TestExecuteEphemeralPoolCleanup_DeletePoolConfigError(t *testing.T) {
 }
 
 func TestEphemeralPoolTTL(t *testing.T) {
+	t.Parallel()
+
 	if EphemeralPoolTTL != 4*time.Hour {
 		t.Errorf("expected EphemeralPoolTTL to be 4h, got %v", EphemeralPoolTTL)
 	}
@@ -1511,6 +1603,8 @@ func strPtr(s string) *string {
 }
 
 func TestExecuteOrphanedSpotRequests_NoSpotRequests(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockEC2API{
 		spotRequests: []ec2types.SpotInstanceRequest{},
 	}
@@ -1531,6 +1625,8 @@ func TestExecuteOrphanedSpotRequests_NoSpotRequests(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_CancelsOrphanedRequests(t *testing.T) {
+	t.Parallel()
+
 	// Simulate spot requests with instances that no longer exist
 	ec2Client := &mockEC2API{
 		spotRequests: []ec2types.SpotInstanceRequest{
@@ -1568,6 +1664,8 @@ func TestExecuteOrphanedSpotRequests_CancelsOrphanedRequests(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_KeepsActiveRequests(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	ec2Client := &mockEC2API{
 		spotRequests: []ec2types.SpotInstanceRequest{
@@ -1608,6 +1706,8 @@ func TestExecuteOrphanedSpotRequests_KeepsActiveRequests(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_DescribeError(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockEC2API{
 		describeSpotErr: errors.New("API error"),
 	}
@@ -1624,6 +1724,8 @@ func TestExecuteOrphanedSpotRequests_DescribeError(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_CancelError(t *testing.T) {
+	t.Parallel()
+
 	// Cancel errors are logged but don't fail the operation
 	ec2Client := &mockEC2API{
 		spotRequests: []ec2types.SpotInstanceRequest{
@@ -1654,6 +1756,8 @@ func TestExecuteOrphanedSpotRequests_CancelError(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_MixedOrphanedAndActive(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	ec2Client := &mockEC2API{
 		spotRequests: []ec2types.SpotInstanceRequest{
@@ -1703,6 +1807,8 @@ func TestExecuteOrphanedSpotRequests_MixedOrphanedAndActive(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_OnlyOpenActiveDisabledStatesProcessed(t *testing.T) {
+	t.Parallel()
+
 	// The DescribeSpotInstanceRequests API call filters by state ["open", "active", "disabled"]
 	// This test verifies the filter is applied. Note: the mock doesn't actually filter,
 	// but in production only requests in those states would be returned by the API.
@@ -1739,6 +1845,8 @@ func TestExecuteOrphanedSpotRequests_OnlyOpenActiveDisabledStatesProcessed(t *te
 }
 
 func TestExecuteOrphanedSpotRequests_NilInstanceID(t *testing.T) {
+	t.Parallel()
+
 	// Spot request not yet fulfilled (no instance assigned)
 	ec2Client := &mockEC2API{
 		spotRequests: []ec2types.SpotInstanceRequest{
@@ -1768,6 +1876,8 @@ func TestExecuteOrphanedSpotRequests_NilInstanceID(t *testing.T) {
 }
 
 func TestExecuteOrphanedSpotRequests_TerminatedInstancesAreOrphaned(t *testing.T) {
+	t.Parallel()
+
 	// Terminated instances older than grace period are considered orphaned
 	oldLaunchTime := time.Now().Add(-2 * time.Hour) // Well past the grace period
 	ec2Client := &mockEC2API{
@@ -1810,6 +1920,8 @@ func TestExecuteOrphanedSpotRequests_TerminatedInstancesAreOrphaned(t *testing.T
 }
 
 func TestExecuteOrphanedSpotRequests_DescribeInstancesError(t *testing.T) {
+	t.Parallel()
+
 	// When DescribeInstances fails, the implementation falls back to individual checks
 	// and treats instances as non-existent if individual checks also fail
 	ec2Client := &mockEC2API{
@@ -1858,6 +1970,8 @@ func (m *mockGitHubJobChecker) GetWorkflowJobStatus(_ context.Context, _, _ stri
 }
 
 func TestExecuteStaleJobs_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			JobsTableName: "",
@@ -1871,6 +1985,8 @@ func TestExecuteStaleJobs_NoJobsTable(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_NoGitHubChecker(t *testing.T) {
+	t.Parallel()
+
 	tasks := &Tasks{
 		config: &config.Config{
 			JobsTableName: "jobs-table",
@@ -1885,6 +2001,8 @@ func TestExecuteStaleJobs_NoGitHubChecker(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_NoStaleJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{},
 	}
@@ -1909,6 +2027,8 @@ func TestExecuteStaleJobs_NoStaleJobs(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_ReconcilesCompletedJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -1951,6 +2071,8 @@ func TestExecuteStaleJobs_ReconcilesCompletedJobs(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_SkipsStillRunningJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -1988,6 +2110,8 @@ func TestExecuteStaleJobs_SkipsStillRunningJobs(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_HandlesGitHubAPIError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -2020,6 +2144,8 @@ func TestExecuteStaleJobs_HandlesGitHubAPIError(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_SkipsInvalidRepo(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -2050,6 +2176,8 @@ func TestExecuteStaleJobs_SkipsInvalidRepo(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_ScanError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		scanErr: errors.New("scan error"),
 	}
@@ -2070,6 +2198,8 @@ func TestExecuteStaleJobs_ScanError(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_ConditionalWriteRace(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -2101,6 +2231,8 @@ func TestExecuteStaleJobs_ConditionalWriteRace(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_MultipleJobs(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -2155,6 +2287,8 @@ func TestExecuteStaleJobs_MultipleJobs(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_SkipsJobsWithEmptyRepo(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -2185,6 +2319,8 @@ func TestExecuteStaleJobs_SkipsJobsWithEmptyRepo(t *testing.T) {
 }
 
 func TestExecuteStaleJobs_UpdateError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockTaskDynamoDBAPI{
 		items: []map[string]types.AttributeValue{
 			{
@@ -2220,6 +2356,8 @@ func TestExecuteStaleJobs_UpdateError(t *testing.T) {
 }
 
 func TestSplitRepo(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input     string
 		wantOwner string

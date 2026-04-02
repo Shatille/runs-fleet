@@ -130,6 +130,8 @@ func (m *MockFleetAPI) RankInstanceTypesByPrice(_ context.Context, instanceTypes
 }
 
 func TestReconcileLoop(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{}, nil
@@ -158,6 +160,8 @@ func TestReconcileLoop(t *testing.T) {
 }
 
 func TestScheduleMatches(t *testing.T) {
+	t.Parallel()
+
 	manager := &Manager{}
 
 	tests := []struct {
@@ -226,6 +230,8 @@ func TestScheduleMatches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := manager.scheduleMatches(tt.schedule, tt.hour, tt.day)
 			if got != tt.wantMatch {
 				t.Errorf("scheduleMatches() = %v, want %v", got, tt.wantMatch)
@@ -235,6 +241,8 @@ func TestScheduleMatches(t *testing.T) {
 }
 
 func TestMarkInstanceBusyIdle(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 
 	// Test marking instance busy
@@ -251,6 +259,8 @@ func TestMarkInstanceBusyIdle(t *testing.T) {
 }
 
 func TestNewManager(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDBClient{}
 	mockFleet := &MockFleetAPI{}
 	cfg := &config.Config{}
@@ -320,6 +330,8 @@ func (m *MockEC2API) CreateTags(ctx context.Context, params *ec2.CreateTagsInput
 }
 
 func TestSetEC2Client(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	mockEC2 := &MockEC2API{}
 
@@ -331,6 +343,8 @@ func TestSetEC2Client(t *testing.T) {
 }
 
 func TestFilterByState(t *testing.T) {
+	t.Parallel()
+
 	manager := &Manager{}
 	instances := []PoolInstance{
 		{InstanceID: "i-running1", State: "running"},
@@ -362,6 +376,8 @@ func TestFilterByState(t *testing.T) {
 }
 
 func TestFilterIdleInstances(t *testing.T) {
+	t.Parallel()
+
 	manager := &Manager{}
 	now := time.Now()
 
@@ -396,6 +412,8 @@ func TestFilterIdleInstances(t *testing.T) {
 }
 
 func TestGetScheduledDesiredCounts(t *testing.T) {
+	t.Parallel()
+
 	manager := &Manager{}
 
 	tests := []struct {
@@ -428,6 +446,8 @@ func TestGetScheduledDesiredCounts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			running, stopped := manager.getScheduledDesiredCounts(tt.config)
 			if running != tt.wantRunning {
 				t.Errorf("getScheduledDesiredCounts() running = %d, want %d", running, tt.wantRunning)
@@ -441,6 +461,8 @@ func TestGetScheduledDesiredCounts(t *testing.T) {
 
 //nolint:dupl // Test functions have similar structure but test different EC2 operations - intentional pattern
 func TestStartInstances(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		instanceIDs []string
@@ -480,6 +502,8 @@ func TestStartInstances(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 			manager.SetEC2Client(tt.mock)
 
@@ -493,6 +517,8 @@ func TestStartInstances(t *testing.T) {
 
 //nolint:dupl // Test functions have similar structure but test different EC2 operations - intentional pattern
 func TestStopInstances(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		instanceIDs []string
@@ -532,6 +558,8 @@ func TestStopInstances(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 			manager.SetEC2Client(tt.mock)
 			// Pre-populate idle tracking to verify cleanup
@@ -557,6 +585,8 @@ func TestStopInstances(t *testing.T) {
 
 //nolint:dupl // Test functions have similar structure but test different EC2 operations - intentional pattern
 func TestTerminateInstances(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		instanceIDs []string
@@ -596,6 +626,8 @@ func TestTerminateInstances(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 			manager.SetEC2Client(tt.mock)
 			// Pre-populate idle tracking to verify cleanup
@@ -620,6 +652,8 @@ func TestTerminateInstances(t *testing.T) {
 }
 
 func TestReconcileWithLockHeld(t *testing.T) {
+	t.Parallel()
+
 	// Test that pool reconciliation is skipped when lock is held by another instance
 	getPoolConfigCalled := false
 	mockDB := &MockDBClient{
@@ -646,6 +680,8 @@ func TestReconcileWithLockHeld(t *testing.T) {
 }
 
 func TestReconcileWithoutEC2Client(t *testing.T) {
+	t.Parallel()
+
 	// Test that reconcile logs warning when EC2 client not configured
 	listPoolsCalled := false
 	mockDB := &MockDBClient{
@@ -711,6 +747,8 @@ func TestReconcilePoolConfigNotFound(_ *testing.T) {
 }
 
 func TestGetPoolInstances(t *testing.T) {
+	t.Parallel()
+
 	launchTime := time.Now().Add(-1 * time.Hour)
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(&MockEC2API{
@@ -782,6 +820,8 @@ func TestGetPoolInstances(t *testing.T) {
 }
 
 func TestGetPoolInstancesError(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(&MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -796,6 +836,8 @@ func TestGetPoolInstancesError(t *testing.T) {
 }
 
 func TestSelectSubnet(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		privateSubnets []string
@@ -825,6 +867,8 @@ func TestSelectSubnet(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{
 				PrivateSubnetIDs: tt.privateSubnets,
 				PublicSubnetIDs:  tt.publicSubnets,
@@ -840,6 +884,8 @@ func TestSelectSubnet(t *testing.T) {
 }
 
 func TestReconcilePoolScaleUp(t *testing.T) {
+	t.Parallel()
+
 	fleetCreateCalled := 0
 	startInstancesCalled := false
 	var capturedSpecs []*fleet.LaunchSpec
@@ -915,6 +961,8 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 }
 
 func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
+	t.Parallel()
+
 	// Test that reconciliation creates new instances when running instances are busy
 	// desired_ready=2, running=2, busy=2 -> ready=0 -> need 2 new instances
 	fleetCreateCalled := 0
@@ -983,6 +1031,8 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 }
 
 func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
+	t.Parallel()
+
 	// Stale job records from terminated instances should not inflate busy count.
 	// GetPoolBusyInstanceIDs returns instance IDs from DynamoDB, but only IDs
 	// matching actual running pool instances should count as busy.
@@ -1058,6 +1108,8 @@ func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
 }
 
 func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
+	t.Parallel()
+
 	// Test that reconciliation doesn't scale down busy instances
 	// desired_ready=1, running=3, busy=2 -> ready=1 -> no scale-down needed
 	terminateCalled := false
@@ -1137,6 +1189,8 @@ func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
 }
 
 func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
+	t.Parallel()
+
 	// Test that reconciliation aborts when GetPoolBusyInstanceIDs fails
 	fleetCreateCalled := false
 	terminateCalled := false
@@ -1210,6 +1264,8 @@ func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
 }
 
 func TestReconcilePoolStartStoppedInstances(t *testing.T) {
+	t.Parallel()
+
 	startInstancesCalled := false
 	startedIDs := []string{}
 
@@ -1272,6 +1328,8 @@ func TestReconcilePoolStartStoppedInstances(t *testing.T) {
 }
 
 func TestReconcilePoolScaleDown(t *testing.T) {
+	t.Parallel()
+
 	terminateInstancesCalled := false
 
 	mockDB := &MockDBClient{
@@ -1342,6 +1400,8 @@ func TestReconcilePoolScaleDown(t *testing.T) {
 }
 
 func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
+	t.Parallel()
+
 	terminateInstancesCalled := false
 	terminatedIDs := []string{}
 
@@ -1415,6 +1475,8 @@ func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
 }
 
 func TestReconcilePoolCreateForWarmPool(t *testing.T) {
+	t.Parallel()
+
 	// Test warm pool: desiredRunning=0, desiredStopped=1
 	// Should create fleet instances to eventually become stopped
 	fleetCreateCalled := 0
@@ -1469,6 +1531,8 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 }
 
 func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
+	t.Parallel()
+
 	// Test that warm pool instances are stopped immediately without waiting for idle timeout
 	// This is the key behavior: new instances should be stopped right away to become "warm"
 	var stoppedIDs []string
@@ -1544,6 +1608,8 @@ func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
 }
 
 func TestReconcilePoolWithSchedule(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	currentHour := now.Hour()
 	currentDay := int(now.Weekday())
@@ -1646,6 +1712,8 @@ func TestReconcilePoolUpdateStateError(_ *testing.T) {
 }
 
 func TestReconcilePoolStartInstancesError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDBClient{
 		ListPoolsFunc: func(_ context.Context) ([]string, error) {
 			return []string{"test-pool"}, nil
@@ -1846,6 +1914,8 @@ func TestReconcilePoolTerminateInstancesError(_ *testing.T) {
 }
 
 func TestGetPoolInstancesIdleTracking(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 
 	// Pre-populate idle tracking for one instance
@@ -1927,6 +1997,8 @@ func TestGetPoolInstancesIdleTracking(t *testing.T) {
 }
 
 func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
+	t.Parallel()
+
 	fleetCreateCount := 0
 
 	mockDB := &MockDBClient{
@@ -1980,6 +2052,8 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 }
 
 func TestReconcileEphemeralPoolPeakError(t *testing.T) {
+	t.Parallel()
+
 	fleetCreateCount := 0
 
 	mockDB := &MockDBClient{
@@ -2033,6 +2107,8 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 
 //nolint:dupl // Test cases have intentionally similar structure with different data
 func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
+	t.Parallel()
+
 	fleetCreateCount := 0
 
 	mockDB := &MockDBClient{
@@ -2087,6 +2163,8 @@ func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
 
 //nolint:dupl // Test cases have intentionally similar structure with different data
 func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
+	t.Parallel()
+
 	fleetCreateCount := 0
 
 	mockDB := &MockDBClient{
@@ -2141,6 +2219,8 @@ func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
 
 //nolint:dupl // Test cases have intentionally similar structure with different data
 func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
+	t.Parallel()
+
 	fleetCreateCount := 0
 
 	mockDB := &MockDBClient{
@@ -2194,6 +2274,8 @@ func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
 }
 
 func TestGetAvailableInstance_StoppedInstance(t *testing.T) {
+	t.Parallel()
+
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 			return &ec2.DescribeInstancesOutput{
@@ -2236,6 +2318,8 @@ func TestGetAvailableInstance_StoppedInstance(t *testing.T) {
 }
 
 func TestGetAvailableInstance_NoStoppedInstances(t *testing.T) {
+	t.Parallel()
+
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 			return &ec2.DescribeInstancesOutput{
@@ -2267,6 +2351,8 @@ func TestGetAvailableInstance_NoStoppedInstances(t *testing.T) {
 }
 
 func TestGetAvailableInstance_NoEC2Client(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	// Don't set EC2 client
 
@@ -2277,6 +2363,8 @@ func TestGetAvailableInstance_NoEC2Client(t *testing.T) {
 }
 
 func TestStartInstanceForJob(t *testing.T) {
+	t.Parallel()
+
 	startCalled := false
 	var startedInstanceIDs []string
 
@@ -2315,6 +2403,8 @@ func TestStartInstanceForJob(t *testing.T) {
 }
 
 func TestStartInstanceForJob_NoEC2Client(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	// Don't set EC2 client
 
@@ -2325,6 +2415,8 @@ func TestStartInstanceForJob_NoEC2Client(t *testing.T) {
 }
 
 func TestStartInstanceForJob_CreatesRoleTag(t *testing.T) {
+	t.Parallel()
+
 	const instanceID = "i-roletagtest"
 	startCalled := false
 	createTagsCalled := false
@@ -2373,6 +2465,8 @@ func TestStartInstanceForJob_CreatesRoleTag(t *testing.T) {
 }
 
 func TestStartInstanceForJob_EmptyRepoSkipsTag(t *testing.T) {
+	t.Parallel()
+
 	const instanceID = "i-emptyrepotest"
 	startCalled := false
 	createTagsCalled := false
@@ -2405,6 +2499,8 @@ func TestStartInstanceForJob_EmptyRepoSkipsTag(t *testing.T) {
 }
 
 func TestStartInstanceForJob_CreateTagsError_NonFatal(t *testing.T) {
+	t.Parallel()
+
 	const instanceID = "i-tagerrortest"
 	startCalled := false
 	createTagsCalled := false
@@ -2438,6 +2534,8 @@ func TestStartInstanceForJob_CreateTagsError_NonFatal(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_Success(t *testing.T) {
+	t.Parallel()
+
 	startCalled := false
 	describeCalled := false
 	claimCalled := false
@@ -2514,6 +2612,8 @@ func TestClaimAndStartPoolInstance_Success(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_NoInstance(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDBClient{}
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -2536,6 +2636,8 @@ func TestClaimAndStartPoolInstance_NoInstance(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_StartError(t *testing.T) {
+	t.Parallel()
+
 	releaseCalled := false
 	mockDB := &MockDBClient{
 		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
@@ -2590,6 +2692,8 @@ func TestClaimAndStartPoolInstance_StartError(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_ClaimConflict(t *testing.T) {
+	t.Parallel()
+
 	// Test that when first instance is already claimed, it tries the next one
 	claimAttempts := 0
 	mockDB := &MockDBClient{
@@ -2651,6 +2755,8 @@ func TestClaimAndStartPoolInstance_ClaimConflict(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_NilDBClient(t *testing.T) {
+	t.Parallel()
+
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 			return &ec2.DescribeInstancesOutput{
@@ -2679,6 +2785,8 @@ func TestClaimAndStartPoolInstance_NilDBClient(t *testing.T) {
 }
 
 func TestStopPoolInstance_Success(t *testing.T) {
+	t.Parallel()
+
 	stopCalled := false
 
 	mockEC2 := &MockEC2API{
@@ -2715,6 +2823,8 @@ func TestStopPoolInstance_Success(t *testing.T) {
 }
 
 func TestStopPoolInstance_NoEC2Client(t *testing.T) {
+	t.Parallel()
+
 	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 	// Don't set EC2 client
 
@@ -2725,6 +2835,8 @@ func TestStopPoolInstance_NoEC2Client(t *testing.T) {
 }
 
 func TestStopPoolInstance_Error(t *testing.T) {
+	t.Parallel()
+
 	mockEC2 := &MockEC2API{
 		StopInstancesFunc: func(_ context.Context, _ *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
 			return nil, errors.New("stop failed")
@@ -2741,6 +2853,8 @@ func TestStopPoolInstance_Error(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
+	t.Parallel()
+
 	// Test that when multiple goroutines attempt to claim the same instance,
 	// only one succeeds and the other either fails or gets a different instance
 	claimCount := 0
@@ -2816,6 +2930,8 @@ func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 }
 
 func TestClaimAndStartPoolInstance_DBClaimFailure(t *testing.T) {
+	t.Parallel()
+
 	// Test that a non-conflict DB error (e.g., network error) stops iteration
 	// and returns the error instead of trying next instance
 	dbError := errors.New("DynamoDB network error")
@@ -2864,6 +2980,8 @@ func TestClaimAndStartPoolInstance_DBClaimFailure(t *testing.T) {
 
 //nolint:dupl // Test cases have intentionally similar structure with different data
 func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
+	t.Parallel()
+
 	// Orphaned job records (from terminated instances) must NOT prevent stopping
 	// idle running instances in warm pools (desiredRunning=0).
 	// This is the critical warm pool invariant: running instances should either
@@ -2924,6 +3042,8 @@ func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
 }
 
 func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
+	t.Parallel()
+
 	// Warm pool invariant: running instances that are not busy must be stopped.
 	// This test verifies that idle running instances are returned to stopped state.
 	var stoppedInstances []string
@@ -2978,6 +3098,8 @@ func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
 
 //nolint:dupl // Test cases have intentionally similar structure with different data
 func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
+	t.Parallel()
+
 	// Busy count must be calculated by intersecting job records with actual
 	// running pool instances. Job records for non-existent instances (orphaned)
 	// must not inflate the busy count.
@@ -3062,6 +3184,8 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 }
 
 func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
+	t.Parallel()
+
 	// Test scenario with a mix of orphaned jobs and real running jobs.
 	// Only real jobs (on existing running instances) should count as busy.
 	var stoppedInstances []string
@@ -3145,6 +3269,8 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 
 
 func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
+	t.Parallel()
+
 	callCount := 0
 
 	mockFleet := &MockFleetAPI{
@@ -3174,6 +3300,8 @@ func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
 }
 
 func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
+	t.Parallel()
+
 	mockFleet := &MockFleetAPI{
 		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			t.Error("CreateOnDemandInstance should not be called when no subnets configured")
@@ -3196,6 +3324,8 @@ func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
 }
 
 func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
+	t.Parallel()
+
 	callCount := 0
 
 	mockFleet := &MockFleetAPI{
@@ -3222,6 +3352,8 @@ func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
 }
 
 func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
+	t.Parallel()
+
 	var capturedSpec *fleet.LaunchSpec
 
 	mockFleet := &MockFleetAPI{
@@ -3268,6 +3400,8 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 }
 
 func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
+	t.Parallel()
+
 	var capturedTypes []string
 
 	weightedPool := []string{"t4g.xlarge", "t4g.xlarge", "t4g.xlarge", testInstanceTypeC7gXL, "m7g.xlarge"}
@@ -3316,6 +3450,8 @@ func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
 }
 
 func TestCreatePoolFleetInstances_EmptyInstanceTypes(t *testing.T) {
+	t.Parallel()
+
 	mockFleet := &MockFleetAPI{
 		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
 			t.Error("CreateOnDemandInstance should not be called when no instance types resolved")
@@ -3339,6 +3475,8 @@ func TestCreatePoolFleetInstances_EmptyInstanceTypes(t *testing.T) {
 
 // TestClaimAndStartPoolInstance_WithSpec tests that spec filtering selects correct instances.
 func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name             string
 		instances        []ec2types.Instance
@@ -3606,6 +3744,8 @@ func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockDB := &MockDBClient{
 				ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
 					return nil
@@ -3651,6 +3791,8 @@ func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
 // TestClaimAndStartPoolInstance_WithSpec_ClaimConflict tests that when first matching
 // instance is already claimed, it tries the next matching instance.
 func TestClaimAndStartPoolInstance_WithSpec_ClaimConflict(t *testing.T) {
+	t.Parallel()
+
 	claimAttempts := 0
 	mockDB := &MockDBClient{
 		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, _ int64, _ time.Duration) error {
@@ -3723,6 +3865,8 @@ func TestClaimAndStartPoolInstance_WithSpec_ClaimConflict(t *testing.T) {
 // TestClaimAndStartPoolInstance_UnknownInstanceType tests that instances with types
 // not in InstanceCatalog are excluded from spec matching.
 func TestClaimAndStartPoolInstance_UnknownInstanceType(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDBClient{
 		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
 			return nil

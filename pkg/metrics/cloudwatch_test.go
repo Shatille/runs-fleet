@@ -22,6 +22,8 @@ func (m *MockCloudWatchAPI) PutMetricData(ctx context.Context, params *cloudwatc
 }
 
 func TestPublishMetrics(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		metricName string
@@ -176,6 +178,8 @@ func TestPublishMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockClient := &MockCloudWatchAPI{
 				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 					if *params.Namespace != testNamespace {
@@ -232,6 +236,8 @@ func TestPublishMetrics(t *testing.T) {
 }
 
 func TestPublishPoolUtilization(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		poolName    string
@@ -259,6 +265,8 @@ func TestPublishPoolUtilization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockClient := &MockCloudWatchAPI{
 				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 					if tt.mockErr != nil {
@@ -308,6 +316,8 @@ func TestPublishPoolUtilization(t *testing.T) {
 
 //nolint:dupl // Test functions have similar structure but test different methods - intentional pattern
 func TestPublishSchedulingFailure(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		taskType string
@@ -332,6 +342,8 @@ func TestPublishSchedulingFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockClient := &MockCloudWatchAPI{
 				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 					if tt.mockErr != nil {
@@ -375,6 +387,8 @@ func TestPublishSchedulingFailure(t *testing.T) {
 
 //nolint:dupl // Test functions have similar structure but test different methods - intentional pattern
 func TestPublishCircuitBreakerTriggered(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		instanceType string
@@ -399,6 +413,8 @@ func TestPublishCircuitBreakerTriggered(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockClient := &MockCloudWatchAPI{
 				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 					if tt.mockErr != nil {
@@ -441,6 +457,8 @@ func TestPublishCircuitBreakerTriggered(t *testing.T) {
 }
 
 func TestPublishMetricsError(t *testing.T) {
+	t.Parallel()
+
 	mockClient := &MockCloudWatchAPI{
 		PutMetricDataFunc: func(_ context.Context, _ *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 			return nil, errors.New("cloudwatch error")
@@ -462,6 +480,8 @@ func TestPublishMetricsError(t *testing.T) {
 }
 
 func TestCloudWatchPublisher_Close(t *testing.T) {
+	t.Parallel()
+
 	publisher := &CloudWatchPublisher{
 		client:    &MockCloudWatchAPI{},
 		namespace: "RunsFleet",
@@ -474,6 +494,8 @@ func TestCloudWatchPublisher_Close(t *testing.T) {
 }
 
 func TestCloudWatchPublisher_FieldsWithMock(t *testing.T) {
+	t.Parallel()
+
 	mockClient := &MockCloudWatchAPI{}
 	publisher := &CloudWatchPublisher{
 		client:    mockClient,

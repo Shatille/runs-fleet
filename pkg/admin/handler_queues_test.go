@@ -27,6 +27,8 @@ func (m *mockSQSAPI) GetQueueAttributes(_ context.Context, params *sqs.GetQueueA
 }
 
 func TestQueuesHandler_ListQueues(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		config         QueueConfig
@@ -93,6 +95,8 @@ func TestQueuesHandler_ListQueues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			sqsMock := &mockSQSAPI{attrs: tt.attrs}
 			auth := NewAuthMiddleware("")
 			handler := NewQueuesHandler(sqsMock, tt.config, auth)
@@ -126,6 +130,8 @@ func TestQueuesHandler_ListQueues(t *testing.T) {
 }
 
 func TestQueuesHandler_DLQMessages(t *testing.T) {
+	t.Parallel()
+
 	config := QueueConfig{
 		MainQueue:    "https://sqs.us-east-1.amazonaws.com/123456789/main",
 		MainQueueDLQ: "https://sqs.us-east-1.amazonaws.com/123456789/main-dlq",

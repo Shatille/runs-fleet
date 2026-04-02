@@ -39,6 +39,8 @@ func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMes
 }
 
 func TestJobMessage_Marshal(t *testing.T) {
+	t.Parallel()
+
 	job := &JobMessage{
 		JobID:        12345,
 		RunID:        67890,
@@ -59,6 +61,8 @@ func TestJobMessage_Marshal(t *testing.T) {
 }
 
 func TestJobMessage_Unmarshal(t *testing.T) {
+	t.Parallel()
+
 	jsonStr := `{"run_id":67890,"instance_type":"c7g.xlarge","spot":true}`
 
 	var job JobMessage
@@ -81,6 +85,8 @@ func TestJobMessage_Unmarshal(t *testing.T) {
 }
 
 func TestSQSClient_SendMessage(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		job     *JobMessage
@@ -152,6 +158,8 @@ func TestSQSClient_SendMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &SQSClient{
 				sqsClient: tt.mock,
 				queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
@@ -166,6 +174,8 @@ func TestSQSClient_SendMessage(t *testing.T) {
 }
 
 func TestSQSClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
+	t.Parallel()
+
 	var firstDedupID, secondDedupID string
 
 	job := &JobMessage{
@@ -209,6 +219,8 @@ func TestSQSClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
 }
 
 func TestSQSClient_ReceiveMessages(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		mock         *mockSQSClient
@@ -264,6 +276,8 @@ func TestSQSClient_ReceiveMessages(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &SQSClient{
 				sqsClient: tt.mock,
 				queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
@@ -281,6 +295,8 @@ func TestSQSClient_ReceiveMessages(t *testing.T) {
 }
 
 func TestSQSClient_DeleteMessage(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		mock    *mockSQSClient
@@ -311,6 +327,8 @@ func TestSQSClient_DeleteMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &SQSClient{
 				sqsClient: tt.mock,
 				queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
@@ -325,6 +343,8 @@ func TestSQSClient_DeleteMessage(t *testing.T) {
 }
 
 func TestSQSClient_SendMessage_WithTraceContext(t *testing.T) {
+	t.Parallel()
+
 	var capturedInput *sqs.SendMessageInput
 
 	mock := &mockSQSClient{
@@ -372,6 +392,8 @@ func TestSQSClient_SendMessage_WithTraceContext(t *testing.T) {
 }
 
 func TestSQSClient_SendMessage_WithPartialTraceContext(t *testing.T) {
+	t.Parallel()
+
 	var capturedInput *sqs.SendMessageInput
 
 	mock := &mockSQSClient{
@@ -416,6 +438,8 @@ func TestSQSClient_SendMessage_WithPartialTraceContext(t *testing.T) {
 }
 
 func TestSQSClient_SendMessage_NoTraceContext(t *testing.T) {
+	t.Parallel()
+
 	var capturedInput *sqs.SendMessageInput
 
 	mock := &mockSQSClient{
@@ -449,6 +473,8 @@ func TestSQSClient_SendMessage_NoTraceContext(t *testing.T) {
 }
 
 func TestSQSClient_ReceiveMessages_WithMessageAttributes(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockSQSClient{
 		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
 			return &sqs.ReceiveMessageOutput{
@@ -504,6 +530,8 @@ func TestSQSClient_ReceiveMessages_WithMessageAttributes(t *testing.T) {
 }
 
 func TestSQSClient_ReceiveMessages_NilFields(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockSQSClient{
 		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
 			return &sqs.ReceiveMessageOutput{
@@ -555,6 +583,8 @@ func TestSQSClient_ReceiveMessages_NilFields(t *testing.T) {
 }
 
 func TestDeref(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		input *string
@@ -579,6 +609,8 @@ func TestDeref(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := deref(tt.input)
 			if got != tt.want {
 				t.Errorf("deref() = %q, want %q", got, tt.want)
@@ -588,6 +620,8 @@ func TestDeref(t *testing.T) {
 }
 
 func TestNewSQSClientWithAPI(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockSQSClient{}
 	client := NewSQSClientWithAPI(mock, "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo")
 
