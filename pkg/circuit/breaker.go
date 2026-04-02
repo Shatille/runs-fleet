@@ -188,6 +188,15 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 	return nil
 }
 
+// IsOpen returns true if the circuit is currently open for the given instance type.
+func (b *Breaker) IsOpen(ctx context.Context, instanceType string) (bool, error) {
+	state, err := b.CheckCircuit(ctx, instanceType)
+	if err != nil {
+		return false, err
+	}
+	return state == StateOpen, nil
+}
+
 // CheckCircuit checks the current circuit state for an instance type.
 func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (State, error) {
 	// Check cache first

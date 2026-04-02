@@ -56,11 +56,13 @@ type MetricsAPI interface {
 	PublishFleetSizeIncrement(ctx context.Context) error
 	PublishFleetSizeDecrement(ctx context.Context) error
 	PublishMessageDeletionFailure(ctx context.Context) error
+	PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error
 }
 
 // CircuitBreakerAPI provides circuit breaker operations.
 type CircuitBreakerAPI interface {
 	RecordInterruption(ctx context.Context, instanceType string) error
+	IsOpen(ctx context.Context, instanceType string) (bool, error)
 }
 
 // Handler processes EventBridge events from SQS queue.
@@ -299,6 +301,21 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 			eventsLog.Warn("circuit breaker record failed",
 				slog.String("instance_type", job.InstanceType),
 				slog.String("error", err.Error()))
+		} else {
+			open, err := h.circuitBreaker.IsOpen(ctx, job.InstanceType)
+			if err != nil {
+				eventsLog.Warn("circuit breaker state check failed",
+					slog.String("instance_type", job.InstanceType),
+					slog.String("error", err.Error()))
+			} else if open {
+				metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
+				defer metricCancel()
+				if err := h.metrics.PublishCircuitBreakerTriggered(metricCtx, job.InstanceType); err != nil {
+					eventsLog.Warn("circuit breaker metric failed",
+						slog.String("instance_type", job.InstanceType),
+						slog.String("error", err.Error()))
+				}
+			}
 		}
 	}
 
