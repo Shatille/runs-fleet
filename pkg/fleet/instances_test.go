@@ -5,6 +5,8 @@ import (
 )
 
 func TestGetInstanceSpec(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		instanceType string
@@ -46,6 +48,8 @@ func TestGetInstanceSpec(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			spec, found := GetInstanceSpec(tt.instanceType)
 			if found != tt.wantFound {
 				t.Errorf("GetInstanceSpec(%q) found = %v, want %v", tt.instanceType, found, tt.wantFound)
@@ -66,6 +70,8 @@ func TestGetInstanceSpec(t *testing.T) {
 }
 
 func TestResolveInstanceTypes(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		spec     FlexibleSpec
@@ -166,6 +172,8 @@ func TestResolveInstanceTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := ResolveInstanceTypes(tt.spec)
 
 			if tt.wantLen > 0 && len(result) != tt.wantLen {
@@ -198,6 +206,8 @@ func TestResolveInstanceTypes(t *testing.T) {
 }
 
 func TestResolveInstanceTypes_SortedByCPU(t *testing.T) {
+	t.Parallel()
+
 	spec := FlexibleSpec{
 		CPUMin:   2,
 		CPUMax:   16,
@@ -223,6 +233,8 @@ func TestResolveInstanceTypes_SortedByCPU(t *testing.T) {
 }
 
 func TestDefaultFlexibleFamilies(t *testing.T) {
+	t.Parallel()
+
 	arm64Families := DefaultFlexibleFamilies("arm64")
 	if len(arm64Families) == 0 {
 		t.Error("DefaultFlexibleFamilies(arm64) returned empty slice")
@@ -286,6 +298,8 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 }
 
 func TestResolveInstanceTypes_Generation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		spec     FlexibleSpec
@@ -363,6 +377,8 @@ func TestResolveInstanceTypes_Generation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := ResolveInstanceTypes(tt.spec)
 
 			for _, want := range tt.contains {
@@ -391,6 +407,8 @@ func TestResolveInstanceTypes_Generation(t *testing.T) {
 }
 
 func TestGetInstanceArch(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		instanceType string
@@ -425,6 +443,8 @@ func TestGetInstanceArch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := GetInstanceArch(tt.instanceType)
 			if got != tt.wantArch {
 				t.Errorf("GetInstanceArch(%q) = %q, want %q", tt.instanceType, got, tt.wantArch)
@@ -434,6 +454,8 @@ func TestGetInstanceArch(t *testing.T) {
 }
 
 func TestGroupInstanceTypesByArch(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name          string
 		instanceTypes []string
@@ -480,6 +502,8 @@ func TestGroupInstanceTypesByArch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := GroupInstanceTypesByArch(tt.instanceTypes)
 
 			// Check ARM64
@@ -510,6 +534,8 @@ func TestGroupInstanceTypesByArch(t *testing.T) {
 }
 
 func TestInstanceSpec_MatchesFlexibleSpec(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		instance InstanceSpec
@@ -725,6 +751,8 @@ func TestInstanceSpec_MatchesFlexibleSpec(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := tt.instance.MatchesFlexibleSpec(tt.spec)
 			if got != tt.want {
 				t.Errorf("InstanceSpec.MatchesFlexibleSpec() = %v, want %v", got, tt.want)

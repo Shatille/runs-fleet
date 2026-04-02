@@ -7,6 +7,8 @@ import (
 )
 
 func TestAuthMiddleware_Disabled(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("")
 	if m.IsEnabled() {
 		t.Error("expected middleware to be disabled with empty string")
@@ -31,6 +33,8 @@ func TestAuthMiddleware_Disabled(t *testing.T) {
 }
 
 func TestAuthMiddleware_MissingUserHeader(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("require-auth")
 
 	called := false
@@ -51,6 +55,8 @@ func TestAuthMiddleware_MissingUserHeader(t *testing.T) {
 }
 
 func TestAuthMiddleware_ValidUserHeader(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("require-auth")
 
 	var capturedUser UserInfo
@@ -77,6 +83,8 @@ func TestAuthMiddleware_ValidUserHeader(t *testing.T) {
 }
 
 func TestAuthMiddleware_WithGroups(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("require-auth")
 
 	var capturedUser UserInfo
@@ -106,6 +114,8 @@ func TestAuthMiddleware_WithGroups(t *testing.T) {
 }
 
 func TestAuthMiddleware_DisabledAllowsAllRequests(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("")
 
 	var capturedUser UserInfo
@@ -127,6 +137,8 @@ func TestAuthMiddleware_DisabledAllowsAllRequests(t *testing.T) {
 }
 
 func TestAuthMiddleware_DisabledStillExtractsHeaders(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("")
 
 	var capturedUser UserInfo
@@ -149,6 +161,8 @@ func TestAuthMiddleware_DisabledStillExtractsHeaders(t *testing.T) {
 }
 
 func TestGetUsername(t *testing.T) {
+	t.Parallel()
+
 	m := NewAuthMiddleware("")
 
 	var username string

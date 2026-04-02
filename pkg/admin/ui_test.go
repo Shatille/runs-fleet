@@ -8,6 +8,8 @@ import (
 )
 
 func TestUIHandler_ServesIndexHTML(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Test root path
@@ -23,6 +25,8 @@ func TestUIHandler_ServesIndexHTML(t *testing.T) {
 }
 
 func TestUIHandler_NotBuilt(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// If the UI is not built, the handler should return a 503 error
@@ -40,6 +44,8 @@ func TestUIHandler_NotBuilt(t *testing.T) {
 }
 
 func TestUIHandler_AdminPrefixStripping(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	tests := []struct {
@@ -54,6 +60,8 @@ func TestUIHandler_AdminPrefixStripping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -73,6 +81,8 @@ func TestUIHandler_AdminPrefixStripping(t *testing.T) {
 }
 
 func TestUIHandler_SPAFallback(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Test SPA routing - non-existent paths should fallback to index.html
@@ -87,6 +97,8 @@ func TestUIHandler_SPAFallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -100,6 +112,8 @@ func TestUIHandler_SPAFallback(t *testing.T) {
 }
 
 func TestUIHandler_StaticAssets(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Test requests for static assets (these may or may not exist)
@@ -115,6 +129,8 @@ func TestUIHandler_StaticAssets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -134,6 +150,8 @@ func TestUIHandler_StaticAssets(t *testing.T) {
 }
 
 func TestUIHandler_DirectoryPath(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	tests := []struct {
@@ -147,6 +165,8 @@ func TestUIHandler_DirectoryPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -160,6 +180,8 @@ func TestUIHandler_DirectoryPath(t *testing.T) {
 }
 
 func TestUIHandler_HTTPMethods(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	methods := []string{
@@ -173,6 +195,8 @@ func TestUIHandler_HTTPMethods(t *testing.T) {
 
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(method, "/", nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -187,6 +211,8 @@ func TestUIHandler_HTTPMethods(t *testing.T) {
 }
 
 func TestUIHandler_PathNormalization(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	tests := []struct {
@@ -200,6 +226,8 @@ func TestUIHandler_PathNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 
@@ -215,6 +243,8 @@ func TestUIHandler_PathNormalization(t *testing.T) {
 }
 
 func TestUIHandler_QueryStrings(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	tests := []struct {
@@ -228,6 +258,8 @@ func TestUIHandler_QueryStrings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -241,6 +273,8 @@ func TestUIHandler_QueryStrings(t *testing.T) {
 }
 
 func TestUIHandler_EmptyPath(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Test empty path after stripping /admin
@@ -255,6 +289,8 @@ func TestUIHandler_EmptyPath(t *testing.T) {
 }
 
 func TestUIHandler_ReturnType(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Verify that UIHandler returns a valid http.Handler
@@ -269,6 +305,8 @@ func TestUIHandler_ReturnType(t *testing.T) {
 }
 
 func TestUIHandler_ContentType(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -284,6 +322,8 @@ func TestUIHandler_ContentType(t *testing.T) {
 }
 
 func TestUIHandler_ConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Test concurrent requests don't cause race conditions
@@ -309,6 +349,8 @@ func TestUIHandler_ConcurrentRequests(t *testing.T) {
 }
 
 func TestUIHandler_LongPath(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	// Test handling of very long paths
@@ -326,6 +368,8 @@ func TestUIHandler_LongPath(t *testing.T) {
 }
 
 func TestUIHandler_SpecialCharacters(t *testing.T) {
+	t.Parallel()
+
 	handler := UIHandler()
 
 	tests := []struct {
@@ -339,6 +383,8 @@ func TestUIHandler_SpecialCharacters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 

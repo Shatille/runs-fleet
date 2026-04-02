@@ -77,6 +77,8 @@ func (m *mockDynamoDB) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput
 }
 
 func TestNewBreaker(t *testing.T) {
+	t.Parallel()
+
 	// Create a breaker with mock (this tests the constructor structure)
 	b := &Breaker{
 		dynamoClient: newMockDynamoDB(),
@@ -94,6 +96,8 @@ func TestNewBreaker(t *testing.T) {
 }
 
 func TestCheckCircuit_NoRecord(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	b := &Breaker{
 		dynamoClient: mock,
@@ -112,6 +116,8 @@ func TestCheckCircuit_NoRecord(t *testing.T) {
 }
 
 func TestCheckCircuit_WithCachedState(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	b := &Breaker{
 		dynamoClient: mock,
@@ -142,6 +148,8 @@ func TestCheckCircuit_WithCachedState(t *testing.T) {
 }
 
 func TestCheckCircuit_ExpiredCache(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	b := &Breaker{
 		dynamoClient: mock,
@@ -173,6 +181,8 @@ func TestCheckCircuit_ExpiredCache(t *testing.T) {
 }
 
 func TestCheckCircuit_OpenState(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 
 	// Create a record with open state
@@ -202,6 +212,8 @@ func TestCheckCircuit_OpenState(t *testing.T) {
 }
 
 func TestCheckCircuit_AutoReset(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 
 	// Create a record with open state that should auto-reset
@@ -237,6 +249,8 @@ func TestCheckCircuit_AutoReset(t *testing.T) {
 }
 
 func TestCheckCircuit_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	mock.getErr = errors.New("dynamodb error")
 
@@ -258,6 +272,8 @@ func TestCheckCircuit_DynamoDBError(t *testing.T) {
 }
 
 func TestRecordInterruption_FirstInterruption(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	b := &Breaker{
 		dynamoClient: mock,
@@ -295,6 +311,8 @@ func TestRecordInterruption_FirstInterruption(t *testing.T) {
 }
 
 func TestRecordInterruption_OpensCircuit(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 
 	// Pre-populate with 2 interruptions
@@ -344,6 +362,8 @@ func TestRecordInterruption_OpensCircuit(t *testing.T) {
 }
 
 func TestRecordInterruption_ResetsCountOutsideWindow(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 
 	// Pre-populate with old interruption (outside time window)
@@ -380,6 +400,8 @@ func TestRecordInterruption_ResetsCountOutsideWindow(t *testing.T) {
 }
 
 func TestRecordInterruption_InvalidatesCache(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	b := &Breaker{
 		dynamoClient: mock,
@@ -406,6 +428,8 @@ func TestRecordInterruption_InvalidatesCache(t *testing.T) {
 }
 
 func TestRecordInterruption_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	mock.getErr = errors.New("dynamodb get error")
 
@@ -422,6 +446,8 @@ func TestRecordInterruption_DynamoDBError(t *testing.T) {
 }
 
 func TestRecordInterruption_PutError(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	mock.putErr = errors.New("dynamodb put error")
 
@@ -438,6 +464,8 @@ func TestRecordInterruption_PutError(t *testing.T) {
 }
 
 func TestResetCircuit(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 
 	// Pre-populate with open circuit
@@ -490,6 +518,8 @@ func TestResetCircuit(t *testing.T) {
 }
 
 func TestResetCircuit_PutError(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	mock.putErr = errors.New("dynamodb put error")
 
@@ -506,6 +536,8 @@ func TestResetCircuit_PutError(t *testing.T) {
 }
 
 func TestCleanupExpiredCache(t *testing.T) {
+	t.Parallel()
+
 	b := &Breaker{
 		dynamoClient: newMockDynamoDB(),
 		tableName:    "test-table",
@@ -538,6 +570,8 @@ func TestCleanupExpiredCache(t *testing.T) {
 }
 
 func TestStartCacheCleanup(t *testing.T) {
+	t.Parallel()
+
 	b := &Breaker{
 		dynamoClient: newMockDynamoDB(),
 		tableName:    "test-table",
@@ -562,6 +596,8 @@ func TestStartCacheCleanup(t *testing.T) {
 }
 
 func TestStateConstants(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		state    State
 		expected string
@@ -579,6 +615,8 @@ func TestStateConstants(t *testing.T) {
 }
 
 func TestConstants(t *testing.T) {
+	t.Parallel()
+
 	if InterruptionThreshold != 3 {
 		t.Errorf("expected InterruptionThreshold 3, got %d", InterruptionThreshold)
 	}
@@ -593,6 +631,8 @@ func TestConstants(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
 	mock := newMockDynamoDB()
 	b := &Breaker{
 		dynamoClient: mock,

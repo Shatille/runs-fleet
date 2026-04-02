@@ -7,6 +7,8 @@ import (
 )
 
 func TestBuildRunnerConditions(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		job  *queue.JobMessage
@@ -58,6 +60,8 @@ func TestBuildRunnerConditions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := BuildRunnerConditions(tt.job)
 			if got != tt.want {
 				t.Errorf("BuildRunnerConditions() = %q, want %q", got, tt.want)

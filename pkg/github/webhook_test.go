@@ -15,6 +15,8 @@ import (
 const testWebhookSecret = "test-secret"
 
 func TestValidateSignature(t *testing.T) {
+	t.Parallel()
+
 	secret := testWebhookSecret
 	payload := []byte("test-payload")
 
@@ -68,6 +70,8 @@ func TestValidateSignature(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			if err := ValidateSignature(tt.payload, tt.signature, tt.secret); (err != nil) != tt.wantErr {
 				t.Errorf("ValidateSignature() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -76,6 +80,8 @@ func TestValidateSignature(t *testing.T) {
 }
 
 func TestParseWebhook(t *testing.T) {
+	t.Parallel()
+
 	secret := testWebhookSecret
 
 	// Create a valid signature for a payload
@@ -148,6 +154,8 @@ func TestParseWebhook(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(tt.body))
 			if tt.event != "" {
 				req.Header.Set("X-GitHub-Event", tt.event)
@@ -172,6 +180,8 @@ func TestParseWebhook(t *testing.T) {
 }
 
 func TestParseWebhook_BodySizeLimit(t *testing.T) {
+	t.Parallel()
+
 	secret := testWebhookSecret
 
 	// Create a payload that exceeds the size limit (1MB + 1 byte)
@@ -194,6 +204,8 @@ func TestParseWebhook_BodySizeLimit(t *testing.T) {
 }
 
 func TestParseWebhook_ReadError(t *testing.T) {
+	t.Parallel()
+
 	secret := testWebhookSecret
 
 	// Create a request with an erroring body
@@ -218,6 +230,8 @@ func (e *errorReader) Read(_ []byte) (int, error) {
 }
 
 func TestParseLabels(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		labels  []string
@@ -276,6 +290,8 @@ func TestParseLabels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
@@ -297,6 +313,8 @@ func TestParseLabels(t *testing.T) {
 }
 
 func TestParseLabels_FlexibleSpecs(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name              string
 		labels            []string
@@ -404,6 +422,8 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
@@ -446,6 +466,8 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 
 //nolint:dupl // Similar structure to TestParseRangeFloat but tests different types
 func TestParseRange(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input   string
 		wantMin int
@@ -464,6 +486,8 @@ func TestParseRange(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+
 			gotMin, gotMax, err := parseRange(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseRange(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
@@ -483,6 +507,8 @@ func TestParseRange(t *testing.T) {
 
 //nolint:dupl // Similar structure to TestParseRange but tests different types
 func TestParseRangeFloat(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input   string
 		wantMin float64
@@ -501,6 +527,8 @@ func TestParseRangeFloat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+
 			gotMin, gotMax, err := parseRangeFloat(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseRangeFloat(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
@@ -519,6 +547,8 @@ func TestParseRangeFloat(t *testing.T) {
 }
 
 func TestParseLabels_InvalidValues(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		labels []string
@@ -559,6 +589,8 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := ParseLabels(tt.labels)
 			if err == nil {
 				t.Errorf("ParseLabels() expected error for invalid input, got nil")
@@ -568,6 +600,8 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 }
 
 func TestParseLabels_Backend(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		labels      []string
@@ -593,6 +627,8 @@ func TestParseLabels_Backend(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
@@ -606,6 +642,8 @@ func TestParseLabels_Backend(t *testing.T) {
 }
 
 func TestParseLabels_Storage(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		labels         []string
@@ -661,6 +699,8 @@ func TestParseLabels_Storage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
@@ -674,6 +714,8 @@ func TestParseLabels_Storage(t *testing.T) {
 }
 
 func TestParseLabels_PublicIP(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		labels       []string
@@ -724,6 +766,8 @@ func TestParseLabels_PublicIP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
@@ -737,6 +781,8 @@ func TestParseLabels_PublicIP(t *testing.T) {
 }
 
 func TestParseLabels_Generation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name              string
 		labels            []string
@@ -797,6 +843,8 @@ func TestParseLabels_Generation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
@@ -827,6 +875,8 @@ func TestParseLabels_Generation(t *testing.T) {
 }
 
 func TestParseLabels_OriginalLabel(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name              string
 		labels            []string
@@ -851,6 +901,8 @@ func TestParseLabels_OriginalLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseLabels(tt.labels)
 			if err != nil {
 				t.Errorf("ParseLabels() error = %v", err)

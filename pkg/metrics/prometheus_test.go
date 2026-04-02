@@ -8,6 +8,8 @@ import (
 )
 
 func TestNewPrometheusPublisher(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		cfg       PrometheusConfig
@@ -27,6 +29,8 @@ func TestNewPrometheusPublisher(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			pub := NewPrometheusPublisher(tt.cfg)
 			if pub == nil {
 				t.Fatal("NewPrometheusPublisher() returned nil")
@@ -39,6 +43,8 @@ func TestNewPrometheusPublisher(t *testing.T) {
 }
 
 func TestPrometheusPublisher_Handler(t *testing.T) {
+	t.Parallel()
+
 	pub := NewPrometheusPublisher(PrometheusConfig{})
 
 	handler := pub.Handler()
@@ -57,6 +63,8 @@ func TestPrometheusPublisher_Handler(t *testing.T) {
 }
 
 func TestPrometheusPublisher_Registry(t *testing.T) {
+	t.Parallel()
+
 	pub := NewPrometheusPublisher(PrometheusConfig{})
 
 	registry := pub.Registry()
@@ -69,6 +77,8 @@ func TestPrometheusPublisher_Registry(t *testing.T) {
 }
 
 func TestPrometheusPublisher_Close(t *testing.T) {
+	t.Parallel()
+
 	pub := NewPrometheusPublisher(PrometheusConfig{})
 
 	err := pub.Close()
@@ -79,6 +89,8 @@ func TestPrometheusPublisher_Close(t *testing.T) {
 
 //nolint:dupl // Test tables are intentionally similar - testing different publishers
 func TestPrometheusPublisher_PublishMethods(t *testing.T) {
+	t.Parallel()
+
 	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
 	ctx := context.Background()
 
@@ -108,6 +120,8 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := tt.publish()
 			if err != nil {
 				t.Errorf("%s() error = %v", tt.name, err)
@@ -117,6 +131,8 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 }
 
 func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
+	t.Parallel()
+
 	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
 	ctx := context.Background()
 

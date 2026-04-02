@@ -76,6 +76,8 @@ func (m *MockDynamoDBAPI) DeleteItem(ctx context.Context, params *dynamodb.Delet
 }
 
 func TestGetPoolConfig(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		poolName   string
@@ -130,6 +132,8 @@ func TestGetPoolConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   "pools-table",
@@ -168,6 +172,8 @@ func TestGetPoolConfig(t *testing.T) {
 }
 
 func TestUpdatePoolState(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		poolName string
@@ -216,6 +222,8 @@ func TestUpdatePoolState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   "pools-table",
@@ -230,6 +238,8 @@ func TestUpdatePoolState(t *testing.T) {
 }
 
 func TestGetJobByInstance(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		instanceID string
@@ -283,6 +293,8 @@ func TestGetJobByInstance(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				jobsTable:    "jobs-table",
@@ -316,6 +328,8 @@ func TestGetJobByInstance(t *testing.T) {
 }
 
 func TestSaveJob(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		job     *JobRecord
@@ -372,6 +386,8 @@ func TestSaveJob(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				jobsTable:    "jobs-table",
@@ -386,6 +402,8 @@ func TestSaveJob(t *testing.T) {
 }
 
 func TestListPools(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		poolsTable string
@@ -443,6 +461,8 @@ func TestListPools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   tt.poolsTable,
@@ -462,6 +482,8 @@ func TestListPools(t *testing.T) {
 }
 
 func TestSavePoolConfig(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		config  *PoolConfig
@@ -517,6 +539,8 @@ func TestSavePoolConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   "pools-table",
@@ -531,6 +555,8 @@ func TestSavePoolConfig(t *testing.T) {
 }
 
 func TestMarkInstanceTerminating(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		instanceID string
@@ -575,6 +601,8 @@ func TestMarkInstanceTerminating(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				jobsTable:    "jobs-table",
@@ -589,6 +617,8 @@ func TestMarkInstanceTerminating(t *testing.T) {
 }
 
 func TestMarkJobComplete(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		jobID    int64
@@ -650,6 +680,8 @@ func TestMarkJobComplete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				jobsTable:    "jobs-table",
@@ -664,6 +696,8 @@ func TestMarkJobComplete(t *testing.T) {
 }
 
 func TestUpdateJobMetrics(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		jobID       int64
@@ -708,6 +742,8 @@ func TestUpdateJobMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				jobsTable:    "jobs-table",
@@ -722,6 +758,8 @@ func TestUpdateJobMetrics(t *testing.T) {
 }
 
 func TestGetPoolConfig_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -740,6 +778,8 @@ func TestGetPoolConfig_DynamoDBError(t *testing.T) {
 }
 
 func TestHasJobsTable(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		jobsTable string
@@ -759,6 +799,8 @@ func TestHasJobsTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: &MockDynamoDBAPI{},
 				jobsTable:    tt.jobsTable,
@@ -771,6 +813,8 @@ func TestHasJobsTable(t *testing.T) {
 }
 
 func TestGetJobByInstance_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -783,6 +827,8 @@ func TestGetJobByInstance_NoJobsTable(t *testing.T) {
 }
 
 func TestSaveJob_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -798,6 +844,8 @@ func TestSaveJob_NoJobsTable(t *testing.T) {
 }
 
 func TestMarkInstanceTerminating_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -810,6 +858,8 @@ func TestMarkInstanceTerminating_NoJobsTable(t *testing.T) {
 }
 
 func TestUpdatePoolState_ConditionalCheckFailed(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, &types.ConditionalCheckFailedException{Message: nil}
@@ -828,6 +878,8 @@ func TestUpdatePoolState_ConditionalCheckFailed(t *testing.T) {
 }
 
 func TestClient_Structure(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{}
 
 	client := &Client{
@@ -845,6 +897,8 @@ func TestClient_Structure(t *testing.T) {
 }
 
 func TestJobRecord_Structure(t *testing.T) {
+	t.Parallel()
+
 	job := JobRecord{
 		JobID:        12345,
 		RunID:        67890,
@@ -883,6 +937,8 @@ func TestJobRecord_Structure(t *testing.T) {
 }
 
 func TestPoolConfig_Structure(t *testing.T) {
+	t.Parallel()
+
 	cfg := PoolConfig{
 		PoolName:           "test-pool",
 		InstanceType:       "c6g.xlarge",
@@ -918,6 +974,8 @@ func TestPoolConfig_Structure(t *testing.T) {
 
 
 func TestGetJobByInstance_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -936,6 +994,8 @@ func TestGetJobByInstance_DynamoDBError(t *testing.T) {
 }
 
 func TestSaveJob_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -957,6 +1017,8 @@ func TestSaveJob_DynamoDBError(t *testing.T) {
 }
 
 func TestMockDynamoDBAPI_DefaultBehavior(t *testing.T) {
+	t.Parallel()
+
 	mock := &MockDynamoDBAPI{}
 
 	// Test default GetItem returns empty output
@@ -1006,6 +1068,8 @@ func TestMockDynamoDBAPI_DefaultBehavior(t *testing.T) {
 }
 
 func TestUpdatePoolState_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -1024,6 +1088,8 @@ func TestUpdatePoolState_DynamoDBError(t *testing.T) {
 }
 
 func TestGetJobByJobID_Success(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		GetItemFunc: func(_ context.Context, params *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			// Verify key is job_id
@@ -1073,6 +1139,8 @@ func TestGetJobByJobID_Success(t *testing.T) {
 }
 
 func TestGetJobByJobID_NotFound(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			return &dynamodb.GetItemOutput{Item: nil}, nil
@@ -1094,6 +1162,8 @@ func TestGetJobByJobID_NotFound(t *testing.T) {
 }
 
 func TestGetJobByJobID_ZeroID(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "jobs-table",
@@ -1106,6 +1176,8 @@ func TestGetJobByJobID_ZeroID(t *testing.T) {
 }
 
 func TestGetJobByJobID_NoTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -1118,6 +1190,8 @@ func TestGetJobByJobID_NoTable(t *testing.T) {
 }
 
 func TestMarkJobRequeuedByJobID_Success(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			// Verify key uses job_id (number type)
@@ -1146,6 +1220,8 @@ func TestMarkJobRequeuedByJobID_Success(t *testing.T) {
 }
 
 func TestMarkJobRequeuedByJobID_AlreadyHandled(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, &types.ConditionalCheckFailedException{Message: nil}
@@ -1167,6 +1243,8 @@ func TestMarkJobRequeuedByJobID_AlreadyHandled(t *testing.T) {
 }
 
 func TestMarkJobRequeuedByJobID_ZeroID(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "jobs-table",
@@ -1179,6 +1257,8 @@ func TestMarkJobRequeuedByJobID_ZeroID(t *testing.T) {
 }
 
 func TestMarkJobRequeuedByJobID_NoTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -1191,6 +1271,8 @@ func TestMarkJobRequeuedByJobID_NoTable(t *testing.T) {
 }
 
 func TestMarkJobRequeuedByJobID_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -1209,6 +1291,8 @@ func TestMarkJobRequeuedByJobID_DynamoDBError(t *testing.T) {
 }
 
 func TestClaimJob_Success(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(job_id)" {
@@ -1230,6 +1314,8 @@ func TestClaimJob_Success(t *testing.T) {
 }
 
 func TestClaimJob_AlreadyClaimed(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 			return nil, &types.ConditionalCheckFailedException{Message: nil}
@@ -1248,6 +1334,8 @@ func TestClaimJob_AlreadyClaimed(t *testing.T) {
 }
 
 func TestClaimJob_EmptyJobID(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "jobs-table",
@@ -1260,6 +1348,8 @@ func TestClaimJob_EmptyJobID(t *testing.T) {
 }
 
 func TestClaimJob_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -1272,6 +1362,8 @@ func TestClaimJob_NoJobsTable(t *testing.T) {
 }
 
 func TestClaimJob_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -1293,6 +1385,8 @@ func TestClaimJob_DynamoDBError(t *testing.T) {
 }
 
 func TestDeleteJobClaim_Success(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
 			return &dynamodb.DeleteItemOutput{}, nil
@@ -1311,6 +1405,8 @@ func TestDeleteJobClaim_Success(t *testing.T) {
 }
 
 func TestDeleteJobClaim_EmptyJobID(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "jobs-table",
@@ -1323,6 +1419,8 @@ func TestDeleteJobClaim_EmptyJobID(t *testing.T) {
 }
 
 func TestDeleteJobClaim_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		jobsTable:    "",
@@ -1335,6 +1433,8 @@ func TestDeleteJobClaim_NoJobsTable(t *testing.T) {
 }
 
 func TestDeleteJobClaim_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		DeleteItemFunc: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
 			return nil, errors.New("dynamodb error")
@@ -1353,6 +1453,8 @@ func TestDeleteJobClaim_DynamoDBError(t *testing.T) {
 }
 
 func TestTouchPoolActivity(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		poolName string
@@ -1411,6 +1513,8 @@ func TestTouchPoolActivity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			poolsTable := testPoolsTable
 			if tt.noTable {
 				poolsTable = ""
@@ -1429,6 +1533,8 @@ func TestTouchPoolActivity(t *testing.T) {
 }
 
 func TestDeletePoolConfig(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		poolName string
@@ -1477,6 +1583,8 @@ func TestDeletePoolConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			poolsTable := testPoolsTable
 			if tt.noTable {
 				poolsTable = ""
@@ -1516,6 +1624,8 @@ func createTwoJobMockScan(now time.Time, poolName string, job1Created, job1Compl
 }
 
 func TestQueryPoolJobHistory(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 	since := now.Add(-1 * time.Hour)
 
@@ -1594,6 +1704,8 @@ func TestQueryPoolJobHistory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			jobsTable := "jobs-table"
 			if tt.noTable {
 				jobsTable = ""
@@ -1615,7 +1727,10 @@ func TestQueryPoolJobHistory(t *testing.T) {
 	}
 }
 
+//nolint:dupl // P90 and peak tests intentionally use similar job scenarios with different expected results
 func TestGetPoolP90Concurrency(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	tests := []struct {
@@ -1718,6 +1833,8 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				jobsTable:    "jobs-table",
@@ -1736,6 +1853,8 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 }
 
 func TestPoolConfig_EphemeralFields(t *testing.T) {
+	t.Parallel()
+
 	// Test that ephemeral pool fields are correctly marshaled/unmarshaled
 	now := time.Now().Truncate(time.Millisecond)
 	config := &PoolConfig{
@@ -1792,6 +1911,8 @@ func TestPoolConfig_EphemeralFields(t *testing.T) {
 }
 
 func TestAcquirePoolReconcileLock(t *testing.T) {
+	t.Parallel()
+
 	// Helper to create a mock that returns a pool for GetItem
 	poolExistsMock := func(updateFunc func(context.Context, *dynamodb.UpdateItemInput, ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)) *MockDynamoDBAPI {
 		return &MockDynamoDBAPI{
@@ -1884,6 +2005,8 @@ func TestAcquirePoolReconcileLock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   "pools-table",
@@ -1906,6 +2029,8 @@ func TestAcquirePoolReconcileLock(t *testing.T) {
 }
 
 func TestAcquirePoolReconcileLock_ReentrantByOwner(t *testing.T) {
+	t.Parallel()
+
 	// Verify that same owner can re-acquire lock (condition includes reconcile_lock_owner = :owner)
 	updateCalls := 0
 	mockDB := &MockDynamoDBAPI{
@@ -1953,6 +2078,8 @@ func TestAcquirePoolReconcileLock_ReentrantByOwner(t *testing.T) {
 }
 
 func TestAcquirePoolReconcileLock_ExpiredLockCanBeAcquired(t *testing.T) {
+	t.Parallel()
+
 	// Verify that an expired lock can be acquired by a new owner
 	mockDB := &MockDynamoDBAPI{
 		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -1988,6 +2115,8 @@ func TestAcquirePoolReconcileLock_ExpiredLockCanBeAcquired(t *testing.T) {
 }
 
 func TestAcquirePoolReconcileLock_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		poolsTable:   "",
@@ -2003,6 +2132,8 @@ func TestAcquirePoolReconcileLock_NoPoolsTable(t *testing.T) {
 }
 
 func TestAcquirePoolReconcileLock_GetPoolConfigError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			return nil, errors.New("network error")
@@ -2021,6 +2152,8 @@ func TestAcquirePoolReconcileLock_GetPoolConfigError(t *testing.T) {
 }
 
 func TestAcquirePoolReconcileLock_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			item, _ := attributevalue.MarshalMap(map[string]interface{}{
@@ -2048,6 +2181,8 @@ func TestAcquirePoolReconcileLock_DynamoDBError(t *testing.T) {
 }
 
 func TestReleasePoolReconcileLock(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		poolName string
@@ -2098,6 +2233,8 @@ func TestReleasePoolReconcileLock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   "pools-table",
@@ -2112,6 +2249,8 @@ func TestReleasePoolReconcileLock(t *testing.T) {
 }
 
 func TestReleasePoolReconcileLock_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		poolsTable:   "",
@@ -2127,6 +2266,8 @@ func TestReleasePoolReconcileLock_NoPoolsTable(t *testing.T) {
 }
 
 func TestReleasePoolReconcileLock_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, errors.New("network error")
@@ -2145,6 +2286,8 @@ func TestReleasePoolReconcileLock_DynamoDBError(t *testing.T) {
 }
 
 func TestAcquireTaskLock(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		taskType string
@@ -2214,6 +2357,8 @@ func TestAcquireTaskLock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   testPoolsTable,
@@ -2235,6 +2380,8 @@ func TestAcquireTaskLock(t *testing.T) {
 }
 
 func TestAcquireTaskLock_ReentrantByOwner(t *testing.T) {
+	t.Parallel()
+
 	updateCalls := 0
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
@@ -2274,6 +2421,8 @@ func TestAcquireTaskLock_ReentrantByOwner(t *testing.T) {
 }
 
 func TestAcquireTaskLock_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		poolsTable:   "",
@@ -2289,6 +2438,8 @@ func TestAcquireTaskLock_NoPoolsTable(t *testing.T) {
 }
 
 func TestAcquireTaskLock_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, errors.New("network error")
@@ -2310,6 +2461,8 @@ func TestAcquireTaskLock_DynamoDBError(t *testing.T) {
 }
 
 func TestReleaseTaskLock(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		taskType string
@@ -2366,6 +2519,8 @@ func TestReleaseTaskLock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   testPoolsTable,
@@ -2379,6 +2534,8 @@ func TestReleaseTaskLock(t *testing.T) {
 }
 
 func TestReleaseTaskLock_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		poolsTable:   "",
@@ -2394,6 +2551,8 @@ func TestReleaseTaskLock_NoPoolsTable(t *testing.T) {
 }
 
 func TestReleaseTaskLock_DynamoDBError(t *testing.T) {
+	t.Parallel()
+
 	mockDB := &MockDynamoDBAPI{
 		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 			return nil, errors.New("network error")
@@ -2412,6 +2571,8 @@ func TestReleaseTaskLock_DynamoDBError(t *testing.T) {
 }
 
 func TestTaskLockKey(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		taskType string
 		want     string
@@ -2423,6 +2584,8 @@ func TestTaskLockKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.taskType, func(t *testing.T) {
+			t.Parallel()
+
 			got := taskLockKey(tt.taskType)
 			if got != tt.want {
 				t.Errorf("taskLockKey(%q) = %q, want %q", tt.taskType, got, tt.want)
@@ -2432,6 +2595,8 @@ func TestTaskLockKey(t *testing.T) {
 }
 
 func TestClaimInstanceForJob(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		instanceID string
@@ -2513,6 +2678,8 @@ func TestClaimInstanceForJob(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   testPoolsTable,
@@ -2529,6 +2696,8 @@ func TestClaimInstanceForJob(t *testing.T) {
 }
 
 func TestClaimInstanceForJob_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		poolsTable:   "",
@@ -2544,6 +2713,8 @@ func TestClaimInstanceForJob_NoPoolsTable(t *testing.T) {
 }
 
 func TestReleaseInstanceClaim(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		instanceID string
@@ -2609,6 +2780,8 @@ func TestReleaseInstanceClaim(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			client := &Client{
 				dynamoClient: tt.mockDB,
 				poolsTable:   testPoolsTable,
@@ -2622,6 +2795,8 @@ func TestReleaseInstanceClaim(t *testing.T) {
 }
 
 func TestReleaseInstanceClaim_NoPoolsTable(t *testing.T) {
+	t.Parallel()
+
 	client := &Client{
 		dynamoClient: &MockDynamoDBAPI{},
 		poolsTable:   "",
@@ -2637,6 +2812,8 @@ func TestReleaseInstanceClaim_NoPoolsTable(t *testing.T) {
 }
 
 func TestInstanceClaimKey(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		instanceID string
 		want       string
@@ -2647,6 +2824,8 @@ func TestInstanceClaimKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.instanceID, func(t *testing.T) {
+			t.Parallel()
+
 			got := instanceClaimKey(tt.instanceID)
 			if got != tt.want {
 				t.Errorf("instanceClaimKey(%q) = %q, want %q", tt.instanceID, got, tt.want)

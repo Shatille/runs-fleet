@@ -49,6 +49,8 @@ func (m *mockSSMClient) GetParametersByPath(ctx context.Context, params *ssm.Get
 }
 
 func TestSSMStore_Put(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		runnerID  string
@@ -89,6 +91,8 @@ func TestSSMStore_Put(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mock := &mockSSMClient{putFunc: tt.putFunc}
 			store := NewSSMStoreWithClient(mock, "")
 
@@ -101,6 +105,8 @@ func TestSSMStore_Put(t *testing.T) {
 }
 
 func TestSSMStore_Get(t *testing.T) {
+	t.Parallel()
+
 	expectedConfig := &RunnerConfig{
 		Org:      "testorg",
 		Repo:     "testorg/testrepo",
@@ -167,6 +173,8 @@ func TestSSMStore_Get(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mock := &mockSSMClient{getFunc: tt.getFunc}
 			store := NewSSMStoreWithClient(mock, "")
 
@@ -182,6 +190,8 @@ func TestSSMStore_Get(t *testing.T) {
 }
 
 func TestSSMStore_Delete(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		runnerID   string
@@ -219,6 +229,8 @@ func TestSSMStore_Delete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mock := &mockSSMClient{deleteFunc: tt.deleteFunc}
 			store := NewSSMStoreWithClient(mock, "")
 
@@ -231,6 +243,8 @@ func TestSSMStore_Delete(t *testing.T) {
 }
 
 func TestSSMStore_List(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name                string
 		getParametersByPath func(ctx context.Context, params *ssm.GetParametersByPathInput, optFns ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error)
@@ -297,6 +311,8 @@ func TestSSMStore_List(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mock := &mockSSMClient{getParametersByPath: tt.getParametersByPath}
 			store := NewSSMStoreWithClient(mock, "")
 
@@ -312,6 +328,8 @@ func TestSSMStore_List(t *testing.T) {
 }
 
 func TestSSMStore_extractRunnerID(t *testing.T) {
+	t.Parallel()
+
 	store := NewSSMStoreWithClient(nil, "/runs-fleet/runners")
 
 	tests := []struct {
@@ -327,6 +345,8 @@ func TestSSMStore_extractRunnerID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+
 			id := store.extractRunnerID(tt.path)
 			if id != tt.wantID {
 				t.Errorf("extractRunnerID(%s) = %s, want %s", tt.path, id, tt.wantID)
@@ -336,6 +356,8 @@ func TestSSMStore_extractRunnerID(t *testing.T) {
 }
 
 func TestSSMStore_CustomPrefix(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockSSMClient{
 		putFunc: func(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
 			expected := "/custom/prefix/i-123/config"
@@ -354,6 +376,8 @@ func TestSSMStore_CustomPrefix(t *testing.T) {
 }
 
 func TestSSMStore_Get_NilParameter(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockSSMClient{
 		getFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
 			return &ssm.GetParameterOutput{
@@ -370,6 +394,8 @@ func TestSSMStore_Get_NilParameter(t *testing.T) {
 }
 
 func TestSSMStore_List_SkipsNilNames(t *testing.T) {
+	t.Parallel()
+
 	mock := &mockSSMClient{
 		getParametersByPath: func(_ context.Context, _ *ssm.GetParametersByPathInput, _ ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
 			return &ssm.GetParametersByPathOutput{
@@ -393,6 +419,8 @@ func TestSSMStore_List_SkipsNilNames(t *testing.T) {
 }
 
 func TestSSMStore_extractRunnerID_EdgeCases(t *testing.T) {
+	t.Parallel()
+
 	store := NewSSMStoreWithClient(nil, "/runs-fleet/runners")
 
 	tests := []struct {
@@ -408,6 +436,8 @@ func TestSSMStore_extractRunnerID_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			id := store.extractRunnerID(tt.path)
 			if id != tt.wantID {
 				t.Errorf("extractRunnerID(%s) = %s, want %s", tt.path, id, tt.wantID)
@@ -417,6 +447,8 @@ func TestSSMStore_extractRunnerID_EdgeCases(t *testing.T) {
 }
 
 func TestSSMStore_DefaultPrefix(t *testing.T) {
+	t.Parallel()
+
 	store := NewSSMStoreWithClient(nil, "")
 	if store.prefix != DefaultSSMPrefix {
 		t.Errorf("prefix = %s, want %s", store.prefix, DefaultSSMPrefix)
@@ -424,6 +456,8 @@ func TestSSMStore_DefaultPrefix(t *testing.T) {
 }
 
 func TestSSMStore_parameterPath(t *testing.T) {
+	t.Parallel()
+
 	store := NewSSMStoreWithClient(nil, "/test/prefix")
 	path := store.parameterPath("i-abc123")
 	expected := "/test/prefix/i-abc123/config"

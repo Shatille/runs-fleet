@@ -31,6 +31,8 @@ func (m *mockInstancesDB) GetPoolBusyInstanceIDs(_ context.Context, poolName str
 }
 
 func TestInstancesHandler_ListInstances(t *testing.T) {
+	t.Parallel()
+
 	launchTime := time.Now().Add(-1 * time.Hour)
 
 	tests := []struct {
@@ -136,6 +138,8 @@ func TestInstancesHandler_ListInstances(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			ec2Mock := &mockEC2API{output: tt.ec2Output}
 			dbMock := &mockInstancesDB{busyIDs: tt.busyIDs}
 			auth := &AuthMiddleware{requireAuth: false}

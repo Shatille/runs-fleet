@@ -55,6 +55,8 @@ func (m *MockPresignAPI) PresignGetObject(ctx context.Context, params *s3.GetObj
 }
 
 func TestGeneratePresignedURL(t *testing.T) {
+	t.Parallel()
+
 	mockPresign := &MockPresignAPI{
 		PresignPutObjectFunc: func(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 			if *params.Bucket != "test-bucket" {
@@ -134,6 +136,8 @@ func TestGeneratePresignedURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := server.GeneratePresignedURL(context.Background(), tt.key, tt.method)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GeneratePresignedURL() error = %v, wantErr %v", err, tt.wantErr)
@@ -147,6 +151,8 @@ func TestGeneratePresignedURL(t *testing.T) {
 }
 
 func TestGeneratePresignedURLPresignFailure(t *testing.T) {
+	t.Parallel()
+
 	mockPresign := &MockPresignAPI{
 		PresignPutObjectFunc: func(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 			return nil, fmt.Errorf("presign error")
@@ -165,6 +171,8 @@ func TestGeneratePresignedURLPresignFailure(t *testing.T) {
 }
 
 func TestGetCacheEntry(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		keys    []string
@@ -266,6 +274,8 @@ func TestGetCacheEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := &Server{
 				s3Client:        tt.mockS3,
 				cacheBucketName: "test-bucket",
@@ -287,6 +297,8 @@ func TestGetCacheEntry(t *testing.T) {
 }
 
 func TestGetCacheEntry_RestoreKeyPrefixMatching(t *testing.T) {
+	t.Parallel()
+
 	now := aws.Time(timeNow())
 
 	tests := []struct {
@@ -354,6 +366,8 @@ func TestGetCacheEntry_RestoreKeyPrefixMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := &Server{
 				s3Client:        tt.mockS3,
 				cacheBucketName: "test-bucket",
@@ -379,6 +393,8 @@ func timeNow() time.Time {
 }
 
 func TestGetCacheEntry_WithScope(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		scope   string
@@ -439,6 +455,8 @@ func TestGetCacheEntry_WithScope(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := &Server{
 				s3Client:        tt.mockS3,
 				cacheBucketName: "test-bucket",
@@ -461,6 +479,8 @@ func TestGetCacheEntry_WithScope(t *testing.T) {
 }
 
 func TestCreateCacheEntry_WithScope(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		scope   string
@@ -493,6 +513,8 @@ func TestCreateCacheEntry_WithScope(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := &Server{
 				cacheBucketName: "test-bucket",
 				defaultScope:    tt.scope,
@@ -511,6 +533,8 @@ func TestCreateCacheEntry_WithScope(t *testing.T) {
 }
 
 func TestWithScope(t *testing.T) {
+	t.Parallel()
+
 	original := &Server{
 		cacheBucketName: "test-bucket",
 		defaultScope:    "",
@@ -535,6 +559,8 @@ func TestWithScope(t *testing.T) {
 }
 
 func TestNewServerWithClientsAndScope_InvalidScope(t *testing.T) {
+	t.Parallel()
+
 	mockS3 := &MockS3API{}
 	mockPresign := &MockPresignAPI{}
 
@@ -552,6 +578,8 @@ func TestNewServerWithClientsAndScope_InvalidScope(t *testing.T) {
 }
 
 func TestSetScope(t *testing.T) {
+	t.Parallel()
+
 	server := &Server{cacheBucketName: "test-bucket"}
 
 	// Valid scope should succeed
@@ -579,6 +607,8 @@ func TestSetScope(t *testing.T) {
 }
 
 func TestWithScope_InvalidScope(t *testing.T) {
+	t.Parallel()
+
 	original := &Server{
 		cacheBucketName: "test-bucket",
 		defaultScope:    "original-scope",
@@ -601,6 +631,8 @@ func TestWithScope_InvalidScope(t *testing.T) {
 }
 
 func TestCreateCacheEntry(t *testing.T) {
+	t.Parallel()
+
 	server := &Server{cacheBucketName: "test-bucket"}
 
 	tests := []struct {
@@ -649,6 +681,8 @@ func TestCreateCacheEntry(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := server.CreateCacheEntry(context.Background(), tt.key, tt.version)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("CreateCacheEntry() error = %v, wantErr %v", err, tt.wantErr)
@@ -662,6 +696,8 @@ func TestCreateCacheEntry(t *testing.T) {
 }
 
 func TestValidateKey(t *testing.T) {
+	t.Parallel()
+
 	maxKeyLen := 504
 	tests := []struct {
 		name    string
@@ -684,6 +720,8 @@ func TestValidateKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := validateKey(tt.key)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
@@ -693,6 +731,8 @@ func TestValidateKey(t *testing.T) {
 }
 
 func TestValidateVersion(t *testing.T) {
+	t.Parallel()
+
 	maxVersionLen := 512
 	tests := []struct {
 		name    string
@@ -715,6 +755,8 @@ func TestValidateVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := validateVersion(tt.version)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateVersion(%q) error = %v, wantErr %v", tt.version, err, tt.wantErr)
@@ -724,6 +766,8 @@ func TestValidateVersion(t *testing.T) {
 }
 
 func TestValidateScope(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		scope   string
@@ -743,6 +787,8 @@ func TestValidateScope(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := validateScope(tt.scope)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateScope(%q) error = %v, wantErr %v", tt.scope, err, tt.wantErr)
@@ -752,6 +798,8 @@ func TestValidateScope(t *testing.T) {
 }
 
 func TestBuildCachePrefix(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		scope     string
@@ -784,6 +832,8 @@ func TestBuildCachePrefix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := &Server{
 				cacheBucketName: "test-bucket",
 				defaultScope:    tt.scope,

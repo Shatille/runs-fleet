@@ -25,6 +25,8 @@ func (m *mockCircuitDynamoAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ 
 }
 
 func TestCircuitHandler_ListCircuitStates(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		tableName      string
@@ -70,6 +72,8 @@ func TestCircuitHandler_ListCircuitStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			var items []map[string]types.AttributeValue
 			for _, record := range tt.items {
 				item, _ := attributevalue.MarshalMap(record)
@@ -109,6 +113,8 @@ func TestCircuitHandler_ListCircuitStates(t *testing.T) {
 }
 
 func TestCircuitHandler_OpenCircuit(t *testing.T) {
+	t.Parallel()
+
 	record := circuitRecord{
 		InstanceType:       "c7g.xlarge",
 		State:              "open",

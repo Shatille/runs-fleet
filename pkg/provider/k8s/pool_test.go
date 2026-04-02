@@ -12,6 +12,8 @@ import (
 )
 
 func TestPoolProvider_ListPoolRunners(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	tests := []struct {
@@ -99,6 +101,8 @@ func TestPoolProvider_ListPoolRunners(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
@@ -122,6 +126,8 @@ func TestPoolProvider_ListPoolRunners(t *testing.T) {
 }
 
 func TestPoolProvider_TerminateRunners(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		runnerIDs []string
@@ -163,6 +169,8 @@ func TestPoolProvider_TerminateRunners(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			tt.setup(clientset)
 
@@ -189,6 +197,8 @@ func TestPoolProvider_TerminateRunners(t *testing.T) {
 }
 
 func TestPoolProvider_StopRunners(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -217,6 +227,8 @@ func TestPoolProvider_StopRunners(t *testing.T) {
 }
 
 func TestPoolProvider_StartRunners(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace: "runs-fleet",
@@ -232,6 +244,8 @@ func TestPoolProvider_StartRunners(t *testing.T) {
 }
 
 func TestPoolProvider_MarkRunnerBusyIdle(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	cfg := &config.Config{
 		KubeNamespace: "runs-fleet",
@@ -259,6 +273,8 @@ func TestPoolProvider_MarkRunnerBusyIdle(t *testing.T) {
 }
 
 func TestPoolProvider_IdleTracking(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -333,6 +349,8 @@ func TestPoolProvider_IdleTracking(t *testing.T) {
 }
 
 func TestPoolProvider_Reconcile(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name            string
 		podName         string
@@ -355,6 +373,8 @@ func TestPoolProvider_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			clientset := fake.NewClientset()
 			_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -390,6 +410,8 @@ func TestPoolProvider_Reconcile(t *testing.T) {
 }
 
 func TestPoolProvider_ReconcileCleansUpStalePodIdle(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 
 	cfg := &config.Config{
@@ -415,6 +437,8 @@ func TestPoolProvider_ReconcileCleansUpStalePodIdle(t *testing.T) {
 }
 
 func TestPoolProvider_ReconcileInitializesUntrackedPods(t *testing.T) {
+	t.Parallel()
+
 	clientset := fake.NewClientset()
 	// Create a running pod that is not tracked in podIdle
 	_, _ = clientset.CoreV1().Pods("runs-fleet").Create(context.Background(), &corev1.Pod{

@@ -107,6 +107,8 @@ func (m *mockTaskExecutor) ExecuteEphemeralPoolCleanup(_ context.Context) error 
 }
 
 func TestNewHandler(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -125,6 +127,8 @@ func TestNewHandler(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_OrphanedInstances(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -152,6 +156,8 @@ func TestHandler_ProcessMessage_OrphanedInstances(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_StaleSSM(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -179,6 +185,8 @@ func TestHandler_ProcessMessage_StaleSSM(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_OldJobs(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -206,6 +214,8 @@ func TestHandler_ProcessMessage_OldJobs(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_PoolAudit(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -233,6 +243,8 @@ func TestHandler_ProcessMessage_PoolAudit(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_CostReport(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -260,6 +272,8 @@ func TestHandler_ProcessMessage_CostReport(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_DLQRedrive(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -287,6 +301,8 @@ func TestHandler_ProcessMessage_DLQRedrive(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_DLQRedriveError(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{
 		dlqErr: errors.New("dlq redrive failed"),
@@ -318,6 +334,8 @@ func TestHandler_ProcessMessage_DLQRedriveError(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_StaleJobs(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -345,6 +363,8 @@ func TestHandler_ProcessMessage_StaleJobs(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_EmptyBody(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -362,6 +382,8 @@ func TestHandler_ProcessMessage_EmptyBody(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -379,6 +401,8 @@ func TestHandler_ProcessMessage_InvalidJSON(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_UnknownTaskType(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -403,6 +427,8 @@ func TestHandler_ProcessMessage_UnknownTaskType(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_TaskError(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{
 		orphanedErr: errors.New("task error"),
@@ -428,6 +454,8 @@ func TestHandler_ProcessMessage_TaskError(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_CostReportError(t *testing.T) {
+	t.Parallel()
+
 	// Explicit test for cost report error handling
 	// Verifies that cost report generation errors are properly propagated
 	q := &mockQueueAPI{}
@@ -461,6 +489,8 @@ func TestHandler_ProcessMessage_CostReportError(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_DeleteError(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{
 		deleteErr: errors.New("delete error"),
 	}
@@ -486,6 +516,8 @@ func TestHandler_ProcessMessage_DeleteError(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_DeletesOnSuccess(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -517,6 +549,8 @@ func TestHandler_ProcessMessage_DeletesOnSuccess(t *testing.T) {
 }
 
 func TestHandler_Run_Cancellation(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{
 		messages: []queue.Message{},
 	}
@@ -545,6 +579,8 @@ func TestHandler_Run_Cancellation(t *testing.T) {
 }
 
 func TestTaskTypeConstants(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		taskType TaskType
 		expected string
@@ -565,6 +601,8 @@ func TestTaskTypeConstants(t *testing.T) {
 }
 
 func TestMessage_JSONSerialization(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now().Truncate(time.Second) // Truncate for comparison
 	msg := Message{
 		TaskType:  TaskOrphanedInstances,
@@ -612,6 +650,8 @@ func (m *mockTaskLocker) ReleaseTaskLock(_ context.Context, taskType, owner stri
 }
 
 func TestHandler_SetTaskLocker(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}
@@ -629,6 +669,8 @@ func TestHandler_SetTaskLocker(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_WithLocking_Success(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	locker := &mockTaskLocker{}
@@ -670,6 +712,8 @@ func TestHandler_ProcessMessage_WithLocking_Success(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_WithLocking_LockHeld(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	locker := &mockTaskLocker{
@@ -711,6 +755,8 @@ func TestHandler_ProcessMessage_WithLocking_LockHeld(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_WithLocking_AcquireError(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	locker := &mockTaskLocker{
@@ -743,6 +789,8 @@ func TestHandler_ProcessMessage_WithLocking_AcquireError(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_WithLocking_TaskFailure(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{
 		orphanedErr: errors.New("task failed"),
@@ -779,6 +827,8 @@ func TestHandler_ProcessMessage_WithLocking_TaskFailure(t *testing.T) {
 }
 
 func TestHandler_ProcessMessage_WithoutLocking(t *testing.T) {
+	t.Parallel()
+
 	q := &mockQueueAPI{}
 	executor := &mockTaskExecutor{}
 	cfg := &config.Config{}

@@ -18,6 +18,8 @@ const (
 )
 
 func TestAuthenticate_TokenMethod(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -44,6 +46,8 @@ func TestAuthenticate_TokenMethod(t *testing.T) {
 }
 
 func TestAuthenticate_TokenMethod_EmptyToken(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -67,6 +71,8 @@ func TestAuthenticate_TokenMethod_EmptyToken(t *testing.T) {
 }
 
 func TestAuthenticate_UnsupportedMethod(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -88,6 +94,8 @@ func TestAuthenticate_UnsupportedMethod(t *testing.T) {
 }
 
 func TestAuthenticate_EmptyMethod_WithEnvToken(t *testing.T) {
+	t.Parallel()
+
 	// Set VAULT_TOKEN env
 	_ = os.Setenv("VAULT_TOKEN", "env-token-123")
 	defer func() { _ = os.Unsetenv("VAULT_TOKEN") }()
@@ -117,6 +125,8 @@ func TestAuthenticate_EmptyMethod_WithEnvToken(t *testing.T) {
 }
 
 func TestAuthenticate_AppRole_Success(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testAppRoleLoginPath {
 			response := map[string]interface{}{
@@ -156,6 +166,8 @@ func TestAuthenticate_AppRole_Success(t *testing.T) {
 }
 
 func TestAuthenticate_AppRole_Failure(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testAppRoleLoginPath {
 			w.WriteHeader(http.StatusForbidden)
@@ -184,6 +196,8 @@ func TestAuthenticate_AppRole_Failure(t *testing.T) {
 }
 
 func TestAuthenticate_AppRole_NilAuth(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testAppRoleLoginPath {
 			// Return response without auth field
@@ -216,6 +230,8 @@ func TestAuthenticate_AppRole_NilAuth(t *testing.T) {
 }
 
 func TestAuthenticate_Kubernetes_Success(t *testing.T) {
+	t.Parallel()
+
 	// Create a temporary JWT file
 	tempDir := t.TempDir()
 	jwtPath := filepath.Join(tempDir, "token")
@@ -262,6 +278,8 @@ func TestAuthenticate_Kubernetes_Success(t *testing.T) {
 }
 
 func TestAuthenticate_Kubernetes_K8sAlias(t *testing.T) {
+	t.Parallel()
+
 	// Create a temporary JWT file
 	tempDir := t.TempDir()
 	jwtPath := filepath.Join(tempDir, "token")
@@ -303,6 +321,8 @@ func TestAuthenticate_Kubernetes_K8sAlias(t *testing.T) {
 }
 
 func TestAuthenticate_Kubernetes_FileNotFound(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -326,6 +346,8 @@ func TestAuthenticate_Kubernetes_FileNotFound(t *testing.T) {
 }
 
 func TestAuthenticate_Kubernetes_NilAuth(t *testing.T) {
+	t.Parallel()
+
 	// Create a temporary JWT file
 	tempDir := t.TempDir()
 	jwtPath := filepath.Join(tempDir, "token")
@@ -365,6 +387,8 @@ func TestAuthenticate_Kubernetes_NilAuth(t *testing.T) {
 }
 
 func TestAuthenticate_Kubernetes_DefaultJWTPath(t *testing.T) {
+	t.Parallel()
+
 	// Test that default JWT path is used when not specified
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -390,6 +414,8 @@ func TestAuthenticate_Kubernetes_DefaultJWTPath(t *testing.T) {
 }
 
 func TestAuthenticateAWS_WithRoleAndRegion(t *testing.T) {
+	t.Parallel()
+
 	// This test verifies the AWS auth code path but will fail without AWS credentials
 	// We're testing that the function constructs the auth request correctly
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -411,6 +437,8 @@ func TestAuthenticateAWS_WithRoleAndRegion(t *testing.T) {
 }
 
 func TestAuthenticateAWS_EmptyRoleAndRegion(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -430,6 +458,8 @@ func TestAuthenticateAWS_EmptyRoleAndRegion(t *testing.T) {
 }
 
 func TestAuthenticateAppRole_DirectCall(t *testing.T) {
+	t.Parallel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testAppRoleLoginPath {
 			response := map[string]interface{}{
@@ -461,6 +491,8 @@ func TestAuthenticateAppRole_DirectCall(t *testing.T) {
 }
 
 func TestAuthenticateK8s_DirectCall(t *testing.T) {
+	t.Parallel()
+
 	// Create a temporary JWT file
 	tempDir := t.TempDir()
 	jwtPath := filepath.Join(tempDir, "token")
@@ -499,6 +531,8 @@ func TestAuthenticateK8s_DirectCall(t *testing.T) {
 }
 
 func TestAuthenticateK8s_LoginFailure(t *testing.T) {
+	t.Parallel()
+
 	// Create a temporary JWT file
 	tempDir := t.TempDir()
 	jwtPath := filepath.Join(tempDir, "token")

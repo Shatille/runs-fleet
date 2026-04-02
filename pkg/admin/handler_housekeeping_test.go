@@ -87,6 +87,8 @@ func (m *mockHousekeepingDynamo) UpdateItem(_ context.Context, _ *dynamodb.Updat
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_NoJobsTable(t *testing.T) {
+	t.Parallel()
+
 	handler := NewHousekeepingHandler(nil, nil, "", NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
@@ -102,6 +104,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_NoJobsTable(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_NoCandidates(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{}
 	dynamoClient := &mockHousekeepingDynamo{
 		items: []map[string]types.AttributeValue{},
@@ -134,6 +138,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_NoCandidates(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_InstancesExist(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{
 			"i-running": ec2types.InstanceStateNameRunning,
@@ -176,6 +182,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InstancesExist(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_OrphanedFound(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{
 			"i-terminated": ec2types.InstanceStateNameTerminated,
@@ -226,6 +234,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_OrphanedFound(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_DryRun(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -269,6 +279,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_DryRun(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_ClaimingStatusNoInstance(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -324,6 +336,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ClaimingStatusNoInstance(t *tes
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_ScanError(t *testing.T) {
+	t.Parallel()
+
 	dynamoClient := &mockHousekeepingDynamo{
 		scanErr: errors.New("DynamoDB scan failed"),
 	}
@@ -352,6 +366,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ScanError(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_UpdateError(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -404,6 +420,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_UpdateError(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_ConditionalCheckFailed(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -444,6 +462,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ConditionalCheckFailed(t *testi
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_CustomThreshold(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -473,6 +493,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_CustomThreshold(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_ThresholdBelowMinimum(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -497,6 +519,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ThresholdBelowMinimum(t *testin
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_RunningStatusNoInstance(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{},
 	}
@@ -535,6 +559,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_RunningStatusNoInstance(t *test
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_VariousInstanceStates(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{
 			"i-running":      ec2types.InstanceStateNameRunning,
@@ -614,6 +640,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_VariousInstanceStates(t *testin
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_EC2Error(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		err: errors.New("EC2 API error"),
 	}
@@ -655,6 +683,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_EC2Error(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidInstanceIDError(t *testing.T) {
+	t.Parallel()
+
 	// InvalidInstanceID.NotFound means instance is definitely gone
 	ec2Client := &mockHousekeepingEC2{
 		err: &mockAPIError{code: "InvalidInstanceID.NotFound", message: "Instance not found"},
@@ -694,6 +724,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidInstanceIDError(t *testi
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_BatchFailFallbackSuccess(t *testing.T) {
+	t.Parallel()
+
 	// Batch call fails, but individual lookups succeed
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{
@@ -756,6 +788,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_BatchFailFallbackSuccess(t *tes
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidJobID(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{}
 	dynamoClient := &mockHousekeepingDynamo{
 		items: []map[string]types.AttributeValue{
@@ -797,6 +831,8 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidJobID(t *testing.T) {
 }
 
 func TestHousekeepingHandler_CleanupOrphanedJobs_MixedScenario(t *testing.T) {
+	t.Parallel()
+
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{
 			"i-running":    ec2types.InstanceStateNameRunning,

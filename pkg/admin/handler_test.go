@@ -68,6 +68,8 @@ func (m *mockPoolDB) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]stri
 }
 
 func TestListPools(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		pools      map[string]*db.PoolConfig
@@ -99,6 +101,8 @@ func TestListPools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockDB := newMockDB()
 			mockDB.pools = tt.pools
 			mockDB.listErr = tt.listErr
@@ -129,6 +133,8 @@ func TestListPools(t *testing.T) {
 }
 
 func TestGetPool(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		poolName   string
@@ -163,6 +169,8 @@ func TestGetPool(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockDB := newMockDB()
 			if tt.pool != nil {
 				mockDB.pools[tt.pool.PoolName] = tt.pool
@@ -200,6 +208,8 @@ func TestGetPool(t *testing.T) {
 }
 
 func TestCreatePool(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		body       PoolRequest
@@ -270,6 +280,8 @@ func TestCreatePool(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockDB := newMockDB()
 			if tt.existing != nil {
 				mockDB.pools[tt.existing.PoolName] = tt.existing
@@ -299,6 +311,8 @@ func TestCreatePool(t *testing.T) {
 }
 
 func TestUpdatePool(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		poolName   string
@@ -345,6 +359,8 @@ func TestUpdatePool(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockDB := newMockDB()
 			if tt.existing != nil {
 				mockDB.pools[tt.existing.PoolName] = tt.existing
@@ -378,6 +394,8 @@ func TestUpdatePool(t *testing.T) {
 }
 
 func TestDeletePool(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		poolName   string
@@ -422,6 +440,8 @@ func TestDeletePool(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			mockDB := newMockDB()
 			if tt.existing != nil {
 				mockDB.pools[tt.existing.PoolName] = tt.existing
@@ -452,6 +472,8 @@ func TestDeletePool(t *testing.T) {
 }
 
 func TestValidatePoolRequest(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler(nil, "")
 
 	tests := []struct {
@@ -539,6 +561,8 @@ func TestValidatePoolRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := h.validatePoolRequest(&tt.req, tt.isCreate)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validatePoolRequest() error = %v, wantErr %v", err, tt.wantErr)
@@ -548,6 +572,8 @@ func TestValidatePoolRequest(t *testing.T) {
 }
 
 func TestCreatePoolContentType(t *testing.T) {
+	t.Parallel()
+
 	mockDB := newMockDB()
 	h := NewHandler(mockDB, "")
 
@@ -564,6 +590,8 @@ func TestCreatePoolContentType(t *testing.T) {
 }
 
 func TestPoolDiff(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		old     *db.PoolConfig
@@ -636,6 +664,8 @@ func TestPoolDiff(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got := poolDiff(tt.old, tt.updated)
 			if got != tt.want {
 				t.Errorf("poolDiff() = %q, want %q", got, tt.want)
@@ -645,6 +675,8 @@ func TestPoolDiff(t *testing.T) {
 }
 
 func TestUpdatePoolContentType(t *testing.T) {
+	t.Parallel()
+
 	mockDB := newMockDB()
 	mockDB.pools["test-pool"] = &db.PoolConfig{PoolName: "test-pool"}
 	h := NewHandler(mockDB, "")

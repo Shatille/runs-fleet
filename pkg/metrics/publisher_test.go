@@ -10,6 +10,8 @@ func TestNoopPublisher_ImplementsInterface(_ *testing.T) {
 }
 
 func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
+	t.Parallel()
+
 	pub := NoopPublisher{}
 	ctx := context.Background()
 
@@ -40,6 +42,8 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := tt.publish()
 			if err != nil {
 				t.Errorf("%s() error = %v, want nil", tt.name, err)
