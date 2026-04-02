@@ -76,10 +76,3 @@ type JobMessage struct {
 	Gen      int      `json:"gen,omitempty"`
 }
 
-// ExtractTraceContext extracts OpenTelemetry trace context from message attributes.
-func ExtractTraceContext(msg Message) (traceID, spanID, parentID string) {
-	if msg.Attributes == nil {
-		return "", "", ""
-	}
-	return msg.Attributes["TraceID"], msg.Attributes["SpanID"], msg.Attributes["ParentID"]
-}
