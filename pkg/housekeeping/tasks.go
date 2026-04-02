@@ -524,13 +524,6 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 // interruption re-queue delays, ensuring legitimate jobs aren't prematurely orphaned.
 const orphanedJobThreshold = 2 * time.Hour
 
-// orphanedJobCandidate holds job info for orphaned job cleanup.
-type orphanedJobCandidate struct {
-	JobID      int64
-	InstanceID string
-	Status     string
-}
-
 // ExecuteOrphanedJobs cleans up jobs with status "running" whose instances no longer exist.
 // This prevents stale job records from inflating pool busy counts and causing infinite scaling.
 //
@@ -541,98 +534,23 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		return nil
 	}
 
-	cutoffTime := time.Now().Add(-orphanedJobThreshold).Format(time.RFC3339)
-
-	// Check for jobs in "running" or "claiming" status that are older than threshold
-	// Jobs can get stuck in "claiming" if instance creation failed or webhook retry created duplicates
-	input := &dynamodb.ScanInput{
-		TableName:        aws.String(t.config.JobsTableName),
-		FilterExpression: aws.String("(#status = :running OR #status = :claiming) AND created_at < :cutoff"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":running":  &types.AttributeValueMemberS{Value: "running"},
-			":claiming": &types.AttributeValueMemberS{Value: "claiming"},
-			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
-		},
-		ProjectionExpression: aws.String("job_id, instance_id, #status"),
-	}
-
-	// Collect all candidate jobs first
-	var candidates []orphanedJobCandidate
-	var lastEvaluatedKey map[string]types.AttributeValue
-
-	for {
-		input.ExclusiveStartKey = lastEvaluatedKey
-
-		output, err := t.dynamoClient.Scan(ctx, input)
-		if err != nil {
-			return fmt.Errorf("failed to scan jobs: %w", err)
-		}
-
-		for _, item := range output.Items {
-			var jobID int64
-			var instanceID string
-			var status string
-
-			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
-				parsed, err := strconv.ParseInt(v.Value, 10, 64)
-				if err != nil {
-					continue
-				}
-				jobID = parsed
-			}
-			if v, ok := item["instance_id"].(*types.AttributeValueMemberS); ok {
-				instanceID = v.Value
-			}
-			if v, ok := item["status"].(*types.AttributeValueMemberS); ok {
-				status = v.Value
-			}
-
-			if jobID == 0 {
-				continue
-			}
-
-			// Jobs in "running" status need instance_id to check if instance exists
-			// Jobs in "claiming" status without instance_id are orphaned (instance creation failed)
-			if status == "running" && instanceID == "" {
-				continue
-			}
-
-			candidates = append(candidates, orphanedJobCandidate{
-				JobID:      jobID,
-				InstanceID: instanceID,
-				Status:     status,
-			})
-		}
-
-		lastEvaluatedKey = output.LastEvaluatedKey
-		if lastEvaluatedKey == nil {
-			break
-		}
+	candidates, err := FindOrphanedJobCandidates(ctx, t.dynamoClient, t.config.JobsTableName, orphanedJobThreshold)
+	if err != nil {
+		return fmt.Errorf("failed to scan jobs: %w", err)
 	}
 
 	if len(candidates) == 0 {
 		return nil
 	}
 
-	// Separate candidates into those with instance IDs (need EC2 check) and those without
-	var candidatesWithInstance []orphanedJobCandidate
-	var orphanedCandidates []orphanedJobCandidate
+	candidatesWithInstance, orphanedCandidates := SeparateOrphanedJobs(candidates)
 
-	for _, c := range candidates {
-		if c.InstanceID == "" {
-			// Jobs without instance ID (stuck in claiming) are automatically orphaned
-			orphanedCandidates = append(orphanedCandidates, c)
-		} else {
-			candidatesWithInstance = append(candidatesWithInstance, c)
-		}
-	}
-
-	// Batch check instance existence for candidates with instance IDs
 	if len(candidatesWithInstance) > 0 {
-		existingInstances := t.batchCheckInstances(ctx, candidatesWithInstance)
+		fallback := func(ctx context.Context, instanceID string) bool {
+			exists, _ := t.instanceExists(ctx, instanceID)
+			return exists
+		}
+		existingInstances := BatchCheckInstanceExistence(ctx, t.ec2Client, candidatesWithInstance, fallback)
 		for _, c := range candidatesWithInstance {
 			if !existingInstances[c.InstanceID] {
 				orphanedCandidates = append(orphanedCandidates, c)
@@ -640,11 +558,9 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		}
 	}
 
-	// Mark orphaned jobs
 	var orphanedCount int
 	for _, c := range orphanedCandidates {
-
-		if err := t.markJobOrphaned(ctx, c.JobID); err != nil {
+		if err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID); err != nil {
 			t.logger().Error("mark job orphaned failed",
 				slog.Int64("job_id", c.JobID),
 				slog.String("error", err.Error()))
@@ -663,98 +579,6 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 	if orphanedCount > 0 {
 		t.logger().Info("orphaned jobs cleaned up", slog.Int(logging.KeyCount, orphanedCount))
 	}
-	return nil
-}
-
-// batchCheckInstances checks multiple instances in batches and returns a map of existing instance IDs.
-// Uses batched DescribeInstances calls to reduce API overhead.
-func (t *Tasks) batchCheckInstances(ctx context.Context, candidates []orphanedJobCandidate) map[string]bool {
-	// Collect unique instance IDs
-	instanceSet := make(map[string]struct{})
-	for _, c := range candidates {
-		instanceSet[c.InstanceID] = struct{}{}
-	}
-
-	instanceIDs := make([]string, 0, len(instanceSet))
-	for id := range instanceSet {
-		instanceIDs = append(instanceIDs, id)
-	}
-
-	existing := make(map[string]bool)
-	const batchSize = 100 // EC2 recommends batches of 100
-
-	for i := 0; i < len(instanceIDs); i += batchSize {
-		end := i + batchSize
-		if end > len(instanceIDs) {
-			end = len(instanceIDs)
-		}
-		batch := instanceIDs[i:end]
-
-		output, err := t.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: batch,
-		})
-		if err != nil {
-			// On error, check individually to handle InvalidInstanceID errors
-			for _, id := range batch {
-				exists, _ := t.instanceExists(ctx, id)
-				existing[id] = exists
-			}
-			continue
-		}
-
-		for _, reservation := range output.Reservations {
-			for _, instance := range reservation.Instances {
-				if instance.InstanceId == nil || instance.State == nil {
-					continue
-				}
-				state := instance.State.Name
-				if state != ec2types.InstanceStateNameTerminated {
-					existing[*instance.InstanceId] = true
-				} else if instance.LaunchTime != nil && time.Since(*instance.LaunchTime) < instanceTerminationGracePeriod {
-					existing[*instance.InstanceId] = true
-				}
-			}
-		}
-	}
-
-	return existing
-}
-
-// markJobOrphaned updates a job's status to "orphaned" if it's still running or claiming.
-// Uses conditional write to prevent race conditions with concurrent job completions.
-func (t *Tasks) markJobOrphaned(ctx context.Context, jobID int64) error {
-	key, err := attributevalue.MarshalMap(map[string]int64{
-		"job_id": jobID,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal key: %w", err)
-	}
-
-	// Allow marking as orphaned if status is "running" or "claiming"
-	_, err = t.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:           aws.String(t.config.JobsTableName),
-		Key:                 key,
-		UpdateExpression:    aws.String("SET #status = :orphaned, completed_at = :completed_at"),
-		ConditionExpression: aws.String("#status = :running OR #status = :claiming"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":orphaned":     &types.AttributeValueMemberS{Value: "orphaned"},
-			":running":      &types.AttributeValueMemberS{Value: "running"},
-			":claiming":     &types.AttributeValueMemberS{Value: "claiming"},
-			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
-		},
-	})
-	if err != nil {
-		// ConditionalCheckFailedException means job status changed (completed normally)
-		var condErr *types.ConditionalCheckFailedException
-		if errors.As(err, &condErr) {
-			return nil
-		}
-		return fmt.Errorf("failed to update job: %w", err)
-	}
-
 	return nil
 }
 
@@ -1182,7 +1006,11 @@ func (t *Tasks) ExecuteOrphanedSpotRequests(ctx context.Context) error {
 	}
 
 	// Check which instances still exist
-	existingInstances := t.batchCheckInstances(ctx, instanceIDsToOrphanedCandidates(instanceIDs))
+	fallback := func(ctx context.Context, instanceID string) bool {
+		exists, _ := t.instanceExists(ctx, instanceID)
+		return exists
+	}
+	existingInstances := BatchCheckInstanceExistence(ctx, t.ec2Client, instanceIDsToOrphanedCandidates(instanceIDs), fallback)
 
 	// Cancel spot requests for non-existent instances
 	var orphanedRequestIDs []string
@@ -1225,11 +1053,11 @@ func (t *Tasks) ExecuteOrphanedSpotRequests(ctx context.Context) error {
 	return nil
 }
 
-// instanceIDsToOrphanedCandidates converts instance IDs to orphanedJobCandidate slice for batch checking.
-func instanceIDsToOrphanedCandidates(instanceIDs []string) []orphanedJobCandidate {
-	candidates := make([]orphanedJobCandidate, len(instanceIDs))
+// instanceIDsToOrphanedCandidates converts instance IDs to OrphanedJobCandidate slice for batch checking.
+func instanceIDsToOrphanedCandidates(instanceIDs []string) []OrphanedJobCandidate {
+	candidates := make([]OrphanedJobCandidate, len(instanceIDs))
 	for i, id := range instanceIDs {
-		candidates[i] = orphanedJobCandidate{InstanceID: id}
+		candidates[i] = OrphanedJobCandidate{InstanceID: id}
 	}
 	return candidates
 }
