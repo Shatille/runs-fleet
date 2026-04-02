@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -742,8 +743,8 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":running":  &types.AttributeValueMemberS{Value: "running"},
-			":claiming": &types.AttributeValueMemberS{Value: "claiming"},
+			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
 		ProjectionExpression: aws.String("job_id, repo, #status"),
@@ -877,9 +878,9 @@ func (t *Tasks) markJobCompleted(ctx context.Context, jobID int64, conclusion st
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":completed":    &types.AttributeValueMemberS{Value: "completed"},
-			":running":      &types.AttributeValueMemberS{Value: "running"},
-			":claiming":     &types.AttributeValueMemberS{Value: "claiming"},
+			":completed":    &types.AttributeValueMemberS{Value: string(db.JobStatusCompleted)},
+			":running":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			":claiming":     &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 			":conclusion":   &types.AttributeValueMemberS{Value: conclusion},
 		},

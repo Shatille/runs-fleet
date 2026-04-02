@@ -260,7 +260,7 @@ func TestGetJobByInstance(t *testing.T) {
 						"pool":          "default",
 						"spot":          true,
 						"retry_count":   0,
-						"status":        "running",
+						"status":        string(JobStatusRunning),
 					})
 					if err != nil {
 						t.Fatalf("Failed to marshal item: %v", err)
@@ -571,7 +571,7 @@ func TestMarkInstanceTerminating(t *testing.T) {
 					item, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"instance_id": "i-1234567890abcdef0",
 						"job_id":      int64(12345),
-						"status":      "running",
+						"status":      string(JobStatusRunning),
 					})
 					return &dynamodb.GetItemOutput{Item: item}, nil
 				},
@@ -631,7 +631,7 @@ func TestMarkJobComplete(t *testing.T) {
 		{
 			name:     "Success",
 			jobID:    12345678901,
-			status:   "completed",
+			status:   string(JobStatusCompleted),
 			exitCode: 0,
 			duration: 120,
 			mockDB: &MockDynamoDBAPI{
@@ -648,7 +648,7 @@ func TestMarkJobComplete(t *testing.T) {
 		{
 			name:     "Zero job ID",
 			jobID:    0,
-			status:   "completed",
+			status:   string(JobStatusCompleted),
 			exitCode: 0,
 			duration: 120,
 			mockDB:   &MockDynamoDBAPI{},
@@ -666,7 +666,7 @@ func TestMarkJobComplete(t *testing.T) {
 		{
 			name:     "DynamoDB error",
 			jobID:    999,
-			status:   "failed",
+			status:   string(JobStatusFailed),
 			exitCode: 1,
 			duration: 60,
 			mockDB: &MockDynamoDBAPI{
@@ -1106,7 +1106,7 @@ func TestGetJobByJobID_Success(t *testing.T) {
 				Pool:         "default",
 				Spot:         true,
 				RetryCount:   1,
-				Status:       "running",
+				Status:       string(JobStatusRunning),
 			})
 			if err != nil {
 				t.Fatalf("failed to marshal: %v", err)

@@ -85,7 +85,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		Spot:           job.Spot,
 		RetryCount:     job.RetryCount,
 		WarmPoolHit:    job.WarmPoolHit,
-		Status:         "running",
+		Status:         string(JobStatusRunning),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		SpotRequestID:  job.SpotRequestID,
 		PersistentSpot: job.PersistentSpot,
@@ -121,7 +121,7 @@ func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 
 	record := jobRecord{
 		JobID:     jobID,
-		Status:    "claiming",
+		Status:    string(JobStatusClaiming),
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 
@@ -289,7 +289,7 @@ func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string)
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status": &types.AttributeValueMemberS{Value: "terminating"},
+			":status": &types.AttributeValueMemberS{Value: string(JobStatusTerminating)},
 		},
 	})
 	if err != nil {
@@ -322,7 +322,7 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
-			":status":      &types.AttributeValueMemberS{Value: "running"},
+			":status":      &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
 		},
 		Limit: aws.Int32(1),
 	}
@@ -377,7 +377,7 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pool":     &types.AttributeValueMemberS{Value: poolName},
 			":since":    &types.AttributeValueMemberS{Value: sinceStr},
-			":orphaned": &types.AttributeValueMemberS{Value: "orphaned"},
+			":orphaned": &types.AttributeValueMemberS{Value: string(JobStatusOrphaned)},
 		},
 	}
 
@@ -528,7 +528,7 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pool":   &types.AttributeValueMemberS{Value: poolName},
-			":status": &types.AttributeValueMemberS{Value: "running"},
+			":status": &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
 		},
 		ProjectionExpression: aws.String("instance_id"),
 	}
@@ -624,8 +624,8 @@ func (c *Client) markJobRequeued(ctx context.Context, key map[string]types.Attri
 		"#status": "status",
 	}
 	exprValues, err := attributevalue.MarshalMap(map[string]interface{}{
-		":new_status":     "requeued",
-		":current_status": "running",
+		":new_status":     string(JobStatusRequeued),
+		":current_status": string(JobStatusRunning),
 		":requeued_at":    time.Now().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -825,13 +825,13 @@ func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*Adm
 		if status, ok := item["status"]; ok {
 			if s, ok := status.(*types.AttributeValueMemberS); ok {
 				switch s.Value {
-				case "completed", "success":
+				case string(JobStatusCompleted), string(JobStatusSuccess):
 					stats.Completed++
-				case "failed", "error":
+				case string(JobStatusFailed), string(JobStatusError):
 					stats.Failed++
-				case "running", "claiming":
+				case string(JobStatusRunning), string(JobStatusClaiming):
 					stats.Running++
-				case "requeued":
+				case string(JobStatusRequeued):
 					stats.Requeued++
 				}
 			}

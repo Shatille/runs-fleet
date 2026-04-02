@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -96,16 +97,16 @@ func TestFindOrphanedJobCandidates_FiltersRunningWithoutInstance(t *testing.T) {
 		items: []map[string]types.AttributeValue{
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "100"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "101"},
-				"status": &types.AttributeValueMemberS{Value: "claiming"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			},
 			{
 				"job_id":      &types.AttributeValueMemberN{Value: "102"},
 				"instance_id": &types.AttributeValueMemberS{Value: "i-abc"},
-				"status":      &types.AttributeValueMemberS{Value: "running"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -138,7 +139,7 @@ func TestFindOrphanedJobCandidates_SkipsZeroJobID(t *testing.T) {
 			{
 				"job_id":      &types.AttributeValueMemberN{Value: "0"},
 				"instance_id": &types.AttributeValueMemberS{Value: "i-abc"},
-				"status":      &types.AttributeValueMemberS{Value: "running"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -158,7 +159,7 @@ func TestFindOrphanedJobCandidates_SkipsInvalidJobID(t *testing.T) {
 			{
 				"job_id":      &types.AttributeValueMemberN{Value: "not-a-number"},
 				"instance_id": &types.AttributeValueMemberS{Value: "i-abc"},
-				"status":      &types.AttributeValueMemberS{Value: "running"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -174,10 +175,10 @@ func TestFindOrphanedJobCandidates_SkipsInvalidJobID(t *testing.T) {
 func TestSeparateOrphanedJobs(t *testing.T) {
 	t.Parallel()
 	candidates := []OrphanedJobCandidate{
-		{JobID: 1, InstanceID: "i-abc", Status: "running"},
-		{JobID: 2, InstanceID: "", Status: "claiming"},
-		{JobID: 3, InstanceID: "i-def", Status: "claiming"},
-		{JobID: 4, InstanceID: "", Status: "claiming"},
+		{JobID: 1, InstanceID: "i-abc", Status: string(db.JobStatusRunning)},
+		{JobID: 2, InstanceID: "", Status: string(db.JobStatusClaiming)},
+		{JobID: 3, InstanceID: "i-def", Status: string(db.JobStatusClaiming)},
+		{JobID: 4, InstanceID: "", Status: string(db.JobStatusClaiming)},
 	}
 
 	withInstance, withoutInstance := SeparateOrphanedJobs(candidates)

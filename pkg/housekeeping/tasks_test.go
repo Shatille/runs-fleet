@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -2034,7 +2035,7 @@ func TestExecuteStaleJobs_ReconcilesCompletedJobs(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -2078,7 +2079,7 @@ func TestExecuteStaleJobs_SkipsStillRunningJobs(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -2117,7 +2118,7 @@ func TestExecuteStaleJobs_HandlesGitHubAPIError(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -2151,7 +2152,7 @@ func TestExecuteStaleJobs_SkipsInvalidRepo(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: "invalid-repo"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -2205,7 +2206,7 @@ func TestExecuteStaleJobs_ConditionalWriteRace(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 		updateErr: &types.ConditionalCheckFailedException{},
@@ -2238,17 +2239,17 @@ func TestExecuteStaleJobs_MultipleJobs(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "111"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo1"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "222"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo2"},
-				"status": &types.AttributeValueMemberS{Value: "claiming"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			},
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "333"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo3"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -2294,7 +2295,7 @@ func TestExecuteStaleJobs_SkipsJobsWithEmptyRepo(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: ""},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
@@ -2326,7 +2327,7 @@ func TestExecuteStaleJobs_UpdateError(t *testing.T) {
 			{
 				"job_id": &types.AttributeValueMemberN{Value: "12345"},
 				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
-				"status": &types.AttributeValueMemberS{Value: "running"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 		updateErr: errors.New("DDB write error"),

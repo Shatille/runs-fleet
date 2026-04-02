@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -50,8 +51,8 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":running":  &types.AttributeValueMemberS{Value: "running"},
-			":claiming": &types.AttributeValueMemberS{Value: "claiming"},
+			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
 		ProjectionExpression: aws.String("job_id, instance_id, #status"),
@@ -91,7 +92,7 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 				continue
 			}
 
-			if status == "running" && instanceID == "" {
+			if status == string(db.JobStatusRunning) && instanceID == "" {
 				continue
 			}
 
@@ -196,10 +197,10 @@ func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":orphaned": &types.AttributeValueMemberS{Value: "orphaned"},
+			":orphaned": &types.AttributeValueMemberS{Value: string(db.JobStatusOrphaned)},
 			":now":      &types.AttributeValueMemberS{Value: now},
-			":running":  &types.AttributeValueMemberS{Value: "running"},
-			":claiming": &types.AttributeValueMemberS{Value: "claiming"},
+			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 		},
 		ConditionExpression: aws.String("#status = :running OR #status = :claiming"),
 	})
