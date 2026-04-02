@@ -420,63 +420,6 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 	return entries, nil
 }
 
-// GetPoolPeakConcurrency calculates the maximum number of concurrent jobs
-// for a pool within the specified time window (in hours).
-// Returns 0 if no jobs found or on error.
-func (c *Client) GetPoolPeakConcurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
-	if windowHours <= 0 {
-		windowHours = 1
-	}
-
-	since := time.Now().Add(-time.Duration(windowHours) * time.Hour)
-	jobs, err := c.QueryPoolJobHistory(ctx, poolName, since)
-	if err != nil {
-		return 0, err
-	}
-
-	if len(jobs) == 0 {
-		return 0, nil
-	}
-
-	type event struct {
-		time  time.Time
-		delta int // +1 for start, -1 for end
-	}
-
-	var events []event
-	now := time.Now()
-
-	for _, job := range jobs {
-		if job.CreatedAt.IsZero() {
-			continue
-		}
-		events = append(events, event{time: job.CreatedAt, delta: 1})
-
-		endTime := job.CompletedAt
-		if endTime.IsZero() {
-			endTime = now
-		}
-		events = append(events, event{time: endTime, delta: -1})
-	}
-
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].time.Equal(events[j].time) {
-			return events[i].delta > events[j].delta
-		}
-		return events[i].time.Before(events[j].time)
-	})
-
-	var current, peak int
-	for _, e := range events {
-		current += e.delta
-		if current > peak {
-			peak = current
-		}
-	}
-
-	return peak, nil
-}
-
 // GetPoolP90Concurrency calculates the 90th percentile of concurrent jobs
 // for a pool within the specified time window (in hours).
 // This is more cost-effective than peak for scaling stopped instances,
@@ -662,24 +605,6 @@ func (c *Client) MarkJobRequeuedByJobID(ctx context.Context, jobID int64) (bool,
 
 	key, err := attributevalue.MarshalMap(map[string]int64{
 		"job_id": jobID,
-	})
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal key: %w", err)
-	}
-
-	return c.markJobRequeued(ctx, key)
-}
-
-// MarkJobRequeued atomically marks a job as "requeued" if its current status is "running".
-// Deprecated: Uses instance_id as key which doesn't match the job_id partition key.
-// Use MarkJobRequeuedByJobID instead.
-func (c *Client) MarkJobRequeued(ctx context.Context, instanceID string) (bool, error) {
-	if instanceID == "" {
-		return false, fmt.Errorf("instance ID cannot be empty")
-	}
-
-	key, err := attributevalue.MarshalMap(map[string]string{
-		"instance_id": instanceID,
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal key: %w", err)

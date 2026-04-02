@@ -42,34 +42,6 @@ type PoolProvider interface {
 	MarkRunnerIdle(runnerID string)
 }
 
-// StateStore manages job and pool state persistence.
-type StateStore interface {
-	// Job operations
-	SaveJob(ctx context.Context, job *Job) error
-	GetJob(ctx context.Context, runnerID string) (*Job, error)
-	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error
-	MarkJobTerminating(ctx context.Context, runnerID string) error
-	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
-
-	// Pool operations
-	GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error)
-	SavePoolConfig(ctx context.Context, config *PoolConfig) error
-	ListPools(ctx context.Context) ([]string, error)
-	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
-}
-
-// Coordinator provides distributed coordination for multi-instance deployments.
-type Coordinator interface {
-	// IsLeader returns true if this instance is the leader.
-	IsLeader() bool
-
-	// Start begins leader election.
-	Start(ctx context.Context) error
-
-	// Stop ends leader election.
-	Stop() error
-}
-
 // RunnerSpec defines parameters for creating a runner.
 type RunnerSpec struct {
 	RunID         int64
