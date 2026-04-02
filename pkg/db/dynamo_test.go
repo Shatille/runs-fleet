@@ -15,6 +15,9 @@ import (
 // Test constants for table names.
 const testPoolsTable = "pools-table"
 
+// Test constant for repository names.
+const testRepo = "org/repo"
+
 // Test constant for error messages.
 const errPoolsTableNotConfigured = "pools table not configured"
 
@@ -1100,7 +1103,7 @@ func TestGetJobByJobID_Success(t *testing.T) {
 			item, err := attributevalue.MarshalMap(jobRecord{
 				JobID:        12345,
 				RunID:        67890,
-				Repo:         "org/repo",
+				Repo:         testRepo,
 				InstanceID:   "i-abc",
 				InstanceType: "c7g.xlarge",
 				Pool:         "default",
@@ -1130,7 +1133,7 @@ func TestGetJobByJobID_Success(t *testing.T) {
 	if info.JobID != 12345 {
 		t.Errorf("JobID = %d, want 12345", info.JobID)
 	}
-	if info.Repo != "org/repo" {
+	if info.Repo != testRepo {
 		t.Errorf("Repo = %s, want org/repo", info.Repo)
 	}
 	if info.RetryCount != 1 {
@@ -2829,6 +2832,669 @@ func TestInstanceClaimKey(t *testing.T) {
 			got := instanceClaimKey(tt.instanceID)
 			if got != tt.want {
 				t.Errorf("instanceClaimKey(%q) = %q, want %q", tt.instanceID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListJobsForAdmin(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	older := now.Add(-1 * time.Hour)
+
+	tests := []struct {
+		name      string
+		filter    AdminJobFilter
+		mockDB    *MockDynamoDBAPI
+		wantCount int
+		wantTotal int
+		wantErr   bool
+	}{
+		{
+			name:   "Returns jobs with all fields populated",
+			filter: AdminJobFilter{},
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{
+						Items: []map[string]types.AttributeValue{
+							{
+								"job_id":           &types.AttributeValueMemberN{Value: "12345"},
+								"run_id":           &types.AttributeValueMemberN{Value: "67890"},
+								"repo":             &types.AttributeValueMemberS{Value: testRepo},
+								"instance_id":      &types.AttributeValueMemberS{Value: "i-abc123"},
+								"instance_type":    &types.AttributeValueMemberS{Value: "c7g.medium"},
+								"pool":             &types.AttributeValueMemberS{Value: "default"},
+								"spot":             &types.AttributeValueMemberBOOL{Value: true},
+								"warm_pool_hit":    &types.AttributeValueMemberBOOL{Value: false},
+								"retry_count":      &types.AttributeValueMemberN{Value: "0"},
+								"status":           &types.AttributeValueMemberS{Value: "completed"},
+								"exit_code":        &types.AttributeValueMemberN{Value: "0"},
+								"duration_seconds": &types.AttributeValueMemberN{Value: "120"},
+								"created_at":       &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+								"started_at":       &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+								"completed_at":     &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+							},
+						},
+					}, nil
+				},
+			},
+			wantCount: 1,
+			wantTotal: 1,
+			wantErr:   false,
+		},
+		{
+			name:   "Empty result",
+			filter: AdminJobFilter{},
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantCount: 0,
+			wantTotal: 0,
+			wantErr:   false,
+		},
+		{
+			name:   "Pagination with offset and limit",
+			filter: AdminJobFilter{Offset: 1, Limit: 1},
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{
+						Items: []map[string]types.AttributeValue{
+							{
+								"job_id":     &types.AttributeValueMemberN{Value: "1"},
+								"status":     &types.AttributeValueMemberS{Value: "completed"},
+								"created_at": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+							},
+							{
+								"job_id":     &types.AttributeValueMemberN{Value: "2"},
+								"status":     &types.AttributeValueMemberS{Value: "running"},
+								"created_at": &types.AttributeValueMemberS{Value: older.Format(time.RFC3339)},
+							},
+							{
+								"job_id":     &types.AttributeValueMemberN{Value: "3"},
+								"status":     &types.AttributeValueMemberS{Value: "failed"},
+								"created_at": &types.AttributeValueMemberS{Value: older.Add(-1 * time.Hour).Format(time.RFC3339)},
+							},
+						},
+					}, nil
+				},
+			},
+			wantCount: 1,
+			wantTotal: 3,
+			wantErr:   false,
+		},
+		{
+			name:   "DynamoDB error propagation",
+			filter: AdminJobFilter{},
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return nil, errors.New("dynamodb scan error")
+				},
+			},
+			wantCount: 0,
+			wantTotal: 0,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			entries, total, err := client.ListJobsForAdmin(context.Background(), tt.filter)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListJobsForAdmin() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if len(entries) != tt.wantCount {
+				t.Errorf("ListJobsForAdmin() returned %d entries, want %d", len(entries), tt.wantCount)
+			}
+			if total != tt.wantTotal {
+				t.Errorf("ListJobsForAdmin() total = %d, want %d", total, tt.wantTotal)
+			}
+
+			if tt.name == "Returns jobs with all fields populated" && len(entries) > 0 {
+				e := entries[0]
+				if e.JobID != 12345 {
+					t.Errorf("JobID = %d, want 12345", e.JobID)
+				}
+				if e.Repo != testRepo {
+					t.Errorf("Repo = %q, want %q", e.Repo, testRepo)
+				}
+				if e.InstanceID != "i-abc123" {
+					t.Errorf("InstanceID = %q, want %q", e.InstanceID, "i-abc123")
+				}
+				if e.Status != "completed" {
+					t.Errorf("Status = %q, want %q", e.Status, "completed")
+				}
+				if !e.Spot {
+					t.Error("Spot = false, want true")
+				}
+				if e.DurationSeconds != 120 {
+					t.Errorf("DurationSeconds = %d, want 120", e.DurationSeconds)
+				}
+			}
+		})
+	}
+}
+
+func TestListJobsForAdmin_JobsTableNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	_, _, err := client.ListJobsForAdmin(context.Background(), AdminJobFilter{})
+	if err == nil {
+		t.Error("ListJobsForAdmin() should fail when jobs table not configured")
+	}
+	if !strings.Contains(err.Error(), "jobs table not configured") {
+		t.Errorf("ListJobsForAdmin() error = %v, want 'jobs table not configured'", err)
+	}
+}
+
+func TestGetJobForAdmin(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	tests := []struct {
+		name    string
+		jobID   int64
+		mockDB  *MockDynamoDBAPI
+		wantNil bool
+		wantErr bool
+	}{
+		{
+			name:  "Job found",
+			jobID: 12345,
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{
+						Item: map[string]types.AttributeValue{
+							"job_id":           &types.AttributeValueMemberN{Value: "12345"},
+							"run_id":           &types.AttributeValueMemberN{Value: "67890"},
+							"repo":             &types.AttributeValueMemberS{Value: testRepo},
+							"instance_id":      &types.AttributeValueMemberS{Value: "i-abc123"},
+							"instance_type":    &types.AttributeValueMemberS{Value: "c7g.medium"},
+							"pool":             &types.AttributeValueMemberS{Value: "default"},
+							"spot":             &types.AttributeValueMemberBOOL{Value: true},
+							"warm_pool_hit":    &types.AttributeValueMemberBOOL{Value: true},
+							"retry_count":      &types.AttributeValueMemberN{Value: "1"},
+							"status":           &types.AttributeValueMemberS{Value: "running"},
+							"exit_code":        &types.AttributeValueMemberN{Value: "0"},
+							"duration_seconds": &types.AttributeValueMemberN{Value: "300"},
+							"created_at":       &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+						},
+					}, nil
+				},
+			},
+			wantNil: false,
+			wantErr: false,
+		},
+		{
+			name:  "Job not found",
+			jobID: 99999,
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: nil}, nil
+				},
+			},
+			wantNil: true,
+			wantErr: false,
+		},
+		{
+			name:  "DynamoDB error propagation",
+			jobID: 12345,
+			mockDB: &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return nil, errors.New("dynamodb get error")
+				},
+			},
+			wantNil: true,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			entry, err := client.GetJobForAdmin(context.Background(), tt.jobID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetJobForAdmin() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantNil {
+				if entry != nil {
+					t.Errorf("GetJobForAdmin() = %v, want nil", entry)
+				}
+			} else {
+				if entry == nil {
+					t.Fatal("GetJobForAdmin() = nil, want entry")
+				}
+				if entry.JobID != 12345 {
+					t.Errorf("JobID = %d, want 12345", entry.JobID)
+				}
+				if entry.RunID != 67890 {
+					t.Errorf("RunID = %d, want 67890", entry.RunID)
+				}
+				if entry.Repo != testRepo {
+					t.Errorf("Repo = %q, want %q", entry.Repo, testRepo)
+				}
+				if entry.Status != "running" {
+					t.Errorf("Status = %q, want %q", entry.Status, "running")
+				}
+				if !entry.WarmPoolHit {
+					t.Error("WarmPoolHit = false, want true")
+				}
+				if entry.RetryCount != 1 {
+					t.Errorf("RetryCount = %d, want 1", entry.RetryCount)
+				}
+			}
+		})
+	}
+}
+
+func TestGetJobForAdmin_JobsTableNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	entry, err := client.GetJobForAdmin(context.Background(), 12345)
+	if err == nil {
+		t.Error("GetJobForAdmin() should fail when jobs table not configured")
+	}
+	if entry != nil {
+		t.Errorf("GetJobForAdmin() = %v, want nil on error", entry)
+	}
+}
+
+func TestGetJobStatsForAdmin(t *testing.T) {
+	t.Parallel()
+
+	since := time.Now().Add(-24 * time.Hour)
+
+	tests := []struct {
+		name      string
+		mockDB    *MockDynamoDBAPI
+		wantStats *AdminJobStats
+		wantErr   bool
+	}{
+		{
+			name: "Various status distributions",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{
+						Items: []map[string]types.AttributeValue{
+							{
+								"job_id": &types.AttributeValueMemberN{Value: "1"},
+								"status": &types.AttributeValueMemberS{Value: "completed"},
+							},
+							{
+								"job_id": &types.AttributeValueMemberN{Value: "2"},
+								"status": &types.AttributeValueMemberS{Value: "success"},
+							},
+							{
+								"job_id":        &types.AttributeValueMemberN{Value: "3"},
+								"status":        &types.AttributeValueMemberS{Value: "failed"},
+								"warm_pool_hit": &types.AttributeValueMemberBOOL{Value: true},
+							},
+							{
+								"job_id": &types.AttributeValueMemberN{Value: "4"},
+								"status": &types.AttributeValueMemberS{Value: "error"},
+							},
+							{
+								"job_id":        &types.AttributeValueMemberN{Value: "5"},
+								"status":        &types.AttributeValueMemberS{Value: "running"},
+								"warm_pool_hit": &types.AttributeValueMemberBOOL{Value: true},
+							},
+							{
+								"job_id": &types.AttributeValueMemberN{Value: "6"},
+								"status": &types.AttributeValueMemberS{Value: "claiming"},
+							},
+							{
+								"job_id": &types.AttributeValueMemberN{Value: "7"},
+								"status": &types.AttributeValueMemberS{Value: "requeued"},
+							},
+						},
+					}, nil
+				},
+			},
+			wantStats: &AdminJobStats{
+				Total:       7,
+				Completed:   2,
+				Failed:      2,
+				Running:     2,
+				Requeued:    1,
+				WarmPoolHit: 2,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Empty table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantStats: &AdminJobStats{
+				Total:       0,
+				Completed:   0,
+				Failed:      0,
+				Running:     0,
+				Requeued:    0,
+				WarmPoolHit: 0,
+			},
+			wantErr: false,
+		},
+		{
+			name: "DynamoDB error propagation",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return nil, errors.New("dynamodb scan error")
+				},
+			},
+			wantStats: nil,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    "jobs-table",
+			}
+
+			stats, err := client.GetJobStatsForAdmin(context.Background(), since)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetJobStatsForAdmin() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantStats == nil {
+				if stats != nil && !tt.wantErr {
+					t.Errorf("GetJobStatsForAdmin() = %v, want nil", stats)
+				}
+				return
+			}
+
+			if stats == nil {
+				t.Fatal("GetJobStatsForAdmin() = nil, want stats")
+			}
+			if stats.Total != tt.wantStats.Total {
+				t.Errorf("Total = %d, want %d", stats.Total, tt.wantStats.Total)
+			}
+			if stats.Completed != tt.wantStats.Completed {
+				t.Errorf("Completed = %d, want %d", stats.Completed, tt.wantStats.Completed)
+			}
+			if stats.Failed != tt.wantStats.Failed {
+				t.Errorf("Failed = %d, want %d", stats.Failed, tt.wantStats.Failed)
+			}
+			if stats.Running != tt.wantStats.Running {
+				t.Errorf("Running = %d, want %d", stats.Running, tt.wantStats.Running)
+			}
+			if stats.Requeued != tt.wantStats.Requeued {
+				t.Errorf("Requeued = %d, want %d", stats.Requeued, tt.wantStats.Requeued)
+			}
+			if stats.WarmPoolHit != tt.wantStats.WarmPoolHit {
+				t.Errorf("WarmPoolHit = %d, want %d", stats.WarmPoolHit, tt.wantStats.WarmPoolHit)
+			}
+		})
+	}
+}
+
+func TestGetJobStatsForAdmin_JobsTableNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{
+		dynamoClient: &MockDynamoDBAPI{},
+		jobsTable:    "",
+	}
+
+	stats, err := client.GetJobStatsForAdmin(context.Background(), time.Now())
+	if err == nil {
+		t.Error("GetJobStatsForAdmin() should fail when jobs table not configured")
+	}
+	if stats != nil {
+		t.Errorf("GetJobStatsForAdmin() = %v, want nil on error", stats)
+	}
+}
+
+func TestGetPoolBusyInstanceIDs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		poolName    string
+		jobsTable   string
+		mockDB      *MockDynamoDBAPI
+		wantIDs     []string
+		wantErr     bool
+	}{
+		{
+			name:      "Returns instance IDs for running jobs",
+			poolName:  "default",
+			jobsTable: "jobs-table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					if params.FilterExpression == nil {
+						t.Error("Expected filter expression")
+					}
+					return &dynamodb.ScanOutput{
+						Items: []map[string]types.AttributeValue{
+							{"instance_id": &types.AttributeValueMemberS{Value: "i-111"}},
+							{"instance_id": &types.AttributeValueMemberS{Value: "i-222"}},
+						},
+					}, nil
+				},
+			},
+			wantIDs: []string{"i-111", "i-222"},
+			wantErr: false,
+		},
+		{
+			name:      "Empty result",
+			poolName:  "empty-pool",
+			jobsTable: "jobs-table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				},
+			},
+			wantIDs: nil,
+			wantErr: false,
+		},
+		{
+			name:      "Empty pool name",
+			poolName:  "",
+			jobsTable: "jobs-table",
+			mockDB:    &MockDynamoDBAPI{},
+			wantIDs:   nil,
+			wantErr:   true,
+		},
+		{
+			name:      "Jobs table not configured returns nil",
+			poolName:  "default",
+			jobsTable: "",
+			mockDB:    &MockDynamoDBAPI{},
+			wantIDs:   nil,
+			wantErr:   false,
+		},
+		{
+			name:      "DynamoDB error propagation",
+			poolName:  "default",
+			jobsTable: "jobs-table",
+			mockDB: &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					return nil, errors.New("dynamodb scan error")
+				},
+			},
+			wantIDs: nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				jobsTable:    tt.jobsTable,
+			}
+
+			ids, err := client.GetPoolBusyInstanceIDs(context.Background(), tt.poolName)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetPoolBusyInstanceIDs() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if len(ids) != len(tt.wantIDs) {
+				t.Errorf("GetPoolBusyInstanceIDs() returned %d IDs, want %d", len(ids), len(tt.wantIDs))
+				return
+			}
+
+			for i, id := range ids {
+				if id != tt.wantIDs[i] {
+					t.Errorf("GetPoolBusyInstanceIDs()[%d] = %q, want %q", i, id, tt.wantIDs[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCreateEphemeralPool(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  *PoolConfig
+		mockDB  *MockDynamoDBAPI
+		wantErr error
+	}{
+		{
+			name: "Successful creation",
+			config: &PoolConfig{
+				PoolName:       "ephemeral-pool-1",
+				InstanceType:   "c7g.medium",
+				DesiredRunning: 1,
+				Ephemeral:      true,
+			},
+			mockDB: &MockDynamoDBAPI{
+				PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+					if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(pool_name)" {
+						t.Errorf("Expected condition expression 'attribute_not_exists(pool_name)', got %v", params.ConditionExpression)
+					}
+					return &dynamodb.PutItemOutput{}, nil
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "Pool already exists",
+			config: &PoolConfig{
+				PoolName:  "existing-pool",
+				Ephemeral: true,
+			},
+			mockDB: &MockDynamoDBAPI{
+				PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{
+						Message: nil,
+					}
+				},
+			},
+			wantErr: ErrPoolAlreadyExists,
+		},
+		{
+			name: "DynamoDB error propagation",
+			config: &PoolConfig{
+				PoolName:  "new-pool",
+				Ephemeral: true,
+			},
+			mockDB: &MockDynamoDBAPI{
+				PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+					return nil, errors.New("dynamodb put error")
+				},
+			},
+			wantErr: errors.New("dynamodb put error"),
+		},
+		{
+			name:    "Nil config",
+			config:  nil,
+			mockDB:  &MockDynamoDBAPI{},
+			wantErr: errors.New("pool config cannot be nil"),
+		},
+		{
+			name: "Empty pool name",
+			config: &PoolConfig{
+				PoolName:  "",
+				Ephemeral: true,
+			},
+			mockDB:  &MockDynamoDBAPI{},
+			wantErr: errors.New("pool name cannot be empty"),
+		},
+		{
+			name: "Non-ephemeral pool rejected",
+			config: &PoolConfig{
+				PoolName:  "persistent-pool",
+				Ephemeral: false,
+			},
+			mockDB:  &MockDynamoDBAPI{},
+			wantErr: errors.New("CreateEphemeralPool can only be used for ephemeral pools"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{
+				dynamoClient: tt.mockDB,
+				poolsTable:   testPoolsTable,
+			}
+
+			err := client.CreateEphemeralPool(context.Background(), tt.config)
+
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Errorf("CreateEphemeralPool() error = %v, want nil", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Errorf("CreateEphemeralPool() = nil, want error %v", tt.wantErr)
+				return
+			}
+
+			if errors.Is(tt.wantErr, ErrPoolAlreadyExists) {
+				if !errors.Is(err, ErrPoolAlreadyExists) {
+					t.Errorf("CreateEphemeralPool() error = %v, want ErrPoolAlreadyExists", err)
+				}
+			} else if !strings.Contains(err.Error(), tt.wantErr.Error()) {
+				t.Errorf("CreateEphemeralPool() error = %v, want containing %q", err, tt.wantErr.Error())
 			}
 		})
 	}
