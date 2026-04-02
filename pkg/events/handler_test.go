@@ -69,10 +69,11 @@ func (m *MockDBAPI) GetJobByInstance(ctx context.Context, instanceID string) (*J
 
 // MockMetricsAPI implements MetricsAPI interface
 type MockMetricsAPI struct {
-	PublishSpotInterruptionFunc       func(ctx context.Context) error
-	PublishFleetSizeIncrementFunc     func(ctx context.Context) error
-	PublishFleetSizeDecrementFunc     func(ctx context.Context) error
-	PublishMessageDeletionFailureFunc func(ctx context.Context) error
+	PublishSpotInterruptionFunc        func(ctx context.Context) error
+	PublishFleetSizeIncrementFunc      func(ctx context.Context) error
+	PublishFleetSizeDecrementFunc      func(ctx context.Context) error
+	PublishMessageDeletionFailureFunc  func(ctx context.Context) error
+	PublishCircuitBreakerTriggeredFunc func(ctx context.Context, instanceType string) error
 }
 
 func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context) error {
@@ -103,9 +104,17 @@ func (m *MockMetricsAPI) PublishMessageDeletionFailure(ctx context.Context) erro
 	return nil
 }
 
+func (m *MockMetricsAPI) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error {
+	if m.PublishCircuitBreakerTriggeredFunc != nil {
+		return m.PublishCircuitBreakerTriggeredFunc(ctx, instanceType)
+	}
+	return nil
+}
+
 // MockCircuitBreakerAPI implements CircuitBreakerAPI interface
 type MockCircuitBreakerAPI struct {
 	RecordInterruptionFunc func(ctx context.Context, instanceType string) error
+	IsOpenFunc             func(ctx context.Context, instanceType string) (bool, error)
 }
 
 func (m *MockCircuitBreakerAPI) RecordInterruption(ctx context.Context, instanceType string) error {
@@ -113,6 +122,13 @@ func (m *MockCircuitBreakerAPI) RecordInterruption(ctx context.Context, instance
 		return m.RecordInterruptionFunc(ctx, instanceType)
 	}
 	return nil
+}
+
+func (m *MockCircuitBreakerAPI) IsOpen(ctx context.Context, instanceType string) (bool, error) {
+	if m.IsOpenFunc != nil {
+		return m.IsOpenFunc(ctx, instanceType)
+	}
+	return false, nil
 }
 
 func TestProcessEvent(t *testing.T) {
@@ -1486,6 +1502,113 @@ func TestSpotInterruptionDetail_Structure(t *testing.T) {
 	}
 	if detail.InstanceAction != "terminate" {
 		t.Errorf("InstanceAction = %s, want terminate", detail.InstanceAction)
+	}
+}
+
+func TestSpotInterruptionPublishesCircuitBreakerMetric(t *testing.T) {
+	tests := []struct {
+		name                string
+		isOpen              bool
+		isOpenErr           error
+		expectMetricCalled  bool
+	}{
+		{
+			name:               "circuit open publishes metric",
+			isOpen:             true,
+			expectMetricCalled: true,
+		},
+		{
+			name:               "circuit closed skips metric",
+			isOpen:             false,
+			expectMetricCalled: false,
+		},
+		{
+			name:               "IsOpen error skips metric",
+			isOpen:             false,
+			isOpenErr:          fmt.Errorf("dynamo error"),
+			expectMetricCalled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var metricCalled atomic.Bool
+			var metricInstanceType atomic.Value
+
+			mockMetrics := &MockMetricsAPI{
+				PublishSpotInterruptionFunc: func(_ context.Context) error {
+					return nil
+				},
+				PublishCircuitBreakerTriggeredFunc: func(_ context.Context, instanceType string) error {
+					metricCalled.Store(true)
+					metricInstanceType.Store(instanceType)
+					return nil
+				},
+			}
+
+			mockCB := &MockCircuitBreakerAPI{
+				RecordInterruptionFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+				IsOpenFunc: func(_ context.Context, _ string) (bool, error) {
+					return tt.isOpen, tt.isOpenErr
+				},
+			}
+
+			mockDB := &MockDBAPI{
+				MarkInstanceTerminatingFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+				GetJobByInstanceFunc: func(_ context.Context, _ string) (*JobInfo, error) {
+					return &JobInfo{
+						JobID:        12345,
+						RunID:        67890,
+						InstanceType: "t4g.medium",
+						Pool:         "default",
+						Spot:         true,
+					}, nil
+				},
+			}
+
+			mockQueue := &MockQueueAPI{
+				SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+					return nil
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+			}
+
+			handler := &Handler{
+				queueClient:    mockQueue,
+				dbClient:       mockDB,
+				metrics:        mockMetrics,
+				config:         &config.Config{},
+				circuitBreaker: mockCB,
+			}
+
+			msg := queue.Message{
+				Body: `{
+					"detail-type": "EC2 Spot Instance Interruption Warning",
+					"detail": {
+						"instance-id": "i-test123",
+						"instance-action": "terminate"
+					}
+				}`,
+				Handle: "receipt-test",
+			}
+
+			handler.processEvent(context.Background(), msg)
+
+			if metricCalled.Load() != tt.expectMetricCalled {
+				t.Errorf("PublishCircuitBreakerTriggered called = %v, want %v", metricCalled.Load(), tt.expectMetricCalled)
+			}
+			if tt.expectMetricCalled {
+				if v, ok := metricInstanceType.Load().(string); !ok || v != "t4g.medium" {
+					t.Errorf("PublishCircuitBreakerTriggered instanceType = %v, want t4g.medium", metricInstanceType.Load())
+				}
+			}
+		})
 	}
 }
 
