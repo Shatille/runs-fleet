@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
@@ -208,7 +209,7 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		}
 	}
 
-	if msg.Status == "success" {
+	if msg.Status == string(db.JobStatusSuccess) {
 		if err := h.metrics.PublishJobSuccess(ctx); err != nil {
 			termLog.Warn("job success metric publish failed", slog.String("error", err.Error()))
 		}

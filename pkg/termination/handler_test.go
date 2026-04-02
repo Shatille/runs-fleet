@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
@@ -21,7 +22,7 @@ func init() {
 // Test constants to satisfy goconst
 const (
 	testReceiptTermination = "test-receipt"
-	testStatusSuccess      = "success"
+	testStatusSuccess      = string(db.JobStatusSuccess)
 )
 
 // mockQueueAPI implements QueueAPI for testing.
