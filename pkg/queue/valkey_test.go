@@ -12,9 +12,10 @@ import (
 
 // Test constants to avoid goconst lint errors
 const (
-	testStreamName   = "test-stream"
-	testGroupName    = "test-group"
-	testConsumerName = "test-consumer"
+	testStreamName    = "test-stream"
+	testGroupName     = "test-group"
+	testConsumerName  = "test-consumer"
+	testTraceparent   = "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"
 )
 
 func TestValkeyClient_InterfaceCompliance(_ *testing.T) {
@@ -107,14 +108,12 @@ func TestNewValkeyClientWithRedis(t *testing.T) {
 func TestValkeyClient_SendMessage_Success(t *testing.T) {
 	// Create a minimal test to verify message marshaling works
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
-		Repo:    "owner/repo",
-		TraceID: "trace-abc",
-		SpanID:  "span-xyz",
+		JobID:       12345,
+		RunID:       67890,
+		Repo:        "owner/repo",
+		Traceparent: testTraceparent,
 	}
 
-	// Verify the job can be marshaled to JSON
 	_, err := json.Marshal(job)
 	if err != nil {
 		t.Fatalf("failed to marshal job: %v", err)
@@ -166,8 +165,7 @@ func TestValkeyClient_Message_Attributes(t *testing.T) {
 		Body:   `{"job_id":"job-123","run_id":"run-456"}`,
 		Handle: "1234567890-0",
 		Attributes: map[string]string{
-			"TraceID": "trace-abc",
-			"SpanID":  "span-xyz",
+			"Traceparent": testTraceparent,
 		},
 	}
 
@@ -177,11 +175,8 @@ func TestValkeyClient_Message_Attributes(t *testing.T) {
 	if msg.Handle != "1234567890-0" {
 		t.Errorf("Handle = %s, want 1234567890-0", msg.Handle)
 	}
-	if msg.Attributes["TraceID"] != "trace-abc" {
-		t.Errorf("TraceID = %s, want trace-abc", msg.Attributes["TraceID"])
-	}
-	if msg.Attributes["SpanID"] != "span-xyz" {
-		t.Errorf("SpanID = %s, want span-xyz", msg.Attributes["SpanID"])
+	if msg.Attributes["Traceparent"] != testTraceparent {
+		t.Errorf("Traceparent = %s, want 00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01", msg.Attributes["Traceparent"])
 	}
 }
 
@@ -304,9 +299,7 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"m6g.large", "m6g.xlarge"},
-		TraceID:       "trace-id-123",
-		SpanID:        "span-id-456",
-		ParentID:      "parent-id-789",
+		Traceparent: testTraceparent,
 	}
 
 	data, err := json.Marshal(job)
@@ -362,14 +355,8 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 	if len(decoded.InstanceTypes) != len(job.InstanceTypes) {
 		t.Errorf("InstanceTypes length mismatch")
 	}
-	if decoded.TraceID != job.TraceID {
-		t.Errorf("TraceID mismatch")
-	}
-	if decoded.SpanID != job.SpanID {
-		t.Errorf("SpanID mismatch")
-	}
-	if decoded.ParentID != job.ParentID {
-		t.Errorf("ParentID mismatch")
+	if decoded.Traceparent != job.Traceparent {
+		t.Errorf("Traceparent mismatch")
 	}
 }
 
@@ -412,14 +399,12 @@ func TestValkeyClient_ErrorConditions(t *testing.T) {
 func TestValkeyClient_MessageParsing(t *testing.T) {
 	// Test parsing messages from stream
 	testValues := map[string]interface{}{
-		"body":     `{"job_id":"job-123","run_id":"run-456"}`,
-		"run_id":   "run-456",
-		"job_id":   "job-123",
-		"trace_id": "trace-abc",
-		"span_id":  "span-xyz",
+		"body":        `{"job_id":"job-123","run_id":"run-456"}`,
+		"run_id":      "run-456",
+		"job_id":      "job-123",
+		"traceparent": testTraceparent,
 	}
 
-	// Verify that string values can be extracted
 	if body, ok := testValues["body"].(string); ok {
 		if body == "" {
 			t.Error("body should not be empty")
@@ -428,15 +413,9 @@ func TestValkeyClient_MessageParsing(t *testing.T) {
 		t.Error("body should be a string")
 	}
 
-	if traceID, ok := testValues["trace_id"].(string); ok {
-		if traceID != "trace-abc" {
-			t.Errorf("trace_id = %s, want trace-abc", traceID)
-		}
-	}
-
-	if spanID, ok := testValues["span_id"].(string); ok {
-		if spanID != "span-xyz" {
-			t.Errorf("span_id = %s, want span-xyz", spanID)
+	if tp, ok := testValues["traceparent"].(string); ok {
+		if tp != testTraceparent {
+			t.Errorf("traceparent = %s, want 00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01", tp)
 		}
 	}
 }
@@ -444,48 +423,50 @@ func TestValkeyClient_MessageParsing(t *testing.T) {
 func TestValkeyClient_StreamMessageExtraction(t *testing.T) {
 	// Test extracting data from stream message values
 	tests := []struct {
-		name       string
-		values     map[string]interface{}
-		wantBody   string
-		wantTrace  string
-		wantSpan   string
+		name            string
+		values          map[string]interface{}
+		wantBody        string
+		wantTraceparent string
+		wantOldTraceID  string
 	}{
 		{
-			name: "complete message",
+			name: "w3c traceparent",
 			values: map[string]interface{}{
-				"body":     `{"job_id":"j1","run_id":"r1"}`,
-				"trace_id": "trace-123",
-				"span_id":  "span-456",
+				"body":        `{"job_id":"j1","run_id":"r1"}`,
+				"traceparent": testTraceparent,
 			},
-			wantBody:  `{"job_id":"j1","run_id":"r1"}`,
-			wantTrace: "trace-123",
-			wantSpan:  "span-456",
+			wantBody:        `{"job_id":"j1","run_id":"r1"}`,
+			wantTraceparent: testTraceparent,
 		},
 		{
 			name: "message without trace context",
 			values: map[string]interface{}{
 				"body": `{"job_id":"j2","run_id":"r2"}`,
 			},
-			wantBody:  `{"job_id":"j2","run_id":"r2"}`,
-			wantTrace: "",
-			wantSpan:  "",
+			wantBody: `{"job_id":"j2","run_id":"r2"}`,
 		},
 		{
-			name: "message with empty trace values",
+			name: "backward compat old trace_id",
 			values: map[string]interface{}{
 				"body":     `{"job_id":"j3","run_id":"r3"}`,
-				"trace_id": "",
-				"span_id":  "",
+				"trace_id": "old-trace-123",
 			},
-			wantBody:  `{"job_id":"j3","run_id":"r3"}`,
-			wantTrace: "",
-			wantSpan:  "",
+			wantBody:       `{"job_id":"j3","run_id":"r3"}`,
+			wantOldTraceID: "old-trace-123",
+		},
+		{
+			name: "empty trace values",
+			values: map[string]interface{}{
+				"body":        `{"job_id":"j4","run_id":"r4"}`,
+				"traceparent": "",
+				"trace_id":    "",
+			},
+			wantBody: `{"job_id":"j4","run_id":"r4"}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Simulate the extraction logic from ReceiveMessages
 			msg := Message{
 				ID:         "1234567890-0",
 				Handle:     "1234567890-0",
@@ -495,21 +476,20 @@ func TestValkeyClient_StreamMessageExtraction(t *testing.T) {
 			if body, ok := tt.values["body"].(string); ok {
 				msg.Body = body
 			}
-			if traceID, ok := tt.values["trace_id"].(string); ok && traceID != "" {
+			if tp, ok := tt.values["traceparent"].(string); ok && tp != "" {
+				msg.Attributes["Traceparent"] = tp
+			} else if traceID, ok := tt.values["trace_id"].(string); ok && traceID != "" {
 				msg.Attributes["TraceID"] = traceID
-			}
-			if spanID, ok := tt.values["span_id"].(string); ok && spanID != "" {
-				msg.Attributes["SpanID"] = spanID
 			}
 
 			if msg.Body != tt.wantBody {
 				t.Errorf("Body = %s, want %s", msg.Body, tt.wantBody)
 			}
-			if msg.Attributes["TraceID"] != tt.wantTrace {
-				t.Errorf("TraceID = %s, want %s", msg.Attributes["TraceID"], tt.wantTrace)
+			if msg.Attributes["Traceparent"] != tt.wantTraceparent {
+				t.Errorf("Traceparent = %s, want %s", msg.Attributes["Traceparent"], tt.wantTraceparent)
 			}
-			if msg.Attributes["SpanID"] != tt.wantSpan {
-				t.Errorf("SpanID = %s, want %s", msg.Attributes["SpanID"], tt.wantSpan)
+			if msg.Attributes["TraceID"] != tt.wantOldTraceID {
+				t.Errorf("TraceID = %s, want %s", msg.Attributes["TraceID"], tt.wantOldTraceID)
 			}
 		})
 	}
@@ -541,11 +521,10 @@ func TestValkeyClient_WaitTimeDuration(t *testing.T) {
 func TestValkeyClient_MessageValues(t *testing.T) {
 	// Test building message values for XAdd
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
-		Repo:    "test-org/test-repo",
-		TraceID: "trace-test-abc",
-		SpanID:  "span-test-xyz",
+		JobID:       12345,
+		RunID:       67890,
+		Repo:        "test-org/test-repo",
+		Traceparent: testTraceparent,
 	}
 
 	body, err := json.Marshal(job)
@@ -554,28 +533,22 @@ func TestValkeyClient_MessageValues(t *testing.T) {
 	}
 
 	values := map[string]interface{}{
-		"body":     string(body),
-		"run_id":   job.RunID,
-		"job_id":   job.JobID,
-		"trace_id": job.TraceID,
-		"span_id":  job.SpanID,
+		"body":        string(body),
+		"run_id":      job.RunID,
+		"job_id":      job.JobID,
+		"traceparent": testTraceparent,
 	}
 
-	// Verify all values are present and correct
 	if values["run_id"] != job.RunID {
 		t.Errorf("run_id = %v, want %d", values["run_id"], job.RunID)
 	}
 	if values["job_id"] != job.JobID {
 		t.Errorf("job_id = %v, want %d", values["job_id"], job.JobID)
 	}
-	if values["trace_id"] != job.TraceID {
-		t.Errorf("trace_id = %v, want %s", values["trace_id"], job.TraceID)
-	}
-	if values["span_id"] != job.SpanID {
-		t.Errorf("span_id = %v, want %s", values["span_id"], job.SpanID)
+	if values["traceparent"] != testTraceparent {
+		t.Errorf("traceparent = %v, want 00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01", values["traceparent"])
 	}
 
-	// Verify body can be deserialized back
 	var decoded JobMessage
 	if err := json.Unmarshal([]byte(values["body"].(string)), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal body: %v", err)
@@ -733,9 +706,8 @@ func TestValkeyClient_StreamMessageBuilding(t *testing.T) {
 	}{
 		ID: "1234567890123-0",
 		Values: map[string]interface{}{
-			"body":     `{"job_id":"test","run_id":"run"}`,
-			"trace_id": "trace-id",
-			"span_id":  "span-id",
+			"body":        `{"job_id":"test","run_id":"run"}`,
+			"traceparent": testTraceparent,
 		},
 	}
 
@@ -748,11 +720,8 @@ func TestValkeyClient_StreamMessageBuilding(t *testing.T) {
 	if body, ok := xmsg.Values["body"].(string); ok {
 		msg.Body = body
 	}
-	if traceID, ok := xmsg.Values["trace_id"].(string); ok && traceID != "" {
-		msg.Attributes["TraceID"] = traceID
-	}
-	if spanID, ok := xmsg.Values["span_id"].(string); ok && spanID != "" {
-		msg.Attributes["SpanID"] = spanID
+	if tp, ok := xmsg.Values["traceparent"].(string); ok && tp != "" {
+		msg.Attributes["Traceparent"] = tp
 	}
 
 	if msg.ID != xmsg.ID {
@@ -764,8 +733,8 @@ func TestValkeyClient_StreamMessageBuilding(t *testing.T) {
 	if msg.Body != xmsg.Values["body"] {
 		t.Errorf("Body = %s, want %v", msg.Body, xmsg.Values["body"])
 	}
-	if msg.Attributes["TraceID"] != "trace-id" {
-		t.Errorf("TraceID = %s, want trace-id", msg.Attributes["TraceID"])
+	if msg.Attributes["Traceparent"] != testTraceparent {
+		t.Errorf("Traceparent = %s, want 00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01", msg.Attributes["Traceparent"])
 	}
 }
 
@@ -824,8 +793,7 @@ func TestValkeyClient_Integration_SendMessage(t *testing.T) {
 		InstanceType: "t4g.medium",
 		Pool:         "default",
 		Spot:         true,
-		TraceID:      "trace-send-123",
-		SpanID:       "span-send-456",
+		Traceparent: "00-aabbccddeeff00112233445566778899-1122334455667788-01",
 	}
 
 	if err := vc.SendMessage(ctx, job); err != nil {
@@ -947,20 +915,15 @@ func TestValkeyClient_Integration_XAddValues(t *testing.T) {
 		t.Fatalf("failed to create consumer group: %v", err)
 	}
 
-	// Send with full trace context
 	job := &JobMessage{
 		JobID: 12345,
 		RunID: 67890,
-		TraceID:  "trace-xadd-123",
-		SpanID:   "span-xadd-456",
-		ParentID: "parent-xadd-789",
 	}
 
 	if err := vc.SendMessage(ctx, job); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
-	// Use XRange to read without blocking (direct stream access)
 	msgs, err := vc.client.XRange(ctx, testStreamName, "-", "+").Result()
 	if err != nil {
 		t.Fatalf("XRange failed: %v", err)
@@ -970,12 +933,8 @@ func TestValkeyClient_Integration_XAddValues(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
 
-	// Verify trace context was stored
-	if msgs[0].Values["trace_id"] != "trace-xadd-123" {
-		t.Errorf("trace_id = %v, want trace-xadd-123", msgs[0].Values["trace_id"])
-	}
-	if msgs[0].Values["span_id"] != "span-xadd-456" {
-		t.Errorf("span_id = %v, want span-xadd-456", msgs[0].Values["span_id"])
+	if _, ok := msgs[0].Values["traceparent"]; !ok {
+		t.Error("traceparent field should exist in stream entry")
 	}
 }
 
