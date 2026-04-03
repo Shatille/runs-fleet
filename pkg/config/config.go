@@ -45,7 +45,8 @@ type Config struct {
 	EventsQueueURL       string
 	TerminationQueueURL  string
 	HousekeepingQueueURL string
-	JobsTableName string
+	JobsTableName        string
+	JobsPoolStatusGSI    string
 	PoolsTableName       string
 	CircuitBreakerTable  string
 	CacheBucketName    string
@@ -176,6 +177,7 @@ func Load() (*Config, error) {
 		TerminationQueueURL:  getEnv("RUNS_FLEET_TERMINATION_QUEUE_URL", ""),
 		HousekeepingQueueURL: getEnv("RUNS_FLEET_HOUSEKEEPING_QUEUE_URL", ""),
 		JobsTableName:        getEnv("RUNS_FLEET_JOBS_TABLE", ""),
+		JobsPoolStatusGSI:    getEnv("RUNS_FLEET_JOBS_POOL_STATUS_GSI", ""),
 		PoolsTableName:       getEnv("RUNS_FLEET_POOLS_TABLE", ""),
 		CircuitBreakerTable:  getEnv("RUNS_FLEET_CIRCUIT_BREAKER_TABLE", "runs-fleet-circuit-state"),
 		CacheBucketName:    getEnv("RUNS_FLEET_CACHE_BUCKET", ""),

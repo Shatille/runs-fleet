@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go"
 )
 
 // ErrJobAlreadyClaimed is returned when attempting to claim a job that is already being processed.
@@ -508,8 +509,8 @@ func (c *Client) GetPoolP90Concurrency(ctx context.Context, poolName string, win
 // GetPoolBusyInstanceIDs returns instance IDs that have running jobs in the pool.
 // Used to identify which instances should not be stopped during reconciliation.
 //
-// Performance note: Uses Scan. Acceptable for current scale (~100 jobs/day, ~10 concurrent).
-// For high-volume deployments (>1000 concurrent jobs), add GSI on (pool, status).
+// When jobsPoolStatusGSI is configured, uses Query on the GSI for O(1) lookup.
+// Falls back to Scan if the GSI is not configured or if the Query fails.
 func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
@@ -519,6 +520,48 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 		return nil, nil
 	}
 
+	if c.jobsPoolStatusGSI != "" {
+		ids, err := c.getPoolBusyInstanceIDsViaGSI(ctx, poolName)
+		if err == nil {
+			return ids, nil
+		}
+		if !isGSIValidationError(err) {
+			return nil, err
+		}
+		dbLog.Warn("GSI query failed, falling back to scan",
+			"gsi", c.jobsPoolStatusGSI,
+			"error", err,
+		)
+	}
+
+	return c.getPoolBusyInstanceIDsViaScan(ctx, poolName)
+}
+
+func (c *Client) getPoolBusyInstanceIDsViaGSI(ctx context.Context, poolName string) ([]string, error) {
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(c.jobsTable),
+		IndexName:              aws.String(c.jobsPoolStatusGSI),
+		KeyConditionExpression: aws.String("#pool = :pool AND #status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#pool":   "pool",
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pool":   &types.AttributeValueMemberS{Value: poolName},
+			":status": &types.AttributeValueMemberS{Value: "running"},
+		},
+		ProjectionExpression: aws.String("instance_id"),
+	}
+
+	output, err := c.dynamoClient.Query(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query GSI: %w", err)
+	}
+
+	return extractInstanceIDs(output.Items), nil
+}
+
+func (c *Client) getPoolBusyInstanceIDsViaScan(ctx context.Context, poolName string) ([]string, error) {
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
 		FilterExpression: aws.String("#pool = :pool AND #status = :status"),
@@ -538,16 +581,27 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 		return nil, fmt.Errorf("failed to scan jobs: %w", err)
 	}
 
-	var instanceIDs []string
-	for _, item := range output.Items {
+	return extractInstanceIDs(output.Items), nil
+}
+
+func extractInstanceIDs(items []map[string]types.AttributeValue) []string {
+	var ids []string
+	for _, item := range items {
 		if v, ok := item["instance_id"]; ok {
 			if s, ok := v.(*types.AttributeValueMemberS); ok && s.Value != "" {
-				instanceIDs = append(instanceIDs, s.Value)
+				ids = append(ids, s.Value)
 			}
 		}
 	}
+	return ids
+}
 
-	return instanceIDs, nil
+func isGSIValidationError(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "ValidationException"
+	}
+	return false
 }
 
 // GetJobByJobID retrieves job information by job ID (partition key lookup, O(1)).
