@@ -27,12 +27,14 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"go.opentelemetry.io/otel"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -59,6 +61,13 @@ func main() {
 		log.Error("config load failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+
+	tp, err := tracing.Setup(ctx, cfg.Tracing)
+	if err != nil {
+		log.Error("tracing setup failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	otel.SetTracerProvider(tp)
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
 	if err != nil {
@@ -199,6 +208,10 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
+
+	if err := tracing.Shutdown(shutdownCtx, tp); err != nil {
+		log.Warn("tracing shutdown failed", slog.String("error", err.Error()))
+	}
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Error("server shutdown failed", slog.String("error", err.Error()))

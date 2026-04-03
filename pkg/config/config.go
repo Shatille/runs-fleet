@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/internal/validation"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 )
 
 // Backend constants for compute provider selection.
@@ -108,6 +109,9 @@ type Config struct {
 	MetricsDatadogBufferPoolSize    int      // Buffer pool size (default: 0 = use library default)
 	MetricsDatadogWorkersCount      int      // Workers count for parallel processing (default: 0 = use library default)
 	MetricsDatadogMaxMsgsPerPayload int      // Max messages per UDP payload (default: 0 = unlimited)
+
+	// Tracing configuration
+	Tracing tracing.Config
 
 	// Secrets backend configuration (EC2 mode only)
 	SecretsBackend    string // "ssm" or "vault" (default: "ssm")
@@ -229,6 +233,9 @@ func Load() (*Config, error) {
 		MetricsDatadogBufferPoolSize:    getEnvIntDefault("RUNS_FLEET_METRICS_DATADOG_BUFFER_POOL_SIZE", 0),
 		MetricsDatadogWorkersCount:      getEnvIntDefault("RUNS_FLEET_METRICS_DATADOG_WORKERS_COUNT", 0),
 		MetricsDatadogMaxMsgsPerPayload: getEnvIntDefault("RUNS_FLEET_METRICS_DATADOG_MAX_MSGS_PER_PAYLOAD", 0),
+
+		// Tracing
+		Tracing: tracing.ParseConfig(),
 
 		// Secrets backend (EC2 mode)
 		SecretsBackend:    getEnv("RUNS_FLEET_SECRETS_BACKEND", "ssm"),
