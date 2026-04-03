@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go"
 )
 
 // Test constants for table names.
@@ -3497,5 +3498,143 @@ func TestCreateEphemeralPool(t *testing.T) {
 				t.Errorf("CreateEphemeralPool() error = %v, want containing %q", err, tt.wantErr.Error())
 			}
 		})
+	}
+}
+
+func TestGetPoolBusyInstanceIDs_ScanPath(t *testing.T) {
+	t.Parallel()
+
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			if input.ProjectionExpression == nil || *input.ProjectionExpression != "instance_id" {
+				return nil, errors.New("expected projection on instance_id")
+			}
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-aaa"}},
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-bbb"}},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mock,
+		jobsTable:    "jobs-table",
+	}
+
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d instance IDs, want 2", len(ids))
+	}
+	if ids[0] != "i-aaa" || ids[1] != "i-bbb" {
+		t.Errorf("got %v, want [i-aaa i-bbb]", ids)
+	}
+}
+
+func TestGetPoolBusyInstanceIDs_GSIPath(t *testing.T) {
+	t.Parallel()
+
+	queryCalled := false
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			queryCalled = true
+			if input.IndexName == nil || *input.IndexName != "pool-status-index" {
+				return nil, errors.New("expected GSI name pool-status-index")
+			}
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-gsi-1"}},
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-gsi-2"}},
+				},
+			}, nil
+		},
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			t.Error("Scan should not be called when GSI query succeeds")
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient:      mock,
+		jobsTable:         "jobs-table",
+		jobsPoolStatusGSI: "pool-status-index",
+	}
+
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !queryCalled {
+		t.Fatal("Query was not called")
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d instance IDs, want 2", len(ids))
+	}
+	if ids[0] != "i-gsi-1" || ids[1] != "i-gsi-2" {
+		t.Errorf("got %v, want [i-gsi-1 i-gsi-2]", ids)
+	}
+}
+
+func TestGetPoolBusyInstanceIDs_GSIFallbackToScan(t *testing.T) {
+	t.Parallel()
+
+	scanCalled := false
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, &smithy.GenericAPIError{Code: "ValidationException", Message: "index not found"}
+		},
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			scanCalled = true
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-fallback"}},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient:      mock,
+		jobsTable:         "jobs-table",
+		jobsPoolStatusGSI: "pool-status-index",
+	}
+
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scanCalled {
+		t.Fatal("Scan was not called as fallback")
+	}
+	if len(ids) != 1 || ids[0] != "i-fallback" {
+		t.Errorf("got %v, want [i-fallback]", ids)
+	}
+}
+
+func TestGetPoolBusyInstanceIDs_GSINonValidationError(t *testing.T) {
+	t.Parallel()
+
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, errors.New("throttling: rate exceeded")
+		},
+	}
+
+	client := &Client{
+		dynamoClient:      mock,
+		jobsTable:         "jobs-table",
+		jobsPoolStatusGSI: "pool-status-index",
+	}
+
+	_, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	if err == nil {
+		t.Fatal("expected error for non-validation GSI failure")
+	}
+	if !strings.Contains(err.Error(), "throttling") {
+		t.Errorf("expected throttling error, got: %v", err)
 	}
 }
