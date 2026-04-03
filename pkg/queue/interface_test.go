@@ -49,9 +49,7 @@ func TestJobMessage_Fields(t *testing.T) {
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
-		TraceID:       "trace-xyz",
-		SpanID:        "span-abc",
-		ParentID:      "parent-def",
+		Traceparent: testTraceparent,
 	}
 
 	if job.JobID != 123 {
@@ -96,13 +94,7 @@ func TestJobMessage_Fields(t *testing.T) {
 	if len(job.InstanceTypes) != 2 {
 		t.Errorf("JobMessage.InstanceTypes length = %d, want 2", len(job.InstanceTypes))
 	}
-	if job.TraceID != "trace-xyz" {
-		t.Errorf("JobMessage.TraceID = %q, want %q", job.TraceID, "trace-xyz")
-	}
-	if job.SpanID != "span-abc" {
-		t.Errorf("JobMessage.SpanID = %q, want %q", job.SpanID, "span-abc")
-	}
-	if job.ParentID != "parent-def" {
-		t.Errorf("JobMessage.ParentID = %q, want %q", job.ParentID, "parent-def")
+	if job.Traceparent != testTraceparent {
+		t.Errorf("JobMessage.Traceparent = %q, want %q", job.Traceparent, testTraceparent)
 	}
 }

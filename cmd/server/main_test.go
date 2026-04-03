@@ -422,9 +422,7 @@ func TestJobMessage_AllFields(t *testing.T) {
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
-		TraceID:       "trace-xyz",
-		SpanID:        "span-abc",
-		ParentID:      "parent-def",
+		Traceparent: "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01",
 	}
 
 	if job.JobID != 123 {
