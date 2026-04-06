@@ -14,7 +14,11 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/google/go-github/v57/github"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var webhookLog = logging.WithComponent(logging.LogTypeWebhook, "handler")
@@ -33,6 +37,14 @@ type PoolDBClient interface {
 
 // HandleWorkflowJobQueued processes queued workflow_job events.
 func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
+	ctx, span := tracing.Tracer().Start(ctx, "webhook.process",
+		trace.WithAttributes(
+			attribute.String("github.event_type", "workflow_job"),
+			attribute.String("github.repo", event.GetRepo().GetFullName()),
+			attribute.Int64("github.run_id", event.GetWorkflowJob().GetRunID()),
+		))
+	defer span.End()
+
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
 	if err != nil {
 		webhookLog.Debug("skipping job no labels",
@@ -72,6 +84,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		InstanceTypes: jobConfig.InstanceTypes,
 		StorageGiB:    jobConfig.StorageGiB,
 		PublicIP:      jobConfig.PublicIP,
+		Traceparent:   tracing.InjectTraceContext(ctx),
 		// Flexible spec for multi-spec pool matching
 		CPUMin:   jobConfig.CPUMin,
 		CPUMax:   jobConfig.CPUMax,
@@ -82,6 +95,8 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 	}
 
 	if err := q.SendMessage(ctx, msg); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		webhookLog.Error("job enqueue failed",
 			slog.Int64(logging.KeyJobID, msg.JobID),
 			slog.String("error", err.Error()))

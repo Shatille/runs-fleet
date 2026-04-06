@@ -17,6 +17,10 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var termLog = logging.WithComponent(logging.LogTypeTermination, "handler")
@@ -182,14 +186,26 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
+	ctx, span := tracing.Tracer().Start(ctx, "termination.process",
+		trace.WithAttributes(
+			attribute.String("job.id", msg.JobID),
+			attribute.String("job.status", msg.Status),
+			attribute.Int("job.duration", msg.DurationSeconds),
+		))
+	defer span.End()
+
 	// Parse job ID from string to int64 (DynamoDB uses Number type)
 	jobID, err := strconv.ParseInt(msg.JobID, 10, 64)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to parse job ID %q: %w", msg.JobID, err)
 	}
 
 	// Update DynamoDB job record (keyed by job_id)
 	if err := h.dbClient.MarkJobComplete(ctx, jobID, msg.Status, msg.ExitCode, msg.DurationSeconds); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to mark job complete: %w", err)
 	}
 
