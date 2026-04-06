@@ -16,6 +16,10 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var k8sLog = logging.WithComponent(logging.LogTypeQueue, "k8s-worker")
@@ -88,6 +92,18 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 		return
 	}
 
+	if tp := job.Traceparent; tp != "" {
+		ctx = tracing.ExtractTraceContext(tp)
+	}
+	ctx, span := tracing.Tracer().Start(ctx, "worker.process_job",
+		trace.WithAttributes(
+			attribute.Int64("job.id", job.JobID),
+			attribute.String("job.pool", job.Pool),
+			attribute.String("job.instance_type", job.InstanceType),
+			attribute.Bool("job.spot", job.Spot),
+		))
+	defer span.End()
+
 	if deps.Runner == nil {
 		k8sLog.Error("runner manager nil", slog.Int64(logging.KeyRunID, job.RunID))
 		poisonMessage = true
@@ -127,6 +143,8 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 
 	result, err := CreateK8sRunnerWithRetry(ctx, deps.Provider, spec)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		k8sLog.Error("pod creation failed",
 			slog.Int64(logging.KeyRunID, job.RunID),
 			slog.String("error", err.Error()))

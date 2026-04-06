@@ -14,9 +14,13 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/circuit"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var fleetLog = logging.WithComponent(logging.LogTypeFleet, "manager")
@@ -107,25 +111,46 @@ type LaunchSpec struct {
 //
 // For warm pool instances that need stop/start capability, use CreateOnDemandInstance instead.
 func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, error) {
+	instanceTypes := spec.InstanceTypes
+	if len(instanceTypes) == 0 && spec.InstanceType != "" {
+		instanceTypes = []string{spec.InstanceType}
+	}
+	ctx, span := tracing.Tracer().Start(ctx, "fleet.create",
+		trace.WithAttributes(
+			attribute.StringSlice("fleet.instance_types", instanceTypes),
+			attribute.Bool("fleet.spot", spec.Spot && !spec.ForceOnDemand),
+			attribute.Int("fleet.target_capacity", 1),
+		))
+	defer span.End()
+
 	useSpot := m.shouldUseSpot(ctx, spec)
 	tags := m.buildTags(spec)
 
 	req, err := m.buildFleetRequest(ctx, spec, useSpot, tags)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
 	output, err := m.ec2Client.CreateFleet(ctx, req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to create fleet: %w", err)
 	}
 
 	if err = m.checkFleetErrors(output); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
 	if len(output.Instances) == 0 {
-		return nil, fmt.Errorf("no instances were created")
+		noInstancesErr := fmt.Errorf("no instances were created")
+		span.RecordError(noInstancesErr)
+		span.SetStatus(codes.Error, noInstancesErr.Error())
+		return nil, noInstancesErr
 	}
 
 	instanceIDs := make([]string, 0, len(output.Instances))

@@ -14,6 +14,10 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var eventsLog = logging.WithComponent(logging.LogTypeEvents, "handler")
@@ -270,20 +274,38 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to unmarshal spot interruption detail: %w", err)
 	}
 
+	ctx, span := tracing.Tracer().Start(ctx, "events.spot_interruption",
+		trace.WithAttributes(
+			attribute.String("instance.id", detail.InstanceID),
+		))
+	defer span.End()
+
 	eventsLog.Info("spot interruption received",
 		slog.String(logging.KeyInstanceID, detail.InstanceID))
 
 	if err := h.retryWithBackoff(ctx, h.metrics.PublishSpotInterruption); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to publish spot interruption metric: %w", err)
 	}
 
 	if err := h.dbClient.MarkInstanceTerminating(ctx, detail.InstanceID); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to mark instance as terminating: %w", err)
 	}
 
 	job, err := h.dbClient.GetJobByInstance(ctx, detail.InstanceID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to get job for instance: %w", err)
+	}
+	if job != nil {
+		span.SetAttributes(
+			attribute.Int64("job.id", job.JobID),
+			attribute.String("instance.type", job.InstanceType),
+		)
 	}
 	if job == nil {
 		eventsLog.Warn("no job for spot interruption requeue",

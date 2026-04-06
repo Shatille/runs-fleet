@@ -19,6 +19,10 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var ec2Log = logging.WithComponent(logging.LogTypeQueue, "ec2-worker")
@@ -127,6 +131,18 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		return
 	}
 
+	if tp := job.Traceparent; tp != "" {
+		ctx = tracing.ExtractTraceContext(tp)
+	}
+	ctx, span := tracing.Tracer().Start(ctx, "worker.process_job",
+		trace.WithAttributes(
+			attribute.Int64("job.id", job.JobID),
+			attribute.String("job.pool", job.Pool),
+			attribute.String("job.instance_type", job.InstanceType),
+			attribute.Bool("job.spot", job.Spot),
+		))
+	defer span.End()
+
 	if deps.DB != nil && deps.DB.HasJobsTable() {
 		if err := deps.DB.ClaimJob(ctx, job.JobID); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
@@ -195,6 +211,8 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 
 	instanceIDs, err := CreateFleetWithRetry(ctx, deps.Fleet, spec)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		ec2Log.Error("fleet creation failed",
 			slog.Int64(logging.KeyRunID, job.RunID),
 			slog.String("error", err.Error()))
