@@ -3615,6 +3615,212 @@ func TestGetPoolBusyInstanceIDs_GSIFallbackToScan(t *testing.T) {
 	}
 }
 
+func TestDeletePoolConfig_NotEphemeral(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		DeleteItemFunc: func(_ context.Context, params *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+			if params.ConditionExpression == nil || *params.ConditionExpression != "ephemeral = :true" {
+				t.Errorf("ConditionExpression = %v, want 'ephemeral = :true'", params.ConditionExpression)
+			}
+			return nil, &types.ConditionalCheckFailedException{}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.DeletePoolConfig(context.Background(), "persistent-pool")
+	if err == nil {
+		t.Fatal("DeletePoolConfig() should fail for non-ephemeral pool")
+	}
+	if !strings.Contains(err.Error(), "not ephemeral or does not exist") {
+		t.Errorf("DeletePoolConfig() error = %v, want message containing 'not ephemeral or does not exist'", err)
+	}
+}
+
+func TestUpdatePoolState_PoolNotFound_ErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.UpdatePoolState(context.Background(), "missing-pool", 3, 1)
+	if err == nil {
+		t.Fatal("UpdatePoolState() should return error for non-existent pool")
+	}
+	if !strings.Contains(err.Error(), "missing-pool") {
+		t.Errorf("UpdatePoolState() error = %v, want pool name in message", err)
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("UpdatePoolState() error = %v, want 'does not exist' in message", err)
+	}
+}
+
+func TestAcquireTaskLock_ExpiredLockCanBeAcquired(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			condition := *params.ConditionExpression
+			if !strings.Contains(condition, "lock_expires < :now") {
+				t.Error("ConditionExpression should check lock_expires < :now for expiration")
+			}
+			if params.ExpressionAttributeValues[":now"] == nil {
+				t.Error("Now timestamp should be in expression values")
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.AcquireTaskLock(context.Background(), "cleanup", "new-owner", 65*time.Second)
+	if err != nil {
+		t.Errorf("AcquireTaskLock() error = %v, want nil for expired lock", err)
+	}
+}
+
+func TestClaimInstanceForJob_ReentrantBySameJob(t *testing.T) {
+	t.Parallel()
+
+	claimCalls := 0
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			claimCalls++
+			condition := *params.ConditionExpression
+			if !strings.Contains(condition, "job_id = :job_id") {
+				t.Error("ConditionExpression should allow re-entry by same job_id")
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.ClaimInstanceForJob(context.Background(), "i-12345", 100, 5*time.Minute)
+	if err != nil {
+		t.Errorf("First ClaimInstanceForJob() error = %v", err)
+	}
+
+	err = client.ClaimInstanceForJob(context.Background(), "i-12345", 100, 5*time.Minute)
+	if err != nil {
+		t.Errorf("Second ClaimInstanceForJob() error = %v", err)
+	}
+
+	if claimCalls != 2 {
+		t.Errorf("UpdateItem called %d times, want 2", claimCalls)
+	}
+}
+
+func TestReleasePoolReconcileLock_DifferentOwner(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.ReleasePoolReconcileLock(context.Background(), "test-pool", "wrong-owner")
+	if err != nil {
+		t.Errorf("ReleasePoolReconcileLock() error = %v, want nil for different owner", err)
+	}
+}
+
+func TestReleaseTaskLock_DifferentOwner(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.ReleaseTaskLock(context.Background(), "cleanup", "wrong-owner")
+	if err != nil {
+		t.Errorf("ReleaseTaskLock() error = %v, want nil for different owner", err)
+	}
+}
+
+func TestClaimInstanceForJob_DynamoDBErrorNotMasked(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &smithy.GenericAPIError{Code: "InternalServerError", Message: "service unavailable"}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.ClaimInstanceForJob(context.Background(), "i-12345", 100, 5*time.Minute)
+	if err == nil {
+		t.Fatal("ClaimInstanceForJob() should return error for DynamoDB failure")
+	}
+	if errors.Is(err, ErrInstanceAlreadyClaimed) {
+		t.Error("DynamoDB internal error should not be reported as ErrInstanceAlreadyClaimed")
+	}
+	if !strings.Contains(err.Error(), "failed to claim instance") {
+		t.Errorf("error = %v, want wrapped 'failed to claim instance' message", err)
+	}
+}
+
+func TestTouchPoolActivity_PoolNotFound_ErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{}
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		poolsTable:   testPoolsTable,
+	}
+
+	err := client.TouchPoolActivity(context.Background(), "ghost-pool")
+	if err == nil {
+		t.Fatal("TouchPoolActivity() should fail for non-existent pool")
+	}
+	if !strings.Contains(err.Error(), "ghost-pool") {
+		t.Errorf("TouchPoolActivity() error = %v, want pool name in message", err)
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("TouchPoolActivity() error = %v, want 'does not exist' in message", err)
+	}
+}
+
 func TestGetPoolBusyInstanceIDs_GSINonValidationError(t *testing.T) {
 	t.Parallel()
 
