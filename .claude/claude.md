@@ -50,7 +50,7 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/secrets/` - Secrets backend abstraction (SSM, Vault)
 - `pkg/state/` - State machine for job lifecycle
 - `pkg/termination/` - Instance termination notifications
-- `pkg/tracing/` - OpenTelemetry distributed tracing
+- `pkg/tracing/` - OpenTelemetry SDK, W3C TraceContext propagation, span instrumentation
 
 ## Distributed Locking
 
@@ -152,6 +152,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 - `RUNS_FLEET_TERMINATION_QUEUE_URL` - Termination notifications queue
 - `RUNS_FLEET_HOUSEKEEPING_QUEUE_URL` - Housekeeping tasks queue
 - `RUNS_FLEET_JOBS_TABLE`, `RUNS_FLEET_POOLS_TABLE` - DynamoDB tables
+- `RUNS_FLEET_JOBS_POOL_STATUS_GSI` - Optional DynamoDB GSI name for pool busy instance queries
 - `RUNS_FLEET_CACHE_BUCKET` - S3 cache bucket
 - `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_*_SUBNET_IDS` - Network config
 - `RUNS_FLEET_SECURITY_GROUP_ID`, `RUNS_FLEET_INSTANCE_PROFILE_ARN` - EC2 config
@@ -173,6 +174,12 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 - `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` - CloudWatch metrics (default: true)
 - `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` - Prometheus /metrics endpoint
 - `RUNS_FLEET_METRICS_DATADOG_ENABLED` - Datadog DogStatsD metrics
+
+### Tracing
+- `RUNS_FLEET_TRACING_ENABLED` - Enable OpenTelemetry tracing (default: false)
+- `RUNS_FLEET_OTEL_ENDPOINT` - OTLP gRPC collector endpoint (required when tracing enabled)
+- `RUNS_FLEET_OTEL_INSECURE` - Use insecure gRPC connection (default: true)
+- `RUNS_FLEET_OTEL_SERVICE_NAME` - Service name for traces (default: runs-fleet)
 
 ### Cache & Admin
 - `RUNS_FLEET_CACHE_SECRET` - HMAC secret for cache auth
@@ -224,6 +231,15 @@ terraform apply
 - Publish to CloudWatch, Prometheus, or Datadog via pkg/metrics
 - Namespace: `RunsFleet` (CloudWatch) or `runs_fleet` (Prometheus/Datadog)
 - Dimensions: `PoolName`, `TaskType`, `InstanceType` (metric-specific)
+
+**Job status:**
+- Use typed `db.JobStatus*` constants (not bare strings) for all status comparisons and updates
+- Defined in `pkg/db/job_status.go`: Running, Claiming, Terminating, Requeued, Completed, Success, Failed, Error, Orphaned
+
+**Tracing:**
+- Spans instrumented at webhook receipt, worker processing, fleet creation, spot interruption, and termination
+- W3C TraceContext propagated through SQS message attributes
+- Noop provider when tracing is disabled (zero overhead)
 
 **Pool reconciliation:**
 - Loop interval: 60 seconds
