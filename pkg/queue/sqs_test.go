@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type mockSQSClient struct {
@@ -360,46 +361,58 @@ func TestSQSClient_SendMessage_WithTraceContext(t *testing.T) {
 	}
 
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		InstanceType: "t4g.medium",
-		TraceID:      "trace-abc123",
-		SpanID:       "span-def456",
-		ParentID:     "parent-ghi789",
 	}
 
-	err := client.SendMessage(context.Background(), job)
+	traceID := trace.TraceID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
+	spanID := trace.SpanID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	err := client.SendMessage(ctx, job)
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
-	// Verify trace context attributes are set
 	if capturedInput.MessageAttributes == nil {
 		t.Fatal("MessageAttributes should not be nil when trace context is present")
 	}
-	if capturedInput.MessageAttributes["TraceID"].StringValue == nil ||
-		*capturedInput.MessageAttributes["TraceID"].StringValue != "trace-abc123" {
-		t.Error("TraceID attribute not set correctly")
+	tp := capturedInput.MessageAttributes["Traceparent"]
+	if tp.StringValue == nil {
+		t.Fatal("Traceparent attribute not set")
 	}
-	if capturedInput.MessageAttributes["SpanID"].StringValue == nil ||
-		*capturedInput.MessageAttributes["SpanID"].StringValue != "span-def456" {
-		t.Error("SpanID attribute not set correctly")
-	}
-	if capturedInput.MessageAttributes["ParentID"].StringValue == nil ||
-		*capturedInput.MessageAttributes["ParentID"].StringValue != "parent-ghi789" {
-		t.Error("ParentID attribute not set correctly")
+	want := "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"
+	if *tp.StringValue != want {
+		t.Errorf("Traceparent = %q, want %q", *tp.StringValue, want)
 	}
 }
 
-func TestSQSClient_SendMessage_WithPartialTraceContext(t *testing.T) {
+func TestSQSClient_ReceiveMessages_BackwardCompat_OldTraceID(t *testing.T) {
 	t.Parallel()
 
-	var capturedInput *sqs.SendMessageInput
-
 	mock := &mockSQSClient{
-		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
-			capturedInput = params
-			return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
+		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			return &sqs.ReceiveMessageOutput{
+				Messages: []types.Message{
+					{
+						MessageId:     aws.String("msg-old"),
+						Body:          aws.String(`{"run_id":123}`),
+						ReceiptHandle: aws.String("receipt-old"),
+						MessageAttributes: map[string]types.MessageAttributeValue{
+							"TraceID": {
+								DataType:    aws.String("String"),
+								StringValue: aws.String("old-trace-id"),
+							},
+						},
+					},
+				},
+			}, nil
 		},
 	}
 
@@ -408,32 +421,17 @@ func TestSQSClient_SendMessage_WithPartialTraceContext(t *testing.T) {
 		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
 	}
 
-	// Only TraceID, no SpanID or ParentID
-	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
-		InstanceType: "t4g.medium",
-		TraceID:      "trace-only",
-	}
-
-	err := client.SendMessage(context.Background(), job)
+	messages, err := client.ReceiveMessages(context.Background(), 10, 0)
 	if err != nil {
-		t.Fatalf("SendMessage() error = %v", err)
+		t.Fatalf("ReceiveMessages() error = %v", err)
 	}
 
-	if capturedInput.MessageAttributes == nil {
-		t.Fatal("MessageAttributes should not be nil when trace context is present")
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
 	}
-	if capturedInput.MessageAttributes["TraceID"].StringValue == nil ||
-		*capturedInput.MessageAttributes["TraceID"].StringValue != "trace-only" {
-		t.Error("TraceID attribute not set correctly")
-	}
-	// SpanID and ParentID should not be present since they're empty
-	if _, ok := capturedInput.MessageAttributes["SpanID"]; ok {
-		t.Error("SpanID should not be set when empty")
-	}
-	if _, ok := capturedInput.MessageAttributes["ParentID"]; ok {
-		t.Error("ParentID should not be set when empty")
+
+	if messages[0].Attributes["TraceID"] != "old-trace-id" {
+		t.Errorf("old TraceID not preserved in attributes: %v", messages[0].Attributes)
 	}
 }
 
@@ -455,10 +453,9 @@ func TestSQSClient_SendMessage_NoTraceContext(t *testing.T) {
 	}
 
 	job := &JobMessage{
-		JobID: 12345,
-		RunID: 67890,
+		JobID:        12345,
+		RunID:        67890,
 		InstanceType: "t4g.medium",
-		// No trace context
 	}
 
 	err := client.SendMessage(context.Background(), job)
@@ -466,13 +463,12 @@ func TestSQSClient_SendMessage_NoTraceContext(t *testing.T) {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
-	// MessageAttributes should be nil when no trace context
 	if capturedInput.MessageAttributes != nil {
 		t.Error("MessageAttributes should be nil when no trace context is present")
 	}
 }
 
-func TestSQSClient_ReceiveMessages_WithMessageAttributes(t *testing.T) {
+func TestSQSClient_ReceiveMessages_WithTraceparent(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockSQSClient{
@@ -481,16 +477,12 @@ func TestSQSClient_ReceiveMessages_WithMessageAttributes(t *testing.T) {
 				Messages: []types.Message{
 					{
 						MessageId:     aws.String("msg-1"),
-						Body:          aws.String(`{"run_id":"123"}`),
+						Body:          aws.String(`{"run_id":123}`),
 						ReceiptHandle: aws.String("receipt-1"),
 						MessageAttributes: map[string]types.MessageAttributeValue{
-							"TraceID": {
+							"Traceparent": {
 								DataType:    aws.String("String"),
-								StringValue: aws.String("trace-recv"),
-							},
-							"SpanID": {
-								DataType:    aws.String("String"),
-								StringValue: aws.String("span-recv"),
+								StringValue: aws.String("00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"),
 							},
 							"CustomAttr": {
 								DataType:    aws.String("String"),
@@ -518,11 +510,8 @@ func TestSQSClient_ReceiveMessages_WithMessageAttributes(t *testing.T) {
 	}
 
 	msg := messages[0]
-	if msg.Attributes["TraceID"] != "trace-recv" {
-		t.Errorf("TraceID = %q, want %q", msg.Attributes["TraceID"], "trace-recv")
-	}
-	if msg.Attributes["SpanID"] != "span-recv" {
-		t.Errorf("SpanID = %q, want %q", msg.Attributes["SpanID"], "span-recv")
+	if msg.Attributes["Traceparent"] != "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01" {
+		t.Errorf("Traceparent = %q, want %q", msg.Attributes["Traceparent"], "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01")
 	}
 	if msg.Attributes["CustomAttr"] != "custom-value" {
 		t.Errorf("CustomAttr = %q, want %q", msg.Attributes["CustomAttr"], "custom-value")

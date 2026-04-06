@@ -63,9 +63,7 @@ type JobMessage struct {
 	InstanceTypes []string `json:"instance_types,omitempty"`
 	StorageGiB    int      `json:"storage_gib,omitempty"` // Disk storage in GiB
 	PublicIP      bool     `json:"public_ip,omitempty"`   // Request public IP (uses public subnet)
-	TraceID       string   `json:"trace_id,omitempty"`
-	SpanID        string   `json:"span_id,omitempty"`
-	ParentID      string   `json:"parent_id,omitempty"`
+	Traceparent string `json:"traceparent,omitempty"`
 
 	// Flexible instance spec for multi-spec pool matching
 	CPUMin   int      `json:"cpu_min,omitempty"`

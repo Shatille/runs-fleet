@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
@@ -76,24 +77,13 @@ func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
 		MessageDeduplicationId: aws.String(dedupID),
 	}
 
-	if job.TraceID != "" {
+	traceparent := tracing.InjectTraceContext(ctx)
+	if traceparent != "" {
 		input.MessageAttributes = map[string]types.MessageAttributeValue{
-			"TraceID": {
+			"Traceparent": {
 				DataType:    aws.String("String"),
-				StringValue: aws.String(job.TraceID),
+				StringValue: aws.String(traceparent),
 			},
-		}
-		if job.SpanID != "" {
-			input.MessageAttributes["SpanID"] = types.MessageAttributeValue{
-				DataType:    aws.String("String"),
-				StringValue: aws.String(job.SpanID),
-			}
-		}
-		if job.ParentID != "" {
-			input.MessageAttributes["ParentID"] = types.MessageAttributeValue{
-				DataType:    aws.String("String"),
-				StringValue: aws.String(job.ParentID),
-			}
 		}
 	}
 

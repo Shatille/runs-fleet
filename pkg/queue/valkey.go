@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -92,12 +93,13 @@ func (c *ValkeyClient) SendMessage(ctx context.Context, job *JobMessage) error {
 		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
+	traceparent := tracing.InjectTraceContext(ctx)
+
 	values := map[string]interface{}{
-		"body":     string(body),
-		"run_id":   job.RunID,
-		"job_id":   job.JobID,
-		"trace_id": job.TraceID,
-		"span_id":  job.SpanID,
+		"body":        string(body),
+		"run_id":      job.RunID,
+		"job_id":      job.JobID,
+		"traceparent": traceparent,
 	}
 
 	_, err = c.client.XAdd(ctx, &redis.XAddArgs{
@@ -142,11 +144,10 @@ func (c *ValkeyClient) ReceiveMessages(ctx context.Context, maxMessages int32, w
 			if body, ok := xmsg.Values["body"].(string); ok {
 				msg.Body = body
 			}
-			if traceID, ok := xmsg.Values["trace_id"].(string); ok && traceID != "" {
+			if tp, ok := xmsg.Values["traceparent"].(string); ok && tp != "" {
+				msg.Attributes["Traceparent"] = tp
+			} else if traceID, ok := xmsg.Values["trace_id"].(string); ok && traceID != "" {
 				msg.Attributes["TraceID"] = traceID
-			}
-			if spanID, ok := xmsg.Values["span_id"].(string); ok && spanID != "" {
-				msg.Attributes["SpanID"] = spanID
 			}
 
 			messages = append(messages, msg)
