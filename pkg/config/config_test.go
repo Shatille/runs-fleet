@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -1368,6 +1370,117 @@ func TestValidateECRImageURL(t *testing.T) {
 			err := validateECRImageURL(tt.url)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateECRImageURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	})
+	return &buf
+}
+
+func TestGetEnvBoolInvalidLogsWarning(t *testing.T) {
+	buf := captureSlog(t)
+
+	t.Setenv("TEST_BOOL_INVALID", "notabool")
+
+	got := getEnvBool("TEST_BOOL_INVALID", true)
+	if got != true {
+		t.Errorf("getEnvBool() = %v, want true", got)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "invalid boolean env var") {
+		t.Errorf("expected warning log, got: %s", logged)
+	}
+	if !strings.Contains(logged, "TEST_BOOL_INVALID") {
+		t.Errorf("expected key in log, got: %s", logged)
+	}
+}
+
+func TestGetEnvFloatInvalidLogsWarning(t *testing.T) {
+	buf := captureSlog(t)
+
+	t.Setenv("TEST_FLOAT_INVALID", "notafloat")
+
+	got := getEnvFloat("TEST_FLOAT_INVALID", 0.5)
+	if got != 0.5 {
+		t.Errorf("getEnvFloat() = %v, want 0.5", got)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "invalid float env var") {
+		t.Errorf("expected warning log, got: %s", logged)
+	}
+	if !strings.Contains(logged, "TEST_FLOAT_INVALID") {
+		t.Errorf("expected key in log, got: %s", logged)
+	}
+}
+
+func TestValidateMetricsSampleRateBounds(t *testing.T) {
+	tests := []struct {
+		name     string
+		rate     float64
+		wantRate float64
+		wantWarn bool
+	}{
+		{"valid 0.5", 0.5, 0.5, false},
+		{"valid 0.0", 0.0, 0.0, false},
+		{"valid 1.0", 1.0, 1.0, false},
+		{"negative clamped to 0", -0.5, 0.0, true},
+		{"above 1 clamped to 1", 2.0, 1.0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := captureSlog(t)
+			cfg := &Config{MetricsDatadogSampleRate: tt.rate}
+
+			_ = cfg.validateMetricsConfig()
+
+			if cfg.MetricsDatadogSampleRate != tt.wantRate {
+				t.Errorf("sample rate = %v, want %v", cfg.MetricsDatadogSampleRate, tt.wantRate)
+			}
+			logged := buf.String()
+			hasWarn := strings.Contains(logged, "RUNS_FLEET_METRICS_DATADOG_SAMPLE_RATE")
+			if hasWarn != tt.wantWarn {
+				t.Errorf("warning logged = %v, want %v (log: %s)", hasWarn, tt.wantWarn, logged)
+			}
+		})
+	}
+}
+
+func TestValidateMetricsBufferPoolSizeBounds(t *testing.T) {
+	tests := []struct {
+		name     string
+		size     int
+		wantSize int
+		wantWarn bool
+	}{
+		{"valid 0", 0, 0, false},
+		{"valid 100", 100, 100, false},
+		{"negative clamped to 0", -5, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := captureSlog(t)
+			cfg := &Config{MetricsDatadogBufferPoolSize: tt.size}
+
+			_ = cfg.validateMetricsConfig()
+
+			if cfg.MetricsDatadogBufferPoolSize != tt.wantSize {
+				t.Errorf("buffer pool size = %v, want %v", cfg.MetricsDatadogBufferPoolSize, tt.wantSize)
+			}
+			logged := buf.String()
+			hasWarn := strings.Contains(logged, "RUNS_FLEET_METRICS_DATADOG_BUFFER_POOL_SIZE")
+			if hasWarn != tt.wantWarn {
+				t.Errorf("warning logged = %v, want %v (log: %s)", hasWarn, tt.wantWarn, logged)
 			}
 		})
 	}
