@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -476,6 +477,23 @@ func (c *Config) validateMetricsConfig() error {
 			return fmt.Errorf("RUNS_FLEET_METRICS_DATADOG_ADDR: %w", err)
 		}
 	}
+
+	if c.MetricsDatadogSampleRate < 0 {
+		slog.Warn("RUNS_FLEET_METRICS_DATADOG_SAMPLE_RATE below 0, clamping to 0.0",
+			slog.Float64("value", c.MetricsDatadogSampleRate))
+		c.MetricsDatadogSampleRate = 0
+	} else if c.MetricsDatadogSampleRate > 1 {
+		slog.Warn("RUNS_FLEET_METRICS_DATADOG_SAMPLE_RATE above 1, clamping to 1.0",
+			slog.Float64("value", c.MetricsDatadogSampleRate))
+		c.MetricsDatadogSampleRate = 1
+	}
+
+	if c.MetricsDatadogBufferPoolSize < 0 {
+		slog.Warn("RUNS_FLEET_METRICS_DATADOG_BUFFER_POOL_SIZE negative, clamping to 0",
+			slog.Int("value", c.MetricsDatadogBufferPoolSize))
+		c.MetricsDatadogBufferPoolSize = 0
+	}
+
 	return nil
 }
 
@@ -527,6 +545,10 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if parsed, err := strconv.ParseBool(value); err == nil {
 		return parsed
 	}
+	slog.Warn("invalid boolean env var, using default",
+		slog.String("key", key),
+		slog.String("value", value),
+		slog.Bool("default", defaultValue))
 	return defaultValue
 }
 
@@ -538,6 +560,10 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	if parsed, err := strconv.ParseFloat(value, 64); err == nil {
 		return parsed
 	}
+	slog.Warn("invalid float env var, using default",
+		slog.String("key", key),
+		slog.String("value", value),
+		slog.Float64("default", defaultValue))
 	return defaultValue
 }
 
