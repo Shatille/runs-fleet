@@ -1,8 +1,10 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -77,8 +79,27 @@ func (h *JobsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 
+	statusFilter := q.Get("status")
+	if statusFilter != "" {
+		validStatuses := map[string]bool{
+			string(db.JobStatusRunning):     true,
+			string(db.JobStatusClaiming):    true,
+			string(db.JobStatusTerminating): true,
+			string(db.JobStatusRequeued):    true,
+			string(db.JobStatusCompleted):   true,
+			string(db.JobStatusSuccess):     true,
+			string(db.JobStatusFailed):      true,
+			string(db.JobStatusError):       true,
+			string(db.JobStatusOrphaned):    true,
+		}
+		if !validStatuses[statusFilter] {
+			h.writeError(w, http.StatusBadRequest, "Invalid status filter", fmt.Sprintf("allowed values: running, claiming, terminating, requeued, completed, success, failed, error, orphaned; got %q", statusFilter))
+			return
+		}
+	}
+
 	filter := db.AdminJobFilter{
-		Status: q.Get("status"),
+		Status: statusFilter,
 		Pool:   q.Get("pool"),
 		Limit:  50,
 		Offset: 0,
@@ -213,10 +234,16 @@ func jobEntryToResponse(e db.AdminJobEntry) JobResponse {
 }
 
 func (h *JobsHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
+		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+	if _, err := buf.WriteTo(w); err != nil {
+		h.log.Error("write response failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 

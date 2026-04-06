@@ -183,3 +183,41 @@ func TestInstancesHandler_ListInstances(t *testing.T) {
 		})
 	}
 }
+
+func TestInstancesHandler_InvalidStateFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		state string
+		want  int
+	}{
+		{"valid state running", "running", http.StatusOK},
+		{"valid state stopped", "stopped", http.StatusOK},
+		{"valid state shutting-down", "shutting-down", http.StatusOK},
+		{"invalid state", "bogus", http.StatusBadRequest},
+		{"invalid state active", "active", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ec2Mock := &mockEC2API{output: &ec2.DescribeInstancesOutput{}}
+			dbMock := &mockInstancesDB{busyIDs: map[string][]string{}}
+			auth := &AuthMiddleware{requireAuth: false}
+			handler := NewInstancesHandler(ec2Mock, dbMock, auth)
+
+			mux := http.NewServeMux()
+			handler.RegisterRoutes(mux)
+
+			req := httptest.NewRequest("GET", "/api/instances?state="+tt.state, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.want {
+				t.Errorf("state=%q: got status %d, want %d", tt.state, rec.Code, tt.want)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -464,10 +465,16 @@ func (h *Handler) requestToConfig(req *PoolRequest) *db.PoolConfig {
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
+		adminLog.Error("json encode failed", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		adminLog.Error("json encode failed", slog.String("error", err.Error()))
+	if _, err := buf.WriteTo(w); err != nil {
+		adminLog.Error("write response failed", slog.String("error", err.Error()))
 	}
 }
 
