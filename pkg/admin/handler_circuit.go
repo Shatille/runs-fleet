@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -116,10 +117,16 @@ func (h *CircuitHandler) ListCircuitStates(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *CircuitHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
+		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+	if _, err := buf.WriteTo(w); err != nil {
+		h.log.Error("write response failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -65,6 +66,17 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 
 	poolFilter := q.Get("pool")
 	stateFilter := q.Get("state")
+
+	if stateFilter != "" {
+		validStates := map[string]bool{
+			"pending": true, "running": true, "shutting-down": true,
+			"terminated": true, "stopping": true, "stopped": true,
+		}
+		if !validStates[stateFilter] {
+			h.writeError(w, http.StatusBadRequest, "Invalid state filter", fmt.Sprintf("allowed values: pending, running, shutting-down, terminated, stopping, stopped; got %q", stateFilter))
+			return
+		}
+	}
 
 	filters := []types.Filter{
 		{

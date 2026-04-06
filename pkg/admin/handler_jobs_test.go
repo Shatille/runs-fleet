@@ -98,6 +98,43 @@ func TestJobsHandler_ListJobs(t *testing.T) {
 	}
 }
 
+func TestJobsHandler_InvalidStatusFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status string
+		want   int
+	}{
+		{"valid status running", "running", http.StatusOK},
+		{"valid status completed", "completed", http.StatusOK},
+		{"valid status orphaned", "orphaned", http.StatusOK},
+		{"invalid status", "bogus", http.StatusBadRequest},
+		{"invalid status pending", "pending", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockDB := &mockJobsDB{jobs: []db.AdminJobEntry{}}
+			auth := NewAuthMiddleware("")
+			handler := NewJobsHandler(mockDB, auth)
+
+			mux := http.NewServeMux()
+			handler.RegisterRoutes(mux)
+
+			req := httptest.NewRequest("GET", "/api/jobs?status="+tt.status, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.want {
+				t.Errorf("status=%q: got status %d, want %d", tt.status, rec.Code, tt.want)
+			}
+		})
+	}
+}
+
 func TestJobsHandler_GetJob(t *testing.T) {
 	t.Parallel()
 
