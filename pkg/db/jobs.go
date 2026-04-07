@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/events"
@@ -34,6 +35,7 @@ type jobRecord struct {
 	CreatedAt      string `dynamodbav:"created_at"`
 	SpotRequestID  string `dynamodbav:"spot_request_id,omitempty"`
 	PersistentSpot bool   `dynamodbav:"persistent_spot,omitempty"`
+	TraceID        string `dynamodbav:"trace_id,omitempty"`
 }
 
 // JobRecord contains job information for storage.
@@ -49,6 +51,7 @@ type JobRecord struct {
 	WarmPoolHit    bool
 	SpotRequestID  string
 	PersistentSpot bool
+	Traceparent    string
 }
 
 // JobHistoryEntry represents a job with timing information for auto-scaling calculations.
@@ -90,6 +93,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		SpotRequestID:  job.SpotRequestID,
 		PersistentSpot: job.PersistentSpot,
+		TraceID:        extractTraceID(job.Traceparent),
 	}
 
 	item, err := attributevalue.MarshalMap(record)
@@ -767,6 +771,8 @@ type AdminJobEntry struct {
 	Status          string
 	ExitCode        int
 	DurationSeconds int
+	SpotRequestID   string
+	TraceID         string
 	CreatedAt       time.Time
 	StartedAt       time.Time
 	CompletedAt     time.Time
@@ -964,6 +970,8 @@ func parseJobItem(item map[string]types.AttributeValue) AdminJobEntry {
 		Status:          getStringAttr(item, "status"),
 		ExitCode:        getIntAttr(item, "exit_code"),
 		DurationSeconds: getIntAttr(item, "duration_seconds"),
+		SpotRequestID:   getStringAttr(item, "spot_request_id"),
+		TraceID:         getStringAttr(item, "trace_id"),
 		CreatedAt:       getTimeAttr(item, "created_at"),
 		StartedAt:       getTimeAttr(item, "started_at"),
 		CompletedAt:     getTimeAttr(item, "completed_at"),
@@ -1028,5 +1036,23 @@ func parseInt(s string) (int, error) {
 	var n int
 	_, err := fmt.Sscanf(s, "%d", &n)
 	return n, err
+}
+
+// extractTraceID extracts the trace-id from a W3C traceparent header.
+// Format: version-trace_id-parent_id-trace_flags (e.g., "00-abc...def-0123456789abcdef-01").
+// Returns empty string if the traceparent is invalid or empty.
+func extractTraceID(traceparent string) string {
+	if traceparent == "" {
+		return ""
+	}
+	parts := strings.Split(traceparent, "-")
+	if len(parts) != 4 {
+		return ""
+	}
+	traceID := parts[1]
+	if len(traceID) != 32 {
+		return ""
+	}
+	return traceID
 }
 

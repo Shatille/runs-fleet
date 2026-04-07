@@ -58,6 +58,7 @@ export interface Job {
   status: string;
   exit_code?: number;
   duration_seconds?: number;
+  trace_id?: string;
   created_at?: string;
   started_at?: string;
   completed_at?: string;

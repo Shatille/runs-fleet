@@ -167,6 +167,7 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 				Pool:         job.Pool,
 				Spot:         job.Spot,
 				RetryCount:   job.RetryCount,
+				Traceparent:  job.Traceparent,
 			}
 			var saveErr error
 			for attempt := 0; attempt < 3; attempt++ {
