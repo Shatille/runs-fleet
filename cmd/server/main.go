@@ -80,6 +80,9 @@ func main() {
 	if cfg.JobsPoolStatusGSI != "" {
 		dbClient.SetJobsPoolStatusGSI(cfg.JobsPoolStatusGSI)
 	}
+	if cfg.JobsInstanceIDGSI != "" {
+		dbClient.SetJobsInstanceIDGSI(cfg.JobsInstanceIDGSI)
+	}
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
 
