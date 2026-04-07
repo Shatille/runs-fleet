@@ -69,9 +69,10 @@ type Config struct {
 	RunnerImage        string            // Container image for EC2 runners (ECR URL)
 	Tags               map[string]string // Custom tags for EC2 resources
 
-	CacheSecret string
-	CacheURL    string
-	AdminSecret string
+	CacheSecret    string
+	CacheURL       string
+	AdminSecret    string
+	AdminRateLimit int
 
 	// K8s-specific configuration
 	KubeConfig             string            // Path to kubeconfig (empty = in-cluster)
@@ -199,9 +200,10 @@ func Load() (*Config, error) {
 		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:               make(map[string]string),
 
-		CacheSecret: getEnv("RUNS_FLEET_CACHE_SECRET", ""),
-		CacheURL:    getEnv("RUNS_FLEET_CACHE_URL", ""),
-		AdminSecret: getEnv("RUNS_FLEET_ADMIN_SECRET", ""),
+		CacheSecret:    getEnv("RUNS_FLEET_CACHE_SECRET", ""),
+		CacheURL:       getEnv("RUNS_FLEET_CACHE_URL", ""),
+		AdminSecret:    getEnv("RUNS_FLEET_ADMIN_SECRET", ""),
+		AdminRateLimit: getEnvIntDefault("RUNS_FLEET_ADMIN_RATE_LIMIT", 60),
 
 		// K8s-specific
 		KubeConfig:             getEnv("RUNS_FLEET_KUBE_CONFIG", ""),
