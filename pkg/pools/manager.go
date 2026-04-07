@@ -115,6 +115,8 @@ type Manager struct {
 	poolInstances map[string][]string  // Cache of instance IDs per pool
 	subnetIndex   uint64
 	randIntn      func(int) int
+
+	demandCh chan string // Pool names requesting immediate reconciliation
 }
 
 // NewManager creates pool manager with DB and fleet clients.
@@ -128,6 +130,17 @@ func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *M
 		instanceIdle:  make(map[string]time.Time),
 		poolInstances: make(map[string][]string),
 		randIntn:      rand.IntN,
+		demandCh:      make(chan string, 64),
+	}
+}
+
+// NotifyPoolDemand signals the reconciliation loop to reconcile the given pool
+// immediately rather than waiting for the next ticker interval. Non-blocking:
+// if the channel is full, the notification is dropped (the ticker will catch up).
+func (m *Manager) NotifyPoolDemand(poolName string) {
+	select {
+	case m.demandCh <- poolName:
+	default:
 	}
 }
 
@@ -153,6 +166,8 @@ func (m *Manager) selectSubnet() string {
 }
 
 // ReconcileLoop runs periodically to maintain pool size.
+// In addition to the 60-second ticker, it accepts demand notifications via
+// NotifyPoolDemand to reconcile specific pools immediately when webhooks arrive.
 func (m *Manager) ReconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -166,6 +181,38 @@ func (m *Manager) ReconcileLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.reconcile(ctx)
+		case poolName := <-m.demandCh:
+			m.reconcileDemand(ctx, poolName)
+		}
+	}
+}
+
+// reconcileDemand handles a demand-driven reconciliation for a specific pool.
+// It drains the demand channel to deduplicate concurrent notifications and
+// reconciles each unique pool exactly once.
+func (m *Manager) reconcileDemand(ctx context.Context, first string) {
+	pools := map[string]struct{}{first: {}}
+	for {
+		select {
+		case name := <-m.demandCh:
+			pools[name] = struct{}{}
+		default:
+			goto reconcile
+		}
+	}
+reconcile:
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.ec2Client == nil {
+		return
+	}
+
+	for poolName := range pools {
+		if err := m.reconcilePool(ctx, poolName); err != nil {
+			poolLog.Error("demand-driven reconciliation failed",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.String("error", err.Error()))
 		}
 	}
 }

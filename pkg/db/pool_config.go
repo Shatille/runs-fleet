@@ -58,7 +58,6 @@ type PoolConfig struct {
 	// Multi-spec pool support: allow pool to hold instances with different specs.
 	// When enabled, pool creates instances based on recent job demand patterns
 	// rather than fixed pool-level spec. Jobs are matched to compatible instances.
-	// TODO: Implement demand-driven reconciliation logic.
 	MultiSpec bool `dynamodbav:"multi_spec,omitempty"`
 }
 

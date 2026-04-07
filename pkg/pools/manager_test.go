@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -3919,5 +3921,221 @@ func TestClaimAndStartPoolInstance_UnknownInstanceType(t *testing.T) {
 	}
 	if instance.InstanceID != "i-known" {
 		t.Errorf("expected i-known, got %s", instance.InstanceID)
+	}
+}
+
+func TestNotifyPoolDemand_TriggersReconciliation(t *testing.T) {
+	t.Parallel()
+
+	reconciled := make(chan string, 10)
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, poolName string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       poolName,
+				DesiredRunning: 0,
+				DesiredStopped: 1,
+			}, nil
+		},
+		AcquirePoolReconcileLockFunc: func(_ context.Context, poolName, _ string, _ time.Duration) error {
+			reconciled <- poolName
+			return nil
+		},
+		ReleasePoolReconcileLockFunc: func(_ context.Context, _, _ string) error { return nil },
+		UpdatePoolStateFunc:          func(_ context.Context, _ string, _, _ int) error { return nil },
+		GetPoolBusyInstanceIDsFunc:   func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		manager.ReconcileLoop(ctx)
+		close(done)
+	}()
+
+	manager.NotifyPoolDemand("test-pool")
+
+	select {
+	case name := <-reconciled:
+		if name != "test-pool" {
+			t.Errorf("reconciled pool = %q, want %q", name, "test-pool")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("demand notification did not trigger reconciliation within 2s")
+	}
+
+	cancel()
+	<-done
+}
+
+func TestNotifyPoolDemand_Deduplication(t *testing.T) {
+	t.Parallel()
+
+	var reconciledPools []string
+	var reconciledMu sync.Mutex
+	reconcileDone := make(chan struct{}, 1)
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, poolName string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       poolName,
+				DesiredRunning: 0,
+				DesiredStopped: 1,
+			}, nil
+		},
+		AcquirePoolReconcileLockFunc: func(_ context.Context, poolName, _ string, _ time.Duration) error {
+			reconciledMu.Lock()
+			reconciledPools = append(reconciledPools, poolName)
+			reconciledMu.Unlock()
+			select {
+			case reconcileDone <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+		ReleasePoolReconcileLockFunc: func(_ context.Context, _, _ string) error { return nil },
+		UpdatePoolStateFunc:          func(_ context.Context, _ string, _, _ int) error { return nil },
+		GetPoolBusyInstanceIDsFunc:   func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		manager.ReconcileLoop(ctx)
+		close(done)
+	}()
+
+	// Send multiple notifications for the same pool before the loop processes any
+	for i := 0; i < 5; i++ {
+		manager.NotifyPoolDemand("dedup-pool")
+	}
+
+	// Wait for at least one reconciliation
+	select {
+	case <-reconcileDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("demand notification did not trigger reconciliation within 2s")
+	}
+
+	// Poll briefly to confirm no additional spurious reconciliations occur
+	deadline := time.Now().Add(150 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		reconciledMu.Lock()
+		count := 0
+		for _, p := range reconciledPools {
+			if p == "dedup-pool" {
+				count++
+			}
+		}
+		reconciledMu.Unlock()
+		if count > 1 {
+			t.Fatalf("pool reconciled %d times, want exactly 1 (deduplication failed)", count)
+		}
+		runtime.Gosched()
+	}
+
+	reconciledMu.Lock()
+	count := 0
+	for _, p := range reconciledPools {
+		if p == "dedup-pool" {
+			count++
+		}
+	}
+	reconciledMu.Unlock()
+	if count != 1 {
+		t.Errorf("pool reconciled %d times, want exactly 1 (deduplication failed)", count)
+	}
+
+	cancel()
+	<-done
+}
+
+func TestReconcileLoop_TickerFallback(t *testing.T) {
+	t.Parallel()
+
+	reconciled := make(chan struct{}, 10)
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			select {
+			case reconciled <- struct{}{}:
+			default:
+			}
+			return []string{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(&MockEC2API{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		manager.ReconcileLoop(ctx)
+		close(done)
+	}()
+
+	// Wait for initial reconciliation via channel (not timing-dependent)
+	select {
+	case <-reconciled:
+	case <-time.After(2 * time.Second):
+		t.Error("initial reconciliation did not occur within 2s")
+	}
+
+	cancel()
+	<-done
+}
+
+func TestNotifyPoolDemand_NonBlocking(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+
+	// Fill the channel to capacity
+	for i := 0; i < 64; i++ {
+		manager.NotifyPoolDemand(fmt.Sprintf("pool-%d", i))
+	}
+
+	// This must not block
+	notifyDone := make(chan struct{})
+	go func() {
+		manager.NotifyPoolDemand("overflow-pool")
+		close(notifyDone)
+	}()
+
+	select {
+	case <-notifyDone:
+	case <-time.After(1 * time.Second):
+		t.Error("NotifyPoolDemand blocked when channel was full")
 	}
 }
