@@ -45,7 +45,7 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
           {jobs.map((job) => (
-            <tr key={job.job_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => window.location.href = `/admin/jobs/${job.job_id}/`}>
+            <tr key={job.job_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => { window.location.href = "/admin/jobs/detail/?id=" + encodeURIComponent(job.job_id); }}>
               <td className="px-4 py-3 whitespace-nowrap">
                 <span className="font-mono text-sm text-gray-900">{job.job_id}</span>
                 {job.run_id && (

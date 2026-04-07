@@ -59,6 +59,7 @@ export interface Job {
   exit_code?: number;
   duration_seconds?: number;
   trace_id?: string;
+  spot_request_id?: string;
   created_at?: string;
   started_at?: string;
   completed_at?: string;
@@ -100,4 +101,26 @@ export interface CircuitState {
   failure_count: number;
   last_failure?: string;
   reset_at?: string;
+}
+
+export interface CostSummary {
+  period_start: string;
+  period_end: string;
+  total_cost: number;
+  spot_cost: number;
+  on_demand_cost: number;
+  spot_savings: number;
+  avg_cost_per_job: number;
+  job_count: number;
+  spot_job_count: number;
+  on_demand_count: number;
+  family_breakdown: FamilyBreakdown[];
+}
+
+export interface FamilyBreakdown {
+  family: string;
+  job_count: number;
+  total_hours: number;
+  total_cost: number;
+  spot_percent: number;
 }

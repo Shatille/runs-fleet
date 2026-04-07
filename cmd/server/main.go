@@ -491,6 +491,9 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	housekeepingHandler := admin.NewHousekeepingHandler(ec2Client, dynamoClient, ws.cfg.JobsTableName, adminAuth)
 	housekeepingHandler.RegisterRoutes(adminMux)
 
+	costAdminHandler := admin.NewCostHandler(ws.dbClient, adminAuth)
+	costAdminHandler.RegisterRoutes(adminMux)
+
 	mux.Handle("/api/", adminRateLimiter.Wrap(adminMux))
 	mux.Handle("/admin/", admin.UIHandler())
 
