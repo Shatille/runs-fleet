@@ -28,7 +28,8 @@ type Client struct {
 	dynamoClient       DynamoDBAPI
 	poolsTable         string
 	jobsTable          string
-	jobsPoolStatusGSI  string
+	jobsPoolStatusGSI    string
+	jobsInstanceIDGSI    string
 }
 
 // NewClient creates DynamoDB client for specified pools and jobs tables.
@@ -44,6 +45,12 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 // When set, GetPoolBusyInstanceIDs uses Query on this GSI instead of Scan.
 func (c *Client) SetJobsPoolStatusGSI(gsiName string) {
 	c.jobsPoolStatusGSI = gsiName
+}
+
+// SetJobsInstanceIDGSI configures the GSI name for instance_id queries on the jobs table.
+// When set, GetJobByInstance uses Query on this GSI instead of Scan.
+func (c *Client) SetJobsInstanceIDGSI(gsiName string) {
+	c.jobsInstanceIDGSI = gsiName
 }
 
 // HasJobsTable returns true if the jobs table is configured.

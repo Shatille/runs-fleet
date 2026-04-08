@@ -301,7 +301,9 @@ func (c *Client) MarkInstanceTerminating(ctx context.Context, instanceID string)
 }
 
 // GetJobByInstance retrieves job information for a given instance ID from DynamoDB.
-// Uses Scan with filter since job_id is the primary key, not instance_id.
+//
+// When jobsInstanceIDGSI is configured, uses Query on the GSI for O(1) lookup.
+// Falls back to Scan if the GSI is not configured or if the Query fails.
 func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error) {
 	if instanceID == "" {
 		return nil, fmt.Errorf("instance ID cannot be empty")
@@ -311,10 +313,52 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		return nil, fmt.Errorf("jobs table not configured")
 	}
 
-	// Scan for running job with this instance_id (job_id is the primary key).
-	// TODO: Add GSI on instance_id for O(1) lookup instead of O(n) scan.
-	// Current approach is acceptable given small table size (ephemeral jobs, <1000 items)
-	// and low call frequency (spot interruption handling only).
+	if c.jobsInstanceIDGSI != "" {
+		info, err := c.getJobByInstanceViaGSI(ctx, instanceID)
+		if err == nil {
+			return info, nil
+		}
+		if !isGSIValidationError(err) {
+			return nil, err
+		}
+		dbLog.Warn("GSI query failed, falling back to scan",
+			"gsi", c.jobsInstanceIDGSI,
+			"error", err,
+		)
+	}
+
+	return c.getJobByInstanceViaScan(ctx, instanceID)
+}
+
+func (c *Client) getJobByInstanceViaGSI(ctx context.Context, instanceID string) (*events.JobInfo, error) {
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(c.jobsTable),
+		IndexName:              aws.String(c.jobsInstanceIDGSI),
+		KeyConditionExpression: aws.String("instance_id = :instance_id"),
+		FilterExpression:       aws.String("#status = :status"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
+			":status":      &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+		},
+		Limit: aws.Int32(1),
+	}
+
+	output, err := c.dynamoClient.Query(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query GSI: %w", err)
+	}
+
+	if len(output.Items) == 0 {
+		return nil, nil
+	}
+
+	return unmarshalJobInfo(output.Items[0])
+}
+
+func (c *Client) getJobByInstanceViaScan(ctx context.Context, instanceID string) (*events.JobInfo, error) {
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
 		FilterExpression: aws.String("instance_id = :instance_id AND #status = :status"),
@@ -337,8 +381,12 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		return nil, nil
 	}
 
+	return unmarshalJobInfo(output.Items[0])
+}
+
+func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, error) {
 	var record jobRecord
-	if err := attributevalue.UnmarshalMap(output.Items[0], &record); err != nil {
+	if err := attributevalue.UnmarshalMap(item, &record); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
 	}
 

@@ -3844,3 +3844,141 @@ func TestGetPoolBusyInstanceIDs_GSINonValidationError(t *testing.T) {
 		t.Errorf("expected throttling error, got: %v", err)
 	}
 }
+
+func TestGetJobByInstance_GSIPath(t *testing.T) {
+	t.Parallel()
+
+	queryCalled := false
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			queryCalled = true
+			if input.IndexName == nil || *input.IndexName != "instance-id-index" {
+				return nil, errors.New("expected GSI name instance-id-index")
+			}
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"instance_id":   "i-gsi-123",
+				"job_id":        int64(99999),
+				"run_id":        int64(88888),
+				"instance_type": "c7g.large",
+				"pool":          "default",
+				"spot":          true,
+				"retry_count":   0,
+				"status":        string(JobStatusRunning),
+			})
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		},
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			t.Error("Scan should not be called when GSI query succeeds")
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient:      mock,
+		jobsTable:         "jobs-table",
+		jobsInstanceIDGSI: "instance-id-index",
+	}
+
+	job, err := client.GetJobByInstance(context.Background(), "i-gsi-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !queryCalled {
+		t.Fatal("Query was not called")
+	}
+	if job == nil {
+		t.Fatal("expected job, got nil")
+	}
+	if job.JobID != 99999 {
+		t.Errorf("JobID = %d, want 99999", job.JobID)
+	}
+}
+
+func TestGetJobByInstance_GSIFallbackToScan(t *testing.T) {
+	t.Parallel()
+
+	scanCalled := false
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, &smithy.GenericAPIError{Code: "ValidationException", Message: "index not found"}
+		},
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			scanCalled = true
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"instance_id":   "i-fallback",
+				"job_id":        int64(77777),
+				"run_id":        int64(66666),
+				"instance_type": "t4g.medium",
+				"pool":          "",
+				"spot":          false,
+				"retry_count":   1,
+				"status":        string(JobStatusRunning),
+			})
+			return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient:      mock,
+		jobsTable:         "jobs-table",
+		jobsInstanceIDGSI: "instance-id-index",
+	}
+
+	job, err := client.GetJobByInstance(context.Background(), "i-fallback")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scanCalled {
+		t.Fatal("Scan was not called as fallback")
+	}
+	if job == nil {
+		t.Fatal("expected job, got nil")
+	}
+	if job.JobID != 77777 {
+		t.Errorf("JobID = %d, want 77777", job.JobID)
+	}
+}
+
+func TestGetJobByInstance_ScanPath(t *testing.T) {
+	t.Parallel()
+
+	scanCalled := false
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			scanCalled = true
+			if input.FilterExpression == nil || !strings.Contains(*input.FilterExpression, "instance_id") {
+				return nil, errors.New("expected filter on instance_id")
+			}
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"instance_id":   "i-scan-only",
+				"job_id":        int64(55555),
+				"run_id":        int64(44444),
+				"instance_type": "m7g.medium",
+				"pool":          "default",
+				"spot":          true,
+				"retry_count":   0,
+				"status":        string(JobStatusRunning),
+			})
+			return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mock,
+		jobsTable:    "jobs-table",
+	}
+
+	job, err := client.GetJobByInstance(context.Background(), "i-scan-only")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scanCalled {
+		t.Fatal("Scan was not called")
+	}
+	if job == nil {
+		t.Fatal("expected job, got nil")
+	}
+	if job.JobID != 55555 {
+		t.Errorf("JobID = %d, want 55555", job.JobID)
+	}
+}
