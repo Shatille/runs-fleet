@@ -33,13 +33,13 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
     comparators,
   );
 
-  const thBase = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
-  const thSortable = `${thBase} cursor-pointer select-none hover:text-gray-700`;
+  const thBase = 'px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider';
+  const thSortable = `${thBase} cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-300`;
 
   return (
-    <div className="bg-white shadow rounded-lg overflow-hidden">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
+    <div className="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+      <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+        <thead className="bg-gray-50 dark:bg-gray-700">
           <tr>
             <th className={thSortable} onClick={() => requestSort('job_id')}>
               Job ID{getSortIndicator('job_id')}
@@ -72,16 +72,16 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
             )}
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
+        <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
           {sortedData.map((job) => (
-            <tr key={job.job_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => { window.location.href = "/admin/jobs/detail/?id=" + encodeURIComponent(job.job_id); }}>
+            <tr key={job.job_id} className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer" onClick={() => { window.location.href = "/admin/jobs/detail/?id=" + encodeURIComponent(job.job_id); }}>
               <td className="px-4 py-3 whitespace-nowrap">
-                <span className="font-mono text-sm text-gray-900">{job.job_id}</span>
+                <span className="font-mono text-sm text-gray-900 dark:text-gray-100">{job.job_id}</span>
                 {job.run_id && (
-                  <span className="ml-2 text-xs text-gray-400">#{job.run_id}</span>
+                  <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">#{job.run_id}</span>
                 )}
               </td>
-              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate">
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 max-w-xs truncate">
                 {job.repo || '-'}
               </td>
               <td className="px-4 py-3 whitespace-nowrap">
@@ -89,33 +89,33 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
               </td>
               <td className="px-4 py-3 whitespace-nowrap">
                 <div className="text-sm">
-                  <span className="font-mono text-gray-700">
+                  <span className="font-mono text-gray-700 dark:text-gray-300">
                     {job.instance_id ? job.instance_id.slice(-12) : '-'}
                   </span>
                   <div className="flex gap-1 mt-0.5">
                     {job.spot && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-300">
                         Spot
                       </span>
                     )}
                     {job.warm_pool_hit && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300">
                         Warm
                       </span>
                     )}
                   </div>
                 </div>
               </td>
-              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {job.pool || '-'}
               </td>
-              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono">
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">
                 {job.instance_type || '-'}
               </td>
-              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {formatDuration(job.duration_seconds)}
               </td>
-              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {formatTime(job.created_at)}
               </td>
               {traceURL && (
@@ -126,7 +126,7 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
-                      className="text-blue-600 hover:text-blue-800"
+                      className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
                       title={job.trace_id}
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -134,7 +134,7 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
                       </svg>
                     </a>
                   ) : (
-                    <span className="text-gray-300">-</span>
+                    <span className="text-gray-300 dark:text-gray-600">-</span>
                   )}
                 </td>
               )}
@@ -153,16 +153,16 @@ interface StatusBadgeProps {
 
 function StatusBadge({ status, exitCode }: StatusBadgeProps) {
   const statusStyles: Record<string, string> = {
-    pending: 'bg-gray-100 text-gray-800',
-    queued: 'bg-blue-100 text-blue-800',
-    running: 'bg-yellow-100 text-yellow-800',
-    completed: 'bg-green-100 text-green-800',
-    failed: 'bg-red-100 text-red-800',
-    terminated: 'bg-red-100 text-red-800',
-    requeued: 'bg-orange-100 text-orange-800',
+    pending: 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300',
+    queued: 'bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300',
+    running: 'bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300',
+    completed: 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300',
+    failed: 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300',
+    terminated: 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300',
+    requeued: 'bg-orange-100 dark:bg-orange-900/50 text-orange-800 dark:text-orange-300',
   };
 
-  const style = statusStyles[status.toLowerCase()] || 'bg-gray-100 text-gray-800';
+  const style = statusStyles[status?.toLowerCase() || ''] || 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300';
 
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${style}`}>

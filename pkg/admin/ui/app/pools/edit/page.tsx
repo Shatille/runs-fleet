@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import PoolForm from '@/components/pool-form';
+import { FormSkeleton } from '@/components/skeleton';
 import { Pool, PoolFormData } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
@@ -62,17 +63,18 @@ function EditPoolContent() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading pool...</div>
+      <div>
+        <div className="h-8 w-48 animate-pulse rounded bg-gray-200 dark:bg-gray-700 mb-6" />
+        <FormSkeleton />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-md p-4">
-        <p className="text-red-800">{error}</p>
-        <a href="/admin/" className="mt-2 inline-block text-blue-600 hover:underline">
+      <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
+        <p className="text-red-800 dark:text-red-300">{error}</p>
+        <a href="/admin/" className="mt-2 inline-block text-blue-600 dark:text-blue-400 hover:underline">
           Back to pools
         </a>
       </div>
@@ -86,9 +88,9 @@ function EditPoolContent() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Edit Pool: {pool.pool_name}</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Edit Pool: {pool.pool_name}</h1>
         {pool.ephemeral && (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300">
             Ephemeral
           </span>
         )}
@@ -101,8 +103,9 @@ function EditPoolContent() {
 export default function EditPoolPage() {
   return (
     <Suspense fallback={
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading...</div>
+      <div>
+        <div className="h-8 w-48 animate-pulse rounded bg-gray-200 dark:bg-gray-700 mb-6" />
+        <FormSkeleton />
       </div>
     }>
       <EditPoolContent />
