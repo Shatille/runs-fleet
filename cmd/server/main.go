@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -154,6 +155,7 @@ func main() {
 		metricsPublisher:   metricsPublisher,
 		directProcessor:    directProcessor,
 		directProcessorSem: directProcessorSem,
+		poolNotifier:       poolManager,
 	}
 	mux := ws.setupHTTPRoutes(cacheServer, prometheusHandler)
 
@@ -420,6 +422,13 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 	return metrics.NewMultiPublisher(publishers...), prometheusHandler
 }
 
+// PoolReconcileNotifier allows the webhook handler to trigger immediate pool reconciliation.
+type PoolReconcileNotifier interface {
+	NotifyPoolDemand(poolName string)
+}
+
+var validPoolName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
 type webhookServer struct {
 	cfg                *config.Config
 	awsCfg             aws.Config
@@ -428,6 +437,7 @@ type webhookServer struct {
 	metricsPublisher   metrics.Publisher
 	directProcessor    *worker.DirectProcessor
 	directProcessorSem chan struct{}
+	poolNotifier       PoolReconcileNotifier
 }
 
 func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHandler http.Handler) *http.ServeMux {
@@ -538,6 +548,9 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
 		if err != nil || jobMsg == nil {
 			return false, ""
+		}
+		if jobMsg.Pool != "" && len(jobMsg.Pool) <= 63 && validPoolName.MatchString(jobMsg.Pool) && ws.poolNotifier != nil {
+			ws.poolNotifier.NotifyPoolDemand(jobMsg.Pool)
 		}
 		worker.TryDirectProcessing(ctx, ws.directProcessor, ws.directProcessorSem, jobMsg)
 		return true, "Job queued"
