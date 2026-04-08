@@ -1,5 +1,23 @@
-import Link from 'next/link';
+'use client';
+
+import { useMemo } from 'react';
 import { Job } from '@/lib/types';
+import { useSortable } from '@/hooks/use-sortable';
+
+type JobSortField = 'job_id' | 'repo' | 'status' | 'pool' | 'duration' | 'created_at';
+
+const JOB_COMPARATORS: Record<JobSortField, (a: Job, b: Job) => number> = {
+  job_id: (a, b) => a.job_id - b.job_id,
+  repo: (a, b) => (a.repo || '').localeCompare(b.repo || ''),
+  status: (a, b) => a.status.localeCompare(b.status),
+  pool: (a, b) => (a.pool || '').localeCompare(b.pool || ''),
+  duration: (a, b) => (a.duration_seconds || 0) - (b.duration_seconds || 0),
+  created_at: (a, b) => {
+    const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return da - db;
+  },
+};
 
 interface JobsTableProps {
   jobs: Job[];
@@ -7,44 +25,55 @@ interface JobsTableProps {
 }
 
 export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
+  const comparators = useMemo(() => JOB_COMPARATORS, []);
+  const { sortedData, requestSort, getSortIndicator } = useSortable<Job, JobSortField>(
+    jobs,
+    'created_at',
+    'desc',
+    comparators,
+  );
+
+  const thBase = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+  const thSortable = `${thBase} cursor-pointer select-none hover:text-gray-700`;
+
   return (
     <div className="bg-white shadow rounded-lg overflow-hidden">
       <table className="min-w-full divide-y divide-gray-200">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Job ID
+            <th className={thSortable} onClick={() => requestSort('job_id')}>
+              Job ID{getSortIndicator('job_id')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Repo
+            <th className={thSortable} onClick={() => requestSort('repo')}>
+              Repo{getSortIndicator('repo')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Status
+            <th className={thSortable} onClick={() => requestSort('status')}>
+              Status{getSortIndicator('status')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className={thBase}>
               Instance
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Pool
+            <th className={thSortable} onClick={() => requestSort('pool')}>
+              Pool{getSortIndicator('pool')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className={thBase}>
               Type
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Duration
+            <th className={thSortable} onClick={() => requestSort('duration')}>
+              Duration{getSortIndicator('duration')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Created
+            <th className={thSortable} onClick={() => requestSort('created_at')}>
+              Created{getSortIndicator('created_at')}
             </th>
             {traceURL && (
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className={thBase}>
                 Trace
               </th>
             )}
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
-          {jobs.map((job) => (
+          {sortedData.map((job) => (
             <tr key={job.job_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => { window.location.href = "/admin/jobs/detail/?id=" + encodeURIComponent(job.job_id); }}>
               <td className="px-4 py-3 whitespace-nowrap">
                 <span className="font-mono text-sm text-gray-900">{job.job_id}</span>
