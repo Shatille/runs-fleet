@@ -449,16 +449,19 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 
 	// Admin API handlers
 	adminAuth := admin.NewAuthMiddleware(ws.cfg.AdminSecret)
+	adminRateLimiter := admin.NewRateLimiter(ws.cfg.AdminRateLimit)
+
+	adminMux := http.NewServeMux()
 
 	adminHandler := admin.NewHandler(ws.dbClient, ws.cfg.AdminSecret)
-	adminHandler.RegisterRoutes(mux)
+	adminHandler.RegisterRoutes(adminMux)
 
 	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth)
-	jobsHandler.RegisterRoutes(mux)
+	jobsHandler.RegisterRoutes(adminMux)
 
 	ec2Client := ec2.NewFromConfig(ws.awsCfg)
 	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, adminAuth)
-	instancesHandler.RegisterRoutes(mux)
+	instancesHandler.RegisterRoutes(adminMux)
 
 	sqsClient := sqs.NewFromConfig(ws.awsCfg)
 	queuesHandler := admin.NewQueuesHandler(sqsClient, admin.QueueConfig{
@@ -469,15 +472,16 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 		TerminationQueue:  ws.cfg.TerminationQueueURL,
 		HousekeepingQueue: ws.cfg.HousekeepingQueueURL,
 	}, adminAuth)
-	queuesHandler.RegisterRoutes(mux)
+	queuesHandler.RegisterRoutes(adminMux)
 
 	dynamoClient := dynamodb.NewFromConfig(ws.awsCfg)
 	circuitHandler := admin.NewCircuitHandler(dynamoClient, ws.cfg.CircuitBreakerTable, adminAuth)
-	circuitHandler.RegisterRoutes(mux)
+	circuitHandler.RegisterRoutes(adminMux)
 
 	housekeepingHandler := admin.NewHousekeepingHandler(ec2Client, dynamoClient, ws.cfg.JobsTableName, adminAuth)
-	housekeepingHandler.RegisterRoutes(mux)
+	housekeepingHandler.RegisterRoutes(adminMux)
 
+	mux.Handle("/api/", adminRateLimiter.Wrap(adminMux))
 	mux.Handle("/admin/", admin.UIHandler())
 
 	mux.HandleFunc("/webhook", ws.handleWebhook)
