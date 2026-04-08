@@ -5,6 +5,7 @@ import JobsTable from '@/components/jobs-table';
 import JobStatsCard from '@/components/job-stats';
 import { Job, JobStats } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
+import { useAutoRefresh } from '@/hooks/use-auto-refresh';
 
 interface CleanupResult {
   cleaned: number;
@@ -102,10 +103,21 @@ export default function JobsPage() {
       })
     : jobs;
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
     fetchJobs();
     fetchStats();
-  };
+  }, [fetchJobs, fetchStats]);
+
+  const isSearchActive = searchQuery.length > 0 && searchQuery !== debouncedSearch;
+  const autoRefreshCallback = useCallback(() => {
+    if (!isSearchActive) handleRefresh();
+  }, [handleRefresh, isSearchActive]);
+
+  const { enabled: autoRefreshEnabled, toggle: toggleAutoRefresh, isRefreshing } = useAutoRefresh(
+    autoRefreshCallback,
+    15000,
+    'runs-fleet-jobs-auto-refresh',
+  );
 
   const handleCleanupOrphanedJobs = async (dryRun: boolean = false) => {
     try {
@@ -151,13 +163,30 @@ export default function JobsPage() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Jobs</h1>
-        <button
-          onClick={handleRefresh}
-          disabled={loading}
-          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 transition-colors disabled:opacity-50"
-        >
-          {loading ? 'Loading...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleAutoRefresh}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-sm transition-colors ${
+              autoRefreshEnabled
+                ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+            }`}
+          >
+            <span className={`inline-block h-2 w-2 rounded-full ${
+              autoRefreshEnabled
+                ? isRefreshing ? 'bg-green-400 animate-pulse' : 'bg-green-500'
+                : 'bg-gray-400'
+            }`} />
+            Auto-refresh
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={loading}
+            className="bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 transition-colors disabled:opacity-50"
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {stats && <JobStatsCard stats={stats} />}

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { CircuitState } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
+import { useAutoRefresh } from '@/hooks/use-auto-refresh';
 
 export default function CircuitPage() {
   const [circuits, setCircuits] = useState<CircuitState[]>([]);
@@ -25,10 +26,10 @@ export default function CircuitPage() {
     }
   }, []);
 
+  const { isRefreshing } = useAutoRefresh(fetchCircuits, 15000, 'runs-fleet-circuit-auto-refresh', true);
+
   useEffect(() => {
     fetchCircuits();
-    const interval = setInterval(fetchCircuits, 15000);
-    return () => clearInterval(interval);
   }, [fetchCircuits]);
 
   const openCircuits = circuits.filter((c) => c.state === 'open');
