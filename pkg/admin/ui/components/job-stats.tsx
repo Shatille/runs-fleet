@@ -30,15 +30,15 @@ interface StatCardProps {
 
 function StatCard({ label, value, color }: StatCardProps) {
   const colorClasses = {
-    blue: 'bg-blue-50 text-blue-700',
-    green: 'bg-green-50 text-green-700',
-    red: 'bg-red-50 text-red-700',
-    yellow: 'bg-yellow-50 text-yellow-700',
-    purple: 'bg-purple-50 text-purple-700',
-    indigo: 'bg-indigo-50 text-indigo-700',
+    blue: 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
+    green: 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400',
+    red: 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400',
+    yellow: 'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400',
+    purple: 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
+    indigo: 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400',
   };
 
-  const bgClass = color ? colorClasses[color] : 'bg-gray-50 text-gray-700';
+  const bgClass = color ? colorClasses[color] : 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
 
   return (
     <div className={`rounded-lg p-4 ${bgClass}`}>

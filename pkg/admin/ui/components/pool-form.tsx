@@ -109,16 +109,16 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6 bg-white shadow rounded-lg p-6">
+    <form onSubmit={handleSubmit} className="space-y-6 bg-white dark:bg-gray-800 shadow rounded-lg p-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-4">
-          <p className="text-red-800">{error}</p>
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
+          <p className="text-red-800 dark:text-red-300">{error}</p>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <label htmlFor="pool_name" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="pool_name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Pool Name
           </label>
           <input
@@ -130,16 +130,16 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             disabled={isEdit}
             required
             pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-600"
             placeholder="my-pool"
           />
-          <p className="mt-1 text-sm text-gray-500">
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Alphanumeric with hyphens/underscores, starting with alphanumeric
           </p>
         </div>
 
         <div>
-          <label htmlFor="instance_type" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="instance_type" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Instance Type
           </label>
           <input
@@ -148,13 +148,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             name="instance_type"
             value={formData.instance_type}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
             placeholder="c7g.xlarge"
           />
         </div>
 
         <div>
-          <label htmlFor="desired_running" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="desired_running" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Desired Running
           </label>
           <input
@@ -164,13 +164,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.desired_running}
             onChange={handleChange}
             min="0"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
           />
-          <p className="mt-1 text-sm text-gray-500">Number of warm running instances</p>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Number of warm running instances</p>
         </div>
 
         <div>
-          <label htmlFor="desired_stopped" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="desired_stopped" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Desired Stopped
           </label>
           <input
@@ -180,13 +180,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.desired_stopped}
             onChange={handleChange}
             min="0"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
           />
-          <p className="mt-1 text-sm text-gray-500">Number of stopped instances ready to start</p>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Number of stopped instances ready to start</p>
         </div>
 
         <div>
-          <label htmlFor="idle_timeout_minutes" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="idle_timeout_minutes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Idle Timeout (minutes)
           </label>
           <input
@@ -196,12 +196,12 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.idle_timeout_minutes}
             onChange={handleChange}
             min="0"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
           />
         </div>
 
         <div>
-          <label htmlFor="environment" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="environment" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Environment
           </label>
           <select
@@ -210,7 +210,7 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.environment}
             onChange={handleChange}
             disabled={isEdit}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-600"
           >
             <option value="">None</option>
             <option value="dev">dev</option>
@@ -220,7 +220,7 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
         </div>
 
         <div>
-          <label htmlFor="region" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="region" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Region
           </label>
           <input
@@ -230,13 +230,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.region}
             onChange={handleChange}
             disabled={isEdit}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-600"
             placeholder="ap-northeast-1"
           />
         </div>
 
         <div>
-          <label htmlFor="arch" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="arch" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Architecture
           </label>
           <select
@@ -244,7 +244,7 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             name="arch"
             value={formData.arch}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
           >
             <option value="">Any</option>
             <option value="arm64">arm64</option>
@@ -253,7 +253,7 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
         </div>
 
         <div>
-          <label htmlFor="cpu_min" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="cpu_min" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             CPU Min
           </label>
           <input
@@ -263,13 +263,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.cpu_min || ''}
             onChange={handleChange}
             min="0"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
             placeholder="0"
           />
         </div>
 
         <div>
-          <label htmlFor="cpu_max" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="cpu_max" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             CPU Max
           </label>
           <input
@@ -279,13 +279,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             value={formData.cpu_max || ''}
             onChange={handleChange}
             min="0"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
             placeholder="0"
           />
         </div>
 
         <div>
-          <label htmlFor="ram_min" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="ram_min" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             RAM Min (GB)
           </label>
           <input
@@ -296,13 +296,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             onChange={handleChange}
             min="0"
             step="0.5"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
             placeholder="0"
           />
         </div>
 
         <div>
-          <label htmlFor="ram_max" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="ram_max" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             RAM Max (GB)
           </label>
           <input
@@ -313,13 +313,13 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             onChange={handleChange}
             min="0"
             step="0.5"
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
             placeholder="0"
           />
         </div>
 
         <div className="md:col-span-2">
-          <label htmlFor="families" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="families" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Instance Families
           </label>
           <input
@@ -328,34 +328,34 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             name="families"
             value={formData.families.join(', ')}
             onChange={handleFamiliesChange}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
             placeholder="c7g, m7g, r7g"
           />
-          <p className="mt-1 text-sm text-gray-500">Comma-separated list of instance families</p>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Comma-separated list of instance families</p>
         </div>
       </div>
 
-      <div className="border-t pt-6">
+      <div className="border-t dark:border-gray-700 pt-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-medium text-gray-900">Schedules</h3>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">Schedules</h3>
           <button
             type="button"
             onClick={addSchedule}
-            className="text-sm px-3 py-1.5 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200"
+            className="text-sm px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600"
           >
             Add Schedule
           </button>
         </div>
 
         {formData.schedules.length === 0 && (
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
             No schedules configured. Pool uses default desired counts at all times.
           </p>
         )}
 
         <div className="space-y-4">
           {formData.schedules.map((schedule, idx) => (
-            <div key={idx} className="border rounded-md p-4 bg-gray-50">
+            <div key={idx} className="border dark:border-gray-700 rounded-md p-4 bg-gray-50 dark:bg-gray-700/50">
               <div className="flex items-center justify-between mb-3">
                 <input
                   type="text"
@@ -363,12 +363,12 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
                   onChange={(e) => updateSchedule(idx, 'name', e.target.value)}
                   placeholder="Schedule name"
                   required
-                  className="text-sm font-medium rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  className="text-sm font-medium rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                 />
                 <button
                   type="button"
                   onClick={() => removeSchedule(idx)}
-                  className="text-sm text-red-600 hover:text-red-800"
+                  className="text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
                 >
                   Remove
                 </button>
@@ -376,51 +376,51 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
                 <div>
-                  <label className="block text-xs text-gray-500">Start Hour</label>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400">Start Hour</label>
                   <input
                     type="number"
                     value={schedule.start_hour}
                     onChange={(e) => updateSchedule(idx, 'start_hour', Number(e.target.value))}
                     min="0"
                     max="23"
-                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500">End Hour</label>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400">End Hour</label>
                   <input
                     type="number"
                     value={schedule.end_hour}
                     onChange={(e) => updateSchedule(idx, 'end_hour', Number(e.target.value))}
                     min="0"
                     max="23"
-                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500">Running</label>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400">Running</label>
                   <input
                     type="number"
                     value={schedule.desired_running}
                     onChange={(e) => updateSchedule(idx, 'desired_running', Number(e.target.value))}
                     min="0"
-                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500">Stopped</label>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400">Stopped</label>
                   <input
                     type="number"
                     value={schedule.desired_stopped}
                     onChange={(e) => updateSchedule(idx, 'desired_stopped', Number(e.target.value))}
                     min="0"
-                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                    className="mt-0.5 block w-full text-sm rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Days of Week</label>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Days of Week</label>
                 <div className="flex gap-1">
                   {DAY_LABELS.map((label, day) => (
                     <button
@@ -430,7 +430,7 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
                       className={`px-2 py-1 text-xs rounded-md border ${
                         (schedule.days_of_week || []).includes(day)
                           ? 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                          : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
                       }`}
                     >
                       {label}
@@ -446,7 +446,7 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
       <div className="flex justify-end space-x-4">
         <a
           href="/admin/"
-          className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+          className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
         >
           Cancel
         </a>

@@ -2,14 +2,17 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { DetailSkeleton } from '@/components/skeleton';
 import { Job } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
 export default function JobDetailPage() {
   return (
     <Suspense fallback={
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading job...</div>
+      <div>
+        <div className="h-4 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-700 mb-6" />
+        <div className="h-8 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-700 mb-6" />
+        <DetailSkeleton />
       </div>
     }>
       <JobDetail />
@@ -58,19 +61,21 @@ function JobDetail() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-500">Loading job...</div>
+      <div>
+        <div className="h-4 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-700 mb-6" />
+        <div className="h-8 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-700 mb-6" />
+        <DetailSkeleton />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-md p-4">
-        <p className="text-red-800">{error}</p>
+      <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
+        <p className="text-red-800 dark:text-red-300">{error}</p>
         <a
           href="/admin/jobs/"
-          className="mt-2 inline-block text-blue-600 hover:underline"
+          className="mt-2 inline-block text-blue-600 dark:text-blue-400 hover:underline"
         >
           Back to Jobs
         </a>
@@ -90,14 +95,14 @@ function JobDetail() {
       <div className="mb-6">
         <a
           href="/admin/jobs/"
-          className="text-blue-600 hover:underline text-sm"
+          className="text-blue-600 dark:text-blue-400 hover:underline text-sm"
         >
           &larr; Back to Jobs
         </a>
       </div>
 
       <div className="flex items-center gap-4 mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
           Job {job.job_id}
         </h1>
         <StatusBadge status={job.status} exitCode={job.exit_code} />
@@ -112,12 +117,12 @@ function JobDetail() {
                 href={githubRunUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-blue-600 hover:underline font-mono text-sm"
+                className="text-blue-600 dark:text-blue-400 hover:underline font-mono text-sm"
               >
                 {job.run_id}
               </a>
             ) : (
-              <span className="font-mono text-sm text-gray-900">
+              <span className="font-mono text-sm text-gray-900 dark:text-gray-100">
                 {job.run_id || '-'}
               </span>
             )}
@@ -131,20 +136,20 @@ function JobDetail() {
           <Field label="Instance Type" value={job.instance_type || '-'} mono />
           <Field label="Spot">
             {job.spot ? (
-              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
+              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-300">
                 Spot
               </span>
             ) : (
-              <span className="text-sm text-gray-500">On-Demand</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400">On-Demand</span>
             )}
           </Field>
           <Field label="Warm Pool Hit">
             {job.warm_pool_hit ? (
-              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300">
                 Yes
               </span>
             ) : (
-              <span className="text-sm text-gray-500">No</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400">No</span>
             )}
           </Field>
           <Field
@@ -179,8 +184,8 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white shadow rounded-lg p-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">{title}</h2>
+    <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+      <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">{title}</h2>
       <dl className="space-y-3">{children}</dl>
     </div>
   );
@@ -199,11 +204,11 @@ function Field({
 }) {
   return (
     <div className="flex justify-between items-center">
-      <dt className="text-sm font-medium text-gray-500">{label}</dt>
+      <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</dt>
       <dd>
         {children || (
           <span
-            className={`text-sm text-gray-900 ${mono ? 'font-mono' : ''}`}
+            className={`text-sm text-gray-900 dark:text-gray-100 ${mono ? 'font-mono' : ''}`}
           >
             {value}
           </span>
@@ -221,17 +226,17 @@ function StatusBadge({
   exitCode?: number;
 }) {
   const statusStyles: Record<string, string> = {
-    pending: 'bg-gray-100 text-gray-800',
-    queued: 'bg-blue-100 text-blue-800',
-    running: 'bg-yellow-100 text-yellow-800',
-    completed: 'bg-green-100 text-green-800',
-    failed: 'bg-red-100 text-red-800',
-    terminated: 'bg-red-100 text-red-800',
-    requeued: 'bg-orange-100 text-orange-800',
+    pending: 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300',
+    queued: 'bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300',
+    running: 'bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300',
+    completed: 'bg-green-100 dark:bg-green-900/50 text-green-800 dark:text-green-300',
+    failed: 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300',
+    terminated: 'bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300',
+    requeued: 'bg-orange-100 dark:bg-orange-900/50 text-orange-800 dark:text-orange-300',
   };
 
   const style =
-    statusStyles[status.toLowerCase()] || 'bg-gray-100 text-gray-800';
+    statusStyles[status.toLowerCase()] || 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300';
 
   return (
     <span

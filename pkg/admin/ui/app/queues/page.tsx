@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { CardSkeleton } from '@/components/skeleton';
 import { QueueStatus } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 import { useAutoRefresh } from '@/hooks/use-auto-refresh';
@@ -34,11 +35,11 @@ export default function QueuesPage() {
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-md p-4">
-        <p className="text-red-800">{error}</p>
+      <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
+        <p className="text-red-800 dark:text-red-300">{error}</p>
         <button
           onClick={fetchQueues}
-          className="mt-2 text-red-600 underline hover:no-underline"
+          className="mt-2 text-red-600 dark:text-red-400 underline hover:no-underline"
         >
           Retry
         </button>
@@ -49,23 +50,21 @@ export default function QueuesPage() {
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Queue Status</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Queue Status</h1>
         <button
           onClick={fetchQueues}
           disabled={loading}
-          className="bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 transition-colors disabled:opacity-50"
+          className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
         >
           {loading ? 'Loading...' : 'Refresh'}
         </button>
       </div>
 
       {loading && queues.length === 0 ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="text-gray-500">Loading queues...</div>
-        </div>
+        <CardSkeleton count={5} />
       ) : queues.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-lg border">
-          <p className="text-gray-500">No queues configured.</p>
+        <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
+          <p className="text-gray-500 dark:text-gray-400">No queues configured.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -87,11 +86,11 @@ function QueueCard({ queue }: QueueCardProps) {
   const hasMessages = totalMessages > 0 || queue.dlq_messages > 0;
 
   return (
-    <div className={`bg-white rounded-lg shadow p-6 ${hasMessages ? 'ring-2 ring-yellow-200' : ''}`}>
+    <div className={`bg-white dark:bg-gray-800 rounded-lg shadow p-6 ${hasMessages ? 'ring-2 ring-yellow-200 dark:ring-yellow-700' : ''}`}>
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 capitalize">{queue.name}</h3>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 capitalize">{queue.name}</h3>
         {queue.dlq_messages > 0 && (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300">
             {queue.dlq_messages} in DLQ
           </span>
         )}
@@ -117,8 +116,8 @@ function QueueCard({ queue }: QueueCardProps) {
         />
       </div>
 
-      <div className="mt-4 pt-4 border-t">
-        <div className="text-xs text-gray-400 truncate" title={queue.url}>
+      <div className="mt-4 pt-4 border-t dark:border-gray-700">
+        <div className="text-xs text-gray-400 dark:text-gray-500 truncate" title={queue.url}>
           {queue.url.replace(/https:\/\/sqs\.[^/]+\//, '')}
         </div>
       </div>
@@ -137,12 +136,12 @@ function StatRow({ label, value, description, highlight }: StatRowProps) {
   return (
     <div className="flex justify-between items-center">
       <div>
-        <span className={`text-sm font-medium ${highlight ? 'text-yellow-700' : 'text-gray-700'}`}>
+        <span className={`text-sm font-medium ${highlight ? 'text-yellow-700 dark:text-yellow-400' : 'text-gray-700 dark:text-gray-300'}`}>
           {label}
         </span>
-        <span className="hidden sm:inline text-xs text-gray-400 ml-2">{description}</span>
+        <span className="hidden sm:inline text-xs text-gray-400 dark:text-gray-500 ml-2">{description}</span>
       </div>
-      <span className={`text-lg font-bold ${highlight ? 'text-yellow-600' : 'text-gray-900'}`}>
+      <span className={`text-lg font-bold ${highlight ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-900 dark:text-gray-100'}`}>
         {value}
       </span>
     </div>
