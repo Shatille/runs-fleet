@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { QueueStatus } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
+import { useAutoRefresh } from '@/hooks/use-auto-refresh';
 
 export default function QueuesPage() {
   const [queues, setQueues] = useState<QueueStatus[]>([]);
@@ -25,10 +26,10 @@ export default function QueuesPage() {
     }
   }, []);
 
+  const { isRefreshing } = useAutoRefresh(fetchQueues, 10000, 'runs-fleet-queues-auto-refresh', true);
+
   useEffect(() => {
     fetchQueues();
-    const interval = setInterval(fetchQueues, 10000);
-    return () => clearInterval(interval);
   }, [fetchQueues]);
 
   if (error) {
