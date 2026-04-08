@@ -1,40 +1,69 @@
+'use client';
+
+import { useMemo } from 'react';
 import { Instance } from '@/lib/types';
+import { useSortable } from '@/hooks/use-sortable';
+
+type InstanceSortField = 'instance_id' | 'state' | 'pool' | 'instance_type' | 'launch_time';
+
+const INSTANCE_COMPARATORS: Record<InstanceSortField, (a: Instance, b: Instance) => number> = {
+  instance_id: (a, b) => a.instance_id.localeCompare(b.instance_id),
+  state: (a, b) => a.state.localeCompare(b.state),
+  pool: (a, b) => (a.pool || '').localeCompare(b.pool || ''),
+  instance_type: (a, b) => a.instance_type.localeCompare(b.instance_type),
+  launch_time: (a, b) => {
+    const da = a.launch_time ? new Date(a.launch_time).getTime() : 0;
+    const db = b.launch_time ? new Date(b.launch_time).getTime() : 0;
+    return da - db;
+  },
+};
 
 interface InstancesTableProps {
   instances: Instance[];
 }
 
 export default function InstancesTable({ instances }: InstancesTableProps) {
+  const comparators = useMemo(() => INSTANCE_COMPARATORS, []);
+  const { sortedData, requestSort, getSortIndicator } = useSortable<Instance, InstanceSortField>(
+    instances,
+    'launch_time',
+    'desc',
+    comparators,
+  );
+
+  const thBase = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+  const thSortable = `${thBase} cursor-pointer select-none hover:text-gray-700`;
+
   return (
     <div className="bg-white shadow rounded-lg overflow-hidden">
       <table className="min-w-full divide-y divide-gray-200">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Instance ID
+            <th className={thSortable} onClick={() => requestSort('instance_id')}>
+              Instance ID{getSortIndicator('instance_id')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Type
+            <th className={thSortable} onClick={() => requestSort('instance_type')}>
+              Type{getSortIndicator('instance_type')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Pool
+            <th className={thSortable} onClick={() => requestSort('pool')}>
+              Pool{getSortIndicator('pool')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              State
+            <th className={thSortable} onClick={() => requestSort('state')}>
+              State{getSortIndicator('state')}
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className={thBase}>
               Status
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className={thBase}>
               Private IP
             </th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Launch Time
+            <th className={thSortable} onClick={() => requestSort('launch_time')}>
+              Launch Time{getSortIndicator('launch_time')}
             </th>
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
-          {instances.map((inst) => (
+          {sortedData.map((inst) => (
             <tr key={inst.instance_id} className="hover:bg-gray-50">
               <td className="px-4 py-3 whitespace-nowrap">
                 <span className="font-mono text-sm text-gray-900">{inst.instance_id}</span>
