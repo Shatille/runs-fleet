@@ -58,6 +58,15 @@ var instancePricing = map[string]float64{
 // SpotDiscount is the average spot discount compared to on-demand
 const SpotDiscount = 0.7 // 70% discount
 
+// GetInstancePrice returns the hard-coded on-demand hourly price for an instance type.
+// Returns the t4g.medium price as default for unknown types.
+func GetInstancePrice(instanceType string) float64 {
+	if price, ok := instancePricing[instanceType]; ok {
+		return price
+	}
+	return 0.0336
+}
+
 // CloudWatchAPI defines CloudWatch operations for cost reporting.
 type CloudWatchAPI interface {
 	GetMetricData(ctx context.Context, params *cloudwatch.GetMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error)
