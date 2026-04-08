@@ -121,6 +121,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				Pool:         job.Pool,
 				Spot:         job.Spot,
 				RetryCount:   job.RetryCount,
+				Traceparent:  job.Traceparent,
 			}
 			if err := p.DB.SaveJob(ctx, jobRecord); err != nil {
 				directLog.Error("job record save failed",

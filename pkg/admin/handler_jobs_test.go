@@ -54,6 +54,7 @@ func TestJobsHandler_ListJobs(t *testing.T) {
 				Repo:      "org/repo",
 				Pool:      "default",
 				Status:    string(db.JobStatusRunning),
+				TraceID:   "0102030405060708090a0b0c0d0e0f10",
 				CreatedAt: now,
 			},
 			{
@@ -67,7 +68,7 @@ func TestJobsHandler_ListJobs(t *testing.T) {
 	}
 
 	auth := NewAuthMiddleware("")
-	handler := NewJobsHandler(mockDB, auth)
+	handler := NewJobsHandler(mockDB, auth, "")
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -96,6 +97,12 @@ func TestJobsHandler_ListJobs(t *testing.T) {
 	if resp.Total != 2 {
 		t.Errorf("expected total 2, got %d", resp.Total)
 	}
+	if resp.Jobs[0].TraceID != "0102030405060708090a0b0c0d0e0f10" {
+		t.Errorf("expected trace_id on first job, got %q", resp.Jobs[0].TraceID)
+	}
+	if resp.Jobs[1].TraceID != "" {
+		t.Errorf("expected empty trace_id on second job, got %q", resp.Jobs[1].TraceID)
+	}
 }
 
 func TestJobsHandler_InvalidStatusFilter(t *testing.T) {
@@ -119,7 +126,7 @@ func TestJobsHandler_InvalidStatusFilter(t *testing.T) {
 
 			mockDB := &mockJobsDB{jobs: []db.AdminJobEntry{}}
 			auth := NewAuthMiddleware("")
-			handler := NewJobsHandler(mockDB, auth)
+			handler := NewJobsHandler(mockDB, auth, "")
 
 			mux := http.NewServeMux()
 			handler.RegisterRoutes(mux)
@@ -152,7 +159,7 @@ func TestJobsHandler_GetJob(t *testing.T) {
 	}
 
 	auth := NewAuthMiddleware("")
-	handler := NewJobsHandler(mockDB, auth)
+	handler := NewJobsHandler(mockDB, auth, "")
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -218,7 +225,7 @@ func TestJobsHandler_GetJobStats(t *testing.T) {
 	}
 
 	auth := NewAuthMiddleware("")
-	handler := NewJobsHandler(mockDB, auth)
+	handler := NewJobsHandler(mockDB, auth, "")
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -255,7 +262,7 @@ func TestJobsHandler_WithAuth(t *testing.T) {
 	}
 
 	auth := NewAuthMiddleware("require-auth")
-	handler := NewJobsHandler(mockDB, auth)
+	handler := NewJobsHandler(mockDB, auth, "")
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -282,6 +289,66 @@ func TestJobsHandler_WithAuth(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("expected status 200, got %d", rec.Code)
+		}
+	})
+}
+
+func TestJobsHandler_GetTraceURL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured trace URL", func(t *testing.T) {
+		t.Parallel()
+
+		mockDB := &mockJobsDB{}
+		auth := NewAuthMiddleware("")
+		handler := NewJobsHandler(mockDB, auth, "https://jaeger.example.com/trace/")
+
+		mux := http.NewServeMux()
+		handler.RegisterRoutes(mux)
+
+		req := httptest.NewRequest("GET", "/api/config/trace-url", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", rec.Code)
+		}
+
+		var resp map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp["trace_url"] != "https://jaeger.example.com/trace/" {
+			t.Errorf("expected trace_url https://jaeger.example.com/trace/, got %q", resp["trace_url"])
+		}
+	})
+
+	t.Run("unconfigured trace URL", func(t *testing.T) {
+		t.Parallel()
+
+		mockDB := &mockJobsDB{}
+		auth := NewAuthMiddleware("")
+		handler := NewJobsHandler(mockDB, auth, "")
+
+		mux := http.NewServeMux()
+		handler.RegisterRoutes(mux)
+
+		req := httptest.NewRequest("GET", "/api/config/trace-url", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", rec.Code)
+		}
+
+		var resp map[string]string
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp["trace_url"] != "" {
+			t.Errorf("expected empty trace_url, got %q", resp["trace_url"])
 		}
 	})
 }

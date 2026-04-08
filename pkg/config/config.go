@@ -74,6 +74,7 @@ type Config struct {
 	CacheURL       string
 	AdminSecret    string
 	AdminRateLimit int
+	TraceUIURL     string
 
 	// K8s-specific configuration
 	KubeConfig             string            // Path to kubeconfig (empty = in-cluster)
@@ -206,6 +207,7 @@ func Load() (*Config, error) {
 		CacheURL:       getEnv("RUNS_FLEET_CACHE_URL", ""),
 		AdminSecret:    getEnv("RUNS_FLEET_ADMIN_SECRET", ""),
 		AdminRateLimit: getEnvIntDefault("RUNS_FLEET_ADMIN_RATE_LIMIT", 60),
+		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
 
 		// K8s-specific
 		KubeConfig:             getEnv("RUNS_FLEET_KUBE_CONFIG", ""),

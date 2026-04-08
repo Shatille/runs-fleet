@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import JobsTable from '@/components/jobs-table';
 import JobStatsCard from '@/components/job-stats';
 import { Job, JobStats } from '@/lib/types';
@@ -25,8 +25,13 @@ export default function JobsPage() {
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [cleanupLoading, setCleanupLoading] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
+  const [traceURL, setTraceURL] = useState<string>('');
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -66,7 +71,36 @@ export default function JobsPage() {
   useEffect(() => {
     fetchJobs();
     fetchStats();
+    apiFetch('/api/config/trace-url').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        if (data.trace_url) setTraceURL(data.trace_url);
+      }
+    }).catch(() => {});
   }, [fetchJobs, fetchStats]);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, []);
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => setDebouncedSearch(value), 300);
+  };
+
+  const filteredJobs = debouncedSearch
+    ? jobs.filter((job) => {
+        const q = debouncedSearch.toLowerCase();
+        return (
+          (job.repo && job.repo.toLowerCase().includes(q)) ||
+          String(job.job_id).includes(q) ||
+          (job.instance_id && job.instance_id.toLowerCase().includes(q))
+        );
+      })
+    : jobs;
 
   const handleRefresh = () => {
     fetchJobs();
@@ -161,6 +195,16 @@ export default function JobsPage() {
         )}
       </div>
 
+      <div className="mb-4">
+        <input
+          type="text"
+          placeholder="Search by repo, job ID, or instance ID..."
+          value={searchQuery}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 px-4 py-2"
+        />
+      </div>
+
       <div className="mb-4 flex gap-4">
         <select
           value={statusFilter}
@@ -197,13 +241,13 @@ export default function JobsPage() {
         <div className="flex items-center justify-center h-64">
           <div className="text-gray-500">Loading jobs...</div>
         </div>
-      ) : jobs.length === 0 ? (
+      ) : filteredJobs.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-lg border">
-          <p className="text-gray-500">No jobs found.</p>
+          <p className="text-gray-500">{debouncedSearch ? 'No jobs match your search.' : 'No jobs found.'}</p>
         </div>
       ) : (
         <>
-          <JobsTable jobs={jobs} />
+          <JobsTable jobs={filteredJobs} traceURL={traceURL || undefined} />
 
           <div className="mt-4 flex justify-between items-center">
             <span className="text-sm text-gray-500">

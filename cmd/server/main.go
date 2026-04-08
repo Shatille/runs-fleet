@@ -466,7 +466,7 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	adminHandler := admin.NewHandler(ws.dbClient, ws.cfg.AdminSecret)
 	adminHandler.RegisterRoutes(adminMux)
 
-	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth)
+	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth, ws.cfg.TraceUIURL)
 	jobsHandler.RegisterRoutes(adminMux)
 
 	ec2Client := ec2.NewFromConfig(ws.awsCfg)

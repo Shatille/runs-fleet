@@ -1,10 +1,12 @@
+import Link from 'next/link';
 import { Job } from '@/lib/types';
 
 interface JobsTableProps {
   jobs: Job[];
+  traceURL?: string;
 }
 
-export default function JobsTable({ jobs }: JobsTableProps) {
+export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
   return (
     <div className="bg-white shadow rounded-lg overflow-hidden">
       <table className="min-w-full divide-y divide-gray-200">
@@ -34,11 +36,16 @@ export default function JobsTable({ jobs }: JobsTableProps) {
             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Created
             </th>
+            {traceURL && (
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Trace
+              </th>
+            )}
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
           {jobs.map((job) => (
-            <tr key={job.job_id} className="hover:bg-gray-50">
+            <tr key={job.job_id} className="hover:bg-gray-50 cursor-pointer" onClick={() => window.location.href = `/admin/jobs/${job.job_id}/`}>
               <td className="px-4 py-3 whitespace-nowrap">
                 <span className="font-mono text-sm text-gray-900">{job.job_id}</span>
                 {job.run_id && (
@@ -82,6 +89,26 @@ export default function JobsTable({ jobs }: JobsTableProps) {
               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                 {formatTime(job.created_at)}
               </td>
+              {traceURL && (
+                <td className="px-4 py-3 whitespace-nowrap text-sm">
+                  {job.trace_id ? (
+                    <a
+                      href={`${traceURL}${job.trace_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-blue-600 hover:text-blue-800"
+                      title={job.trace_id}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                    </a>
+                  ) : (
+                    <span className="text-gray-300">-</span>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

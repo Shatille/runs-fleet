@@ -304,6 +304,7 @@ func SaveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 			Pool:         job.Pool,
 			Spot:         job.Spot,
 			RetryCount:   job.RetryCount,
+			Traceparent:  job.Traceparent,
 		}
 		var saveErr error
 		for attempt := 0; attempt < 3; attempt++ {

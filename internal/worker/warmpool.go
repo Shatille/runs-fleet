@@ -150,6 +150,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 			Spot:         job.Spot,
 			RetryCount:   job.RetryCount,
 			WarmPoolHit:  true,
+			Traceparent:  job.Traceparent,
 		}
 		if err := w.DB.SaveJob(ctx, jobRecord); err != nil {
 			warmPoolLog.Error("job record save failed",

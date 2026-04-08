@@ -35,6 +35,8 @@ type JobResponse struct {
 	Status          string     `json:"status"`
 	ExitCode        int        `json:"exit_code,omitempty"`
 	DurationSeconds int        `json:"duration_seconds,omitempty"`
+	SpotRequestID   string     `json:"spot_request_id,omitempty"`
+	TraceID         string     `json:"trace_id,omitempty"`
 	CreatedAt       *time.Time `json:"created_at,omitempty"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
@@ -53,17 +55,19 @@ type JobStatsResponse struct {
 
 // JobsHandler provides HTTP endpoints for job management.
 type JobsHandler struct {
-	db   JobsDB
-	auth *AuthMiddleware
-	log  *logging.Logger
+	db         JobsDB
+	auth       *AuthMiddleware
+	log        *logging.Logger
+	traceUIURL string
 }
 
 // NewJobsHandler creates a new jobs handler.
-func NewJobsHandler(db JobsDB, auth *AuthMiddleware) *JobsHandler {
+func NewJobsHandler(db JobsDB, auth *AuthMiddleware, traceUIURL string) *JobsHandler {
 	return &JobsHandler{
-		db:   db,
-		auth: auth,
-		log:  logging.WithComponent(logging.LogTypeAdmin, "jobs"),
+		db:         db,
+		auth:       auth,
+		log:        logging.WithComponent(logging.LogTypeAdmin, "jobs"),
+		traceUIURL: traceUIURL,
 	}
 }
 
@@ -72,6 +76,7 @@ func (h *JobsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/jobs", h.auth.WrapFunc(h.ListJobs))
 	mux.Handle("GET /api/jobs/stats", h.auth.WrapFunc(h.GetJobStats))
 	mux.Handle("GET /api/jobs/{id}", h.auth.WrapFunc(h.GetJob))
+	mux.Handle("GET /api/config/trace-url", h.auth.WrapFunc(h.GetTraceURL))
 }
 
 // ListJobs handles GET /api/jobs.
@@ -220,6 +225,8 @@ func jobEntryToResponse(e db.AdminJobEntry) JobResponse {
 		Status:          e.Status,
 		ExitCode:        e.ExitCode,
 		DurationSeconds: e.DurationSeconds,
+		SpotRequestID:   e.SpotRequestID,
+		TraceID:         e.TraceID,
 	}
 	if !e.CreatedAt.IsZero() {
 		resp.CreatedAt = &e.CreatedAt
@@ -231,6 +238,13 @@ func jobEntryToResponse(e db.AdminJobEntry) JobResponse {
 		resp.CompletedAt = &e.CompletedAt
 	}
 	return resp
+}
+
+// GetTraceURL handles GET /api/config/trace-url.
+func (h *JobsHandler) GetTraceURL(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]string{
+		"trace_url": h.traceUIURL,
+	})
 }
 
 func (h *JobsHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
