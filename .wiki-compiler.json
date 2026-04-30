@@ -1,0 +1,83 @@
+{
+  "version": 2,
+  "mode": "codebase",
+  "name": "runs-fleet",
+  "sources": [
+    {
+      "path": "./",
+      "exclude": [
+        "node_modules/",
+        "dist/",
+        ".git/",
+        "wiki/",
+        "vendor/",
+        "__pycache__/",
+        ".build/",
+        "target/",
+        ".next/",
+        "coverage/",
+        "bin/",
+        "agent/",
+        "server/"
+      ]
+    }
+  ],
+  "output": "wiki/",
+  "service_discovery": "auto",
+  "knowledge_files": [
+    "README.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "*.proto",
+    "*.graphql",
+    "openapi.yaml",
+    "openapi.json",
+    "ADR-*.md",
+    "docs/adr/*.md",
+    "docker-compose.yml",
+    "Dockerfile",
+    ".env.example",
+    "CHANGELOG.md"
+  ],
+  "deep_scan": false,
+  "auto_update": "prompt",
+  "article_sections": [
+    {
+      "name": "Purpose",
+      "description": "What this module/service does and who depends on it",
+      "required": true
+    },
+    {
+      "name": "Architecture",
+      "description": "Key files, structure, entry points"
+    },
+    {
+      "name": "Talks To",
+      "description": "Dependencies, communication patterns, inter-service calls"
+    },
+    {
+      "name": "API Surface",
+      "description": "Endpoints, exported functions, or interfaces exposed"
+    },
+    {
+      "name": "Data",
+      "description": "Tables, collections, queues, caches, state owned"
+    },
+    {
+      "name": "Key Decisions",
+      "description": "Why it was built this way, from ADRs and READMEs"
+    },
+    {
+      "name": "Gotchas",
+      "description": "Known issues, edge cases, failure modes"
+    },
+    {
+      "name": "Sources",
+      "description": "Backlinks to all contributing files",
+      "required": true
+    }
+  ],
+  "link_style": "markdown"
+}
