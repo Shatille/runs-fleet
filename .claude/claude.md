@@ -2,6 +2,10 @@
 
 Self-hosted ephemeral GitHub Actions runners on AWS. Orchestrates spot EC2 instances for workflow jobs.
 
+## Wiki
+
+A compiled codebase wiki lives at `wiki/`. Read `wiki/CONTEXT.md` for navigation, then `wiki/INDEX.md` to find the right topic. Prefer wiki articles over scanning raw files when the section's `[coverage: high]` tag is set; fall back to source for `[coverage: low]` sections or code-level questions. Cross-cutting patterns (locking, backend asymmetry, retry semantics) live in `wiki/concepts/`.
+
 ## Stack
 
 - Go 1.25+ (AWS SDK v2, go-github)
