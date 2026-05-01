@@ -1388,6 +1388,102 @@ func TestClaimJob_DynamoDBError(t *testing.T) {
 	}
 }
 
+// Empty-string string-key attributes (e.g. pool) violate the
+// pool-created-at-index GSI and cause DynamoDB to reject the write.
+// ClaimJob writes a sparse record without a pool, so the marshaled
+// item must omit the attribute entirely rather than serialize "".
+func TestClaimJob_OmitsPoolAttribute(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]types.AttributeValue
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	if err := client.ClaimJob(context.Background(), 12345); err != nil {
+		t.Fatalf("ClaimJob() unexpected error: %v", err)
+	}
+	if _, present := captured["pool"]; present {
+		t.Errorf("ClaimJob() wrote pool attribute, must omit when unset; got: %#v", captured["pool"])
+	}
+}
+
+// SaveJob with a JobRecord that has no Pool set must omit the pool
+// attribute from the marshaled item, matching ClaimJob behavior.
+func TestSaveJob_OmitsEmptyPoolAttribute(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]types.AttributeValue
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveJob(context.Background(), &JobRecord{
+		JobID:        12345,
+		InstanceID:   "i-1234567890abcdef0",
+		InstanceType: "t4g.medium",
+		Pool:         "",
+	})
+	if err != nil {
+		t.Fatalf("SaveJob() unexpected error: %v", err)
+	}
+	if _, present := captured["pool"]; present {
+		t.Errorf("SaveJob() wrote pool attribute for empty Pool, must omit; got: %#v", captured["pool"])
+	}
+}
+
+// Sanity: a non-empty Pool must still be written so the GSI projects
+// the item correctly.
+func TestSaveJob_WritesNonEmptyPoolAttribute(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]types.AttributeValue
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveJob(context.Background(), &JobRecord{
+		JobID:        12345,
+		InstanceID:   "i-1234567890abcdef0",
+		InstanceType: "t4g.medium",
+		Pool:         "default",
+	})
+	if err != nil {
+		t.Fatalf("SaveJob() unexpected error: %v", err)
+	}
+	got, ok := captured["pool"].(*types.AttributeValueMemberS)
+	if !ok {
+		t.Fatalf("SaveJob() pool attribute missing or wrong type: %#v", captured["pool"])
+	}
+	if got.Value != "default" {
+		t.Errorf("SaveJob() pool = %q, want %q", got.Value, "default")
+	}
+}
+
 func TestDeleteJobClaim_Success(t *testing.T) {
 	t.Parallel()
 

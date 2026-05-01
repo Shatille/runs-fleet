@@ -27,7 +27,7 @@ type jobRecord struct {
 	RunID          int64  `dynamodbav:"run_id"`
 	Repo           string `dynamodbav:"repo"`
 	InstanceType   string `dynamodbav:"instance_type"`
-	Pool           string `dynamodbav:"pool"`
+	Pool           string `dynamodbav:"pool,omitempty"`
 	Spot           bool   `dynamodbav:"spot"`
 	RetryCount     int    `dynamodbav:"retry_count"`
 	WarmPoolHit    bool   `dynamodbav:"warm_pool_hit"`
