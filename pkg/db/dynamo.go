@@ -25,11 +25,11 @@ type DynamoDBAPI interface {
 
 // Client provides DynamoDB operations for pool configuration and state.
 type Client struct {
-	dynamoClient       DynamoDBAPI
-	poolsTable         string
-	jobsTable          string
-	jobsPoolStatusGSI    string
-	jobsInstanceIDGSI    string
+	dynamoClient      DynamoDBAPI
+	poolsTable        string
+	jobsTable         string
+	jobsPoolStatusGSI string
+	jobsInstanceIDGSI string
 }
 
 // NewClient creates DynamoDB client for specified pools and jobs tables.

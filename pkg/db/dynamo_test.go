@@ -1606,11 +1606,11 @@ func TestDeletePoolConfig(t *testing.T) {
 	}
 }
 
-// createTwoJobMockScan creates a mock ScanFunc returning two job items for testing.
+// createTwoJobMockQuery creates a mock QueryFunc returning two job items for testing.
 // job1Created/job1Completed are offsets from now for the first job.
 // job2Created is offset for the second job (no completed_at - still running).
-func createTwoJobMockScan(now time.Time, poolName string, job1Created, job1Completed, job2Created time.Duration) func(context.Context, *dynamodb.ScanInput, ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
-	return func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+func createTwoJobMockQuery(now time.Time, poolName string, job1Created, job1Completed, job2Created time.Duration) func(context.Context, *dynamodb.QueryInput, ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	return func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 		item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 			"job_id":       int64(1),
 			"pool":         poolName,
@@ -1623,7 +1623,7 @@ func createTwoJobMockScan(now time.Time, poolName string, job1Created, job1Compl
 			"created_at": now.Add(job2Created).Format(time.RFC3339),
 			// No completed_at - still running
 		})
-		return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+		return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
 	}
 }
 
@@ -1645,7 +1645,7 @@ func TestQueryPoolJobHistory(t *testing.T) {
 			name:     "Success with jobs",
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
-				ScanFunc: createTwoJobMockScan(now, "test-pool", -30*time.Minute, -20*time.Minute, -10*time.Minute),
+				QueryFunc: createTwoJobMockQuery(now, "test-pool", -30*time.Minute, -20*time.Minute, -10*time.Minute),
 			},
 			wantLen: 2,
 			wantErr: false,
@@ -1667,8 +1667,8 @@ func TestQueryPoolJobHistory(t *testing.T) {
 			name:     "Empty Results",
 			poolName: "empty-pool",
 			mockDB: &MockDynamoDBAPI{
-				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
-					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
 				},
 			},
 			wantLen: 0,
@@ -1678,7 +1678,7 @@ func TestQueryPoolJobHistory(t *testing.T) {
 			name:     "DynamoDB Error",
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
-				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 					return nil, errors.New("dynamodb error")
 				},
 			},
@@ -1688,7 +1688,10 @@ func TestQueryPoolJobHistory(t *testing.T) {
 			name:     "Excludes orphaned jobs",
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
-				ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+				QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+					if input.IndexName == nil || *input.IndexName != "pool-created-at-index" {
+						return nil, errors.New("expected GSI name pool-created-at-index")
+					}
 					if input.FilterExpression == nil || !strings.Contains(*input.FilterExpression, "#status <> :orphaned") {
 						return nil, errors.New("filter expression must exclude orphaned jobs")
 					}
@@ -1698,7 +1701,7 @@ func TestQueryPoolJobHistory(t *testing.T) {
 					if _, ok := input.ExpressionAttributeValues[":orphaned"]; !ok {
 						return nil, errors.New("ExpressionAttributeValues must include :orphaned")
 					}
-					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
 				},
 			},
 			wantLen: 0,
@@ -1750,7 +1753,7 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 			mockDB: &MockDynamoDBAPI{
 				// 3 overlapping jobs for only 2 minutes out of 60
 				// Peak is 3, but P90 should be much lower (most samples are 0)
-				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(1),
 						"pool":         "test-pool",
@@ -1769,7 +1772,7 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 						"created_at":   now.Add(-22 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-12 * time.Minute).Format(time.RFC3339),
 					})
-					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2, item3}}, nil
+					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item1, item2, item3}}, nil
 				},
 			},
 			wantP90: 2, // P90 is 2, even though peak is 3
@@ -1780,7 +1783,7 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
 				// 2 jobs running for most of the hour
-				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(1),
 						"pool":         "test-pool",
@@ -1793,7 +1796,7 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 						"created_at":   now.Add(-50 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-10 * time.Minute).Format(time.RFC3339),
 					})
-					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
 				},
 			},
 			wantP90: 2, // Both jobs overlap for 40+ minutes, P90 should be 2
@@ -1803,8 +1806,8 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 			name:     "No jobs returns zero",
 			poolName: "empty-pool",
 			mockDB: &MockDynamoDBAPI{
-				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
-					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{}}, nil
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{}}, nil
 				},
 			},
 			wantP90: 0,
@@ -1814,7 +1817,7 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 			name:     "Non-overlapping jobs",
 			poolName: "test-pool",
 			mockDB: &MockDynamoDBAPI{
-				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(1),
 						"pool":         "test-pool",
@@ -1827,7 +1830,7 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 						"created_at":   now.Add(-20 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
 					})
-					return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
+					return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item1, item2}}, nil
 				},
 			},
 			wantP90: 1, // ~10 minutes of activity at concurrency 1, P90 captures this
@@ -3612,6 +3615,135 @@ func TestGetPoolBusyInstanceIDs_GSIFallbackToScan(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "i-fallback" {
 		t.Errorf("got %v, want [i-fallback]", ids)
+	}
+}
+
+func TestQueryPoolJobHistory_GSIPath(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	queryCalled := false
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			queryCalled = true
+			if input.IndexName == nil || *input.IndexName != "pool-created-at-index" {
+				return nil, errors.New("expected GSI name pool-created-at-index")
+			}
+			if input.KeyConditionExpression == nil ||
+				!strings.Contains(*input.KeyConditionExpression, "#pool = :pool") ||
+				!strings.Contains(*input.KeyConditionExpression, "#created_at >= :since") {
+				return nil, errors.New("expected key condition on pool and created_at")
+			}
+			if input.FilterExpression == nil || !strings.Contains(*input.FilterExpression, "#status <> :orphaned") {
+				return nil, errors.New("filter must exclude orphaned jobs")
+			}
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"job_id":     int64(7),
+				"pool":       "default",
+				"created_at": now.Add(-30 * time.Minute).Format(time.RFC3339),
+			})
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		},
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			t.Error("Scan should not be called when GSI query succeeds")
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mock,
+		jobsTable:    "jobs-table",
+	}
+
+	entries, err := client.QueryPoolJobHistory(context.Background(), "default", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !queryCalled {
+		t.Fatal("Query was not called")
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].JobID != 7 {
+		t.Errorf("got job_id %d, want 7", entries[0].JobID)
+	}
+}
+
+func TestQueryPoolJobHistory_GSIFallbackToScan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	scanCalled := false
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, &smithy.GenericAPIError{Code: "ValidationException", Message: "index not found"}
+		},
+		ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			scanCalled = true
+			if input.FilterExpression == nil || !strings.Contains(*input.FilterExpression, "#status <> :orphaned") {
+				return nil, errors.New("scan fallback must exclude orphaned jobs")
+			}
+			if _, ok := input.ExpressionAttributeValues[":orphaned"]; !ok {
+				return nil, errors.New("scan fallback must bind :orphaned")
+			}
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"job_id":     int64(11),
+				"pool":       "default",
+				"created_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
+			})
+			return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mock,
+		jobsTable:    "jobs-table",
+	}
+
+	entries, err := client.QueryPoolJobHistory(context.Background(), "default", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scanCalled {
+		t.Fatal("Scan was not called as fallback")
+	}
+	if len(entries) != 1 || entries[0].JobID != 11 {
+		t.Errorf("got %v, want one entry with JobID=11", entries)
+	}
+}
+
+func TestQueryPoolJobHistory_GSINonValidationError(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, errors.New("throttling: rate exceeded")
+		},
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			t.Error("Scan should not be called for non-validation GSI errors")
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mock,
+		jobsTable:    "jobs-table",
+	}
+
+	_, err := client.QueryPoolJobHistory(context.Background(), "default", since)
+	if err == nil {
+		t.Fatal("expected error for non-validation GSI failure")
+	}
+	if !strings.Contains(err.Error(), "throttling") {
+		t.Errorf("expected throttling error, got: %v", err)
 	}
 }
 

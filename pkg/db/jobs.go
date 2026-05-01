@@ -405,10 +405,20 @@ func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, er
 	}, nil
 }
 
+// poolCreatedAtIndexName is the GSI on the jobs table keyed by (pool, created_at)
+// used by QueryPoolJobHistory. Provisioned in Terraform.
+const poolCreatedAtIndexName = "pool-created-at-index"
+
 // QueryPoolJobHistory retrieves recent jobs for a pool within the specified time window.
 //
-// Performance note: Uses Scan with filter. Acceptable for current scale (~100 jobs/day).
-// For high-volume deployments, add GSI on (pool, created_at) for efficient queries.
+// Uses Query on the (pool, created_at) GSI for an efficient range scan. Falls back to
+// a filtered table Scan if the GSI is not yet provisioned (DynamoDB returns
+// ValidationException), so a code deploy can land before the matching infra change.
+//
+// Both paths read a single page (DynamoDB's ~1 MB limit). Sufficient for current
+// scale (~100 jobs/day) and a 1-hour window; if a single pool ever sustains tens of
+// thousands of jobs in an hour, p90 concurrency will be computed from a truncated
+// dataset and read under the true value.
 func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since time.Time) ([]JobHistoryEntry, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
@@ -418,8 +428,50 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 		return nil, fmt.Errorf("jobs table not configured")
 	}
 
-	sinceStr := since.Format(time.RFC3339)
+	entries, err := c.queryPoolJobHistoryViaGSI(ctx, poolName, since)
+	if err == nil {
+		return entries, nil
+	}
+	if !isGSIValidationError(err) {
+		return nil, err
+	}
+	dbLog.Warn("GSI query failed, falling back to scan",
+		"gsi", poolCreatedAtIndexName,
+		"error", err,
+	)
 
+	return c.queryPoolJobHistoryViaScan(ctx, poolName, since)
+}
+
+func (c *Client) queryPoolJobHistoryViaGSI(ctx context.Context, poolName string, since time.Time) ([]JobHistoryEntry, error) {
+	sinceStr := since.Format(time.RFC3339)
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(c.jobsTable),
+		IndexName:              aws.String(poolCreatedAtIndexName),
+		KeyConditionExpression: aws.String("#pool = :pool AND #created_at >= :since"),
+		FilterExpression:       aws.String("#status <> :orphaned"),
+		ExpressionAttributeNames: map[string]string{
+			"#pool":       "pool",
+			"#created_at": "created_at",
+			"#status":     "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pool":     &types.AttributeValueMemberS{Value: poolName},
+			":since":    &types.AttributeValueMemberS{Value: sinceStr},
+			":orphaned": &types.AttributeValueMemberS{Value: string(JobStatusOrphaned)},
+		},
+	}
+
+	output, err := c.dynamoClient.Query(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query GSI: %w", err)
+	}
+
+	return parseJobHistoryItems(output.Items), nil
+}
+
+func (c *Client) queryPoolJobHistoryViaScan(ctx context.Context, poolName string, since time.Time) ([]JobHistoryEntry, error) {
+	sinceStr := since.Format(time.RFC3339)
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
 		FilterExpression: aws.String("#pool = :pool AND created_at >= :since AND #status <> :orphaned"),
@@ -439,8 +491,12 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 		return nil, fmt.Errorf("failed to scan jobs: %w", err)
 	}
 
+	return parseJobHistoryItems(output.Items), nil
+}
+
+func parseJobHistoryItems(items []map[string]types.AttributeValue) []JobHistoryEntry {
 	var entries []JobHistoryEntry
-	for _, item := range output.Items {
+	for _, item := range items {
 		var record struct {
 			JobID       int64  `dynamodbav:"job_id"`
 			Pool        string `dynamodbav:"pool"`
@@ -470,7 +526,7 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 		entries = append(entries, entry)
 	}
 
-	return entries, nil
+	return entries
 }
 
 // GetPoolP90Concurrency calculates the 90th percentile of concurrent jobs
