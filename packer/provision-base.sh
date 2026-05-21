@@ -15,6 +15,7 @@ echo "==> Detected architecture: ${ARCH} (Docker: ${DOCKER_ARCH})"
 echo "==> Installing base packages"
 sudo dnf install -y \
   git \
+  git-lfs \
   tar \
   jq \
   make \
@@ -24,6 +25,9 @@ sudo dnf install -y \
   docker \
   amazon-ssm-agent \
   amazon-cloudwatch-agent
+
+echo "==> Installing git-lfs system-wide hooks"
+sudo git lfs install --system
 
 # Gold linker only needed for ARM64 (Go race detector compatibility)
 if [ "$ARCH" = "aarch64" ]; then
@@ -243,6 +247,7 @@ echo "    - Node.js: $(node --version)"
 echo "    - npm: $(npm --version)"
 echo "    - yarn: $(yarn --version)"
 echo "    - pnpm: $(pnpm --version)"
+echo "    - git-lfs: $(git lfs version)"
 echo "    - QEMU binfmt: enabled at boot"
 echo "    - Docker buildx: multi-arch builder configured"
 echo "    - SSM Agent: enabled"
