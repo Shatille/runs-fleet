@@ -1,0 +1,17 @@
+.git
+.direnv
+.envrc
+wiki
+**/node_modules
+**/.next
+**/out
+**/.cache
+**/dist
+*.log
+*.tar
+*.tar.gz
+runner-image.tar
+AGENTS.md
+README.md
+CLAUDE.md
+docs
