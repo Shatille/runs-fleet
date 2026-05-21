@@ -82,7 +82,7 @@ RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
 # Download and install GitHub Actions runner
-ARG RUNNER_VERSION=2.331.0
+ARG RUNNER_VERSION=2.334.0
 RUN set -ex \
     && case "${TARGETARCH}" in \
          "amd64") RUNNER_ARCH="x64" ;; \
