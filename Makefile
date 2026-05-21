@@ -1,4 +1,4 @@
-.PHONY: init build test coverage lint clean docker-build docker-push docker-build-runner docker-push-runner build-admin-ui
+.PHONY: init build test coverage lint clean docker-build docker-push docker-build-runner docker-push-runner build-admin-ui scan-runner sbom-runner
 
 # Variables
 BINARY_SERVER=bin/runs-fleet-server
@@ -74,13 +74,13 @@ docker-push: docker-build
 # Build runner Docker image
 RUNNER_IMAGE?=runs-fleet-runner
 RUNNER_TAG?=latest
-RUNNER_VERSION?=2.330.0
+RUNNER_BASE_TAG?=2.334.0
 
 # Build runner image for local architecture only (for testing)
 docker-build-runner:
 	@echo "Building runner Docker image (local arch)..."
 	$(CONTAINER_CLI) build \
-		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg RUNNER_BASE_TAG=$(RUNNER_BASE_TAG) \
 		--build-arg VERSION=$(RUNNER_TAG) \
 		-f docker/runner/Dockerfile \
 		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
@@ -104,7 +104,7 @@ docker-push-runner:
 _build-runner-amd64:
 	$(CONTAINER_CLI) buildx build \
 		--platform linux/amd64 \
-		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg RUNNER_BASE_TAG=$(RUNNER_BASE_TAG) \
 		--build-arg VERSION=$(RUNNER_TAG) \
 		-f docker/runner/Dockerfile \
 		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-amd64 \
@@ -114,13 +114,47 @@ _build-runner-amd64:
 _build-runner-arm64:
 	$(CONTAINER_CLI) buildx build \
 		--platform linux/arm64 \
-		--build-arg RUNNER_VERSION=$(RUNNER_VERSION) \
+		--build-arg RUNNER_BASE_TAG=$(RUNNER_BASE_TAG) \
 		--build-arg VERSION=$(RUNNER_TAG) \
 		-f docker/runner/Dockerfile \
 		-t $(ECR_REGISTRY)/$(RUNNER_IMAGE):$(RUNNER_TAG)-arm64 \
 		--push \
 		.
 
+
+# Scan the runner image with Trivy via container so no host install is needed.
+# Saves the image to a tarball under bin/ and runs Trivy against it. HIGH/CRITICAL
+# only by default; override SEVERITY=HIGH,CRITICAL,MEDIUM,LOW for a full report.
+TRIVY_IMAGE?=aquasec/trivy:0.70.0
+RUNNER_TAR=bin/runs-fleet-runner.tar
+
+scan-runner: docker-build-runner
+	@mkdir -p bin
+	@echo "Saving image to $(RUNNER_TAR)..."
+	$(CONTAINER_CLI) save $(RUNNER_IMAGE):$(RUNNER_TAG) -o $(RUNNER_TAR)
+	@echo "Scanning with Trivy via $(TRIVY_IMAGE) using .trivy/trivy.yaml + VEX..."
+	$(CONTAINER_CLI) run --rm \
+		-v $(PWD)/bin:/work:ro \
+		-v $(PWD)/.trivy:/trivy:ro \
+		$(TRIVY_IMAGE) image \
+			--config /trivy/trivy.yaml \
+			--vex /trivy/vex.json \
+			--ignore-unfixed \
+			--exit-code 1 \
+			--no-progress \
+			--input /work/runs-fleet-runner.tar
+
+# Generate a CycloneDX SBOM for the runner image. Output: bin/runs-fleet-runner.sbom.json
+sbom-runner: docker-build-runner
+	@mkdir -p bin
+	@echo "Saving image to $(RUNNER_TAR)..."
+	$(CONTAINER_CLI) save $(RUNNER_IMAGE):$(RUNNER_TAG) -o $(RUNNER_TAR)
+	@echo "Generating CycloneDX SBOM via $(TRIVY_IMAGE)..."
+	$(CONTAINER_CLI) run --rm -v $(PWD)/bin:/work $(TRIVY_IMAGE) image \
+		--format cyclonedx --no-progress \
+		--input /work/runs-fleet-runner.tar \
+		-o /work/runs-fleet-runner.sbom.json
+	@echo "SBOM written to bin/runs-fleet-runner.sbom.json"
 
 # Run server locally
 run-server:
@@ -156,6 +190,8 @@ help:
 	@echo "  docker-push             - Build and push orchestrator image to ECR"
 	@echo "  docker-build-runner     - Build runner Docker image (local arch)"
 	@echo "  docker-push-runner      - Build and push runner image to ECR (multi-arch)"
+	@echo "  scan-runner             - Build + Trivy scan the runner image (HIGH/CRITICAL)"
+	@echo "  sbom-runner             - Build + generate CycloneDX SBOM for the runner image"
 	@echo "  run-server              - Run server locally"
 	@echo "  deps                    - Update dependencies"
 	@echo "  ci                      - Run full CI pipeline"

@@ -6,6 +6,10 @@ Self-hosted ephemeral GitHub Actions runners on AWS. Orchestrates spot EC2 insta
 
 A compiled codebase wiki lives at `wiki/`. Read `wiki/CONTEXT.md` for navigation, then `wiki/INDEX.md` to find the right topic. Prefer wiki articles over scanning raw files when the section's `[coverage: high]` tag is set; fall back to source for `[coverage: low]` sections or code-level questions. Cross-cutting patterns (locking, backend asymmetry, retry semantics) live in `wiki/concepts/`.
 
+## Runner image
+
+The runner container at `docker/runner/` has specific patterns for keeping the Trivy CVE footprint low. **Before adding packages, building from source, patching CVEs, or touching anything in that directory, read `docker/runner/CLAUDE.md` — it covers the base-image policy, package-install order of preference, VEX vs `.trivyignore`, and verification workflow.** Run `make scan-runner` locally before pushing; CI has a Trivy gate that blocks merge.
+
 ## Stack
 
 - Go 1.25+ (AWS SDK v2, go-github)

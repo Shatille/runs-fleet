@@ -61,7 +61,12 @@ nix build .#agent-arm64
 
 # Test
 make test && make lint
+
+# Scan the runner image for CVEs (matches CI Trivy gate)
+make scan-runner
 ```
+
+Changes to the runner image (`docker/runner/`) follow conventions documented in `docker/runner/CLAUDE.md` — base-image policy, package-install preferences, and OpenVEX usage for upstream-blocked CVEs.
 
 ## License
 

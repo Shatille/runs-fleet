@@ -1,0 +1,52 @@
+{
+  "_note": "PURLs below are pinned to docker/docker@v28.5.2 — the version currently vendored by docker-buildx-plugin and docker-compose-plugin. When those plugins bump their vendored docker/docker, this file must be reviewed: if they bump past the CVE fixes the entries can be removed; if they stay on a still-vulnerable version the PURLs must be updated.",
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/Shatille/runs-fleet/.trivy/vex.json",
+  "author": "runs-fleet maintainers",
+  "timestamp": "2026-05-21T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-34040",
+        "description": "Docker authorization bypass via plugin disabling. Affects dockerd authorization handler."
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Present in docker-buildx-plugin and docker-compose-plugin as vendored library code only. Both binaries are Docker API clients; they do not run dockerd or its authorization handler. The vulnerable code path is dead code in the client binaries. The actual daemon (docker-ce) on this image is at 29.5.2 which contains the fix."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-41567",
+        "description": "PUT /containers/{id}/archive executes container binary on the host. Daemon-side archive handler."
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Vendored in docker-buildx-plugin and docker-compose-plugin client binaries. Neither binary serves the /containers/{id}/archive endpoint; only dockerd does. Vulnerable handler code is unreachable from these binaries."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-42306",
+        "description": "Race condition in docker cp allows bind mount redirection to host. Daemon-side cp handler."
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/docker/docker@v28.5.2+incompatible"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Vendored in docker-buildx-plugin and docker-compose-plugin client binaries. The race condition is in the daemon's cp implementation. Plugins talk to the daemon over the API; they do not execute the vulnerable cp handler themselves."
+    }
+  ]
+}

@@ -1,10 +1,10 @@
 # runs-fleet runner image
-# Contains GitHub Actions runner + runs-fleet agent
-# Multi-arch: supports amd64 and arm64
+# Built on the official GitHub Actions runner image. Multi-arch (amd64/arm64).
 
 ARG TARGETARCH
+ARG RUNNER_BASE_TAG=2.334.0
 
-# Stage 1: Build agent binary
+# Stage 1: Build the runs-fleet agent binary
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
@@ -19,191 +19,84 @@ RUN go mod download
 
 COPY . .
 
-# Build agent for target architecture
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-agent ./cmd/agent
 
-# Stage 1b: Build Docker CLI from source (separate stage to avoid go.mod conflicts)
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS docker-builder
+# Stage 2: Official GitHub Actions runner base
+# Provides: actions-runner at /home/runner, Node.js externals, sudo, common
+# workflow tooling. Docker tooling is replaced below with apt-managed packages
+# so future security updates land via `apt-get upgrade` instead of requiring
+# image rebuilds against frozen upstream binaries.
+FROM ghcr.io/actions/actions-runner:${RUNNER_BASE_TAG}
 
-ARG TARGETARCH
-ARG DOCKER_CLI_VERSION=v27.5.1
-
-RUN apk add --no-cache git
-RUN git clone --depth 1 --branch ${DOCKER_CLI_VERSION} https://github.com/docker/cli.git /docker-cli
-
-WORKDIR /docker-cli
-
-# Docker CLI uses vendor.mod/vendor.sum; patch vendored x/crypto CVEs before build
-RUN cp vendor.mod go.mod && cp vendor.sum go.sum \
-    && go get golang.org/x/crypto@v0.35.0 \
-    && go mod vendor
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -mod=vendor \
-    -trimpath -ldflags "-s -w" \
-    -o /bin/docker ./cmd/docker
-
-# Stage 2: Runner image
-FROM ubuntu:24.04
-
-ARG TARGETARCH
+USER root
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV RUNNER_ALLOW_RUNASROOT=1
 
-WORKDIR /home/runner
-
-# Install dependencies and apply security updates
-# NOTE: upgrade runs AFTER install to patch newly-installed packages (e.g., gnupg CVEs)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    git \
-    jq \
-    sudo \
-    unzip \
-    wget \
-    zip \
-    gnupg \
-    lsb-release \
-    software-properties-common \
-    && apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/*
-
-# Docker CLI built from source (controls Go version for CVE-2025-68121 fix)
-COPY --from=docker-builder /bin/docker /usr/local/bin/docker
-
-# Create runner user with restricted sudo (apt only for workflow package installs)
-# SECURITY NOTE: Sudo access is intentional to support workflows needing build deps.
-# - Restricted from NOPASSWD:ALL (GitHub default) to apt-only commands
-# - Ephemeral containers mitigate persistence risk
-# - High-security deployments: consider restricting apt sources or using allowlisted packages
-RUN useradd -m -s /bin/bash runner \
-    && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
-
-# Download and install GitHub Actions runner
-ARG RUNNER_VERSION=2.334.0
-RUN set -ex \
-    && case "${TARGETARCH}" in \
-         "amd64") RUNNER_ARCH="x64" ;; \
-         "arm64") RUNNER_ARCH="arm64" ;; \
-         *) echo "ERROR: Unsupported architecture: ${TARGETARCH}" >&2 && exit 1 ;; \
-       esac \
-    && RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
-    && echo "Downloading: ${RUNNER_URL}" \
-    && curl -fsSL --retry 3 --retry-delay 5 -o actions-runner.tar.gz "${RUNNER_URL}" \
-    && tar xzf actions-runner.tar.gz \
-    && rm actions-runner.tar.gz \
-    && ./bin/installdependencies.sh \
-    && chown -R runner:runner /home/runner
-
-# Final security update for all installed packages (CVE-2025-15467: OpenSSL stack buffer overflow)
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
-
-# Patch node-tar CVEs (CVE-2026-23950, CVE-2026-24842): Update vulnerable package in runner's bundled Node.js
-# Note: This patches the JavaScript tar package (node-tar), not GNU tar (system binary)
-# SHA512 from https://registry.npmjs.org/tar/7.5.7 (.dist.integrity)
+# Remove the upstream-bundled Docker tooling (manually installed by the runner
+# image; not apt-tracked, so it never gets security updates). We reinstall from
+# Docker's official apt repo below.
 RUN set -ex; \
-    TAR_INTEGRITY="sha512-fov56fJiRuThVFXD6o6/Q354S7pnWMJIVlDBYijsTNx6jKSE4pvrDTs6lUnmGvNyfJwFQQwWy3owKz1ucIhveQ=="; \
-    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/tar/-/tar-7.5.7.tgz -o /tmp/tar-7.5.7.tgz; \
-    ACTUAL=$(openssl dgst -sha512 -binary /tmp/tar-7.5.7.tgz | base64 -w0); \
-    EXPECTED=$(echo "$TAR_INTEGRITY" | sed 's/^sha512-//'); \
-    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
-    echo 0 > /tmp/patched_count; \
-    rm -f /tmp/patch_errors; \
-    find /home/runner/externals -type d -name "tar" -path "*/node_modules/*" -exec sh -c 'set -e; \
-        for pkg_dir; do \
-            if [ -f "$pkg_dir/package.json" ]; then \
-                rm -rf "$pkg_dir"; \
-                mkdir -p "$pkg_dir"; \
-                tar -xzf /tmp/tar-7.5.7.tgz -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
-                COUNT=$(cat /tmp/patched_count); \
-                echo $((COUNT + 1)) > /tmp/patched_count; \
-            fi; \
-        done' _ {} +; \
-    if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
-    PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
-    rm -f /tmp/tar-7.5.7.tgz /tmp/patched_count /tmp/patch_errors; \
-    echo "Patched $PATCHED node-tar package(s)"; \
-    if [ "$PATCHED" -eq 0 ]; then echo "ERROR: No tar packages found - node-tar CVEs unpatched" >&2; exit 1; fi
+    rm -f /usr/bin/docker /usr/bin/dockerd /usr/bin/docker-proxy \
+          /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/ctr \
+          /usr/bin/runc; \
+    rm -rf /usr/local/lib/docker /usr/libexec/docker
 
-# Patch @isaacs/brace-expansion CVE-2026-25547: Uncontrolled Resource Consumption
-# SHA512 from https://registry.npmjs.org/@isaacs/brace-expansion/5.0.1 (.dist.integrity)
+# Install Docker tooling from Docker's official apt repo so it tracks the
+# upstream release cadence (and stdlib refreshes) automatically.
 RUN set -ex; \
-    PKG_INTEGRITY="sha512-WMz71T1JS624nWj2n2fnYAuPovhv7EUhk69R6i9dsVyzxt5eM3bjwvgk9L+APE1TRscGysAVMANkB0jh0LQZrQ=="; \
-    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/@isaacs/brace-expansion/-/brace-expansion-5.0.1.tgz -o /tmp/brace-expansion-5.0.1.tgz; \
-    ACTUAL=$(openssl dgst -sha512 -binary /tmp/brace-expansion-5.0.1.tgz | base64 -w0); \
-    EXPECTED=$(echo "$PKG_INTEGRITY" | sed 's/^sha512-//'); \
-    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: SHA512 mismatch" >&2; exit 1; fi; \
-    echo 0 > /tmp/patched_count; \
-    rm -f /tmp/patch_errors; \
-    find /home/runner/externals -type d -name "brace-expansion" -path "*/node_modules/@isaacs/*" -exec sh -c 'set -e; \
-        for pkg_dir; do \
-            if [ -f "$pkg_dir/package.json" ]; then \
-                rm -rf "$pkg_dir"; \
-                mkdir -p "$pkg_dir"; \
-                tar -xzf /tmp/brace-expansion-5.0.1.tgz -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
-                COUNT=$(cat /tmp/patched_count); \
-                echo $((COUNT + 1)) > /tmp/patched_count; \
-            fi; \
-        done' _ {} +; \
-    if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
-    PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
-    rm -f /tmp/brace-expansion-5.0.1.tgz /tmp/patched_count /tmp/patch_errors; \
-    echo "Patched $PATCHED @isaacs/brace-expansion package(s)"; \
-    if [ "$PATCHED" -eq 0 ]; then echo "WARNING: No @isaacs/brace-expansion packages found" >&2; fi
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    install -m 0755 -d /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc; \
+    chmod a+r /etc/apt/keyrings/docker.asc; \
+    . /etc/os-release; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin; \
+    apt-get upgrade -y; \
+    rm -rf /var/lib/apt/lists/*
 
-# Patch minimatch CVE-2026-27903 / CVE-2026-27904: ReDoS via catastrophic backtracking
-# Replaces vulnerable minimatch 9.x with 9.0.9 and 10.x with 10.2.5
-# SHA512s from https://registry.npmjs.org/minimatch (.dist.integrity)
-RUN set -ex; \
-    MM9_INTEGRITY="sha512-OBwBN9AL4dqmETlpS2zasx+vTeWclWzkblfZk7KTA5j3jeOONz/tRCnZomUyvNg83wL5Zv9Ss6HMJXAgL8R2Yg=="; \
-    MM10_INTEGRITY="sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg=="; \
-    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/minimatch/-/minimatch-9.0.9.tgz -o /tmp/minimatch-9.tgz; \
-    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/minimatch/-/minimatch-10.2.5.tgz -o /tmp/minimatch-10.tgz; \
-    EXPECTED=$(echo "$MM9_INTEGRITY" | sed 's/^sha512-//'); \
-    ACTUAL=$(openssl dgst -sha512 -binary /tmp/minimatch-9.tgz | base64 -w0); \
-    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: minimatch 9 SHA512 mismatch" >&2; exit 1; fi; \
-    EXPECTED=$(echo "$MM10_INTEGRITY" | sed 's/^sha512-//'); \
-    ACTUAL=$(openssl dgst -sha512 -binary /tmp/minimatch-10.tgz | base64 -w0); \
-    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: minimatch 10 SHA512 mismatch" >&2; exit 1; fi; \
-    echo 0 > /tmp/patched_count; \
-    rm -f /tmp/patch_errors; \
-    find /home/runner/externals -type d -name "minimatch" -path "*/node_modules/*" -exec sh -c 'set -e; \
-        for pkg_dir; do \
-            if [ ! -f "$pkg_dir/package.json" ]; then continue; fi; \
-            MAJOR=$(sed -n "s/.*\"version\"[[:space:]]*:[[:space:]]*\"\\([0-9]\\+\\)\\..*/\\1/p" "$pkg_dir/package.json" | head -1); \
-            case "$MAJOR" in \
-                10) TARBALL=/tmp/minimatch-10.tgz ;; \
-                9)  TARBALL=/tmp/minimatch-9.tgz ;; \
-                *)  continue ;; \
-            esac; \
-            rm -rf "$pkg_dir"; \
-            mkdir -p "$pkg_dir"; \
-            tar -xzf "$TARBALL" -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
-            COUNT=$(cat /tmp/patched_count); \
-            echo $((COUNT + 1)) > /tmp/patched_count; \
-        done' _ {} +; \
-    if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
-    PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
-    rm -f /tmp/minimatch-9.tgz /tmp/minimatch-10.tgz /tmp/patched_count /tmp/patch_errors; \
-    echo "Patched $PATCHED minimatch package(s)"; \
-    if [ "$PATCHED" -eq 0 ]; then echo "WARNING: No vulnerable minimatch packages found" >&2; fi
+# Drop the Node.js 20 distribution. GitHub deprecated Node 20 actions on 2025-09-19;
+# forced cutover to Node 24 lands on 2026-06-02 and Node 20 leaves the runner on
+# 2026-09-16. The ENV below redirects all `runs.using: node20` actions to node24
+# via GitHub's official transition flag, so the bundled node20 tree (and its npm
+# CVE surface) can go now. Workflows needing Node 20 specifically should use
+# actions/setup-node@v5 to install their own.
+ENV FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true
+RUN rm -rf /home/runner/externals/node20
 
-# Copy agent binary
+# Refresh the bundled npm to the latest release so its transitive node_modules
+# (tar, minimatch, glob, picomatch, ...) come from the current npm tree rather
+# than whatever was frozen when the runner image was built. npm self-upgrade
+# handles integrity verification — no version pins or hashes maintained here.
+RUN /home/runner/externals/node24/bin/node \
+        /home/runner/externals/node24/lib/node_modules/npm/bin/npm-cli.js \
+        install -g npm@latest
+
+# Pre-create /opt/actions-runner so the agent's fallback download path is writable
+RUN mkdir -p /opt/actions-runner && chown runner:runner /opt/actions-runner
+
+# Tighten sudo: base image grants %sudo NOPASSWD:ALL; restrict to apt for workflow
+# package installs only. Ephemeral containers mitigate residual risk.
+RUN printf 'runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt\n' \
+    > /etc/sudoers.d/runner-restricted \
+    && chmod 0440 /etc/sudoers.d/runner-restricted \
+    && sed -i 's|^%sudo.*NOPASSWD:ALL.*|%sudo ALL=(ALL:ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt|' /etc/sudoers
+
 COPY --from=builder /bin/runs-fleet-agent /usr/local/bin/runs-fleet-agent
 RUN chmod +x /usr/local/bin/runs-fleet-agent
 
-# Copy entrypoint script
 COPY docker/runner/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-
-# Set ownership
-RUN chown -R runner:runner /home/runner
-
-# Pre-create the actions-runner directory that the agent will use at runtime
-# The agent downloads/extracts to /opt/actions-runner, so runner user needs write access
-RUN mkdir -p /opt/actions-runner && chown runner:runner /opt/actions-runner
 
 USER runner
 
