@@ -28,6 +28,7 @@ permissions:
 env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
+  RUNNER_BASE_TAG: ${{ vars.RUNNER_BASE_TAG || '2.334.0' }}
 
 jobs:
   # Check if runner-related files changed since last tag
@@ -152,6 +153,7 @@ jobs:
           tags: ${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
+            RUNNER_BASE_TAG=${{ env.RUNNER_BASE_TAG }}
           cache-from: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }}
           cache-to: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
           provenance: false
@@ -214,17 +216,26 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Pull image and save to tarball
+        env:
+          IMAGE_REF: "${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-unverified"
+        run: |
+          docker pull "${IMAGE_REF}"
+          docker save "${IMAGE_REF}" -o runner-image.tar
+
       - name: Scan image for vulnerabilities
         id: scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.prepare.outputs.version }}-unverified"
-          format: "table"
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: "os,library"
-          severity: "CRITICAL,HIGH"
-          trivyignores: "docker/runner/.trivyignore"
+        run: |
+          docker run --rm \
+            -v "${PWD}:/work:ro" \
+            -v "${PWD}/.trivy:/trivy:ro" \
+            aquasec/trivy:0.70.0 image \
+              --config /trivy/trivy.yaml \
+              --vex /trivy/vex.json \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --no-progress \
+              --input /work/runner-image.tar
 
       - name: Delete images on scan failure
         if: failure() && steps.scan.outcome == 'failure'
