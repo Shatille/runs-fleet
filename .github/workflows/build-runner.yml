@@ -2,8 +2,16 @@ name: Build Runner Image
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
+    paths:
+      - "docker/runner/**"
+      - "cmd/agent/**"
+      - "pkg/agent/**"
+      - ".trivy/**"
+      - ".github/workflows/build-runner.yml"
   workflow_dispatch:
     inputs:
       tag:
