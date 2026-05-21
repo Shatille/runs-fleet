@@ -57,7 +57,6 @@ type Config struct {
 
 	// EC2-specific configuration
 	VPCID              string
-	PublicSubnetIDs    []string
 	PrivateSubnetIDs   []string
 	SecurityGroupID    string
 	InstanceProfileARN string
@@ -191,7 +190,6 @@ func Load() (*Config, error) {
 
 		// EC2-specific
 		VPCID:              getEnv("RUNS_FLEET_VPC_ID", ""),
-		PublicSubnetIDs:    splitAndFilter(getEnv("RUNS_FLEET_PUBLIC_SUBNET_IDS", "")),
 		PrivateSubnetIDs:   splitAndFilter(getEnv("RUNS_FLEET_PRIVATE_SUBNET_IDS", "")),
 		SecurityGroupID:    getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
 		InstanceProfileARN: getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
@@ -387,8 +385,8 @@ func (c *Config) validateEC2Config() error {
 	if c.InstanceProfileARN == "" {
 		return fmt.Errorf("RUNS_FLEET_INSTANCE_PROFILE_ARN is required for EC2 backend")
 	}
-	if len(c.PublicSubnetIDs) == 0 && len(c.PrivateSubnetIDs) == 0 {
-		return fmt.Errorf("at least one of RUNS_FLEET_PUBLIC_SUBNET_IDS or RUNS_FLEET_PRIVATE_SUBNET_IDS is required for EC2 backend")
+	if len(c.PrivateSubnetIDs) == 0 {
+		return fmt.Errorf("RUNS_FLEET_PRIVATE_SUBNET_IDS is required for EC2 backend")
 	}
 	if c.RunnerImage == "" {
 		return fmt.Errorf("RUNS_FLEET_RUNNER_IMAGE is required for EC2 backend")

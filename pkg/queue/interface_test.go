@@ -44,8 +44,6 @@ func TestJobMessage_Fields(t *testing.T) {
 		OriginalLabel: "runs-on: self-hosted",
 		RetryCount:    2,
 		ForceOnDemand: true,
-		Region:        "us-east-1",
-		Environment:   "production",
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
@@ -78,12 +76,6 @@ func TestJobMessage_Fields(t *testing.T) {
 	}
 	if !job.ForceOnDemand {
 		t.Error("JobMessage.ForceOnDemand = false, want true")
-	}
-	if job.Region != "us-east-1" {
-		t.Errorf("JobMessage.Region = %q, want %q", job.Region, "us-east-1")
-	}
-	if job.Environment != "production" {
-		t.Errorf("JobMessage.Environment = %q, want %q", job.Environment, "production")
 	}
 	if job.OS != "linux" {
 		t.Errorf("JobMessage.OS = %q, want %q", job.OS, "linux")

@@ -294,8 +294,6 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 		OriginalLabel: "self-hosted",
 		RetryCount:    2,
 		ForceOnDemand: true,
-		Region:        "us-east-1",
-		Environment:   "production",
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"m6g.large", "m6g.xlarge"},
@@ -339,12 +337,6 @@ func TestValkeyClient_SendMessage_JobMessageFields(t *testing.T) {
 	}
 	if decoded.ForceOnDemand != job.ForceOnDemand {
 		t.Errorf("ForceOnDemand mismatch")
-	}
-	if decoded.Region != job.Region {
-		t.Errorf("Region mismatch")
-	}
-	if decoded.Environment != job.Environment {
-		t.Errorf("Environment mismatch")
 	}
 	if decoded.OS != job.OS {
 		t.Errorf("OS mismatch")
@@ -958,8 +950,6 @@ func TestValkeyClient_Integration_MessageBody(t *testing.T) {
 		OriginalLabel: "self-hosted",
 		RetryCount:    3,
 		ForceOnDemand: true,
-		Region:        "us-west-2",
-		Environment:   "staging",
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"c6g.xlarge", "c6g.2xlarge"},

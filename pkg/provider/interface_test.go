@@ -141,8 +141,6 @@ func TestRunnerSpec_AllFields(t *testing.T) {
 		Pool:          "default",
 		OS:            "linux",
 		Arch:          "arm64",
-		Environment:   "production",
-		Region:        "us-east-1",
 		ForceOnDemand: false,
 		RetryCount:    1,
 		SubnetID:      "subnet-123",

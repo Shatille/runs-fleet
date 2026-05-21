@@ -149,20 +149,13 @@ func (m *Manager) SetEC2Client(ec2Client EC2API) {
 	m.ec2Client = ec2Client
 }
 
-// selectSubnet returns the next subnet ID in round-robin fashion,
-// prioritizing private subnets to avoid public IPv4 costs.
+// selectSubnet returns the next private subnet ID in round-robin fashion.
 func (m *Manager) selectSubnet() string {
-	var subnets []string
-	if len(m.config.PrivateSubnetIDs) > 0 {
-		subnets = m.config.PrivateSubnetIDs
-	} else {
-		subnets = m.config.PublicSubnetIDs
-	}
-	if len(subnets) == 0 {
+	if len(m.config.PrivateSubnetIDs) == 0 {
 		return ""
 	}
 	idx := atomic.AddUint64(&m.subnetIndex, 1) - 1
-	return subnets[idx%uint64(len(subnets))]
+	return m.config.PrivateSubnetIDs[idx%uint64(len(m.config.PrivateSubnetIDs))]
 }
 
 // ReconcileLoop runs periodically to maintain pool size.
