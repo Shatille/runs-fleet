@@ -82,7 +82,7 @@ RUN useradd -m -s /bin/bash runner \
     && echo "runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt" >> /etc/sudoers
 
 # Download and install GitHub Actions runner
-ARG RUNNER_VERSION=2.331.0
+ARG RUNNER_VERSION=2.334.0
 RUN set -ex \
     && case "${TARGETARCH}" in \
          "amd64") RUNNER_ARCH="x64" ;; \
@@ -152,6 +152,43 @@ RUN set -ex; \
     rm -f /tmp/brace-expansion-5.0.1.tgz /tmp/patched_count /tmp/patch_errors; \
     echo "Patched $PATCHED @isaacs/brace-expansion package(s)"; \
     if [ "$PATCHED" -eq 0 ]; then echo "WARNING: No @isaacs/brace-expansion packages found" >&2; fi
+
+# Patch minimatch CVE-2026-27903 / CVE-2026-27904: ReDoS via catastrophic backtracking
+# Replaces vulnerable minimatch 9.x with 9.0.9 and 10.x with 10.2.5
+# SHA512s from https://registry.npmjs.org/minimatch (.dist.integrity)
+RUN set -ex; \
+    MM9_INTEGRITY="sha512-OBwBN9AL4dqmETlpS2zasx+vTeWclWzkblfZk7KTA5j3jeOONz/tRCnZomUyvNg83wL5Zv9Ss6HMJXAgL8R2Yg=="; \
+    MM10_INTEGRITY="sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg=="; \
+    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/minimatch/-/minimatch-9.0.9.tgz -o /tmp/minimatch-9.tgz; \
+    curl --proto '=https' --tlsv1.2 -fsSL https://registry.npmjs.org/minimatch/-/minimatch-10.2.5.tgz -o /tmp/minimatch-10.tgz; \
+    EXPECTED=$(echo "$MM9_INTEGRITY" | sed 's/^sha512-//'); \
+    ACTUAL=$(openssl dgst -sha512 -binary /tmp/minimatch-9.tgz | base64 -w0); \
+    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: minimatch 9 SHA512 mismatch" >&2; exit 1; fi; \
+    EXPECTED=$(echo "$MM10_INTEGRITY" | sed 's/^sha512-//'); \
+    ACTUAL=$(openssl dgst -sha512 -binary /tmp/minimatch-10.tgz | base64 -w0); \
+    if [ "$ACTUAL" != "$EXPECTED" ]; then echo "ERROR: minimatch 10 SHA512 mismatch" >&2; exit 1; fi; \
+    echo 0 > /tmp/patched_count; \
+    rm -f /tmp/patch_errors; \
+    find /home/runner/externals -type d -name "minimatch" -path "*/node_modules/*" -exec sh -c 'set -e; \
+        for pkg_dir; do \
+            if [ ! -f "$pkg_dir/package.json" ]; then continue; fi; \
+            MAJOR=$(sed -n "s/.*\"version\"[[:space:]]*:[[:space:]]*\"\\([0-9]\\+\\)\\..*/\\1/p" "$pkg_dir/package.json" | head -1); \
+            case "$MAJOR" in \
+                10) TARBALL=/tmp/minimatch-10.tgz ;; \
+                9)  TARBALL=/tmp/minimatch-9.tgz ;; \
+                *)  continue ;; \
+            esac; \
+            rm -rf "$pkg_dir"; \
+            mkdir -p "$pkg_dir"; \
+            tar -xzf "$TARBALL" -C "$pkg_dir" --strip-components=1 || { echo "FAILED: $pkg_dir" >> /tmp/patch_errors; exit 1; }; \
+            COUNT=$(cat /tmp/patched_count); \
+            echo $((COUNT + 1)) > /tmp/patched_count; \
+        done' _ {} +; \
+    if [ -f /tmp/patch_errors ]; then echo "ERROR: Patch extraction failed" >&2; cat /tmp/patch_errors >&2; exit 1; fi; \
+    PATCHED=$(cat /tmp/patched_count 2>/dev/null || echo 0); \
+    rm -f /tmp/minimatch-9.tgz /tmp/minimatch-10.tgz /tmp/patched_count /tmp/patch_errors; \
+    echo "Patched $PATCHED minimatch package(s)"; \
+    if [ "$PATCHED" -eq 0 ]; then echo "WARNING: No vulnerable minimatch packages found" >&2; fi
 
 # Copy agent binary
 COPY --from=builder /bin/runs-fleet-agent /usr/local/bin/runs-fleet-agent
