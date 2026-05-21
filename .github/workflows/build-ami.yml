@@ -15,6 +15,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: build-ami-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   AWS_REGION: ap-northeast-1
 

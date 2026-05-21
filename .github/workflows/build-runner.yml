@@ -25,6 +25,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: build-runner-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   AWS_REGION: ap-northeast-1
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
