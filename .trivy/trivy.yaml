@@ -1,0 +1,8 @@
+severity:
+  - CRITICAL
+  - HIGH
+
+pkg:
+  types:
+    - os
+    - library
