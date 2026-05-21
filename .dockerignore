@@ -13,5 +13,8 @@ wiki
 runner-image.tar
 AGENTS.md
 README.md
-CLAUDE.md
+**/CLAUDE.md
+**/claude.md
+.claude
+.trivy
 docs
