@@ -54,8 +54,6 @@ type RunnerSpec struct {
 	Pool          string
 	OS            string // linux, windows
 	Arch          string // arm64, amd64
-	Environment   string
-	Region        string
 	ForceOnDemand bool
 	RetryCount    int
 	SubnetID      string // Network isolation (EC2: subnet, K8s: namespace)

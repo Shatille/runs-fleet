@@ -957,21 +957,6 @@ func TestBuildTags(t *testing.T) {
 			},
 		},
 		{
-			name: "With environment",
-			config: &config.Config{},
-			spec: &LaunchSpec{
-				RunID: 12345,
-				Environment: "production",
-			},
-			wantTags: map[string]string{
-				"Name":                   "runs-fleet-runner",
-				"runs-fleet:run-id":      "12345",
-				"runs-fleet:managed":     "true",
-				"runs-fleet:environment": "production",
-				"Environment":            "production",
-			},
-		},
-		{
 			name:   "Cold-start with repo and conditions",
 			config: &config.Config{},
 			spec: &LaunchSpec{
@@ -1001,34 +986,6 @@ func TestBuildTags(t *testing.T) {
 				"runs-fleet:managed": "true",
 			},
 			wantAbsent: []string{"runs-fleet:pool"},
-		},
-		{
-			name:   "With region tag",
-			config: &config.Config{},
-			spec: &LaunchSpec{
-				RunID: 12345,
-				Region: "us-west-2",
-			},
-			wantTags: map[string]string{
-				"Name":               "runs-fleet-runner",
-				"runs-fleet:run-id":  "12345",
-				"runs-fleet:managed": "true",
-				"runs-fleet:region":  "us-west-2",
-			},
-		},
-		{
-			name:   "Empty region should not create tag",
-			config: &config.Config{},
-			spec: &LaunchSpec{
-				RunID: 12345,
-				Region: "",
-			},
-			wantTags: map[string]string{
-				"Name":               "runs-fleet-runner",
-				"runs-fleet:run-id":  "12345",
-				"runs-fleet:managed": "true",
-			},
-			wantAbsent: []string{"runs-fleet:region"},
 		},
 		{
 			name: "With config-based tags",

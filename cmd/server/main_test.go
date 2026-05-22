@@ -102,7 +102,7 @@ func TestSelectSubnet(t *testing.T) {
 		{
 			name: "uses public subnet",
 			cfg: &config.Config{
-				PublicSubnetIDs: []string{"subnet-pub-1", "subnet-pub-2"},
+				PrivateSubnetIDs: []string{"subnet-pub-1", "subnet-pub-2"},
 			},
 			wantFunc: func(result string) bool {
 				return result == "subnet-pub-1" || result == "subnet-pub-2"
@@ -111,7 +111,7 @@ func TestSelectSubnet(t *testing.T) {
 		{
 			name: "no subnets returns empty",
 			cfg: &config.Config{
-				PublicSubnetIDs: []string{},
+				PrivateSubnetIDs: []string{},
 			},
 			wantFunc: func(result string) bool {
 				return result == ""
@@ -122,7 +122,7 @@ func TestSelectSubnet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var subnetIndex uint64
-			got := worker.SelectSubnet(tt.cfg, &subnetIndex, false)
+			got := worker.SelectSubnet(tt.cfg, &subnetIndex)
 			if !tt.wantFunc(got) {
 				t.Errorf("SelectSubnet() = %q, unexpected result", got)
 			}
@@ -132,14 +132,14 @@ func TestSelectSubnet(t *testing.T) {
 
 func TestSelectSubnet_RoundRobin(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
+		PrivateSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
 	}
 
 	var subnetIndex uint64
 	results := make([]string, 6)
 
 	for i := 0; i < 6; i++ {
-		results[i] = worker.SelectSubnet(cfg, &subnetIndex, false)
+		results[i] = worker.SelectSubnet(cfg, &subnetIndex)
 	}
 
 	expected := []string{"subnet-a", "subnet-b", "subnet-c", "subnet-a", "subnet-b", "subnet-c"}
@@ -152,7 +152,7 @@ func TestSelectSubnet_RoundRobin(t *testing.T) {
 
 func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: []string{"subnet-1", "subnet-2", "subnet-3", "subnet-4"},
+		PrivateSubnetIDs: []string{"subnet-1", "subnet-2", "subnet-3", "subnet-4"},
 	}
 
 	var subnetIndex uint64
@@ -160,7 +160,7 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		go func() {
-			result := worker.SelectSubnet(cfg, &subnetIndex, false)
+			result := worker.SelectSubnet(cfg, &subnetIndex)
 			done <- result
 		}()
 	}
@@ -173,7 +173,7 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 
 	for subnet := range results {
 		found := false
-		for _, valid := range cfg.PublicSubnetIDs {
+		for _, valid := range cfg.PrivateSubnetIDs {
 			if subnet == valid {
 				found = true
 				break
@@ -259,14 +259,14 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 
 func TestSelectSubnet_AtomicIndex(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: []string{"subnet-1"},
+		PrivateSubnetIDs: []string{"subnet-1"},
 	}
 
 	var subnetIndex uint64
 
 	atomic.StoreUint64(&subnetIndex, 1000)
 
-	result := worker.SelectSubnet(cfg, &subnetIndex, false)
+	result := worker.SelectSubnet(cfg, &subnetIndex)
 	if result != "subnet-1" {
 		t.Errorf("SelectSubnet() = %q, want %q", result, "subnet-1")
 	}
@@ -325,12 +325,12 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 
 func TestSelectSubnet_SingleSubnet(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: []string{"only-subnet"},
+		PrivateSubnetIDs: []string{"only-subnet"},
 	}
 	var subnetIndex uint64
 
 	for i := 0; i < 5; i++ {
-		result := worker.SelectSubnet(cfg, &subnetIndex, false)
+		result := worker.SelectSubnet(cfg, &subnetIndex)
 		if result != "only-subnet" {
 			t.Errorf("iteration %d: SelectSubnet() = %q, want %q", i, result, "only-subnet")
 		}
@@ -347,15 +347,15 @@ func TestHousekeepingMetricsAdapter_NilPublisher(_ *testing.T) {
 
 func TestSelectSubnet_LargeIndex(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: []string{"a", "b", "c"},
+		PrivateSubnetIDs: []string{"a", "b", "c"},
 	}
 
 	var subnetIndex uint64 = 1000000000
 
-	result := worker.SelectSubnet(cfg, &subnetIndex, false)
+	result := worker.SelectSubnet(cfg, &subnetIndex)
 
 	found := false
-	for _, s := range cfg.PublicSubnetIDs {
+	for _, s := range cfg.PrivateSubnetIDs {
 		if s == result {
 			found = true
 			break
@@ -396,11 +396,11 @@ func TestBuildRunnerLabel_WhitespaceOriginalLabel(t *testing.T) {
 
 func TestSelectSubnet_NilSubnets(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: nil,
+		PrivateSubnetIDs: nil,
 	}
 	var subnetIndex uint64
 
-	result := worker.SelectSubnet(cfg, &subnetIndex, false)
+	result := worker.SelectSubnet(cfg, &subnetIndex)
 	if result != "" {
 		t.Errorf("SelectSubnet() = %q, want empty string", result)
 	}
@@ -417,8 +417,6 @@ func TestJobMessage_AllFields(t *testing.T) {
 		OriginalLabel: "runs-fleet=456/cpu=2",
 		RetryCount:    3,
 		ForceOnDemand: true,
-		Region:        "us-east-1",
-		Environment:   "production",
 		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
@@ -659,8 +657,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		OriginalLabel: "runs-fleet=67890/cpu=2",
 		RetryCount:    0,
 		ForceOnDemand: false,
-		Region:        "us-east-1",
-		Environment:   "production",
 		OS:            "linux",
 		Arch:          "arm64",
 		StorageGiB:    50,
@@ -677,8 +673,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		OriginalLabel: originalJob.OriginalLabel,
 		RetryCount:    originalJob.RetryCount + 1,
 		ForceOnDemand: true,
-		Region:        originalJob.Region,
-		Environment:   originalJob.Environment,
 		OS:            originalJob.OS,
 		Arch:          originalJob.Arch,
 		StorageGiB:    originalJob.StorageGiB,
@@ -704,9 +698,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 	}
 	if len(fallbackJob.InstanceTypes) != len(originalJob.InstanceTypes) {
 		t.Error("fallback job should preserve InstanceTypes")
-	}
-	if fallbackJob.Region != originalJob.Region {
-		t.Error("fallback job should preserve Region")
 	}
 	if fallbackJob.StorageGiB != originalJob.StorageGiB {
 		t.Error("fallback job should preserve StorageGiB")

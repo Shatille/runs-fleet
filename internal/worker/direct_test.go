@@ -116,7 +116,7 @@ func TestProcessJobDirect_NilFleet(t *testing.T) {
 	processor := &DirectProcessor{
 		Pool:        &pools.Manager{},
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -140,7 +140,7 @@ func TestProcessJobDirect_NilDBSkipsClaimCheck(t *testing.T) {
 		Pool:        nil,
 		Metrics:     metrics.NoopPublisher{},
 		DB:          nil, // Nil DB skips claim check
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -159,7 +159,7 @@ func TestTryDirectProcessing_WithCapacity(t *testing.T) {
 		Fleet:       nil,
 		Pool:        nil,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -196,7 +196,7 @@ func TestTryDirectProcessing_PanicRecovery(t *testing.T) {
 		Fleet:       nil,
 		Pool:        nil,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 

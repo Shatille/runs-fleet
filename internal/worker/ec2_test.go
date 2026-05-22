@@ -46,12 +46,12 @@ func TestSelectSubnet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				PublicSubnetIDs: tt.subnets,
+				PrivateSubnetIDs: tt.subnets,
 			}
 			var index uint64
 
 			for i := 0; i < tt.callCount; i++ {
-				result := SelectSubnet(cfg, &index, false)
+				result := SelectSubnet(cfg, &index)
 				if result != tt.expectedOrder[i] {
 					t.Errorf("SelectSubnet() call %d = %q, want %q", i, result, tt.expectedOrder[i])
 				}
@@ -62,7 +62,7 @@ func TestSelectSubnet(t *testing.T) {
 
 func TestSelectSubnet_Concurrent(t *testing.T) {
 	cfg := &config.Config{
-		PublicSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
+		PrivateSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
 	}
 	var index uint64
 	var mu sync.Mutex
@@ -71,7 +71,7 @@ func TestSelectSubnet_Concurrent(t *testing.T) {
 	done := make(chan string, 100)
 	for i := 0; i < 100; i++ {
 		go func() {
-			done <- SelectSubnet(cfg, &index, false)
+			done <- SelectSubnet(cfg, &index)
 		}()
 	}
 
@@ -89,75 +89,11 @@ func TestSelectSubnet_Concurrent(t *testing.T) {
 	}
 }
 
-func TestSelectSubnet_PrivateSubnetPriority(t *testing.T) {
-	tests := []struct {
-		name           string
-		publicSubnets  []string
-		privateSubnets []string
-		publicIP       bool
-		wantSubnets    []string
-	}{
-		{
-			name:           "private subnets preferred when both configured",
-			publicSubnets:  []string{"pub-a", "pub-b"},
-			privateSubnets: []string{"priv-a", "priv-b"},
-			publicIP:       false,
-			wantSubnets:    []string{"priv-a", "priv-b"},
-		},
-		{
-			name:           "public subnets used when publicIP=true",
-			publicSubnets:  []string{"pub-a", "pub-b"},
-			privateSubnets: []string{"priv-a", "priv-b"},
-			publicIP:       true,
-			wantSubnets:    []string{"pub-a", "pub-b"},
-		},
-		{
-			name:           "fallback to public when no private subnets",
-			publicSubnets:  []string{"pub-a", "pub-b"},
-			privateSubnets: []string{},
-			publicIP:       false,
-			wantSubnets:    []string{"pub-a", "pub-b"},
-		},
-		{
-			name:           "private-only configuration",
-			publicSubnets:  []string{},
-			privateSubnets: []string{"priv-a", "priv-b"},
-			publicIP:       false,
-			wantSubnets:    []string{"priv-a", "priv-b"},
-		},
-		{
-			name:           "publicIP=true returns empty when no public subnets",
-			publicSubnets:  []string{},
-			privateSubnets: []string{"priv-a"},
-			publicIP:       true,
-			wantSubnets:    []string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.Config{
-				PublicSubnetIDs:  tt.publicSubnets,
-				PrivateSubnetIDs: tt.privateSubnets,
-			}
-			var index uint64
-
-			result := SelectSubnet(cfg, &index, tt.publicIP)
-
-			found := false
-			for _, want := range tt.wantSubnets {
-				if result == want {
-					found = true
-					break
-				}
-			}
-			if !found && len(tt.wantSubnets) > 0 {
-				t.Errorf("SelectSubnet() = %q, want one of %v", result, tt.wantSubnets)
-			}
-			if len(tt.wantSubnets) == 0 && result != "" {
-				t.Errorf("SelectSubnet() = %q, want empty", result)
-			}
-		})
+func TestSelectSubnet_EmptyPrivate(t *testing.T) {
+	cfg := &config.Config{PrivateSubnetIDs: []string{}}
+	var index uint64
+	if got := SelectSubnet(cfg, &index); got != "" {
+		t.Errorf("SelectSubnet() with empty subnets = %q, want empty", got)
 	}
 }
 
@@ -507,7 +443,7 @@ func TestProcessEC2Message_InvalidJSON(t *testing.T) {
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -547,7 +483,7 @@ func TestProcessEC2Message_ValidJSON_NilFleet(_ *testing.T) {
 		Queue:       mockQueue,
 		Fleet:       nil, // nil fleet manager
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -571,7 +507,7 @@ func TestRunEC2Worker_ContextCancellation(t *testing.T) {
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -619,7 +555,7 @@ func TestRunEC2Worker_ProcessesMessages(t *testing.T) {
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -745,7 +681,7 @@ func TestProcessEC2Message_NoPool_SkipsWarmPool(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil, // Will fail at fleet creation
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -810,7 +746,7 @@ func TestProcessEC2Message_WithPool_WarmPoolSuccess(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil,
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -886,7 +822,7 @@ func TestProcessEC2Message_WithPool_FallsBackToColdStart(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil, // Nil fleet will cause cold start to fail, but we can verify warm pool was tried
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PublicSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}

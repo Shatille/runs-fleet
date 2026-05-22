@@ -843,26 +843,18 @@ func TestSelectSubnet(t *testing.T) {
 	tests := []struct {
 		name           string
 		privateSubnets []string
-		publicSubnets  []string
 		calls          int
 		wantSubnets    []string
 	}{
 		{
-			name:           "private subnets preferred",
+			name:           "rotates through private subnets",
 			privateSubnets: []string{"subnet-priv1", "subnet-priv2"},
-			publicSubnets:  []string{"subnet-pub1"},
 			calls:          3,
 			wantSubnets:    []string{"subnet-priv1", "subnet-priv2", "subnet-priv1"},
 		},
 		{
-			name:          "falls back to public when no private",
-			publicSubnets: []string{"subnet-pub1", "subnet-pub2"},
-			calls:         2,
-			wantSubnets:   []string{"subnet-pub1", "subnet-pub2"},
-		},
-		{
-			name:  "returns empty when no subnets",
-			calls: 1,
+			name:        "returns empty when no subnets",
+			calls:       1,
 			wantSubnets: []string{""},
 		},
 	}
@@ -873,7 +865,6 @@ func TestSelectSubnet(t *testing.T) {
 
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{
 				PrivateSubnetIDs: tt.privateSubnets,
-				PublicSubnetIDs:  tt.publicSubnets,
 			})
 			for i := 0; i < tt.calls; i++ {
 				got := manager.selectSubnet()
@@ -3313,7 +3304,6 @@ func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
 		PrivateSubnetIDs: []string{},
-		PublicSubnetIDs:  []string{},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 

@@ -570,10 +570,6 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 			labels: []string{"runs-fleet=12345/ram=8+abc/arch=arm64"},
 		},
 		{
-			name:   "Invalid backend value",
-			labels: []string{"runs-fleet=12345/cpu=2/arch=arm64/backend=invalid"},
-		},
-		{
 			name:   "Invalid disk value (non-numeric)",
 			labels: []string{"runs-fleet=12345/cpu=2/arch=arm64/disk=abc"},
 		},
@@ -594,48 +590,6 @@ func TestParseLabels_InvalidValues(t *testing.T) {
 			_, err := ParseLabels(tt.labels)
 			if err == nil {
 				t.Errorf("ParseLabels() expected error for invalid input, got nil")
-			}
-		})
-	}
-}
-
-func TestParseLabels_Backend(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		labels      []string
-		wantBackend string
-		wantErr     bool
-	}{
-		{
-			name:        "EC2 backend",
-			labels:      []string{"runs-fleet=12345/cpu=2/arch=arm64/backend=ec2"},
-			wantBackend: "ec2",
-		},
-		{
-			name:        "K8s backend",
-			labels:      []string{"runs-fleet=12345/cpu=2/arch=arm64/backend=k8s"},
-			wantBackend: "k8s",
-		},
-		{
-			name:        "No backend (default)",
-			labels:      []string{"runs-fleet=12345/cpu=2/arch=arm64"},
-			wantBackend: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, err := ParseLabels(tt.labels)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got.Backend != tt.wantBackend {
-				t.Errorf("ParseLabels() Backend = %v, want %v", got.Backend, tt.wantBackend)
 			}
 		})
 	}
@@ -708,73 +662,6 @@ func TestParseLabels_Storage(t *testing.T) {
 			}
 			if !tt.wantErr && got.StorageGiB != tt.wantStorageGiB {
 				t.Errorf("ParseLabels() StorageGiB = %v, want %v", got.StorageGiB, tt.wantStorageGiB)
-			}
-		})
-	}
-}
-
-func TestParseLabels_PublicIP(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		labels       []string
-		wantPublicIP bool
-		wantErr      bool
-	}{
-		{
-			name:         "public=true requests public subnet",
-			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=true"},
-			wantPublicIP: true,
-		},
-		{
-			name:         "public=false uses private subnet",
-			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=false"},
-			wantPublicIP: false,
-		},
-		{
-			name:         "no public label defaults to false",
-			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64"},
-			wantPublicIP: false,
-		},
-		{
-			name:         "public with other options",
-			labels:       []string{"runs-fleet=12345/cpu=4/arch=amd64/public=true/spot=false/pool=ci"},
-			wantPublicIP: true,
-		},
-		{
-			name:         "public=TRUE case insensitive",
-			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=TRUE"},
-			wantPublicIP: true,
-		},
-		{
-			name:         "public=1 numeric true",
-			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=1"},
-			wantPublicIP: true,
-		},
-		{
-			name:         "public=0 numeric false",
-			labels:       []string{"runs-fleet=12345/cpu=2/arch=arm64/public=0"},
-			wantPublicIP: false,
-		},
-		{
-			name:    "public=invalid returns error",
-			labels:  []string{"runs-fleet=12345/cpu=2/arch=arm64/public=yes"},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, err := ParseLabels(tt.labels)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseLabels() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got.PublicIP != tt.wantPublicIP {
-				t.Errorf("ParseLabels() PublicIP = %v, want %v", got.PublicIP, tt.wantPublicIP)
 			}
 		})
 	}

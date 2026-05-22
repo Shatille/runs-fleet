@@ -56,14 +56,11 @@ type JobMessage struct {
 	OriginalLabel string   `json:"original_label,omitempty"`
 	RetryCount    int      `json:"retry_count,omitempty"`
 	ForceOnDemand bool     `json:"force_on_demand,omitempty"`
-	Region        string   `json:"region,omitempty"`
-	Environment   string   `json:"environment,omitempty"`
 	OS            string   `json:"os,omitempty"`   // linux, windows
 	Arch          string   `json:"arch,omitempty"` // amd64, arm64
 	InstanceTypes []string `json:"instance_types,omitempty"`
 	StorageGiB    int      `json:"storage_gib,omitempty"` // Disk storage in GiB
-	PublicIP      bool     `json:"public_ip,omitempty"`   // Request public IP (uses public subnet)
-	Traceparent string `json:"traceparent,omitempty"`
+	Traceparent   string   `json:"traceparent,omitempty"`
 
 	// Flexible instance spec for multi-spec pool matching
 	CPUMin   int      `json:"cpu_min,omitempty"`

@@ -15,19 +15,18 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
 | Label | Description |
 |-------|-------------|
 | `runs-fleet=<run-id>` | Workflow run identifier (required) |
-| `cpu=<n>` | vCPU count (default: 2). Defaults to 2x range (e.g., `cpu=4` → 4-8 vCPUs) |
+| `cpu=<n>` | vCPU count (default: 2). Defaults to a 2x range (e.g., `cpu=4` → 4-8 vCPUs) |
 | `cpu=<min>+<max>` | Explicit vCPU range for spot diversification |
-| `ram=<n>` | Minimum RAM in GB |
-| `ram=<min>+<max>` | RAM range in GB |
-| `arch=<arch>` | Architecture: `arm64` or `amd64` (omit for both) |
+| `ram=<n>` | Minimum RAM in GB (no auto-range, unlike `cpu=`) |
+| `ram=<min>+<max>` | Explicit RAM range in GB |
+| `arch=<arch>` | Architecture: `arm64` or `amd64` (omit to let runs-fleet pick) |
 | `family=<list>` | Instance families (e.g., `family=c7g+m7g`) |
+| `gen=<n>` | Instance generation (1-10). E.g., `gen=8` for Graviton4. Default: any generation |
 | `disk=<size>` | Disk size in GiB (1-16384) |
-| `pool=<name>` | Warm pool for fast start (~10s vs ~60s) |
+| `pool=<name>` | Warm pool name (must be ≤63 chars; alphanumeric, `-`, `_`) |
 | `spot=false` | Force on-demand for cold-start (warm pool is always on-demand) |
-| `public=true` | Request public IP (uses public subnet; default: private) |
-| `backend=<ec2\|k8s>` | Override default compute backend |
-| `region=<region>` | Target AWS region (multi-region deployments) |
-| `env=<env>` | Environment isolation: `dev`, `staging`, or `prod` |
+
+> **Asymmetry note:** `cpu=N` automatically expands to a `N..2N` range to enable spot diversification. `ram=N` does **not** — it's interpreted as a minimum only, with no upper bound. If you want a bounded RAM range, use `ram=min+max` explicitly.
 
 ## Instance Selection
 
@@ -40,13 +39,16 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
 # Explicit CPU range for wider spot diversification
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/arch=arm64"
 
-# Exact CPU match (no diversification)
+# Pin exact CPU count (still diversifies across families)
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+4/arch=arm64"
 
 # Specific families for workload requirements
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/family=c7g+m7g/arch=arm64"
 
-# Architecture-agnostic: EC2 Fleet chooses ARM64 or AMD64 based on spot availability
+# Pin instance generation (e.g., Graviton4)
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
+
+# Architecture-agnostic: runs-fleet picks the cheaper-on-spot arch at launch
 runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
 ```
 
@@ -59,16 +61,20 @@ When you specify `cpu=N` without a max, runs-fleet defaults to a 2x range (`N` t
 | `cpu=2` | 2-4 vCPUs |
 | `cpu=4` | 4-8 vCPUs |
 | `cpu=8` | 8-16 vCPUs |
-| `cpu=4+4` | Exactly 4 vCPUs |
+| `cpu=4+4` | Exactly 4 vCPUs (but still picks across compatible families) |
 | `cpu=4+16` | 4-16 vCPUs |
 
-This bounded diversification improves spot availability without risk of selecting excessively large instances. EC2 Fleet's `price-capacity-optimized` strategy selects from the available pool.
+EC2 Fleet's `price-capacity-optimized` strategy then selects from the matching pool.
 
-When `arch` is omitted, runs-fleet creates multiple EC2 Fleet launch template configurations (one per architecture) and lets EC2 choose based on `price-capacity-optimized` strategy. This maximizes spot availability across both ARM64 and AMD64 instance pools.
+### Architecture omission
 
-**Default families by architecture:**
-- ARM64: c7g, m7g, t4g
-- AMD64: c6i, c7i, m6i, m7i, t3
+When `arch` is omitted, runs-fleet does **not** submit both architectures to EC2 Fleet simultaneously. Instead, it queries average spot prices for each candidate arch and picks the cheaper one up front; only that arch's launch template is submitted to Fleet. If the spot price fetch fails, runs-fleet defaults to `arm64`.
+
+If you want hard control over architecture, set `arch=arm64` or `arch=amd64` explicitly.
+
+**Default families per arch:**
+- ARM64: `c8g, m8g, r8g, c7g, m7g, t4g`
+- AMD64: `c6i, c7i, m6i, m7i, t3`
 - No arch: all of the above
 
 ## Custom Disk Size
@@ -93,7 +99,7 @@ jobs:
   test:
     runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: make test
 ```
 
@@ -124,15 +130,7 @@ jobs:
     runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/spot=false"
 ```
 
-### Request public IP
-
-```yaml
-jobs:
-  external-access:
-    # Request public IP when job needs direct internet access without NAT
-    # Default behavior uses private subnets (no public IPv4 cost)
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/public=true"
-```
+> **Note:** `spot=false` is case-sensitive. `spot=False` or `spot=0` will **not** disable spot — only the literal lowercase `false` does.
 
 ### Matrix build
 
@@ -147,7 +145,7 @@ jobs:
 
 ### Ephemeral pools (auto-created)
 
-Ephemeral pools are automatically created when a job references a pool that doesn't exist. They inherit instance specs from the first job and auto-scale based on demand:
+Ephemeral pools are automatically created when a job references a pool that doesn't exist. They inherit instance specs from the first job that references them:
 
 ```yaml
 jobs:
@@ -157,7 +155,7 @@ jobs:
     runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=my-project"
 ```
 
-Ephemeral pools:
-- Auto-scale `DesiredRunning` based on peak concurrent jobs (1-hour window)
+Ephemeral pool behavior:
+- Auto-scale `DesiredStopped` based on **p90** concurrent jobs over a 1-hour rolling window. Stopped instances start quickly when claimed, but the pool keeps `DesiredRunning=0` for ephemeral pools — so a sudden one-off concurrency spike beyond p90 still pays the cold-start cost.
 - Deleted after 4 hours of inactivity
 - Don't override explicitly configured pools in DynamoDB

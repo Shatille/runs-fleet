@@ -83,11 +83,8 @@ type JobConfig struct {
 	InstanceType string
 	Pool         string
 	Spot         bool
-	Region       string // Multi-region support (Phase 3)
-	Environment  string // Per-stack environment support (Phase 6)
 	OS           string // Operating system (linux, windows)
 	Arch         string // Architecture (amd64, arm64)
-	Backend      string // Compute backend: "ec2" or "k8s" (empty = use default)
 
 	// Flexible instance selection
 	InstanceTypes []string // Multiple instance types for spot diversification
@@ -101,9 +98,6 @@ type JobConfig struct {
 
 	// Storage configuration
 	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
-
-	// Network configuration
-	PublicIP bool // Request public IP (uses public subnet). Default: false (private subnet preferred)
 }
 
 
@@ -118,11 +112,9 @@ type JobConfig struct {
 // Multiple instance families can be specified with + separator.
 func ParseLabels(labels []string) (*JobConfig, error) {
 	cfg := &JobConfig{
-		Spot:        true,
-		OS:          "linux",
-		Arch:        "", // Empty = arch doesn't matter, uses non-suffixed launch template
-		Environment: "", // Default: no specific environment
-		Region:      "", // Default: use primary region
+		Spot: true,
+		OS:   "linux",
+		Arch: "", // Empty = arch doesn't matter, uses non-suffixed launch template
 	}
 
 	var runsFleetLabel string
@@ -212,34 +204,12 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 		case "spot":
 			cfg.Spot = value != "false"
 
-		case "region":
-			cfg.Region = value
-
-		case "env":
-			if value == "dev" || value == "staging" || value == "prod" {
-				cfg.Environment = value
-			}
-
-		case "backend":
-			if value == "ec2" || value == "k8s" {
-				cfg.Backend = value
-			} else {
-				return fmt.Errorf("invalid backend label: must be 'ec2' or 'k8s', got %q", value)
-			}
-
 		case "disk":
 			diskGiB, err := parseBoundedInt(value, 1, 16384, "disk")
 			if err != nil {
 				return err
 			}
 			cfg.StorageGiB = diskGiB
-
-		case "public":
-			var err error
-			cfg.PublicIP, err = strconv.ParseBool(value)
-			if err != nil {
-				return fmt.Errorf("invalid public value %q: %w", value, err)
-			}
 		}
 	}
 

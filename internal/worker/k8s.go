@@ -135,7 +135,6 @@ func processK8sMessage(ctx context.Context, deps K8sWorkerDeps, msg queue.Messag
 		Arch:         job.Arch,
 		InstanceType: job.InstanceType,
 		Spot:         job.Spot,
-		Environment:  job.Environment,
 		RetryCount:   job.RetryCount,
 		StorageGiB:   job.StorageGiB,
 		JITToken:     jitToken,

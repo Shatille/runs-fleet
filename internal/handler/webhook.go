@@ -77,13 +77,10 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		Pool:          jobConfig.Pool,
 		Spot:          jobConfig.Spot,
 		OriginalLabel: jobConfig.OriginalLabel,
-		Region:        jobConfig.Region,
-		Environment:   jobConfig.Environment,
 		OS:            jobConfig.OS,
 		Arch:          jobConfig.Arch,
 		InstanceTypes: jobConfig.InstanceTypes,
 		StorageGiB:    jobConfig.StorageGiB,
-		PublicIP:      jobConfig.PublicIP,
 		Traceparent:   tracing.InjectTraceContext(ctx),
 		// Flexible spec for multi-spec pool matching
 		CPUMin:   jobConfig.CPUMin,

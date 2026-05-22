@@ -95,8 +95,6 @@ type LaunchSpec struct {
 	Repo          string // Repository name for cost allocation (Role tag)
 	ForceOnDemand bool   // Force on-demand even if spot is preferred (for retries)
 	RetryCount    int    // Number of times this job has been retried
-	Region        string // Target AWS region (Phase 3: Multi-region)
-	Environment   string // Environment tag (Phase 6: Per-stack environments)
 	OS            string // Operating system: linux, windows (Phase 4: Windows support)
 	Arch          string // Architecture: amd64, arm64
 	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
@@ -466,27 +464,6 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		tags = append(tags, types.Tag{
 			Key:   aws.String("runs-fleet:arch"),
 			Value: aws.String(spec.Arch),
-		})
-	}
-
-	// Add region tag for multi-region support (Phase 3)
-	if spec.Region != "" {
-		tags = append(tags, types.Tag{
-			Key:   aws.String("runs-fleet:region"),
-			Value: aws.String(spec.Region),
-		})
-	}
-
-	// Add environment tag for per-stack environments (Phase 6)
-	if spec.Environment != "" {
-		tags = append(tags, types.Tag{
-			Key:   aws.String("runs-fleet:environment"),
-			Value: aws.String(spec.Environment),
-		})
-		// Also add standard AWS Environment tag for cost tracking
-		tags = append(tags, types.Tag{
-			Key:   aws.String("Environment"),
-			Value: aws.String(spec.Environment),
 		})
 	}
 

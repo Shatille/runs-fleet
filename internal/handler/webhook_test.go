@@ -695,31 +695,6 @@ func TestHandleWorkflowJobQueued_InvalidDisk(t *testing.T) {
 	}
 }
 
-func TestHandleWorkflowJobQueued_InvalidBackend(t *testing.T) {
-	event := &github.WorkflowJobEvent{
-		WorkflowJob: &github.WorkflowJob{
-			ID:     github.Int64(12345),
-			Name:   github.String("test-job"),
-			Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64/backend=invalid"},
-		},
-		Repo: &github.Repository{
-			FullName: github.String("owner/repo"),
-		},
-	}
-
-	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
-
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
-	if err != nil {
-		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
-	}
-	// Invalid backend should cause label parsing to fail
-	if msg != nil {
-		t.Error("HandleWorkflowJobQueued() should return nil for invalid backend")
-	}
-}
-
 func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name string
