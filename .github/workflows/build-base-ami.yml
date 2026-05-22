@@ -54,7 +54,11 @@ jobs:
 
       - name: Packer Validate
         working-directory: packer
-        run: packer validate ${{ matrix.packer_file }}
+        run: |
+          packer validate \
+            -var "security_group_id=${{ secrets.PACKER_SECURITY_GROUP_ID }}" \
+            -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
+            ${{ matrix.packer_file }}
 
       - name: Packer Build
         id: packer
