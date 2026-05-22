@@ -17,14 +17,9 @@ variable "ami_version" {
   default = "1.0.0"
 }
 
-variable "security_group_id" {
+variable "vpc_id" {
   type        = string
-  description = "Security group ID for packer builder instance"
-}
-
-variable "subnet_id" {
-  type        = string
-  description = "Subnet ID for packer builder instance"
+  description = "VPC ID for packer builder (subnet and SG are filter-discovered)"
 }
 
 source "amazon-ebs" "runner_base_arm64" {
@@ -32,8 +27,21 @@ source "amazon-ebs" "runner_base_arm64" {
   instance_type        = "c7g.xlarge"
   region               = var.region
   iam_instance_profile = "runs-fleet-runner"
-  security_group_id    = var.security_group_id
-  subnet_id            = var.subnet_id
+  vpc_id               = var.vpc_id
+
+  subnet_filter {
+    filters = {
+      "vpc-id" = var.vpc_id
+    }
+    most_free = true
+    random    = false
+  }
+
+  security_group_filter {
+    filters = {
+      "group-name" = "runs-fleet-runner"
+    }
+  }
 
   source_ami_filter {
     filters = {
@@ -75,15 +83,15 @@ source "amazon-ebs" "runner_base_arm64" {
 
   run_tags = {
     Name       = "packer-runner-base-arm64-builder"
-    created-by = "packer"
+    created-by = "runs-fleet-packer"
   }
 
   run_volume_tags = {
-    created-by = "packer"
+    created-by = "runs-fleet-packer"
   }
 
   snapshot_tags = {
-    created-by = "packer"
+    created-by = "runs-fleet-packer"
   }
 }
 

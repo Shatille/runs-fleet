@@ -56,8 +56,7 @@ jobs:
         working-directory: packer
         run: |
           packer validate \
-            -var "security_group_id=${{ secrets.PACKER_SECURITY_GROUP_ID }}" \
-            -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
+            -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
             ${{ matrix.packer_file }}
 
       - name: Packer Build
@@ -65,8 +64,7 @@ jobs:
         working-directory: packer
         run: |
           packer build \
-            -var "security_group_id=${{ secrets.PACKER_SECURITY_GROUP_ID }}" \
-            -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
+            -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
             -machine-readable \
             ${{ matrix.packer_file }} | tee packer-output.txt
 
