@@ -39,11 +39,15 @@ echo "==> Installing git-lfs system-wide hooks"
 sudo git lfs install --system
 
 echo "==> Adding GitHub CLI dnf repo"
-# Use GitHub's published .repo file directly so the gpgkey URL stays
-# upstream-canonical (it lives at /packages/githubcli-archive-keyring.asc,
-# not under /rpm/gpg.key — that path 404s).
-sudo dnf install -y dnf-plugins-core
-sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+sudo rpm --import https://cli.github.com/packages/githubcli-archive-keyring.asc
+sudo tee /etc/yum.repos.d/gh-cli.repo > /dev/null <<'EOF'
+[gh-cli]
+name=packages for the GitHub CLI
+baseurl=https://cli.github.com/packages/rpm
+enabled=1
+gpgcheck=1
+gpgkey=https://cli.github.com/packages/githubcli-archive-keyring.asc
+EOF
 
 echo "==> Installing GitHub CLI"
 sudo dnf install -y gh
