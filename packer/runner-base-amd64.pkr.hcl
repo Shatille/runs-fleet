@@ -74,7 +74,16 @@ source "amazon-ebs" "runner_base_amd64" {
   }
 
   run_tags = {
-    Name = "packer-runner-base-amd64-builder"
+    Name       = "packer-runner-base-amd64-builder"
+    created-by = "packer"
+  }
+
+  run_volume_tags = {
+    created-by = "packer"
+  }
+
+  snapshot_tags = {
+    created-by = "packer"
   }
 }
 
