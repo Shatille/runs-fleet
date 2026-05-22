@@ -62,7 +62,11 @@ make scan-runner   # must exit 0 with no findings
 
 CI uses the same Trivy version (`aquasec/trivy:0.70.0`), the same `.trivy/trivy.yaml` config, and the same `--vex .trivy/vex.json` flag. If local passes, CI passes. Iterating via CI burns time and runner-cost.
 
-For supply-chain transparency, `make sbom-runner` generates a CycloneDX SBOM at `bin/runs-fleet-runner.sbom.json`.
+For supply-chain transparency, `make sbom-runner` generates a CycloneDX SBOM at `bin/runs-fleet-runner.sbom.json`. CI emits the same SBOM as a BuildKit attestation attached to the image manifest (retrievable via `docker buildx imagetools inspect <image> --format '{{json .SBOM}}'`).
+
+## Auto-rebuild and AMI cascade
+
+Pushes to `main` touching `docker/runner/**`, `cmd/agent/**`, `pkg/agent/**`, `.trivy/**`, or `build-runner.yml` itself trigger the runner image build automatically. On successful completion, `build-ami.yml` runs via `workflow_run` and rebuilds the AMI off the freshly-promoted `:latest`. Edits here ship to both ECS Fargate (container) and EC2 (AMI) without manual intervention.
 
 ## What lives where
 
