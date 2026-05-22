@@ -101,4 +101,22 @@ build {
   provisioner "shell" {
     script = "${path.root}/provision-base.sh"
   }
+
+  # Vulnerability gate: scan the provisioned filesystem before the AMI snapshot
+  # is taken. Reuses the same Trivy config + VEX as the container path. If the
+  # scan finds an unsuppressed HIGH/CRITICAL finding, the build fails and no
+  # AMI is registered.
+  provisioner "file" {
+    source      = "${path.root}/../.trivy/trivy.yaml"
+    destination = "/tmp/trivy.yaml"
+  }
+
+  provisioner "file" {
+    source      = "${path.root}/../.trivy/vex.json"
+    destination = "/tmp/vex.json"
+  }
+
+  provisioner "shell" {
+    script = "${path.root}/provision-trivy-scan.sh"
+  }
 }
