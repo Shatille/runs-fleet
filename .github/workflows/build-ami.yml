@@ -8,7 +8,7 @@ on:
       - "scripts/**"
       - "packer/**"
   workflow_run:
-    workflows: ["Build Runner Image"]
+    workflows: ["Build Runner Image", "Build Runner Base AMI"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
