@@ -160,7 +160,8 @@ jobs:
             RUNNER_BASE_TAG=${{ env.RUNNER_BASE_TAG }}
           cache-from: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }}
           cache-to: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
-          provenance: false
+          sbom: true
+          provenance: mode=max
           no-cache-filters: stage-1
 
   # Create multi-arch manifest
@@ -178,28 +179,19 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Create and push manifest
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Create and push multi-arch manifest
         run: |
           REGISTRY="${{ needs.prepare.outputs.registry }}"
           REPO="${{ env.ECR_REPOSITORY }}"
           VERSION="${{ needs.prepare.outputs.version }}"
 
-          docker manifest create \
-            "${REGISTRY}/${REPO}:${VERSION}-unverified" \
+          docker buildx imagetools create \
+            -t "${REGISTRY}/${REPO}:${VERSION}-unverified" \
             "${REGISTRY}/${REPO}:${VERSION}-amd64" \
             "${REGISTRY}/${REPO}:${VERSION}-arm64"
-
-          docker manifest annotate \
-            "${REGISTRY}/${REPO}:${VERSION}-unverified" \
-            "${REGISTRY}/${REPO}:${VERSION}-amd64" \
-            --os linux --arch amd64
-
-          docker manifest annotate \
-            "${REGISTRY}/${REPO}:${VERSION}-unverified" \
-            "${REGISTRY}/${REPO}:${VERSION}-arm64" \
-            --os linux --arch arm64
-
-          docker manifest push "${REGISTRY}/${REPO}:${VERSION}-unverified"
 
   # Scan and promote
   verify:
