@@ -12,15 +12,24 @@ else
 fi
 echo "==> Detected architecture: ${ARCH} (Docker: ${DOCKER_ARCH})"
 
+echo "==> Replacing curl-minimal with full curl"
+# Scoped to its own transaction so --allowerasing only affects the known
+# curl-minimal swap, not the broader package list below.
+sudo dnf install -y --allowerasing curl
+
 echo "==> Installing base packages"
 sudo dnf install -y \
   git \
   git-lfs \
-  tar \
+  gnupg2 \
   jq \
-  make \
   libicu \
+  make \
+  rsync \
+  tar \
   unzip \
+  wget \
+  zip \
   awscli \
   docker \
   amazon-ssm-agent \
@@ -28,6 +37,20 @@ sudo dnf install -y \
 
 echo "==> Installing git-lfs system-wide hooks"
 sudo git lfs install --system
+
+echo "==> Adding GitHub CLI dnf repo"
+sudo rpm --import https://cli.github.com/packages/rpm/gpg.key
+sudo tee /etc/yum.repos.d/gh-cli.repo > /dev/null <<'GHREPO'
+[gh-cli]
+name=packages for the GitHub CLI
+baseurl=https://cli.github.com/packages/rpm
+enabled=1
+gpgcheck=1
+gpgkey=https://cli.github.com/packages/rpm/gpg.key
+GHREPO
+
+echo "==> Installing GitHub CLI"
+sudo dnf install -y gh
 
 # Gold linker only needed for ARM64 (Go race detector compatibility)
 if [ "$ARCH" = "aarch64" ]; then
@@ -187,6 +210,37 @@ sudo unzip -o "/tmp/${VAULT_ZIP}" -d /usr/local/bin || { echo "Vault extraction 
 rm "/tmp/${VAULT_ZIP}" /tmp/vault_checksums.txt
 sudo chmod +x /usr/local/bin/vault
 
+echo "==> Installing yq"
+YQ_VERSION="4.53.2"
+if [ "$ARCH" = "x86_64" ]; then
+  YQ_ARCH="amd64"
+else
+  YQ_ARCH="arm64"
+fi
+YQ_BINARY="yq_linux_${YQ_ARCH}"
+YQ_URL="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}"
+curl -sfL "${YQ_URL}/${YQ_BINARY}" -o /tmp/yq \
+  || { echo "Failed to download yq"; exit 1; }
+curl -sfL "${YQ_URL}/checksums" -o /tmp/yq_checksums.txt \
+  || { echo "Failed to download yq checksums"; exit 1; }
+curl -sfL "${YQ_URL}/checksums_hashes_order" -o /tmp/yq_hashes_order.txt \
+  || { echo "Failed to download yq hash order"; exit 1; }
+# yq's `checksums` file is "<filename> <hash1> <hash2> ..." with one column per
+# algorithm; `checksums_hashes_order` lists which algorithm sits at each column
+# (in order). Field 1 is the filename, so SHA-256 is at field (row+1).
+SHA256_ROW=$(awk '/^SHA-256$/ {print NR; exit}' /tmp/yq_hashes_order.txt)
+[ -n "$SHA256_ROW" ] || { echo "yq SHA-256 row not found in hash order"; exit 1; }
+SHA256_FIELD=$((SHA256_ROW + 1))
+YQ_CHECKSUM=$(awk -v fname="${YQ_BINARY}" -v f="$SHA256_FIELD" \
+  '$1 == fname {print $f; exit}' /tmp/yq_checksums.txt)
+[[ "$YQ_CHECKSUM" =~ ^[a-f0-9]{64}$ ]] \
+  || { echo "Invalid yq SHA-256: $YQ_CHECKSUM"; rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; exit 1; }
+echo "${YQ_CHECKSUM}  /tmp/yq" | sha256sum -c \
+  || { echo "yq checksum verification failed"; rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; exit 1; }
+sudo install -m 0755 /tmp/yq /usr/local/bin/yq \
+  || { echo "yq installation failed"; rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; exit 1; }
+rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt
+
 echo "==> Configuring CloudWatch agent"
 sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json > /dev/null <<'CWCONFIG'
 {
@@ -248,6 +302,9 @@ echo "    - npm: $(npm --version)"
 echo "    - yarn: $(yarn --version)"
 echo "    - pnpm: $(pnpm --version)"
 echo "    - git-lfs: $(git lfs version)"
+echo "    - gh: $(gh --version | head -1)"
+echo "    - yq: $(yq --version)"
+echo "    - curl: $(curl --version | head -1)"
 echo "    - QEMU binfmt: enabled at boot"
 echo "    - Docker buildx: multi-arch builder configured"
 echo "    - SSM Agent: enabled"
