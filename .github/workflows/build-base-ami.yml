@@ -61,6 +61,8 @@ jobs:
         working-directory: packer
         run: |
           packer build \
+            -var "security_group_id=${{ secrets.PACKER_SECURITY_GROUP_ID }}" \
+            -var "subnet_id=${{ secrets.PACKER_SUBNET_ID }}" \
             -machine-readable \
             ${{ matrix.packer_file }} | tee packer-output.txt
 
