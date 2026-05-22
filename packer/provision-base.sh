@@ -219,6 +219,8 @@ else
 fi
 YQ_BINARY="yq_linux_${YQ_ARCH}"
 YQ_URL="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}"
+cleanup_yq_tmp() { rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; }
+trap cleanup_yq_tmp EXIT
 curl -sfL "${YQ_URL}/${YQ_BINARY}" -o /tmp/yq \
   || { echo "Failed to download yq"; exit 1; }
 curl -sfL "${YQ_URL}/checksums" -o /tmp/yq_checksums.txt \
@@ -234,12 +236,13 @@ SHA256_FIELD=$((SHA256_ROW + 1))
 YQ_CHECKSUM=$(awk -v fname="${YQ_BINARY}" -v f="$SHA256_FIELD" \
   '$1 == fname {print $f; exit}' /tmp/yq_checksums.txt)
 [[ "$YQ_CHECKSUM" =~ ^[a-f0-9]{64}$ ]] \
-  || { echo "Invalid yq SHA-256: $YQ_CHECKSUM"; rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; exit 1; }
+  || { echo "Invalid yq SHA-256: $YQ_CHECKSUM"; exit 1; }
 echo "${YQ_CHECKSUM}  /tmp/yq" | sha256sum -c \
-  || { echo "yq checksum verification failed"; rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; exit 1; }
+  || { echo "yq checksum verification failed"; exit 1; }
 sudo install -m 0755 /tmp/yq /usr/local/bin/yq \
-  || { echo "yq installation failed"; rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; exit 1; }
-rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt
+  || { echo "yq installation failed"; exit 1; }
+trap - EXIT
+cleanup_yq_tmp
 
 echo "==> Configuring CloudWatch agent"
 sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json > /dev/null <<'CWCONFIG'
