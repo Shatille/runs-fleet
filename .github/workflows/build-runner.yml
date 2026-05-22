@@ -18,6 +18,11 @@ on:
         description: "Image tag (default: latest)"
         required: false
         default: "latest"
+      use_fallback_runners:
+        description: "Use GitHub-hosted arm64 fallback (when self-hosted fleet is unavailable)"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       tag:
@@ -25,6 +30,11 @@ on:
         required: false
         type: string
         default: "latest"
+      use_fallback_runners:
+        description: "Use GitHub-hosted arm64 fallback"
+        required: false
+        type: boolean
+        default: false
     secrets:
       AWS_IAM_ROLE_ARN:
         required: true
@@ -136,7 +146,7 @@ jobs:
             runner: ubuntu-latest
             platform: linux/amd64
           - arch: arm64
-            runner: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
             platform: linux/arm64
     steps:
       - name: Checkout code
