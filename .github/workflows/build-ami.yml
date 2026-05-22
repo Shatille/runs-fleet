@@ -5,10 +5,12 @@ on:
     branches:
       - main
     paths:
-      - "cmd/agent/**"
-      - "pkg/agent/**"
       - "scripts/**"
       - "packer/**"
+  workflow_run:
+    workflows: ["Build Runner Image"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -23,15 +25,9 @@ env:
   AWS_REGION: ap-northeast-1
 
 jobs:
-  build-runner:
-    name: Build Runner Image
-    uses: ./.github/workflows/build-runner.yml
-    secrets:
-      AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
-
   build-ami:
     name: Build AMI ${{ matrix.arch }}
-    needs: build-runner
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
