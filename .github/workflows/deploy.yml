@@ -19,6 +19,10 @@ on:
       custom_version:
         description: "Custom version (e.g., v1.2.0). Overrides bump type."
         type: string
+      use_fallback_runners:
+        description: "Use GitHub-hosted arm64 fallback (when self-hosted fleet is unavailable)"
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy
@@ -37,15 +41,18 @@ env:
 jobs:
   build:
     name: Build Orchestrator
+    if: github.repository == 'Shatille/runs-fleet'
     uses: ./.github/workflows/build-orchestrator.yml
     with:
       bump: ${{ inputs.bump || 'patch' }}
       custom_version: ${{ inputs.custom_version }}
+      use_fallback_runners: ${{ inputs.use_fallback_runners || false }}
     secrets:
       AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
 
   coverage:
     name: Update Coverage
+    if: github.repository == 'Shatille/runs-fleet'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -92,6 +99,7 @@ jobs:
 
   deploy:
     name: Deploy to ECS
+    if: github.repository == 'Shatille/runs-fleet'
     needs: build
     runs-on: ubuntu-latest
     steps:
