@@ -14,6 +14,11 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      use_fallback_runners:
+        description: "Use GitHub-hosted runners (when self-hosted fleet is unavailable)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,7 +35,7 @@ jobs:
   build-ami:
     name: Build AMI ${{ matrix.arch }}
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +43,11 @@ jobs:
           - arch: arm64
             packer_file: runs-fleet-runner-arm64.pkr.hcl
             launch_template: runs-fleet-runner-arm64
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
           - arch: amd64
             packer_file: runs-fleet-runner-amd64.pkr.hcl
             launch_template: runs-fleet-runner-amd64
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -92,7 +99,7 @@ jobs:
   cleanup-old-amis:
     name: Cleanup Old AMIs
     needs: build-ami
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6

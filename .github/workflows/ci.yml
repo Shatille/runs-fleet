@@ -10,6 +10,12 @@ on:
       - "pkg/admin/ui/**"
       - "Makefile"
       - ".github/workflows/ci.yml"
+  workflow_dispatch:
+    inputs:
+      use_fallback_runners:
+        description: "Use GitHub-hosted runners (when self-hosted fleet is unavailable)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,7 +27,7 @@ concurrency:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -59,7 +65,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     needs: build
     steps:
       - uses: actions/checkout@v5
@@ -101,7 +107,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     needs: build
     steps:
       - uses: actions/checkout@v5

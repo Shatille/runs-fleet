@@ -56,7 +56,7 @@ jobs:
   # Check if runner-related files changed since last tag
   check-changes:
     name: Check Runner Changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
@@ -105,7 +105,7 @@ jobs:
     name: Prepare Build
     needs: check-changes
     if: needs.check-changes.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       registry: ${{ steps.login-ecr.outputs.registry }}
@@ -143,7 +143,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
             platform: linux/amd64
           - arch: arm64
             runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
@@ -186,7 +186,7 @@ jobs:
   manifest:
     name: Create Multi-arch Manifest
     needs: [prepare, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -215,7 +215,7 @@ jobs:
   verify:
     name: Scan and Promote
     needs: [prepare, manifest]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      use_fallback_runners:
+        description: "Use GitHub-hosted runners (when self-hosted fleet is unavailable). Manual re-run of a tag's release on hosted runners."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -16,7 +22,7 @@ env:
 jobs:
   release:
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

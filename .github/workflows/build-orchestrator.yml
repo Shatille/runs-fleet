@@ -47,7 +47,7 @@ env:
 jobs:
   version:
     name: Calculate Version
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       version: ${{ steps.version.outputs.new_version }}
     steps:
@@ -110,7 +110,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
             platform: linux/amd64
           - arch: arm64
             runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
@@ -151,7 +151,7 @@ jobs:
   manifest:
     name: Create Manifest
     needs: [version, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       version: ${{ needs.version.outputs.version }}
     steps:
