@@ -53,7 +53,7 @@ jobs:
   coverage:
     name: Update Coverage
     if: github.repository == 'Shatille/runs-fleet'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -101,7 +101,7 @@ jobs:
     name: Deploy to ECS
     if: github.repository == 'Shatille/runs-fleet'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: aws-actions/configure-aws-credentials@v6
         with:
