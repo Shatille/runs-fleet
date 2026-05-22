@@ -6,7 +6,9 @@ on:
       - main
     paths:
       - "scripts/**"
-      - "packer/**"
+      - "packer/runs-fleet-runner-*.pkr.hcl"
+      - "packer/provision-runs-fleet.sh"
+      - ".github/workflows/build-ami.yml"
   workflow_run:
     workflows: ["Build Runner Image", "Build Runner Base AMI"]
     types: [completed]
