@@ -39,3 +39,7 @@ Thumbs.db
 
 # Build artifacts
 dist/
+
+# Claude Code runtime
+.claude/scheduled_tasks.lock
+.claude/worktrees/
