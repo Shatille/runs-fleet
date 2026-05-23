@@ -62,8 +62,8 @@ jobs:
         uses: hashicorp/setup-packer@main
 
       - name: Install Session Manager Plugin
+        if: ${{ !inputs.use_fallback_runners }}
         run: |
-          command -v session-manager-plugin && exit 0
           ARCH=$([ "$(uname -m)" = "x86_64" ] && echo linux_64bit || echo linux_arm64)
           sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ARCH}/session-manager-plugin.rpm"
 
