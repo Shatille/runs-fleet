@@ -81,6 +81,15 @@ fi
 echo "==> Enabling SSM agent"
 sudo systemctl enable amazon-ssm-agent
 
+echo "==> Installing AWS Session Manager Plugin"
+if [ "$ARCH" = "x86_64" ]; then
+  SSM_PLUGIN_ARCH="linux_64bit"
+else
+  SSM_PLUGIN_ARCH="linux_arm64"
+fi
+sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${SSM_PLUGIN_ARCH}/session-manager-plugin.rpm" \
+  || { echo "Failed to install session-manager-plugin"; exit 1; }
+
 echo "==> Enabling Docker"
 sudo systemctl enable docker
 sudo usermod -aG docker ec2-user
@@ -307,4 +316,5 @@ echo "    - curl: $(curl --version | head -1)"
 echo "    - QEMU binfmt: enabled at boot"
 echo "    - Docker buildx: multi-arch builder configured"
 echo "    - SSM Agent: enabled"
+echo "    - Session Manager Plugin: $(session-manager-plugin --version)"
 echo "    - CloudWatch Agent: enabled"
