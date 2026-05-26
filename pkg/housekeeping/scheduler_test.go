@@ -307,8 +307,9 @@ func TestScheduler_Run_Cancellation(t *testing.T) {
 		PoolAuditInterval:            100 * time.Millisecond,
 		CostReportInterval:           100 * time.Millisecond,
 		DLQRedriveInterval:           100 * time.Millisecond,
-		EphemeralPoolCleanupInterval: 100 * time.Millisecond,
-		StaleJobsInterval:           100 * time.Millisecond,
+		EphemeralPoolCleanupInterval:    100 * time.Millisecond,
+		StaleJobsInterval:               100 * time.Millisecond,
+		OrphanedPackerInstancesInterval: 100 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -346,8 +347,9 @@ func TestScheduler_Run_ImmediateOrphanedTask(t *testing.T) {
 		PoolAuditInterval:            1 * time.Hour,
 		CostReportInterval:           1 * time.Hour,
 		DLQRedriveInterval:           1 * time.Hour,
-		EphemeralPoolCleanupInterval: 1 * time.Hour,
-		StaleJobsInterval:           1 * time.Hour,
+		EphemeralPoolCleanupInterval:    1 * time.Hour,
+		StaleJobsInterval:               1 * time.Hour,
+		OrphanedPackerInstancesInterval: 1 * time.Hour,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 
@@ -446,8 +448,9 @@ func TestScheduler_Run_TickerBasedScheduling(t *testing.T) {
 		PoolAuditInterval:            10 * time.Millisecond,
 		CostReportInterval:           10 * time.Millisecond,
 		DLQRedriveInterval:           10 * time.Millisecond,
-		EphemeralPoolCleanupInterval: 10 * time.Millisecond,
-		StaleJobsInterval:           10 * time.Millisecond,
+		EphemeralPoolCleanupInterval:    10 * time.Millisecond,
+		StaleJobsInterval:               10 * time.Millisecond,
+		OrphanedPackerInstancesInterval: 10 * time.Millisecond,
 	}
 	scheduler := NewScheduler(sqsClient, "https://sqs.example.com/queue", cfg)
 

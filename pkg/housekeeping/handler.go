@@ -49,6 +49,9 @@ const (
 	TaskOrphanedJobs TaskType = "orphaned_jobs"
 	// TaskStaleJobs detects jobs stuck in running/claiming by checking GitHub API.
 	TaskStaleJobs TaskType = "stale_jobs"
+	// TaskOrphanedPackerInstances terminates packer builder instances left
+	// running by killed or cancelled AMI-build workflows.
+	TaskOrphanedPackerInstances TaskType = "orphaned_packer_instances"
 )
 
 // Message represents a housekeeping task message.
@@ -69,6 +72,7 @@ type TaskExecutor interface {
 	ExecuteCostReport(ctx context.Context) error
 	ExecuteDLQRedrive(ctx context.Context) error
 	ExecuteEphemeralPoolCleanup(ctx context.Context) error
+	ExecuteOrphanedPackerInstances(ctx context.Context) error
 }
 
 // Handler processes housekeeping tasks from SQS queue.
@@ -190,6 +194,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		err = h.taskExecutor.ExecuteDLQRedrive(taskCtx)
 	case TaskEphemeralPoolCleanup:
 		err = h.taskExecutor.ExecuteEphemeralPoolCleanup(taskCtx)
+	case TaskOrphanedPackerInstances:
+		err = h.taskExecutor.ExecuteOrphanedPackerInstances(taskCtx)
 	default:
 		h.logger().Warn("unknown task type", slog.String(logging.KeyTask, string(hkMsg.TaskType)))
 	}
