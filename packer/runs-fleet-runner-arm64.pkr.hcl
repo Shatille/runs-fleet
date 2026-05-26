@@ -22,6 +22,12 @@ variable "vpc_id" {
   description = "VPC ID for packer builder (subnet and SG are filter-discovered)"
 }
 
+variable "extra_tags" {
+  type        = map(string)
+  default     = {}
+  description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
+}
+
 source "amazon-ebs" "runs_fleet_runner_arm64" {
   ami_name             = "runs-fleet-runner-arm64-{{timestamp}}"
   instance_type        = "c7g.xlarge"
@@ -70,7 +76,7 @@ source "amazon-ebs" "runs_fleet_runner_arm64" {
     delete_on_termination = true
   }
 
-  tags = {
+  tags = merge({
     Name           = "runs-fleet-runner-arm64"
     Version        = var.ami_version
     OS             = "Amazon Linux 2023"
@@ -80,7 +86,7 @@ source "amazon-ebs" "runs_fleet_runner_arm64" {
     BuildTimestamp = "{{timestamp}}"
     Stage          = "application"
     BaseAMI        = "runner-base-arm64"
-  }
+  }, var.extra_tags)
 
   run_tags = {
     Name       = "packer-runs-fleet-runner-arm64-builder"

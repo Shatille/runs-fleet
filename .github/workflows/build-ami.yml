@@ -74,6 +74,11 @@ jobs:
       - name: Packer Build
         id: packer
         working-directory: packer
+        env:
+          # Downstream forks set vars.AMI_EXTRA_TAGS to a JSON-object string
+          # (e.g., '{"Environment":"prod"}') to merge tags onto the final AMI.
+          # Unset → '{}', which parses as an empty map(string).
+          PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
         run: |
           packer build \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \

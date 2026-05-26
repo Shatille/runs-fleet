@@ -22,6 +22,12 @@ variable "vpc_id" {
   description = "VPC ID for packer builder (subnet and SG are filter-discovered)"
 }
 
+variable "extra_tags" {
+  type        = map(string)
+  default     = {}
+  description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
+}
+
 source "amazon-ebs" "runner_base_amd64" {
   ami_name             = "runner-base-amd64-{{timestamp}}"
   instance_type        = "c6i.xlarge"
@@ -70,7 +76,7 @@ source "amazon-ebs" "runner_base_amd64" {
     delete_on_termination = true
   }
 
-  tags = {
+  tags = merge({
     Name           = "runner-base-amd64"
     Version        = var.ami_version
     OS             = "Amazon Linux 2023"
@@ -79,7 +85,7 @@ source "amazon-ebs" "runner_base_amd64" {
     ManagedBy      = "Packer"
     BuildTimestamp = "{{timestamp}}"
     Stage          = "base"
-  }
+  }, var.extra_tags)
 
   run_tags = {
     Name       = "packer-runner-base-amd64-builder"
@@ -97,6 +103,14 @@ source "amazon-ebs" "runner_base_amd64" {
 
 build {
   sources = ["source.amazon-ebs.runner_base_amd64"]
+
+  # Downstream extension hook. Upstream ships an empty stub at
+  # packer/provision-base-hook.sh; the build-base-ami workflow rewrites it
+  # from the PROVISION_BASE_HOOK secret when set, otherwise it stays empty.
+  provisioner "file" {
+    source      = "${path.root}/provision-base-hook.sh"
+    destination = "/tmp/provision-base-hook.sh"
+  }
 
   provisioner "shell" {
     script = "${path.root}/provision-base.sh"
