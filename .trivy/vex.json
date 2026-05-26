@@ -1,9 +1,9 @@
 {
-  "_note": "PURLs below are pinned to docker/docker@v28.5.2 — the version currently vendored by docker-buildx-plugin and docker-compose-plugin. When those plugins bump their vendored docker/docker, this file must be reviewed: if they bump past the CVE fixes the entries can be removed; if they stay on a still-vulnerable version the PURLs must be updated.",
+  "_note": "PURLs below are pinned to the versions Trivy currently detects in this image: docker/docker@v28.5.2 (vendored by docker-buildx-plugin and docker-compose-plugin) and containerd/v2@v2.2.3 (real runtime dependency of the AL2023 `docker` dnf package, also vendored as library code by the same plugins). When `dnf install docker` resolves to a newer version, or the plugins bump their vendored libraries, this file must be reviewed: if the new versions are past the CVE fixes the entries can be removed; otherwise the PURLs must be updated.",
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/Shatille/runs-fleet/.trivy/vex.json",
   "author": "runs-fleet maintainers",
-  "timestamp": "2026-05-21T00:00:00Z",
+  "timestamp": "2026-05-26T00:00:00Z",
   "version": 1,
   "statements": [
     {
@@ -47,6 +47,20 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
       "impact_statement": "Vendored in docker-buildx-plugin and docker-compose-plugin client binaries. The race condition is in the daemon's cp implementation. Plugins talk to the daemon over the API; they do not execute the vulnerable cp handler themselves."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-46680",
+        "description": "containerd user ID handling bypass allows runAsNonRoot evasion. Vulnerable code lives in containerd's CRI plugin, where a crafted image USER directive can bypass the Kubernetes-set runAsNonRoot SecurityContext check."
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Trivy reports this against dockerd (real containerd runtime dependency) and docker-buildx / docker-compose plugins (vendored as library code). The exploit requires a runAsNonRoot SecurityContext to flow through containerd's CRI plugin — a Kubernetes-only path. This AMI runs `docker run` via the legacy moby socket; CRI is not loaded and no Kubernetes pod spec is ever applied, so the user-ID resolution code path tied to runAsNonRoot enforcement is never exercised. The plugins are pure API clients that do not host the runtime at all."
     }
   ]
 }
