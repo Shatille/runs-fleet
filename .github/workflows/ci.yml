@@ -3,13 +3,6 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "pkg/admin/ui/**"
-      - "Makefile"
-      - ".github/workflows/ci.yml"
   workflow_dispatch:
     inputs:
       use_fallback_runners:
@@ -25,8 +18,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go:
+              - '**.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'pkg/admin/ui/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+
   build:
     name: Build
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
@@ -65,8 +79,9 @@ jobs:
 
   lint:
     name: Lint
+    needs: [changes, build]
+    if: needs.changes.outputs.go == 'true'
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
-    needs: build
     steps:
       - uses: actions/checkout@v5
 
@@ -107,8 +122,9 @@ jobs:
 
   test:
     name: Test
+    needs: [changes, build]
+    if: needs.changes.outputs.go == 'true'
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
-    needs: build
     steps:
       - uses: actions/checkout@v5
 
