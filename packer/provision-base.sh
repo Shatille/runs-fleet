@@ -297,6 +297,17 @@ CWCONFIG
 echo "==> Enabling CloudWatch agent"
 sudo systemctl enable amazon-cloudwatch-agent
 
+# Downstream extension point.
+# The build uploads packer/provision-base-hook.sh to /tmp/provision-base-hook.sh
+# unconditionally. Upstream ships an empty stub; downstream forks rewrite it
+# from a CI secret. If the file is non-empty, run it before cleanup so its
+# changes are part of the snapshot.
+HOOK="/tmp/provision-base-hook.sh"
+if [ -s "$HOOK" ]; then
+  echo "==> Running downstream provision hook"
+  sudo bash "$HOOK"
+fi
+
 echo "==> Cleaning up"
 sudo dnf clean all
 sudo rm -rf /var/cache/dnf
