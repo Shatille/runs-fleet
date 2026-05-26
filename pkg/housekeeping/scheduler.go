@@ -58,6 +58,11 @@ type SchedulerConfig struct {
 	// StaleJobsInterval is how often to check for stale jobs via GitHub API.
 	// Default: 5 minutes
 	StaleJobsInterval time.Duration
+
+	// OrphanedPackerInstancesInterval is how often to reap stale packer
+	// builder instances left behind by killed AMI-build workflows.
+	// Default: 15 minutes
+	OrphanedPackerInstancesInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default scheduler configuration.
@@ -70,8 +75,9 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		PoolAuditInterval:            10 * time.Minute,
 		CostReportInterval:           24 * time.Hour,
 		DLQRedriveInterval:           1 * time.Minute,
-		EphemeralPoolCleanupInterval: 1 * time.Hour,
-		StaleJobsInterval:           5 * time.Minute,
+		EphemeralPoolCleanupInterval:    1 * time.Hour,
+		StaleJobsInterval:               5 * time.Minute,
+		OrphanedPackerInstancesInterval: 15 * time.Minute,
 	}
 }
 
@@ -125,6 +131,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	dlqTicker := time.NewTicker(s.config.DLQRedriveInterval)
 	ephemeralPoolTicker := time.NewTicker(s.config.EphemeralPoolCleanupInterval)
 	staleJobsTicker := time.NewTicker(s.config.StaleJobsInterval)
+	packerOrphanTicker := time.NewTicker(s.config.OrphanedPackerInstancesInterval)
 
 	defer orphanedTicker.Stop()
 	defer ssmTicker.Stop()
@@ -135,6 +142,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	defer dlqTicker.Stop()
 	defer ephemeralPoolTicker.Stop()
 	defer staleJobsTicker.Stop()
+	defer packerOrphanTicker.Stop()
 
 	s.scheduleTask(ctx, TaskOrphanedInstances)
 	s.scheduleTask(ctx, TaskDLQRedrive)
@@ -170,6 +178,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 		case <-staleJobsTicker.C:
 			s.scheduleTask(ctx, TaskStaleJobs)
+
+		case <-packerOrphanTicker.C:
+			s.scheduleTask(ctx, TaskOrphanedPackerInstances)
 		}
 	}
 }

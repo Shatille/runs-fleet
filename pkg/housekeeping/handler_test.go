@@ -50,6 +50,7 @@ type mockTaskExecutor struct {
 	costErr           error
 	dlqErr            error
 	ephemeralPoolErr  error
+	packerErr         error
 	orphanedCall      int
 	ssmCall           int
 	jobsCall          int
@@ -59,6 +60,7 @@ type mockTaskExecutor struct {
 	costCall          int
 	dlqCall           int
 	ephemeralPoolCall int
+	packerCall        int
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -104,6 +106,11 @@ func (m *mockTaskExecutor) ExecuteDLQRedrive(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteEphemeralPoolCleanup(_ context.Context) error {
 	m.ephemeralPoolCall++
 	return m.ephemeralPoolErr
+}
+
+func (m *mockTaskExecutor) ExecuteOrphanedPackerInstances(_ context.Context) error {
+	m.packerCall++
+	return m.packerErr
 }
 
 func TestNewHandler(t *testing.T) {
