@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "pkg/admin/ui/**"
+      - "Makefile"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Dummy workflow that publishes the same Build / Lint / Test status checks
+# as ci.yml so PRs that don't touch Go can still satisfy the required
+# checks on main. Paths-ignore here must mirror ci.yml's paths exactly.
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
