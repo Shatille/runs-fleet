@@ -50,8 +50,12 @@ source "amazon-ebs" "runner_base_arm64" {
   }
 
   source_ami_filter {
+    # Pinned to AL2023 standard + kernel-6.1 (the default LTS). The broader
+    # `al2023-ami-*-arm64` glob also matches `al2023-ami-minimal-*`, which
+    # ships without amazon-ssm-agent — Packer's session_manager SSH then
+    # times out.
     filters = {
-      name                = "al2023-ami-*-arm64"
+      name                = "al2023-ami-2023.*-kernel-6.1-arm64"
       virtualization-type = "hvm"
     }
     most_recent = true
