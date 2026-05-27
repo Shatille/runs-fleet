@@ -246,6 +246,7 @@ func (v *VaultStore) Put(ctx context.Context, runnerID string, config *RunnerCon
 		"jit_token":             config.JITToken,
 		"labels":                config.Labels,
 		"runner_group":          config.RunnerGroup,
+		"runner_name":           config.RunnerName,
 		"job_id":                config.JobID,
 		"cache_token":           config.CacheToken,
 		"cache_url":             config.CacheURL,

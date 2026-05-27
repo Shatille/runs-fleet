@@ -215,12 +215,25 @@ func TestVaultStore_Put(t *testing.T) {
 			t.Parallel()
 
 			putCalled := false
+			var capturedPayload map[string]interface{}
 			server := mockVaultServer(map[string]http.HandlerFunc{
 				tt.path: func(w http.ResponseWriter, r *http.Request) {
 					if r.Method != http.MethodPut && r.Method != http.MethodPost {
 						t.Errorf("expected PUT or POST, got %s", r.Method)
 					}
 					putCalled = true
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("failed to decode request body: %v", err)
+					}
+					// KVv2 wraps the payload under "data"; KVv1 sends it directly.
+					if tt.kvVersion == 2 {
+						if d, ok := body["data"].(map[string]interface{}); ok {
+							capturedPayload = d
+						}
+					} else {
+						capturedPayload = body
+					}
 					w.WriteHeader(http.StatusOK)
 					_, _ = w.Write([]byte(tt.response))
 				},
@@ -236,9 +249,10 @@ func TestVaultStore_Put(t *testing.T) {
 			store := NewVaultStoreWithClient(client, "secret", "runs-fleet/runners", tt.kvVersion)
 
 			config := &RunnerConfig{
-				Org:      "testorg",
-				Repo:     "testorg/testrepo",
-				JITToken: "token123",
+				Org:        "testorg",
+				Repo:       "testorg/testrepo",
+				JITToken:   "token123",
+				RunnerName: "runs-fleet-runner-unique-suffix-42",
 			}
 
 			err = store.Put(t.Context(), "i-123", config)
@@ -248,6 +262,14 @@ func TestVaultStore_Put(t *testing.T) {
 
 			if !putCalled {
 				t.Error("Vault API was not called")
+			}
+
+			// Regression guard: every field the agent reads back must be in the
+			// serialized payload. Missing runner_name caused all ephemeral runners
+			// to register under the generic default name and trample each other
+			// via `config.sh --replace`.
+			if got, ok := capturedPayload["runner_name"].(string); !ok || got != config.RunnerName {
+				t.Errorf("runner_name in Vault payload = %v, want %q", capturedPayload["runner_name"], config.RunnerName)
 			}
 		})
 	}
