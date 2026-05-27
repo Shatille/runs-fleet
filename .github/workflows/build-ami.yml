@@ -79,6 +79,11 @@ jobs:
           # (e.g., '{"Environment":"prod"}') to merge tags onto the final AMI.
           # Unset → '{}', which parses as an empty map(string).
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
+          # Source of truth is vars.ECR_REPOSITORY_RUNNER (also read by
+          # build-runner.yml when publishing the image). Fallback matches the
+          # Packer template's own default in runs-fleet-runner-*.pkr.hcl so
+          # behavior is unchanged when the variable is unset.
+          PKR_VAR_ecr_repository: ${{ vars.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
         run: |
           packer build \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
