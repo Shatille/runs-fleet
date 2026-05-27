@@ -54,7 +54,8 @@ echo "==> Extracting agent binary from ECR image"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REGION="ap-northeast-1"
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
-RUNNER_IMAGE="${ECR_REGISTRY}/runs-fleet-runner:latest"
+ECR_REPOSITORY="${ECR_REPOSITORY:-runs-fleet-runner}"
+RUNNER_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
 
 # Authenticate to ECR
 aws ecr get-login-password --region ${REGION} | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}

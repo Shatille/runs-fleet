@@ -28,6 +28,12 @@ variable "extra_tags" {
   description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
 }
 
+variable "ecr_repository" {
+  type        = string
+  default     = "runs-fleet-runner"
+  description = "ECR repository (no registry host, no tag) holding the runner image whose agent binary is extracted into the AMI. Override to match `vars.ECR_REPOSITORY_RUNNER` if your fork publishes under a different path (e.g. `runs-fleet/runner`)."
+}
+
 source "amazon-ebs" "runs_fleet_runner_arm64" {
   ami_name             = "runs-fleet-runner-arm64-{{timestamp}}"
   instance_type        = "c7g.xlarge"
@@ -117,7 +123,8 @@ build {
 
   provisioner "shell" {
     environment_vars = [
-      "RUNNER_ARCH=arm64"
+      "RUNNER_ARCH=arm64",
+      "ECR_REPOSITORY=${var.ecr_repository}",
     ]
     script = "${path.root}/provision-runs-fleet.sh"
   }
