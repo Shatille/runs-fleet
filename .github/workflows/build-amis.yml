@@ -1,0 +1,285 @@
+name: Build AMIs
+
+# Single source of truth for both AMI layers. The base AMI and the runner AMI
+# used to live in separate workflows that fired on the same push in parallel,
+# which created a race: the lean runner-AMI Packer build (~3 min) would finish
+# before the heavy base build (~16 min) and pick up a stale base via
+# `source_ami_filter`. Merging them into one workflow lets `needs: build-base`
+# enforce ordering — runner-AMI never starts Packer until base has succeeded
+# (or been skipped because nothing in base changed).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packer/**"
+      - "scripts/**"
+      - ".github/workflows/build-amis.yml"
+  workflow_run:
+    # When the runner Docker image is rebuilt (new agent binary), bake it into
+    # a fresh runner AMI. Base doesn't need rebuilding for this trigger.
+    workflows: ["Build Runner Image"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Weekly base refresh picks up any upstream OS/package updates. The runner
+    # AMI job cascades automatically since base output reflects "fresh build".
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      use_fallback_runners:
+        description: "Use GitHub-hosted runners (when self-hosted fleet is unavailable). Required to bootstrap when no working runs-fleet AMI exists yet."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-amis-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  # Resolve which AMI layer(s) need rebuilding for this trigger. Push events
+  # use paths-filter to scope to what actually changed; other events fall
+  # through via `if:` clauses on the downstream jobs.
+  changes:
+    name: Detect Changes
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      base: ${{ steps.filter.outputs.base }}
+      runner: ${{ steps.filter.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - if: github.event_name == 'push'
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            base:
+              - 'packer/runner-base-*.pkr.hcl'
+              - 'packer/provision-base.sh'
+              - 'packer/provision-base-hook.sh'
+              - '.github/workflows/build-amis.yml'
+            runner:
+              - 'packer/runs-fleet-runner-*.pkr.hcl'
+              - 'packer/provision-runs-fleet.sh'
+              - 'scripts/**'
+              - '.github/workflows/build-amis.yml'
+
+  build-base:
+    name: Build Base AMI ${{ matrix.arch }}
+    needs: changes
+    if: |
+      needs.changes.outputs.base == 'true' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            packer_file: runner-base-arm64.pkr.hcl
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+          - arch: amd64
+            packer_file: runner-base-amd64.pkr.hcl
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Install Session Manager Plugin
+        if: ${{ !inputs.use_fallback_runners }}
+        run: |
+          ARCH=$([ "$(uname -m)" = "x86_64" ] && echo linux_64bit || echo linux_arm64)
+          sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ARCH}/session-manager-plugin.rpm"
+
+      - name: Materialize downstream provision hook (if configured)
+        working-directory: packer
+        env:
+          PROVISION_BASE_HOOK: ${{ secrets.PROVISION_BASE_HOOK }}
+        run: |
+          if [ -n "$PROVISION_BASE_HOOK" ]; then
+            printf '%s' "$PROVISION_BASE_HOOK" > provision-base-hook.sh
+            echo "Materialized provision-base-hook.sh from secret ($(wc -l < provision-base-hook.sh) lines)"
+          else
+            echo "No PROVISION_BASE_HOOK secret set; using checked-in empty stub"
+          fi
+
+      - name: Packer Init
+        working-directory: packer
+        run: packer init ${{ matrix.packer_file }}
+
+      - name: Packer Validate
+        working-directory: packer
+        env:
+          # Downstream forks set vars.AMI_EXTRA_TAGS to a JSON-object string
+          # (e.g., '{"Environment":"prod"}') to merge tags onto the final AMI.
+          # Unset → '{}', which parses as an empty map(string).
+          PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
+        run: |
+          packer validate \
+            -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
+            ${{ matrix.packer_file }}
+
+      - name: Packer Build
+        id: packer
+        working-directory: packer
+        env:
+          PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
+        run: |
+          packer build \
+            -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
+            -machine-readable \
+            ${{ matrix.packer_file }} | tee packer-output.txt
+
+          AMI_ID=$(grep 'artifact,0,id' packer-output.txt | cut -d: -f2)
+          if [ -z "$AMI_ID" ]; then
+            echo "ERROR: Packer build did not produce an AMI" >&2
+            exit 1
+          fi
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "Built base AMI: $AMI_ID"
+
+  build-runner-ami:
+    name: Build Runner AMI ${{ matrix.arch }}
+    needs: [changes, build-base]
+    # Run when:
+    #   - runner-AMI paths changed (push), OR
+    #   - base paths changed (push) — chain rebuild on top of fresh base, OR
+    #   - workflow_run from Build Runner Image (new agent binary to bake), OR
+    #   - schedule (weekly refresh), OR
+    #   - workflow_dispatch (manual).
+    # Gate on build-base completing — success unblocks; skipped means base
+    # didn't need to rebuild and we proceed against the existing latest base;
+    # failed blocks because the runner AMI would inherit a stale/broken base.
+    if: |
+      always() &&
+      (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
+      (needs.changes.outputs.runner == 'true' ||
+       needs.changes.outputs.base == 'true' ||
+       github.event_name == 'workflow_run' ||
+       github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            packer_file: runs-fleet-runner-arm64.pkr.hcl
+            launch_template: runs-fleet-runner-arm64
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+          - arch: amd64
+            packer_file: runs-fleet-runner-amd64.pkr.hcl
+            launch_template: runs-fleet-runner-amd64
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Install Session Manager Plugin
+        if: ${{ !inputs.use_fallback_runners }}
+        run: |
+          ARCH=$([ "$(uname -m)" = "x86_64" ] && echo linux_64bit || echo linux_arm64)
+          sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ARCH}/session-manager-plugin.rpm"
+
+      - name: Packer Init
+        working-directory: packer
+        run: packer init ${{ matrix.packer_file }}
+
+      - name: Packer Build
+        id: packer
+        working-directory: packer
+        env:
+          # Downstream forks set vars.AMI_EXTRA_TAGS to a JSON-object string
+          # (e.g., '{"Environment":"prod"}') to merge tags onto the final AMI.
+          # Unset → '{}', which parses as an empty map(string).
+          PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
+          # Source of truth is secrets.ECR_REPOSITORY_RUNNER (also read by
+          # build-runner.yml when publishing the image). Fallback matches the
+          # Packer template's own default in runs-fleet-runner-*.pkr.hcl so
+          # behavior is unchanged when the secret is unset.
+          PKR_VAR_ecr_repository: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
+        run: |
+          packer build \
+            -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
+            -machine-readable \
+            ${{ matrix.packer_file }} | tee packer-output.txt
+
+          AMI_ID=$(grep 'artifact,0,id' packer-output.txt | cut -d: -f2)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "Built AMI: $AMI_ID"
+
+      - name: Update Launch Template
+        env:
+          AMI_ID: ${{ steps.packer.outputs.ami_id }}
+          LAUNCH_TEMPLATE: ${{ matrix.launch_template }}
+        run: |
+          NEW_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-name "$LAUNCH_TEMPLATE" \
+            --source-version '$Latest' \
+            --launch-template-data "{\"ImageId\":\"$AMI_ID\"}" \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text)
+
+          aws ec2 modify-launch-template \
+            --launch-template-name "$LAUNCH_TEMPLATE" \
+            --default-version "$NEW_VERSION"
+
+          echo "Updated $LAUNCH_TEMPLATE to version $NEW_VERSION with AMI $AMI_ID"
+
+  cleanup-old-amis:
+    name: Cleanup Old AMIs
+    needs: build-runner-ami
+    if: needs.build-runner-ami.result == 'success'
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deregister old AMIs (keep latest 2)
+        run: |
+          for arch in arm64 amd64; do
+            OLD_AMIS=$(aws ec2 describe-images \
+              --owners self \
+              --filters "Name=name,Values=runs-fleet-runner-${arch}-*" \
+              --query 'sort_by(Images, &CreationDate)[:-2].[ImageId]' \
+              --output text)
+
+            for ami in $OLD_AMIS; do
+              if [ "$ami" != "None" ] && [ -n "$ami" ]; then
+                echo "Deregistering $ami"
+                aws ec2 deregister-image --image-id "$ami" || true
+              fi
+            done
+          done

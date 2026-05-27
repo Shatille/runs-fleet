@@ -7,7 +7,7 @@ Two-layer AMI build:
 | **Base** | `runner-base-{amd64,arm64}.pkr.hcl` | `provision-base.sh` | OS + every package that's stable across runner-image revs: docker, git/git-lfs, node, vault, yq, buildx, gh, runner OS deps, dev tools, language toolchains, the actions/runner binary, CloudWatch agent. |
 | **Runner** | `runs-fleet-runner-{amd64,arm64}.pkr.hcl` | `provision-runs-fleet.sh` | The diff over base: the `runs-fleet-agent` binary extracted from the ECR runner image, its systemd unit, the bootstrap shim, the per-boot cloud-init script, and the runs-fleet-specific CloudWatch override. |
 
-The runner AMI uses `source_ami_filter` to pick the most recent `runner-base-{arch}-*` AMI in the account at build time, so changes to the base only take effect after `Build Runner Base AMI` runs.
+Both layers are built by a single workflow at `.github/workflows/build-amis.yml`. The runner-AMI job declares `needs: build-base`, so when a single push touches both `provision-base.sh` and `provision-runs-fleet.sh`, the runner AMI waits for the new base to register before starting Packer (its `source_ami_filter` then resolves to the fresh base). When a push only touches one layer, the other layer's job is skipped.
 
 ## Where does a new package go?
 
@@ -31,8 +31,7 @@ If you're tempted to add anything else to `provision-runs-fleet.sh`, that's a si
 
 1. Edit `packer/provision-base.sh`. Add a new `echo "==> ..."` block, follow the existing pattern (explicit error handling for downloads + checksum verify for tarballs).
 2. If the package adds a binary that downstream consumers should be able to inspect, append a line to the trailing summary (`echo "    - your-tool: $(your-tool --version)"`).
-3. Open a PR. Merging to `main` triggers `Build Runner Base AMI` automatically (`.github/workflows/build-base-ami.yml`).
-4. **Wait for the base AMI build to complete before relying on the new package.** Until the next `runner-base-*-{timestamp}` AMI is registered, `Build Runner AMI` will still pick up the old base via `source_ami_filter`. The base build also runs weekly (Sunday 06:00 UTC) and on workflow_dispatch.
+3. Open a PR. Merging to `main` triggers the unified `Build AMIs` workflow (`.github/workflows/build-amis.yml`); the `build-base` job runs, and `build-runner-ami` waits for it. The base build also runs weekly (Sunday 06:00 UTC) and on workflow_dispatch.
 
 ## Verifying
 
@@ -41,3 +40,17 @@ If you're tempted to add anything else to `provision-runs-fleet.sh`, that's a si
 ## Downstream extension point
 
 `packer/provision-base-hook.sh` is an empty stub in upstream. Downstream forks that need to layer in account-specific tooling without modifying upstream can rewrite it (e.g. from a CI secret) — the base build uploads it unconditionally and executes it just before cleanup if non-empty. **Prefer upstreaming new packages over relying on this hook.** The hook is for things that genuinely cannot live in upstream (account-specific credentials, internal-mirror configs).
+
+## Rolling back a bad runner AMI
+
+`pkg/fleet/fleet.go` pins `LaunchTemplateSpecification.Version` to `"$Latest"`, which means **highest version number** — not the version flagged as default. So `aws ec2 modify-launch-template --default-version N` does **not** affect new EC2 fleet launches. To roll back, create a new launch-template version that clones the last known-good one (the new version's number becomes `$Latest`):
+
+```bash
+aws ec2 create-launch-template-version \
+  --launch-template-name runs-fleet-runner-<arch> \
+  --source-version <good-version-number> \
+  --launch-template-data '{}' \
+  --version-description "rollback of <bad-version-number>"
+```
+
+Both `runs-fleet-runner-amd64` and `runs-fleet-runner-arm64` need the same treatment. The next `CreateFleet` call from the orchestrator will resolve `$Latest` to the new version and launch the rolled-back AMI. The next successful `Build AMIs` run then naturally advances `$Latest` again with a fresh AMI.
