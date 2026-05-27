@@ -17,7 +17,10 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
+  # Forks that classify the ECR repository path as sensitive set it via
+  # `secrets.ECR_REPOSITORY` instead of a repo variable; fall back through
+  # both so either form works.
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || vars.ECR_REPOSITORY || 'runs-fleet' }}
 
 jobs:
   release:

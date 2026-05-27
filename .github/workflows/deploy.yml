@@ -34,9 +34,11 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'runs-fleet' }}
-  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'shavakan' }}
-  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'runs-fleet-server' }}
+  # Forks that classify these values as sensitive set them via `secrets.X`
+  # instead of repo variables; fall back through both so either form works.
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY || vars.ECR_REPOSITORY || 'runs-fleet' }}
+  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER || vars.ECS_CLUSTER || 'shavakan' }}
+  ECS_SERVICE: ${{ secrets.ECS_SERVICE || vars.ECS_SERVICE || 'runs-fleet-server' }}
 
 jobs:
   version:
