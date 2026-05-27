@@ -39,15 +39,131 @@ env:
   ECS_SERVICE: ${{ vars.ECS_SERVICE || 'runs-fleet-server' }}
 
 jobs:
+  version:
+    name: Calculate Version
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    outputs:
+      version: ${{ steps.version.outputs.new_version }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Calculate version
+        id: version
+        run: |
+          validate_version() {
+            if ! [[ $1 =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version format '$1'"
+              exit 1
+            fi
+          }
+
+          CUSTOM="${{ inputs.custom_version }}"
+          if [ -n "$CUSTOM" ]; then
+            validate_version "$CUSTOM"
+            [[ $CUSTOM =~ ^v ]] || CUSTOM="v${CUSTOM}"
+            NEW_VERSION="$CUSTOM"
+          else
+            LATEST=$(aws ecr describe-images --repository-name $ECR_REPOSITORY \
+              --query 'imageDetails[*].imageTags[]' --output text 2>/dev/null | \
+              tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+
+            VERSION=${LATEST#v}
+            if [ -z "$VERSION" ]; then
+              VERSION="0.0.0"
+            fi
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+
+            BUMP="${{ inputs.bump || 'patch' }}"
+            if [ "$BUMP" = "minor" ]; then
+              NEW_VERSION="v${MAJOR}.$((MINOR + 1)).0"
+            else
+              NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            fi
+          fi
+
+          if aws ecr describe-images --repository-name $ECR_REPOSITORY \
+            --image-ids imageTag=$NEW_VERSION >/dev/null 2>&1; then
+            echo "Version $NEW_VERSION already exists"
+            exit 1
+          fi
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $NEW_VERSION"
+
   build:
-    name: Build Orchestrator
-    uses: ./.github/workflows/build-orchestrator.yml
-    with:
-      bump: ${{ inputs.bump || 'patch' }}
-      custom_version: ${{ inputs.custom_version }}
-      use_fallback_runners: ${{ inputs.use_fallback_runners || false }}
-    secrets:
-      AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
+    name: Build ${{ matrix.arch }}
+    needs: version
+    runs-on: "${{ matrix.runner }}"
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+            platform: linux/amd64
+          - arch: arm64
+            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          pull: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.version.outputs.version }}-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+          cache-from: type=registry,ref=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
+          sbom: true
+          provenance: mode=max
+          no-cache-filters: stage-1
+
+  manifest:
+    name: Create Manifest
+    needs: [version, build]
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Create and push multi-arch manifest
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-amd64 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION-arm64
 
   coverage:
     name: Update Coverage
@@ -99,7 +215,7 @@ jobs:
   deploy:
     name: Deploy to ECS
     if: github.repository == 'Shatille/runs-fleet'
-    needs: build
+    needs: [version, manifest]
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: aws-actions/configure-aws-credentials@v6
@@ -113,7 +229,7 @@ jobs:
       - name: Deploy to ECS
         env:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition $ECS_SERVICE \
@@ -136,7 +252,7 @@ jobs:
 
       - name: Summary
         env:
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           echo "### Deployed $VERSION" >> $GITHUB_STEP_SUMMARY
