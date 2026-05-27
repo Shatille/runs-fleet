@@ -1,49 +1,15 @@
 #!/bin/bash
 set -e
 
-# Architecture detection (passed from Packer or default to arm64)
-ARCH="${RUNNER_ARCH:-arm64}"
-echo "==> Building for architecture: ${ARCH}"
-
-echo "==> Creating GitHub Actions runner directory"
-sudo mkdir -p /opt/actions-runner
-sudo chown ec2-user:ec2-user /opt/actions-runner
-cd /opt/actions-runner
-
-RUNNER_VERSION="2.334.0"
-echo "==> Downloading GitHub Actions runner v${RUNNER_VERSION} (${ARCH})"
-curl -fsSL -o runner.tar.gz \
-  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz"
-tar xzf runner.tar.gz
-rm runner.tar.gz
-
-echo "==> Installing runner dependencies (manual for AL2023)"
-# installdependencies.sh doesn't recognize AL2023, install manually
-sudo dnf install -y \
-  icu \
-  libicu \
-  openssl-libs \
-  krb5-libs \
-  zlib \
-  libgcc
-
-echo "==> Installing development tools for CI workflows"
-# Install full development toolchain for builds requiring compilation
-sudo dnf groupinstall -y "Development Tools"
-# Gold linker is built from source in base image for Go race detector support
-
-echo "==> Installing Java (required for sbt)"
-sudo dnf install -y java-21-amazon-corretto-headless || { echo "Java installation failed"; exit 1; }
-
-echo "==> Installing sbt"
-SBT_VERSION="1.10.7"
-SBT_SHA256="32c15233c636c233ee25a2c31879049db7021cfef70807c187515c39b96b0fe6"
-curl -fsSL --max-time 300 -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
-  || { echo "sbt download failed"; exit 1; }
-echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c || { echo "sbt checksum verification failed"; rm /tmp/sbt.tgz; exit 1; }
-sudo tar xzf /tmp/sbt.tgz -C /usr/local || { echo "sbt extraction failed"; rm /tmp/sbt.tgz; exit 1; }
-sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt || { echo "sbt symlink creation failed"; exit 1; }
-rm /tmp/sbt.tgz
+# Translate the kernel arch into Docker's platform naming for the ECR pull.
+# The actions/runner binary itself, its OS deps, and the language toolchains
+# now live in the base AMI (see packer/provision-base.sh).
+case "$(uname -m)" in
+  x86_64)  DOCKER_ARCH="amd64" ;;
+  aarch64) DOCKER_ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+echo "==> Building runs-fleet layer for ${DOCKER_ARCH}"
 
 echo "==> Creating runs-fleet agent directory"
 sudo mkdir -p /opt/runs-fleet
@@ -59,12 +25,6 @@ RUNNER_IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
 
 # Authenticate to ECR
 aws ecr get-login-password --region ${REGION} | sudo docker login --username AWS --password-stdin ${ECR_REGISTRY}
-
-# Translate runner arch to docker arch (x64 -> amd64)
-DOCKER_ARCH="${ARCH}"
-if [ "${ARCH}" = "x64" ]; then
-  DOCKER_ARCH="amd64"
-fi
 
 # Pull the runner image for current architecture
 sudo docker pull --platform linux/${DOCKER_ARCH} ${RUNNER_IMAGE}
@@ -168,7 +128,5 @@ echo "==> Cleaning up"
 sudo rm -rf /tmp/*
 
 echo "==> runs-fleet runner AMI provisioning complete"
-echo "    - GitHub Runner: v${RUNNER_VERSION}"
 echo "    - Agent binary: extracted from ECR"
 echo "    - Systemd service: runs-fleet-agent.service"
-echo "    - sbt: v${SBT_VERSION}"

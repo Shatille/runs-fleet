@@ -123,7 +123,6 @@ build {
 
   provisioner "shell" {
     environment_vars = [
-      "RUNNER_ARCH=arm64",
       "ECR_REPOSITORY=${var.ecr_repository}",
     ]
     script = "${path.root}/provision-runs-fleet.sh"
