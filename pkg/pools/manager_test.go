@@ -864,7 +864,7 @@ func TestSelectSubnet(t *testing.T) {
 			t.Parallel()
 
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{
-				PrivateSubnetIDs: tt.privateSubnets,
+				SubnetIDs: tt.privateSubnets,
 			})
 			for i := 0; i < tt.calls; i++ {
 				got := manager.selectSubnet()
@@ -931,7 +931,7 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1011,7 +1011,7 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1087,7 +1087,7 @@ func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1510,7 +1510,7 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1581,7 +1581,7 @@ func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1650,7 +1650,7 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1753,7 +1753,7 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -1797,7 +1797,7 @@ func TestReconcilePoolCreateFleetError(_ *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -2032,7 +2032,7 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -2086,7 +2086,7 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -2142,7 +2142,7 @@ func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -2198,7 +2198,7 @@ func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -2254,7 +2254,7 @@ func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -3021,7 +3021,7 @@ func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{PrivateSubnetIDs: []string{"subnet-1"}})
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -3072,7 +3072,7 @@ func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
 		},
 	}
 
-	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{PrivateSubnetIDs: []string{"subnet-1"}})
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
 	manager.SetEC2Client(mockEC2)
 
 	manager.reconcile(context.Background())
@@ -3152,7 +3152,7 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -3235,7 +3235,7 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 	}
 
 	manager := NewManager(mockDB, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
 
@@ -3277,7 +3277,7 @@ func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
 	}
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 
@@ -3303,7 +3303,7 @@ func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
 	}
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{},
+		SubnetIDs: []string{},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 
@@ -3328,7 +3328,7 @@ func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
 	}
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 
@@ -3356,7 +3356,7 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 	}
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 
@@ -3408,7 +3408,7 @@ func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
 	}
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 
@@ -3452,7 +3452,7 @@ func TestCreatePoolFleetInstances_EmptyInstanceTypes(t *testing.T) {
 	}
 
 	manager := NewManager(&MockDBClient{}, mockFleet, &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(&MockEC2API{})
 

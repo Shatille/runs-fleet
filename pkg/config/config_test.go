@@ -30,7 +30,7 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_PRIVATE_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -44,7 +44,7 @@ func TestLoad(t *testing.T) {
 			name: "Missing Queue URL",
 			env: map[string]string{
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_PRIVATE_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -57,7 +57,7 @@ func TestLoad(t *testing.T) {
 			name: "Missing VPC ID",
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
-				"RUNS_FLEET_PRIVATE_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -71,7 +71,7 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_PRIVATE_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -85,7 +85,7 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_PRIVATE_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -111,8 +111,8 @@ func TestLoad(t *testing.T) {
 			}
 
 			if !tt.wantErr {
-				if len(cfg.PrivateSubnetIDs) != 2 {
-					t.Errorf("PrivateSubnetIDs length = %v, want 2", len(cfg.PrivateSubnetIDs))
+				if len(cfg.SubnetIDs) != 2 {
+					t.Errorf("SubnetIDs length = %v, want 2", len(cfg.SubnetIDs))
 				}
 			}
 		})
@@ -168,7 +168,7 @@ func ec2Env(extra map[string]string) map[string]string {
 	env := map[string]string{
 		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 		"RUNS_FLEET_VPC_ID":                 "vpc-123",
-		"RUNS_FLEET_PRIVATE_SUBNET_IDS":     "subnet-1,subnet-2",
+		"RUNS_FLEET_SUBNET_IDS":     "subnet-1,subnet-2",
 		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 		"RUNS_FLEET_GITHUB_APP_ID":          "123",
 		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",

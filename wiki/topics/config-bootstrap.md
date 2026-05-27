@@ -43,7 +43,7 @@ Note: the file header says the package "manages application configuration from e
   - **Queues:** `QueueURL`, `QueueDLQURL`, `PoolQueueURL`, `EventsQueueURL`, `TerminationQueueURL`, `HousekeepingQueueURL`.
   - **DynamoDB:** `JobsTableName`, `PoolsTableName`, `CircuitBreakerTable`.
   - **S3 / SNS:** `CacheBucketName`, `CostReportSNSTopic`, `CostReportBucket`.
-  - **EC2:** `VPCID`, `PublicSubnetIDs`, `PrivateSubnetIDs`, `SecurityGroupID`, `InstanceProfileARN`, `KeyName`, `SpotEnabled`, `MaxRuntimeMinutes`, `LogLevel`, `LaunchTemplateName`, `RunnerImage`, `Tags`.
+  - **EC2:** `VPCID`, `SubnetIDs`, `SecurityGroupID`, `InstanceProfileARN`, `KeyName`, `SpotEnabled`, `MaxRuntimeMinutes`, `LogLevel`, `LaunchTemplateName`, `RunnerImage`, `Tags`.
   - **Cache / Admin:** `CacheSecret`, `CacheURL`, `AdminSecret`.
   - **K8s:** `KubeConfig`, `KubeNamespace`, `KubeServiceAccount`, `KubeNodeSelector`, `KubeTolerations`, `KubeRunnerImage`, `KubeIdleTimeoutMinutes`, `KubeReleaseName`, `KubeStorageClass`, `KubeResourceLabels`.
   - **K8s DinD:** `KubeDindImage`, `KubeDaemonJSONConfigMap`, `KubeDockerWaitSeconds`, `KubeDockerGroupGID`, `KubeRegistryMirror`.
@@ -73,7 +73,7 @@ Selected env-var → field mappings (full list lives in `docs/CONFIGURATION.md`)
 | `RUNS_FLEET_VPC_ID` | `VPCID` | — | EC2 |
 | `RUNS_FLEET_SECURITY_GROUP_ID` | `SecurityGroupID` | — | EC2 |
 | `RUNS_FLEET_INSTANCE_PROFILE_ARN` | `InstanceProfileARN` | — | EC2 |
-| `RUNS_FLEET_PUBLIC_SUBNET_IDS` / `RUNS_FLEET_PRIVATE_SUBNET_IDS` | `PublicSubnetIDs` / `PrivateSubnetIDs` | — | at least one for EC2 |
+| `RUNS_FLEET_SUBNET_IDS` | `SubnetIDs` | — | required for EC2 |
 | `RUNS_FLEET_RUNNER_IMAGE` | `RunnerImage` | — | EC2 (must match ECR URL regex) |
 | `RUNS_FLEET_SPOT_ENABLED` | `SpotEnabled` | `true` | — |
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `MaxRuntimeMinutes` | `360` | range 1–1440 |
@@ -120,7 +120,7 @@ Selected env-var → field mappings (full list lives in `docs/CONFIGURATION.md`)
 - **`AWS_REGION` silently defaults to `ap-northeast-1`.** Operators in other regions who forget to set it will hit cross-region latency or "resource not found" errors before realizing the region is wrong.
 - **Empty `RUNS_FLEET_MODE` is treated as `ec2`.** `IsEC2Backend()` returns true for `""` as well as `"ec2"`. Mistyping the value (e.g., `EC2`) falls through `Validate` because the case check is exact-string and rejects only non-empty unknowns.
 - **EC2 vs K8s envs do not conflict — they're ignored by the wrong backend.** Setting K8s vars under `mode=ec2` is a no-op (only EC2 validation runs), and vice versa. The risk is silently running the wrong backend rather than getting a clear error.
-- **Subnet config is "at least one of public OR private."** Setting only `RUNS_FLEET_PRIVATE_SUBNET_IDS` is valid; jobs with `public=true` labels in such a deployment will fail later in fleet creation, not at config load.
+- **Subnet config is a single required list** under `RUNS_FLEET_SUBNET_IDS`.
 - **`RUNS_FLEET_RUNNER_IMAGE` regex is strict.** Only ECR URLs of the form `<12-digit-account>.dkr.ecr.<region>.amazonaws.com/...` pass. Docker Hub or GHCR images are rejected at load.
 - **`VAULT_KV_VERSION` accepts only 0, 1, 2.** Any other integer (including negative) errors out with an explicit message.
 - **Datadog address validates only when Datadog is enabled.** Garbage in `RUNS_FLEET_METRICS_DATADOG_ADDR` with `RUNS_FLEET_METRICS_DATADOG_ENABLED=false` does not fail.

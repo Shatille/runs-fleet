@@ -46,7 +46,7 @@ func TestSelectSubnet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				PrivateSubnetIDs: tt.subnets,
+				SubnetIDs: tt.subnets,
 			}
 			var index uint64
 
@@ -62,7 +62,7 @@ func TestSelectSubnet(t *testing.T) {
 
 func TestSelectSubnet_Concurrent(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
+		SubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
 	}
 	var index uint64
 	var mu sync.Mutex
@@ -90,7 +90,7 @@ func TestSelectSubnet_Concurrent(t *testing.T) {
 }
 
 func TestSelectSubnet_EmptyPrivate(t *testing.T) {
-	cfg := &config.Config{PrivateSubnetIDs: []string{}}
+	cfg := &config.Config{SubnetIDs: []string{}}
 	var index uint64
 	if got := SelectSubnet(cfg, &index); got != "" {
 		t.Errorf("SelectSubnet() with empty subnets = %q, want empty", got)
@@ -443,7 +443,7 @@ func TestProcessEC2Message_InvalidJSON(t *testing.T) {
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -483,7 +483,7 @@ func TestProcessEC2Message_ValidJSON_NilFleet(_ *testing.T) {
 		Queue:       mockQueue,
 		Fleet:       nil, // nil fleet manager
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -507,7 +507,7 @@ func TestRunEC2Worker_ContextCancellation(t *testing.T) {
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -555,7 +555,7 @@ func TestRunEC2Worker_ProcessesMessages(t *testing.T) {
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Metrics:     metrics.NoopPublisher{},
-		Config:      &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 	}
 
@@ -681,7 +681,7 @@ func TestProcessEC2Message_NoPool_SkipsWarmPool(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil, // Will fail at fleet creation
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -746,7 +746,7 @@ func TestProcessEC2Message_WithPool_WarmPoolSuccess(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil,
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -822,7 +822,7 @@ func TestProcessEC2Message_WithPool_FallsBackToColdStart(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil, // Nil fleet will cause cold start to fail, but we can verify warm pool was tried
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}

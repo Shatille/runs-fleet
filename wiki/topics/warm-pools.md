@@ -253,8 +253,8 @@ with that prefix.
 - **Best-fit instance selection.** `ClaimAndStartPoolInstance` sorts
   candidates by CPU asc, then RAM asc, picking the smallest instance that
   satisfies the spec.
-- **Subnet selection prefers private.** `selectSubnet` returns from
-  `PrivateSubnetIDs` when available, round-robin via an atomic counter.
+- **Round-robin subnet selection.** `selectSubnet` returns from
+  `SubnetIDs` round-robin via an atomic counter.
 
 ## Gotchas [coverage: high -- 4 sources]
 

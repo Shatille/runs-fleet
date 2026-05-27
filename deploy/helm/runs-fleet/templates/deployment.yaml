@@ -13,8 +13,8 @@
 {{- if not .Values.aws.runnerImage }}
 {{- fail "aws.runnerImage is required" }}
 {{- end }}
-{{- if not .Values.aws.privateSubnetIds }}
-{{- fail "aws.privateSubnetIds is required" }}
+{{- if not .Values.aws.subnetIds }}
+{{- fail "aws.subnetIds is required" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -71,8 +71,8 @@ spec:
             # Network
             - name: RUNS_FLEET_VPC_ID
               value: {{ .Values.aws.vpcId | quote }}
-            - name: RUNS_FLEET_PRIVATE_SUBNET_IDS
-              value: {{ .Values.aws.privateSubnetIds | join "," | quote }}
+            - name: RUNS_FLEET_SUBNET_IDS
+              value: {{ .Values.aws.subnetIds | join "," | quote }}
             - name: RUNS_FLEET_SECURITY_GROUP_ID
               value: {{ .Values.aws.securityGroupId | quote }}
             - name: RUNS_FLEET_INSTANCE_PROFILE_ARN

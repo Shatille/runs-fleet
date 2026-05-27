@@ -43,7 +43,7 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNS_FLEET_VPC_ID` | | VPC ID (required) |
-| `RUNS_FLEET_PRIVATE_SUBNET_IDS` | | Comma-separated subnet IDs (required) |
+| `RUNS_FLEET_SUBNET_IDS` | | Comma-separated subnet IDs (required) |
 | `RUNS_FLEET_SECURITY_GROUP_ID` | | Security group ID (required) |
 | `RUNS_FLEET_INSTANCE_PROFILE_ARN` | | IAM instance profile ARN (required) |
 | `RUNS_FLEET_RUNNER_IMAGE` | | ECR image URL for runners (required) |
