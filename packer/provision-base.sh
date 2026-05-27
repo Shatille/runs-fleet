@@ -12,16 +12,17 @@ else
 fi
 echo "==> Detected architecture: ${ARCH} (Docker: ${DOCKER_ARCH})"
 
-echo "==> Replacing curl-minimal with full curl"
+echo "==> Replacing *-minimal packages with full variants"
 # Scoped to its own transaction so --allowerasing only affects the known
-# curl-minimal swap, not the broader package list below.
-sudo dnf install -y --allowerasing curl
+# minimal-package swaps, not the broader package list below. AL2023 standard
+# ships curl-minimal and gnupg2-minimal preinstalled; both conflict with the
+# full packages we need.
+sudo dnf install -y --allowerasing curl gnupg2
 
 echo "==> Installing base packages"
 sudo dnf install -y \
   git \
   git-lfs \
-  gnupg2 \
   jq \
   libicu \
   make \
