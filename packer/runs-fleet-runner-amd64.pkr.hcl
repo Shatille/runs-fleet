@@ -22,6 +22,18 @@ variable "vpc_id" {
   description = "VPC ID for packer builder (subnet and SG are filter-discovered)"
 }
 
+variable "extra_tags" {
+  type        = map(string)
+  default     = {}
+  description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
+}
+
+variable "ecr_repository" {
+  type        = string
+  default     = "runs-fleet-runner"
+  description = "ECR repository (no registry host, no tag) holding the runner image whose agent binary is extracted into the AMI. Override to match `vars.ECR_REPOSITORY_RUNNER` if your fork publishes under a different path (e.g. `runs-fleet/runner`)."
+}
+
 source "amazon-ebs" "runs_fleet_runner_amd64" {
   ami_name             = "runs-fleet-runner-amd64-{{timestamp}}"
   instance_type        = "c7i.xlarge"
@@ -70,7 +82,7 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
     delete_on_termination = true
   }
 
-  tags = {
+  tags = merge({
     Name           = "runs-fleet-runner-amd64"
     Version        = var.ami_version
     OS             = "Amazon Linux 2023"
@@ -80,7 +92,7 @@ source "amazon-ebs" "runs_fleet_runner_amd64" {
     BuildTimestamp = "{{timestamp}}"
     Stage          = "application"
     BaseAMI        = "runner-base-amd64"
-  }
+  }, var.extra_tags)
 
   run_tags = {
     Name       = "packer-runs-fleet-runner-amd64-builder"
@@ -111,7 +123,7 @@ build {
 
   provisioner "shell" {
     environment_vars = [
-      "RUNNER_ARCH=x64"
+      "ECR_REPOSITORY=${var.ecr_repository}",
     ]
     script = "${path.root}/provision-runs-fleet.sh"
   }

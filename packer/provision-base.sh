@@ -12,16 +12,17 @@ else
 fi
 echo "==> Detected architecture: ${ARCH} (Docker: ${DOCKER_ARCH})"
 
-echo "==> Replacing curl-minimal with full curl"
+echo "==> Replacing *-minimal packages with full variants"
 # Scoped to its own transaction so --allowerasing only affects the known
-# curl-minimal swap, not the broader package list below.
-sudo dnf install -y --allowerasing curl
+# minimal-package swaps, not the broader package list below. AL2023 standard
+# ships curl-minimal and gnupg2-minimal preinstalled; both conflict with the
+# full packages we need.
+sudo dnf install -y --allowerasing curl gnupg2
 
 echo "==> Installing base packages"
 sudo dnf install -y \
   git \
   git-lfs \
-  gnupg2 \
   jq \
   libicu \
   make \
@@ -297,6 +298,66 @@ CWCONFIG
 echo "==> Enabling CloudWatch agent"
 sudo systemctl enable amazon-cloudwatch-agent
 
+echo "==> Installing GitHub Actions runner OS dependencies"
+# AL2023 isn't recognized by actions/runner's installdependencies.sh, so the
+# runtime libraries are installed explicitly. libicu is already pulled in via
+# the base packages above; the rest are net-new.
+sudo dnf install -y \
+  openssl-libs \
+  krb5-libs \
+  zlib \
+  libgcc
+
+echo "==> Installing development tools for CI workloads"
+# Full GCC/make/etc. toolchain so CI jobs can compile native deps without an
+# extra apt-get/dnf step. Gold linker is built from source above (ARM64 only)
+# for Go race detector support.
+sudo dnf groupinstall -y "Development Tools"
+
+echo "==> Installing Java"
+sudo dnf install -y java-21-amazon-corretto-headless \
+  || { echo "Java installation failed"; exit 1; }
+
+echo "==> Installing sbt"
+SBT_VERSION="1.10.7"
+SBT_SHA256="32c15233c636c233ee25a2c31879049db7021cfef70807c187515c39b96b0fe6"
+curl -fsSL --max-time 300 -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
+  || { echo "sbt download failed"; exit 1; }
+echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c \
+  || { echo "sbt checksum verification failed"; rm /tmp/sbt.tgz; exit 1; }
+sudo tar xzf /tmp/sbt.tgz -C /usr/local \
+  || { echo "sbt extraction failed"; rm /tmp/sbt.tgz; exit 1; }
+sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt \
+  || { echo "sbt symlink creation failed"; exit 1; }
+rm /tmp/sbt.tgz
+
+echo "==> Downloading GitHub Actions runner"
+RUNNER_VERSION="2.334.0"
+if [ "$ARCH" = "x86_64" ]; then
+  RUNNER_PLATFORM="x64"
+else
+  RUNNER_PLATFORM="arm64"
+fi
+sudo mkdir -p /opt/actions-runner
+sudo chown ec2-user:ec2-user /opt/actions-runner
+curl -fsSL -o /tmp/actions-runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_PLATFORM}-${RUNNER_VERSION}.tar.gz" \
+  || { echo "actions-runner download failed"; exit 1; }
+tar xzf /tmp/actions-runner.tar.gz -C /opt/actions-runner \
+  || { echo "actions-runner extraction failed"; rm /tmp/actions-runner.tar.gz; exit 1; }
+rm /tmp/actions-runner.tar.gz
+
+# Downstream extension point.
+# The build uploads packer/provision-base-hook.sh to /tmp/provision-base-hook.sh
+# unconditionally. Upstream ships an empty stub; downstream forks rewrite it
+# from a CI secret. If the file is non-empty, run it before cleanup so its
+# changes are part of the snapshot.
+HOOK="/tmp/provision-base-hook.sh"
+if [ -s "$HOOK" ]; then
+  echo "==> Running downstream provision hook"
+  sudo bash "$HOOK"
+fi
+
 echo "==> Cleaning up"
 sudo dnf clean all
 sudo rm -rf /var/cache/dnf
@@ -318,3 +379,6 @@ echo "    - Docker buildx: multi-arch builder configured"
 echo "    - SSM Agent: enabled"
 echo "    - Session Manager Plugin: $(session-manager-plugin --version)"
 echo "    - CloudWatch Agent: enabled"
+echo "    - Java: $(java -version 2>&1 | head -1)"
+echo "    - sbt: v${SBT_VERSION}"
+echo "    - GitHub Actions runner: v${RUNNER_VERSION} (linux-${RUNNER_PLATFORM})"

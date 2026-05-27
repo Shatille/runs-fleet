@@ -22,6 +22,12 @@ variable "vpc_id" {
   description = "VPC ID for packer builder (subnet and SG are filter-discovered)"
 }
 
+variable "extra_tags" {
+  type        = map(string)
+  default     = {}
+  description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
+}
+
 source "amazon-ebs" "runner_base_arm64" {
   ami_name             = "runner-base-arm64-{{timestamp}}"
   instance_type        = "c7g.xlarge"
@@ -44,8 +50,12 @@ source "amazon-ebs" "runner_base_arm64" {
   }
 
   source_ami_filter {
+    # Pinned to AL2023 standard + kernel-6.1 (the default LTS). The broader
+    # `al2023-ami-*-arm64` glob also matches `al2023-ami-minimal-*`, which
+    # ships without amazon-ssm-agent — Packer's session_manager SSH then
+    # times out.
     filters = {
-      name                = "al2023-ami-*-arm64"
+      name                = "al2023-ami-2023.*-kernel-6.1-arm64"
       virtualization-type = "hvm"
     }
     most_recent = true
@@ -70,7 +80,7 @@ source "amazon-ebs" "runner_base_arm64" {
     delete_on_termination = true
   }
 
-  tags = {
+  tags = merge({
     Name           = "runner-base-arm64"
     Version        = var.ami_version
     OS             = "Amazon Linux 2023"
@@ -79,7 +89,7 @@ source "amazon-ebs" "runner_base_arm64" {
     ManagedBy      = "Packer"
     BuildTimestamp = "{{timestamp}}"
     Stage          = "base"
-  }
+  }, var.extra_tags)
 
   run_tags = {
     Name       = "packer-runner-base-arm64-builder"
@@ -97,6 +107,14 @@ source "amazon-ebs" "runner_base_arm64" {
 
 build {
   sources = ["source.amazon-ebs.runner_base_arm64"]
+
+  # Downstream extension hook. Upstream ships an empty stub at
+  # packer/provision-base-hook.sh; the build-base-ami workflow rewrites it
+  # from the PROVISION_BASE_HOOK secret when set, otherwise it stays empty.
+  provisioner "file" {
+    source      = "${path.root}/provision-base-hook.sh"
+    destination = "/tmp/provision-base-hook.sh"
+  }
 
   provisioner "shell" {
     script = "${path.root}/provision-base.sh"
