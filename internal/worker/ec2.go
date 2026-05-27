@@ -244,11 +244,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 // SelectSubnet returns the next private subnet ID in round-robin fashion.
 // Returns empty string if no private subnets are configured.
 func SelectSubnet(cfg *config.Config, subnetIndex *uint64) string {
-	if len(cfg.PrivateSubnetIDs) == 0 {
+	if len(cfg.SubnetIDs) == 0 {
 		return ""
 	}
 	idx := atomic.AddUint64(subnetIndex, 1) - 1
-	return cfg.PrivateSubnetIDs[idx%uint64(len(cfg.PrivateSubnetIDs))]
+	return cfg.SubnetIDs[idx%uint64(len(cfg.SubnetIDs))]
 }
 
 // CreateFleetWithRetry attempts to create a fleet with exponential backoff.

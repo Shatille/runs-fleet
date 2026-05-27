@@ -151,11 +151,11 @@ func (m *Manager) SetEC2Client(ec2Client EC2API) {
 
 // selectSubnet returns the next private subnet ID in round-robin fashion.
 func (m *Manager) selectSubnet() string {
-	if len(m.config.PrivateSubnetIDs) == 0 {
+	if len(m.config.SubnetIDs) == 0 {
 		return ""
 	}
 	idx := atomic.AddUint64(&m.subnetIndex, 1) - 1
-	return m.config.PrivateSubnetIDs[idx%uint64(len(m.config.PrivateSubnetIDs))]
+	return m.config.SubnetIDs[idx%uint64(len(m.config.SubnetIDs))]
 }
 
 // ReconcileLoop runs periodically to maintain pool size.

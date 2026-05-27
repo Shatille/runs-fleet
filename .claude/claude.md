@@ -161,7 +161,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 - `RUNS_FLEET_JOBS_TABLE`, `RUNS_FLEET_POOLS_TABLE` - DynamoDB tables
 - `RUNS_FLEET_JOBS_POOL_STATUS_GSI` - Optional DynamoDB GSI name for pool busy instance queries
 - `RUNS_FLEET_CACHE_BUCKET` - S3 cache bucket
-- `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_PRIVATE_SUBNET_IDS` - Network config
+- `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_SUBNET_IDS` - Network config
 - `RUNS_FLEET_SECURITY_GROUP_ID`, `RUNS_FLEET_INSTANCE_PROFILE_ARN` - EC2 config
 - `RUNS_FLEET_RUNNER_IMAGE` - ECR image URL for runners
 - `RUNS_FLEET_SPOT_ENABLED` - Enable spot instances (default: true)

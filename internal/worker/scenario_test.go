@@ -100,7 +100,7 @@ func TestScenario_NoPool_ColdStart(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil, // Will fail at fleet creation, but that's OK for this test
 		Metrics:          metrics.NoopPublisher{},
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -197,7 +197,7 @@ func TestScenario_EphemeralPool_FirstJob(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil,
 		Metrics:          metrics.NoopPublisher{},
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -283,7 +283,7 @@ func TestScenario_EphemeralPool_SecondJob(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil,
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}
@@ -375,7 +375,7 @@ func TestScenario_DeclarativePool(t *testing.T) {
 		Queue:            mockQueue,
 		Fleet:            nil,
 		Metrics:          mockMetrics,
-		Config:           &config.Config{PrivateSubnetIDs: []string{"subnet-a"}},
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex:      &subnetIndex,
 		WarmPoolAssigner: mockAssigner,
 	}

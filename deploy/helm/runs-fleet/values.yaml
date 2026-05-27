@@ -12,7 +12,7 @@ aws:
 
   # Network
   vpcId: ""
-  privateSubnetIds: []
+  subnetIds: []
   securityGroupId: ""
   instanceProfileArn: ""
 

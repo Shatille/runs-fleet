@@ -102,7 +102,7 @@ func TestSelectSubnet(t *testing.T) {
 		{
 			name: "uses public subnet",
 			cfg: &config.Config{
-				PrivateSubnetIDs: []string{"subnet-pub-1", "subnet-pub-2"},
+				SubnetIDs: []string{"subnet-pub-1", "subnet-pub-2"},
 			},
 			wantFunc: func(result string) bool {
 				return result == "subnet-pub-1" || result == "subnet-pub-2"
@@ -111,7 +111,7 @@ func TestSelectSubnet(t *testing.T) {
 		{
 			name: "no subnets returns empty",
 			cfg: &config.Config{
-				PrivateSubnetIDs: []string{},
+				SubnetIDs: []string{},
 			},
 			wantFunc: func(result string) bool {
 				return result == ""
@@ -132,7 +132,7 @@ func TestSelectSubnet(t *testing.T) {
 
 func TestSelectSubnet_RoundRobin(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
+		SubnetIDs: []string{"subnet-a", "subnet-b", "subnet-c"},
 	}
 
 	var subnetIndex uint64
@@ -152,7 +152,7 @@ func TestSelectSubnet_RoundRobin(t *testing.T) {
 
 func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1", "subnet-2", "subnet-3", "subnet-4"},
+		SubnetIDs: []string{"subnet-1", "subnet-2", "subnet-3", "subnet-4"},
 	}
 
 	var subnetIndex uint64
@@ -173,7 +173,7 @@ func TestSelectSubnet_ConcurrentAccess(t *testing.T) {
 
 	for subnet := range results {
 		found := false
-		for _, valid := range cfg.PrivateSubnetIDs {
+		for _, valid := range cfg.SubnetIDs {
 			if subnet == valid {
 				found = true
 				break
@@ -259,7 +259,7 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 
 func TestSelectSubnet_AtomicIndex(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"subnet-1"},
+		SubnetIDs: []string{"subnet-1"},
 	}
 
 	var subnetIndex uint64
@@ -325,7 +325,7 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 
 func TestSelectSubnet_SingleSubnet(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"only-subnet"},
+		SubnetIDs: []string{"only-subnet"},
 	}
 	var subnetIndex uint64
 
@@ -347,7 +347,7 @@ func TestHousekeepingMetricsAdapter_NilPublisher(_ *testing.T) {
 
 func TestSelectSubnet_LargeIndex(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: []string{"a", "b", "c"},
+		SubnetIDs: []string{"a", "b", "c"},
 	}
 
 	var subnetIndex uint64 = 1000000000
@@ -355,7 +355,7 @@ func TestSelectSubnet_LargeIndex(t *testing.T) {
 	result := worker.SelectSubnet(cfg, &subnetIndex)
 
 	found := false
-	for _, s := range cfg.PrivateSubnetIDs {
+	for _, s := range cfg.SubnetIDs {
 		if s == result {
 			found = true
 			break
@@ -396,7 +396,7 @@ func TestBuildRunnerLabel_WhitespaceOriginalLabel(t *testing.T) {
 
 func TestSelectSubnet_NilSubnets(t *testing.T) {
 	cfg := &config.Config{
-		PrivateSubnetIDs: nil,
+		SubnetIDs: nil,
 	}
 	var subnetIndex uint64
 
