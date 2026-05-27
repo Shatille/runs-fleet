@@ -49,7 +49,6 @@ concurrency:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
   RUNNER_BASE_TAG: ${{ vars.RUNNER_BASE_TAG || '2.334.0' }}
 
 jobs:
@@ -138,6 +137,11 @@ jobs:
     name: Build ${{ matrix.arch }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
+    env:
+      # Read from secrets so deployments that treat the repository path as
+      # non-public config can keep it out of plaintext variables. Job-level
+      # because workflow-level `env:` cannot reference `secrets.*`.
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
     strategy:
       fail-fast: true
       matrix:
@@ -187,6 +191,8 @@ jobs:
     name: Create Multi-arch Manifest
     needs: [prepare, build]
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    env:
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -216,6 +222,8 @@ jobs:
     name: Scan and Promote
     needs: [prepare, manifest]
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    env:
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
