@@ -37,15 +37,6 @@ func NewRegistrar(secretsStore secrets.Store, logger Logger) *Registrar {
 	}
 }
 
-// NewRegistrarWithoutSecrets creates a registrar without a secrets store.
-// Used in K8s mode where config is loaded from files instead of secrets backend.
-func NewRegistrarWithoutSecrets(logger Logger) *Registrar {
-	return &Registrar{
-		secretsStore: nil,
-		logger:       logger,
-	}
-}
-
 // FetchConfig retrieves runner configuration from the secrets backend.
 func (r *Registrar) FetchConfig(ctx context.Context, runnerID string) (*secrets.RunnerConfig, error) {
 	var config *secrets.RunnerConfig

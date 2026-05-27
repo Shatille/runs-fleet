@@ -32,7 +32,6 @@ This file defines the structure and conventions for the runs-fleet codebase wiki
 
 - `per-resource-locking`: DynamoDB conditional-write locks per resource (pool, task, instance claim) substitute for global leader election — connects [warm-pools, state-storage, housekeeping].
 - `two-track-reliability`: Spot-first for cold-start, on-demand-only for warm pools; `ForceOnDemand=true` on retry — connects [project-overview, fleet-orchestration, warm-pools, events-and-termination].
-- `asymmetric-backend-abstraction`: Provider interface only wraps K8s; EC2 wires pkg/fleet directly. Multi-replica K8s correctness is weaker — connects [compute-providers, queue-processing, agent-runtime, state-storage, warm-pools].
 - `idempotent-retry-over-rollback`: Forward progress with retry counters and conditional writes; housekeeping is the second half of the consistency model — connects [fleet-orchestration, events-and-termination, internal-services, housekeeping, github-integration].
 
 ## Article Structure

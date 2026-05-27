@@ -27,9 +27,8 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
-	"github.com/Shavakan/runs-fleet/pkg/provider/k8s"
-	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
@@ -87,65 +86,37 @@ func main() {
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
 
-	var fleetManager *fleet.Manager
-	var poolManager *pools.Manager
-	var eventHandler *events.Handler
-	var k8sProvider *k8s.Provider
-	var k8sPoolProvider *k8s.PoolProvider
+	eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
+	fleetManager := fleet.NewManager(awsCfg, cfg)
+	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
+	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 
-	if cfg.IsK8sBackend() {
-		log.Info("initializing backend", slog.String(logging.KeyBackend, "k8s"), slog.String(logging.KeyNamespace, cfg.KubeNamespace))
-		k8sProvider, err = k8s.NewProvider(cfg)
-		if err != nil {
-			log.Error("k8s provider creation failed", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		k8sPoolProvider = k8s.NewPoolProvider(k8sProvider.Clientset(), cfg)
-	} else {
-		log.Info("initializing backend", slog.String(logging.KeyBackend, "ec2"))
-		eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
-		fleetManager = fleet.NewManager(awsCfg, cfg)
-		poolManager = pools.NewManager(dbClient, fleetManager, cfg)
-		eventHandler = events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
-	}
-
-	if poolManager != nil {
-		ec2Client := ec2.NewFromConfig(awsCfg)
-		poolManager.SetEC2Client(ec2Client)
-	}
+	ec2Client := ec2.NewFromConfig(awsCfg)
+	poolManager.SetEC2Client(ec2Client)
 
 	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
 
-	var secretsStore secrets.Store
+	secretsStore := initSecretsStore(ctx, awsCfg, cfg)
 	var terminationHandler *termination.Handler
-	var housekeepingHandler *housekeeping.Handler
-	var housekeepingScheduler *housekeeping.Scheduler
-	if cfg.IsEC2Backend() {
-		secretsStore = initSecretsStore(ctx, awsCfg, cfg)
-		if cfg.TerminationQueueURL != "" {
-			terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
-			terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
-		}
-		housekeepingHandler, housekeepingScheduler = initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient)
+	if cfg.TerminationQueueURL != "" {
+		terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
+		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
 	}
+	housekeepingHandler, housekeepingScheduler := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient)
 
 	runnerManager := initRunnerManager(secretsStore, cfg)
 
 	var subnetIndex uint64
-	var directProcessor *worker.DirectProcessor
-	var directProcessorSem chan struct{}
-	if cfg.IsEC2Backend() {
-		directProcessor = &worker.DirectProcessor{
-			Fleet:       fleetManager,
-			Pool:        poolManager,
-			Metrics:     metricsPublisher,
-			Runner:      runnerManager,
-			DB:          dbClient,
-			Config:      cfg,
-			SubnetIndex: &subnetIndex,
-		}
-		directProcessorSem = make(chan struct{}, 10)
+	directProcessor := &worker.DirectProcessor{
+		Fleet:       fleetManager,
+		Pool:        poolManager,
+		Metrics:     metricsPublisher,
+		Runner:      runnerManager,
+		DB:          dbClient,
+		Config:      cfg,
+		SubnetIndex: &subnetIndex,
 	}
+	directProcessorSem := make(chan struct{}, 10)
 
 	ws := &webhookServer{
 		cfg:                cfg,
@@ -167,31 +138,18 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	if cfg.IsK8sBackend() {
-		go worker.RunK8sWorker(ctx, worker.K8sWorkerDeps{
-			Queue:        jobQueue,
-			Provider:     k8sProvider,
-			PoolProvider: k8sPoolProvider,
-			Metrics:      metricsPublisher,
-			Runner:       runnerManager,
-			DB:           dbClient,
-			Config:       cfg,
-		})
-		go k8sPoolProvider.ReconcileLoop(ctx)
-	} else {
-		go worker.RunEC2Worker(ctx, worker.EC2WorkerDeps{
-			Queue:       jobQueue,
-			Fleet:       fleetManager,
-			Pool:        poolManager,
-			Metrics:     metricsPublisher,
-			Runner:      runnerManager,
-			DB:          dbClient,
-			Config:      cfg,
-			SubnetIndex: &subnetIndex,
-		})
-		go poolManager.ReconcileLoop(ctx)
-		go eventHandler.Run(ctx)
-	}
+	go worker.RunEC2Worker(ctx, worker.EC2WorkerDeps{
+		Queue:       jobQueue,
+		Fleet:       fleetManager,
+		Pool:        poolManager,
+		Metrics:     metricsPublisher,
+		Runner:      runnerManager,
+		DB:          dbClient,
+		Config:      cfg,
+		SubnetIndex: &subnetIndex,
+	})
+	go poolManager.ReconcileLoop(ctx)
+	go eventHandler.Run(ctx)
 
 	if terminationHandler != nil {
 		go terminationHandler.Run(ctx)
@@ -235,26 +193,6 @@ func main() {
 
 func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
 	log := logging.WithComponent(logging.LogTypeQueue, "init")
-	if cfg.IsK8sBackend() {
-		consumerID := os.Getenv("HOSTNAME")
-		if consumerID == "" {
-			consumerID = uuid.NewString()
-		}
-		valkeyClient, err := queue.NewValkeyClient(queue.ValkeyConfig{
-			Addr:       cfg.ValkeyAddr,
-			Password:   cfg.ValkeyPassword,
-			DB:         cfg.ValkeyDB,
-			Stream:     "runs-fleet:jobs",
-			Group:      "orchestrator",
-			ConsumerID: consumerID,
-		})
-		if err != nil {
-			log.Error("valkey client creation failed", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		log.Info("queue initialized", slog.String("type", "valkey"), slog.String("addr", cfg.ValkeyAddr))
-		return valkeyClient
-	}
 	log.Info("queue initialized", slog.String("type", "sqs"), slog.String(logging.KeyQueueURL, cfg.QueueURL))
 	return queue.NewSQSClient(awsCfg, cfg.QueueURL)
 }

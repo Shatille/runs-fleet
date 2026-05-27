@@ -11,7 +11,6 @@ import (
 )
 
 // TelemetryClient defines the interface for sending job telemetry.
-// Implementations handle backend-specific telemetry (SQS vs Valkey).
 type TelemetryClient interface {
 	SendJobStarted(ctx context.Context, status JobStatus) error
 	SendJobCompleted(ctx context.Context, status JobStatus) error

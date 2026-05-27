@@ -10,13 +10,12 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` | GitHub App private key (PEM format) |
 | `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` | Webhook HMAC secret |
 | `AWS_REGION` | AWS region (default: `ap-northeast-1`) |
-| `RUNS_FLEET_MODE` | Backend mode: `ec2` or `k8s` (default: `ec2`) |
 
-## Queues (SQS - EC2 mode)
+## Queues (SQS)
 
 | Variable | Description |
 |----------|-------------|
-| `RUNS_FLEET_QUEUE_URL` | Main job queue URL (required for EC2) |
+| `RUNS_FLEET_QUEUE_URL` | Main job queue URL (required) |
 | `RUNS_FLEET_QUEUE_DLQ_URL` | Dead letter queue URL |
 | `RUNS_FLEET_POOL_QUEUE_URL` | Warm pool batch queue URL |
 | `RUNS_FLEET_EVENTS_QUEUE_URL` | EventBridge events queue (spot interruptions) |
@@ -39,15 +38,12 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_COST_REPORT_BUCKET` | Cost report storage |
 | `RUNS_FLEET_COST_REPORT_SNS_TOPIC` | Cost report notifications |
 
-## EC2 Backend
-
-Required when `RUNS_FLEET_MODE=ec2`.
+## EC2 Fleet
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNS_FLEET_VPC_ID` | | VPC ID (required) |
-| `RUNS_FLEET_PUBLIC_SUBNET_IDS` | | Comma-separated subnet IDs (required) |
-| `RUNS_FLEET_PRIVATE_SUBNET_IDS` | | Private subnets (optional) |
+| `RUNS_FLEET_PRIVATE_SUBNET_IDS` | | Comma-separated subnet IDs (required) |
 | `RUNS_FLEET_SECURITY_GROUP_ID` | | Security group ID (required) |
 | `RUNS_FLEET_INSTANCE_PROFILE_ARN` | | IAM instance profile ARN (required) |
 | `RUNS_FLEET_RUNNER_IMAGE` | | ECR image URL for runners (required) |
@@ -56,41 +52,6 @@ Required when `RUNS_FLEET_MODE=ec2`.
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |
-
-## Kubernetes Backend
-
-Required when `RUNS_FLEET_MODE=k8s`.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUNS_FLEET_KUBE_NAMESPACE` | | Runner namespace (required) |
-| `RUNS_FLEET_KUBE_RUNNER_IMAGE` | | Runner container image (required) |
-| `RUNS_FLEET_KUBE_CONFIG` | | Kubeconfig path (empty = in-cluster) |
-| `RUNS_FLEET_KUBE_SERVICE_ACCOUNT` | `runs-fleet-runner` | Runner ServiceAccount |
-| `RUNS_FLEET_KUBE_NODE_SELECTOR` | | Node selector (`key=value,...`) |
-| `RUNS_FLEET_KUBE_TOLERATIONS` | | Tolerations (JSON array) |
-| `RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES` | `10` | Pod idle timeout |
-| `RUNS_FLEET_KUBE_RELEASE_NAME` | `runs-fleet` | Helm release name |
-| `RUNS_FLEET_KUBE_STORAGE_CLASS` | | PVC storage class |
-| `RUNS_FLEET_KUBE_RESOURCE_LABELS` | | Additional pod labels (`key=value,...`) |
-
-### Kubernetes DinD (Docker-in-Docker)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUNS_FLEET_KUBE_DIND_IMAGE` | `docker:dind` | DinD sidecar image |
-| `RUNS_FLEET_KUBE_DAEMON_JSON_CONFIGMAP` | | ConfigMap for daemon.json |
-| `RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS` | `120` | Docker daemon startup wait (10-300) |
-| `RUNS_FLEET_KUBE_DOCKER_GROUP_GID` | `123` | Docker socket GID (1-65535) |
-| `RUNS_FLEET_KUBE_REGISTRY_MIRROR` | | Registry mirror URL |
-
-### Valkey Queue (K8s mode)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUNS_FLEET_VALKEY_ADDR` | `valkey:6379` | Valkey/Redis address (required for K8s) |
-| `RUNS_FLEET_VALKEY_PASSWORD` | | Valkey password |
-| `RUNS_FLEET_VALKEY_DB` | `0` | Database number |
 
 ## Cache
 

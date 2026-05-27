@@ -35,7 +35,6 @@ Start here for codebase navigation. Each topic article synthesizes a related pac
 |---------|----------|-------------|
 | [per-resource-locking](concepts/per-resource-locking.md) | warm-pools, state-storage, housekeeping | 2026-04-30 |
 | [two-track-reliability](concepts/two-track-reliability.md) | project-overview, fleet-orchestration, warm-pools, events-and-termination | 2026-04-30 |
-| [asymmetric-backend-abstraction](concepts/asymmetric-backend-abstraction.md) | compute-providers, queue-processing, agent-runtime, state-storage, warm-pools | 2026-04-30 |
 | [idempotent-retry-over-rollback](concepts/idempotent-retry-over-rollback.md) | fleet-orchestration, events-and-termination, internal-services, housekeeping, github-integration | 2026-04-30 |
 
 ## Recent Changes
@@ -47,7 +46,6 @@ Start here for codebase navigation. Each topic article synthesizes a related pac
 - **Orchestrator boot or queue worker work:** [cmd-server](topics/cmd-server.md), [internal-services](topics/internal-services.md)
 - **Spot strategy, instance type selection:** [fleet-orchestration](topics/fleet-orchestration.md), [two-track-reliability](concepts/two-track-reliability.md)
 - **Pool config or reconciler bug:** [warm-pools](topics/warm-pools.md), [per-resource-locking](concepts/per-resource-locking.md)
-- **K8s mode work:** [compute-providers](topics/compute-providers.md), [asymmetric-backend-abstraction](concepts/asymmetric-backend-abstraction.md)
 - **Webhook / GitHub auth:** [github-integration](topics/github-integration.md)
 - **Cost or metrics question:** [observability](topics/observability.md)
 - **Failure handling:** [events-and-termination](topics/events-and-termination.md), [housekeeping](topics/housekeeping.md), [idempotent-retry-over-rollback](concepts/idempotent-retry-over-rollback.md)

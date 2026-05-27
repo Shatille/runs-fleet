@@ -1,5 +1,4 @@
 // Package queue provides message queue abstractions for job orchestration.
-// Supports SQS (EC2 mode) and Valkey Streams (K8s mode).
 package queue
 
 import (
@@ -24,7 +23,7 @@ type Queue interface {
 	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]Message, error)
 
 	// DeleteMessage acknowledges successful message processing.
-	// handle is the receipt handle (SQS) or message ID (Valkey).
+	// handle is the SQS receipt handle.
 	DeleteMessage(ctx context.Context, handle string) error
 }
 
@@ -36,9 +35,7 @@ type Message struct {
 	// Body contains the JSON-encoded JobMessage.
 	Body string
 
-	// Handle is used to delete/acknowledge the message.
-	// For SQS: ReceiptHandle
-	// For Valkey: stream message ID
+	// Handle is the SQS ReceiptHandle used to delete/acknowledge the message.
 	Handle string
 
 	// Attributes contains message metadata (trace context, etc).

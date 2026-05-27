@@ -15,26 +15,9 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/tracing"
 )
 
-// Backend constants for compute provider selection.
-const (
-	BackendEC2 = "ec2"
-	BackendK8s = "k8s"
-)
-
-// Toleration represents a Kubernetes toleration for runner pods.
-type Toleration struct {
-	Key      string `json:"key"`
-	Operator string `json:"operator,omitempty"`
-	Value    string `json:"value,omitempty"`
-	Effect   string `json:"effect,omitempty"`
-}
-
 // Config holds all application configuration loaded from environment variables.
 type Config struct {
 	AWSRegion string
-
-	// Provider selection
-	DefaultBackend string // "ec2" or "k8s" (default: "ec2")
 
 	GitHubWebhookSecret string
 	GitHubAppID         string
@@ -55,7 +38,7 @@ type Config struct {
 	CostReportSNSTopic string
 	CostReportBucket     string
 
-	// EC2-specific configuration
+	// EC2 fleet configuration
 	VPCID              string
 	PrivateSubnetIDs   []string
 	SecurityGroupID    string
@@ -74,32 +57,6 @@ type Config struct {
 	AdminSecret    string
 	AdminRateLimit int
 	TraceUIURL     string
-
-	// K8s-specific configuration
-	KubeConfig             string            // Path to kubeconfig (empty = in-cluster)
-	KubeNamespace          string            // Default namespace for runners
-	KubeServiceAccount     string            // ServiceAccount for runner pods
-	KubeNodeSelector       map[string]string // Default node selector for runners
-	KubeTolerations        []Toleration      // Tolerations for runner pods
-	KubeRunnerImage        string            // Container image for runner pods
-	KubeIdleTimeoutMinutes int               // Idle timeout for K8s pods (default: 10)
-	KubeReleaseName        string            // Helm release name for deployment naming
-	KubeStorageClass       string            // StorageClass for runner PVCs (empty = default)
-
-	// DinD (Docker-in-Docker) configuration for K8s runners
-	KubeDindImage           string // DinD sidecar image (default: docker:dind)
-	KubeDaemonJSONConfigMap string // ConfigMap name for daemon.json (optional)
-	KubeDockerWaitSeconds   int    // Seconds to wait for Docker daemon (default: 120, range: 10-300)
-	KubeDockerGroupGID      int    // Docker socket group GID (default: 123)
-	KubeRegistryMirror      string // Docker registry mirror URL (optional)
-
-	// Custom labels for dynamically created runner resources (Pod, ConfigMap, Secret, PVC)
-	KubeResourceLabels map[string]string
-
-	// Valkey queue configuration (K8s mode only)
-	ValkeyAddr     string // Valkey/Redis address (e.g., "valkey:6379")
-	ValkeyPassword string // Optional password
-	ValkeyDB       int    // Database number (default: 0)
 
 	// Metrics configuration
 	MetricsNamespace         string   // Metric namespace/prefix (default: "RunsFleet" for CloudWatch, "runs_fleet" for others)
@@ -133,27 +90,12 @@ type Config struct {
 
 // Load reads configuration from environment variables and validates required fields.
 func Load() (*Config, error) {
+	if v := os.Getenv("RUNS_FLEET_MODE"); v != "" {
+		slog.Warn("RUNS_FLEET_MODE is deprecated and ignored; the K8s runner backend was removed",
+			slog.String("value", v))
+	}
+
 	maxRuntimeMinutes, err := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
-	if err != nil {
-		return nil, fmt.Errorf("config error: %w", err)
-	}
-
-	kubeIdleTimeoutMinutes, err := getEnvInt("RUNS_FLEET_KUBE_IDLE_TIMEOUT_MINUTES", 10)
-	if err != nil {
-		return nil, fmt.Errorf("config error: %w", err)
-	}
-
-	kubeDockerWaitSeconds, err := getEnvInt("RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS", 120)
-	if err != nil {
-		return nil, fmt.Errorf("config error: %w", err)
-	}
-
-	kubeDockerGroupGID, err := getEnvInt("RUNS_FLEET_KUBE_DOCKER_GROUP_GID", 123)
-	if err != nil {
-		return nil, fmt.Errorf("config error: %w", err)
-	}
-
-	valkeyDB, err := getEnvInt("RUNS_FLEET_VALKEY_DB", 0)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
@@ -167,8 +109,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AWSRegion:      getEnv("AWS_REGION", "ap-northeast-1"),
-		DefaultBackend: getEnv("RUNS_FLEET_MODE", BackendEC2),
+		AWSRegion: getEnv("AWS_REGION", "ap-northeast-1"),
 
 		GitHubWebhookSecret:  getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
 		GitHubAppID:          getEnv("RUNS_FLEET_GITHUB_APP_ID", ""),
@@ -207,27 +148,6 @@ func Load() (*Config, error) {
 		AdminRateLimit: getEnvIntDefault("RUNS_FLEET_ADMIN_RATE_LIMIT", 60),
 		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
 
-		// K8s-specific
-		KubeConfig:             getEnv("RUNS_FLEET_KUBE_CONFIG", ""),
-		KubeNamespace:          getEnv("RUNS_FLEET_KUBE_NAMESPACE", ""),
-		KubeServiceAccount:     getEnv("RUNS_FLEET_KUBE_SERVICE_ACCOUNT", "runs-fleet-runner"),
-		KubeRunnerImage:        getEnv("RUNS_FLEET_KUBE_RUNNER_IMAGE", ""),
-		KubeIdleTimeoutMinutes: kubeIdleTimeoutMinutes,
-		KubeReleaseName:        getEnv("RUNS_FLEET_KUBE_RELEASE_NAME", "runs-fleet"),
-		KubeStorageClass:       getEnv("RUNS_FLEET_KUBE_STORAGE_CLASS", ""),
-
-		// K8s DinD configuration
-		KubeDindImage:           getEnv("RUNS_FLEET_KUBE_DIND_IMAGE", "docker:dind"),
-		KubeDaemonJSONConfigMap: getEnv("RUNS_FLEET_KUBE_DAEMON_JSON_CONFIGMAP", ""),
-		KubeDockerWaitSeconds:   kubeDockerWaitSeconds,
-		KubeDockerGroupGID:      kubeDockerGroupGID,
-		KubeRegistryMirror:      getEnv("RUNS_FLEET_KUBE_REGISTRY_MIRROR", ""),
-
-		// Valkey queue (K8s mode)
-		ValkeyAddr:     getEnv("RUNS_FLEET_VALKEY_ADDR", "valkey:6379"),
-		ValkeyPassword: getEnv("RUNS_FLEET_VALKEY_PASSWORD", ""),
-		ValkeyDB:       valkeyDB,
-
 		// Metrics
 		MetricsNamespace:         getEnv("RUNS_FLEET_METRICS_NAMESPACE", ""),
 		MetricsCloudWatchEnabled: getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
@@ -258,52 +178,13 @@ func Load() (*Config, error) {
 		VaultK8sJWTPath:   getEnv("VAULT_K8S_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 	}
 
-	// Parse node selector with validation (only for K8s backend)
-	if cfg.IsK8sBackend() {
-		nodeSelectorStr := getEnv("RUNS_FLEET_KUBE_NODE_SELECTOR", "")
-		if nodeSelectorStr != "" {
-			nodeSelector, err := parseNodeSelector(nodeSelectorStr)
-			if err != nil {
-				return nil, fmt.Errorf("config error: %w", err)
-			}
-			cfg.KubeNodeSelector = nodeSelector
-		} else {
-			cfg.KubeNodeSelector = make(map[string]string)
+	tagsStr := getEnv("RUNS_FLEET_TAGS", "")
+	if tagsStr != "" {
+		tags, err := parseTags(tagsStr)
+		if err != nil {
+			return nil, fmt.Errorf("config error: %w", err)
 		}
-
-		// Parse tolerations JSON
-		tolerationsStr := getEnv("RUNS_FLEET_KUBE_TOLERATIONS", "")
-		if tolerationsStr != "" {
-			tolerations, err := parseTolerations(tolerationsStr)
-			if err != nil {
-				return nil, fmt.Errorf("config error: %w", err)
-			}
-			cfg.KubeTolerations = tolerations
-		}
-
-		// Parse resource labels JSON
-		resourceLabelsStr := getEnv("RUNS_FLEET_KUBE_RESOURCE_LABELS", "")
-		if resourceLabelsStr != "" {
-			resourceLabels, err := parseResourceLabels(resourceLabelsStr)
-			if err != nil {
-				return nil, fmt.Errorf("config error: %w", err)
-			}
-			cfg.KubeResourceLabels = resourceLabels
-		} else {
-			cfg.KubeResourceLabels = make(map[string]string)
-		}
-	}
-
-	// Parse custom tags for EC2 resources (EC2 backend only)
-	if cfg.IsEC2Backend() {
-		tagsStr := getEnv("RUNS_FLEET_TAGS", "")
-		if tagsStr != "" {
-			tags, err := parseTags(tagsStr)
-			if err != nil {
-				return nil, fmt.Errorf("config error: %w", err)
-			}
-			cfg.Tags = tags
-		}
+		cfg.Tags = tags
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -313,22 +194,8 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// IsEC2Backend returns true if using EC2 as the compute backend.
-func (c *Config) IsEC2Backend() bool {
-	return c.DefaultBackend == BackendEC2 || c.DefaultBackend == ""
-}
-
-// IsK8sBackend returns true if using Kubernetes as the compute backend.
-func (c *Config) IsK8sBackend() bool {
-	return c.DefaultBackend == BackendK8s
-}
-
 // Validate checks that all required configuration fields are present and valid.
 func (c *Config) Validate() error {
-	if c.DefaultBackend != "" && c.DefaultBackend != BackendEC2 && c.DefaultBackend != BackendK8s {
-		return fmt.Errorf("RUNS_FLEET_MODE must be 'ec2' or 'k8s', got %q", c.DefaultBackend)
-	}
-
 	if c.GitHubWebhookSecret == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_WEBHOOK_SECRET is required")
 	}
@@ -338,13 +205,8 @@ func (c *Config) Validate() error {
 	if c.GitHubAppPrivateKey == "" {
 		return fmt.Errorf("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY is required")
 	}
-
-	// Queue validation: SQS for EC2, Valkey for K8s
-	if c.IsEC2Backend() && c.QueueURL == "" {
-		return fmt.Errorf("RUNS_FLEET_QUEUE_URL is required for EC2 backend")
-	}
-	if c.IsK8sBackend() && c.ValkeyAddr == "" {
-		return fmt.Errorf("RUNS_FLEET_VALKEY_ADDR is required for K8s backend")
+	if c.QueueURL == "" {
+		return fmt.Errorf("RUNS_FLEET_QUEUE_URL is required")
 	}
 	if c.MaxRuntimeMinutes <= 0 {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must be greater than 0, got %d", c.MaxRuntimeMinutes)
@@ -353,18 +215,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must not exceed 1440 (24 hours), got %d", c.MaxRuntimeMinutes)
 	}
 
-	if c.IsEC2Backend() {
-		if err := c.validateEC2Config(); err != nil {
-			return err
-		}
-		if err := c.validateSecretsConfig(); err != nil {
-			return err
-		}
+	if err := c.validateEC2Config(); err != nil {
+		return err
 	}
-	if c.IsK8sBackend() {
-		if err := c.validateK8sConfig(); err != nil {
-			return err
-		}
+	if err := c.validateSecretsConfig(); err != nil {
+		return err
 	}
 
 	if err := c.validateMetricsConfig(); err != nil {
@@ -450,23 +305,6 @@ func (c *Config) validateVaultAuthConfig() error {
 		// Token can come from VAULT_TOKEN env var at runtime
 	default:
 		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'jwt', 'approle', or 'token', got %q", c.VaultAuthMethod)
-	}
-	return nil
-}
-
-// validateK8sConfig validates Kubernetes-specific configuration.
-func (c *Config) validateK8sConfig() error {
-	if c.KubeNamespace == "" {
-		return fmt.Errorf("RUNS_FLEET_KUBE_NAMESPACE is required for K8s backend")
-	}
-	if c.KubeRunnerImage == "" {
-		return fmt.Errorf("RUNS_FLEET_KUBE_RUNNER_IMAGE is required for K8s backend")
-	}
-	if c.KubeDockerWaitSeconds < 10 || c.KubeDockerWaitSeconds > 300 {
-		return fmt.Errorf("RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS must be between 10 and 300, got %d", c.KubeDockerWaitSeconds)
-	}
-	if c.KubeDockerGroupGID < 1 || c.KubeDockerGroupGID > 65535 {
-		return fmt.Errorf("RUNS_FLEET_KUBE_DOCKER_GROUP_GID must be between 1 and 65535, got %d", c.KubeDockerGroupGID)
 	}
 	return nil
 }
@@ -591,198 +429,6 @@ func splitAndFilter(s string) []string {
 		}
 	}
 	return result
-}
-
-// parseNodeSelector parses a comma-separated key=value string into a map.
-// Example: "kubernetes.io/arch=arm64,node.kubernetes.io/instance-type=c7g.xlarge"
-// Returns an error if any label key or value is invalid per Kubernetes constraints.
-func parseNodeSelector(s string) (map[string]string, error) {
-	result := make(map[string]string)
-	if s == "" {
-		return result, nil
-	}
-	for _, pair := range strings.Split(s, ",") {
-		trimmed := strings.TrimSpace(pair)
-		if trimmed == "" {
-			continue
-		}
-		kv := strings.SplitN(trimmed, "=", 2)
-		if len(kv) != 2 {
-			return nil, fmt.Errorf("invalid node selector pair %q: missing '='", trimmed)
-		}
-		key, value := kv[0], kv[1]
-		if key == "" {
-			return nil, fmt.Errorf("invalid node selector: empty key in pair %q", trimmed)
-		}
-		if err := validateK8sLabelKey(key); err != nil {
-			return nil, fmt.Errorf("invalid node selector key %q: %w", key, err)
-		}
-		if !isValidK8sLabelValue(value) {
-			return nil, fmt.Errorf("invalid node selector value %q for key %q", value, key)
-		}
-		result[key] = value
-	}
-	return result, nil
-}
-
-// validateK8sLabelKey validates Kubernetes label key constraints.
-// Keys have format: [prefix/]name
-// - Prefix (optional): <= 253 chars, DNS subdomain (lowercase alphanumeric, -, .)
-// - Name: <= 63 chars, alphanumeric + -_, must start/end with alphanumeric
-func validateK8sLabelKey(key string) error {
-	if key == "" {
-		return fmt.Errorf("key cannot be empty")
-	}
-
-	var prefix, name string
-	if idx := strings.LastIndex(key, "/"); idx != -1 {
-		prefix = key[:idx]
-		name = key[idx+1:]
-	} else {
-		name = key
-	}
-
-	if prefix != "" {
-		if err := validateK8sLabelKeyPrefix(prefix); err != nil {
-			return err
-		}
-	} else if strings.HasPrefix(key, "/") {
-		return fmt.Errorf("key cannot start with '/'")
-	}
-
-	return validateK8sLabelKeyName(name)
-}
-
-// validateK8sLabelKeyPrefix validates the prefix portion of a K8s label key.
-func validateK8sLabelKeyPrefix(prefix string) error {
-	if len(prefix) > 253 {
-		return fmt.Errorf("prefix exceeds 253 characters")
-	}
-	for i, r := range prefix {
-		isLowerAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		isSpecial := r == '-' || r == '.'
-		if i == 0 || i == len(prefix)-1 {
-			if !isLowerAlphaNum {
-				return fmt.Errorf("prefix must start and end with lowercase alphanumeric")
-			}
-		} else if !isLowerAlphaNum && !isSpecial {
-			return fmt.Errorf("prefix contains invalid character %q", r)
-		}
-	}
-	return nil
-}
-
-// validateK8sLabelKeyName validates the name portion of a K8s label key.
-func validateK8sLabelKeyName(name string) error {
-	if name == "" {
-		return fmt.Errorf("name cannot be empty")
-	}
-	if len(name) > 63 {
-		return fmt.Errorf("name exceeds 63 characters")
-	}
-	for i, r := range name {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
-		isSpecial := r == '-' || r == '_' || r == '.'
-		if i == 0 || i == len(name)-1 {
-			if !isAlphaNum {
-				return fmt.Errorf("name must start and end with alphanumeric")
-			}
-		} else if !isAlphaNum && !isSpecial {
-			return fmt.Errorf("name contains invalid character %q", r)
-		}
-	}
-	return nil
-}
-
-// isValidK8sLabelValue validates Kubernetes label value constraints:
-// - Max 63 characters
-// - Empty string is valid
-// - Must start and end with alphanumeric (ASCII only)
-// - Can contain alphanumeric, -, _, and .
-func isValidK8sLabelValue(s string) bool {
-	if s == "" {
-		return true
-	}
-	if len(s) > 63 {
-		return false
-	}
-	for i, r := range s {
-		// Reject non-ASCII characters
-		if r > 127 {
-			return false
-		}
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
-		isSpecial := r == '-' || r == '_' || r == '.'
-		if i == 0 || i == len(s)-1 {
-			if !isAlphaNum {
-				return false
-			}
-		} else if !isAlphaNum && !isSpecial {
-			return false
-		}
-	}
-	return true
-}
-
-// parseTolerations parses a JSON array of tolerations.
-// Example: [{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"}]
-func parseTolerations(s string) ([]Toleration, error) {
-	if s == "" {
-		return nil, nil
-	}
-
-	var tolerations []Toleration
-	if err := json.Unmarshal([]byte(s), &tolerations); err != nil {
-		return nil, fmt.Errorf("invalid tolerations JSON: %w", err)
-	}
-
-	return tolerations, nil
-}
-
-// parseResourceLabels parses a JSON object of key-value labels for K8s runner resources.
-// Example: {"team":"platform","environment":"production"}
-func parseResourceLabels(s string) (map[string]string, error) {
-	if s == "" {
-		return nil, nil
-	}
-
-	var labels map[string]string
-	if err := json.Unmarshal([]byte(s), &labels); err != nil {
-		return nil, fmt.Errorf("invalid resource labels JSON: %w", err)
-	}
-
-	if err := validateResourceLabels(labels); err != nil {
-		return nil, err
-	}
-
-	return labels, nil
-}
-
-func validateResourceLabels(labels map[string]string) error {
-	for key, value := range labels {
-		if err := validateK8sLabelKey(key); err != nil {
-			return fmt.Errorf("invalid resource label key %q: %w", key, err)
-		}
-		if !isValidK8sLabelValue(value) {
-			return fmt.Errorf("invalid resource label value %q for key %q", value, key)
-		}
-		lowerKey := strings.ToLower(key)
-		// Reject "app" label - reserved for pod selection
-		if lowerKey == "app" {
-			return fmt.Errorf("resource label key %q is reserved for system use", key)
-		}
-		// Reject reserved prefixes to prevent conflicts with system labels
-		if strings.HasPrefix(lowerKey, "runs-fleet.io/") {
-			return fmt.Errorf("resource label key %q uses reserved 'runs-fleet.io/' prefix", key)
-		}
-		if strings.HasPrefix(lowerKey, "kubernetes.io/") {
-			return fmt.Errorf("resource label key %q uses reserved 'kubernetes.io/' prefix", key)
-		}
-		if strings.HasPrefix(lowerKey, "k8s.io/") {
-			return fmt.Errorf("resource label key %q uses reserved 'k8s.io/' prefix", key)
-		}
-	}
-	return nil
 }
 
 // parseTags parses a JSON object of key-value tags.

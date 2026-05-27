@@ -1,4 +1,4 @@
-// Package main implements the runs-fleet agent that runs on EC2 instances or K8s pods
+// Package main implements the runs-fleet agent that runs on EC2 instances
 // to execute GitHub Actions jobs.
 package main
 
@@ -7,15 +7,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 type stdLogger struct{}
@@ -36,19 +33,11 @@ type agentConfig struct {
 	cwLogger     *agent.CloudWatchLogger
 	awsCfg       aws.Config
 	secretsStore secrets.Store
-	cleanup      func() // Cleanup function for deferred resources
 }
 
 func main() {
 	logger := &stdLogger{}
 	logger.Println("Starting runs-fleet agent...")
-
-	isK8s := agent.IsK8sEnvironment()
-	if isK8s {
-		logger.Println("Running in Kubernetes mode")
-	} else {
-		logger.Println("Running in EC2 mode")
-	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -60,24 +49,20 @@ func main() {
 
 	ctx := context.Background()
 
-	instanceID := getInstanceID(isK8s)
+	instanceID := os.Getenv("RUNS_FLEET_INSTANCE_ID")
+	if instanceID == "" {
+		log.Fatal("RUNS_FLEET_INSTANCE_ID environment variable is required")
+	}
 	maxRuntimeMinutes := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
 
-	// Initialize components based on backend mode
-	var ac *agentConfig
-	var err error
-	if isK8s {
-		ac, err = initK8sMode(ctx, logger)
-	} else {
-		ac, err = initEC2Mode(ctx, instanceID, logger)
-	}
+	ac, err := initAgent(ctx, instanceID, logger)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
 
 	// Resolve run ID: env var takes precedence, then secrets store config.
 	// In SSM mode the bootstrap only sets INSTANCE_ID and REGION — the run_id
-	// comes from the config fetched by initEC2Mode.
+	// comes from the config fetched by initAgent.
 	runID := os.Getenv("RUNS_FLEET_RUN_ID")
 	if runID == "" && ac.runnerConfig != nil {
 		runID = ac.runnerConfig.RunID
@@ -86,11 +71,8 @@ func main() {
 		log.Fatal("RUNS_FLEET_RUN_ID not set and not found in runner config")
 	}
 
-	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, k8s=%v, max_runtime=%dm",
-		runID, instanceID, isK8s, maxRuntimeMinutes)
-	if ac.cleanup != nil {
-		defer ac.cleanup()
-	}
+	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, max_runtime=%dm",
+		runID, instanceID, maxRuntimeMinutes)
 
 	downloader := agent.NewDownloader()
 	safetyMonitor := agent.NewSafetyMonitor(time.Duration(maxRuntimeMinutes)*time.Minute, logger)
@@ -101,90 +83,11 @@ func main() {
 		executor.SetCloudWatchLogger(ac.cwLogger)
 	}
 
-	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, runID, isK8s, logger)
+	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, runID, logger)
 }
 
-// getInstanceID returns the instance/pod ID based on mode.
-func getInstanceID(isK8s bool) string {
-	instanceID := os.Getenv("RUNS_FLEET_INSTANCE_ID")
-	if instanceID == "" {
-		if isK8s {
-			hostname, err := os.Hostname()
-			if err != nil {
-				log.Fatal("Failed to get hostname for K8s pod")
-			}
-			return hostname
-		}
-		log.Fatal("RUNS_FLEET_INSTANCE_ID environment variable is required")
-	}
-	return instanceID
-}
-
-// initK8sMode initializes components for Kubernetes mode.
-func initK8sMode(ctx context.Context, logger *stdLogger) (*agentConfig, error) {
-	ac := &agentConfig{}
-
-	runnerConfig, err := agent.FetchK8sConfig(ctx, agent.DefaultK8sConfigPaths(), logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch K8s config: %w", err)
-	}
-	ac.runnerConfig = runnerConfig
-
-	// Create Kubernetes clientset for cleanup operations
-	var clientset kubernetes.Interface
-	namespace := getK8sNamespace()
-
-	restConfig, err := rest.InClusterConfig()
-	if err != nil {
-		logger.Printf("Warning: failed to create in-cluster config: %v (cleanup will be skipped)", err)
-	} else {
-		clientset, err = kubernetes.NewForConfig(restConfig)
-		if err != nil {
-			logger.Printf("Warning: failed to create Kubernetes clientset: %v (cleanup will be skipped)", err)
-			clientset = nil
-		} else {
-			logger.Printf("Kubernetes client initialized for namespace: %s", namespace)
-		}
-	}
-
-	// Valkey telemetry (required when configured)
-	valkeyAddr := os.Getenv("RUNS_FLEET_VALKEY_ADDR")
-	if valkeyAddr != "" {
-		valkeyPassword := os.Getenv("RUNS_FLEET_VALKEY_PASSWORD")
-		valkeyDB := getEnvInt("RUNS_FLEET_VALKEY_DB", 0)
-		valkeyTelemetry, valkeyErr := agent.NewValkeyTelemetry(
-			valkeyAddr, valkeyPassword, valkeyDB,
-			"runs-fleet:termination", logger,
-		)
-		if valkeyErr != nil {
-			return nil, fmt.Errorf("failed to connect to Valkey at %s: %w", valkeyAddr, valkeyErr)
-		}
-		ac.telemetry = valkeyTelemetry
-		ac.cleanup = func() {
-			if closeErr := valkeyTelemetry.Close(); closeErr != nil {
-				logger.Printf("Warning: failed to close Valkey connection: %v", closeErr)
-			}
-		}
-	}
-
-	ac.terminator = agent.NewK8sTerminator(clientset, namespace, ac.telemetry, logger)
-	return ac, nil
-}
-
-// getK8sNamespace returns the namespace the pod is running in.
-// Reads from the downward API file or falls back to "default".
-func getK8sNamespace() string {
-	// Read from service account namespace file (standard K8s location)
-	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-	if err == nil {
-		return strings.TrimSpace(string(data))
-	}
-
-	return "default"
-}
-
-// initEC2Mode initializes components for EC2 mode.
-func initEC2Mode(ctx context.Context, instanceID string, logger *stdLogger) (*agentConfig, error) {
+// initAgent initializes the agent components (AWS config, secrets, telemetry, terminator).
+func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agentConfig, error) {
 	ac := &agentConfig{}
 
 	region := os.Getenv("AWS_REGION")
@@ -198,7 +101,6 @@ func initEC2Mode(ctx context.Context, instanceID string, logger *stdLogger) (*ag
 	}
 	ac.awsCfg = awsCfg
 
-	// Initialize secrets store
 	secretsCfg := secrets.LoadConfig()
 	secretsStore, err := secrets.NewStore(ctx, secretsCfg, awsCfg)
 	if err != nil {
@@ -206,14 +108,12 @@ func initEC2Mode(ctx context.Context, instanceID string, logger *stdLogger) (*ag
 	}
 	ac.secretsStore = secretsStore
 
-	// Fetch runner config from secrets store
 	runnerConfig, err := secretsStore.Get(ctx, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch config from secrets store: %w", err)
 	}
 	ac.runnerConfig = runnerConfig
 
-	// SQS telemetry — resolve from env var first, then from runner config (SSM mode)
 	terminationQueueURL := os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL")
 	if terminationQueueURL == "" {
 		terminationQueueURL = runnerConfig.TerminationQueueURL
@@ -224,7 +124,6 @@ func initEC2Mode(ctx context.Context, instanceID string, logger *stdLogger) (*ag
 
 	ac.terminator = agent.NewEC2Terminator(awsCfg, ac.telemetry, logger)
 
-	// CloudWatch logging (EC2 only)
 	logGroup := os.Getenv("RUNS_FLEET_LOG_GROUP")
 	if logGroup != "" {
 		logStream := fmt.Sprintf("%s/%s", instanceID, runnerConfig.RunID)
@@ -243,13 +142,12 @@ func initEC2Mode(ctx context.Context, instanceID string, logger *stdLogger) (*ag
 // runAgent executes the agent phases.
 func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader,
 	executor *agent.Executor, cleanup *agent.Cleanup,
-	instanceID, runID string, isK8s bool, logger *stdLogger) {
+	instanceID, runID string, logger *stdLogger) {
 
 	if ac.cwLogger != nil {
 		defer ac.cwLogger.Stop()
 	}
 
-	// Phase 1: Download runner
 	logger.Println("Phase 1: Downloading GitHub Actions runner...")
 	runnerPath, err := downloader.DownloadRunner(ctx)
 	if err != nil {
@@ -259,15 +157,8 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 	logger.Printf("Runner downloaded successfully to %s", runnerPath)
 
-	// Phase 2: Register runner
 	logger.Println("Phase 2: Registering runner with GitHub...")
-
-	var registrar *agent.Registrar
-	if isK8s {
-		registrar = agent.NewRegistrarWithoutSecrets(logger)
-	} else {
-		registrar = agent.NewRegistrar(ac.secretsStore, logger)
-	}
+	registrar := agent.NewRegistrar(ac.secretsStore, logger)
 
 	if regErr := registrar.RegisterRunner(ctx, ac.runnerConfig, runnerPath); regErr != nil {
 		logger.Printf("Failed to register runner: %v", regErr)
@@ -276,7 +167,6 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 	logger.Println("Runner registered successfully")
 
-	// Set runner environment variables
 	cacheURL := os.Getenv("RUNS_FLEET_CACHE_URL")
 	if envErr := registrar.SetRunnerEnvironment(runnerPath, cacheURL, ac.runnerConfig.CacheToken); envErr != nil {
 		logger.Printf("Warning: failed to set runner environment: %v", envErr)
@@ -295,7 +185,6 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		}
 	}
 
-	// Phase 3: Execute job
 	logger.Println("Phase 3: Executing job...")
 	result, err := executor.ExecuteJob(ctx, runnerPath)
 	if err != nil {
@@ -320,7 +209,6 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		}
 	}
 
-	// Phase 4: Cleanup and termination
 	logger.Println("Phase 4: Cleaning up and terminating...")
 
 	if cleanErr := cleanup.CleanupRunner(ctx, runnerPath); cleanErr != nil {

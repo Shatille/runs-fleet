@@ -4,6 +4,8 @@ import (
 	"testing"
 )
 
+const testTraceparent = "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01"
+
 func TestMessage_Structure(t *testing.T) {
 	t.Parallel()
 
