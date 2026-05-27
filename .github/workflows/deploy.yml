@@ -41,7 +41,6 @@ env:
 jobs:
   build:
     name: Build Orchestrator
-    if: github.repository == 'Shatille/runs-fleet'
     uses: ./.github/workflows/build-orchestrator.yml
     with:
       bump: ${{ inputs.bump || 'patch' }}
