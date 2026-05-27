@@ -10,6 +10,10 @@ A compiled codebase wiki lives at `wiki/`. Read `wiki/CONTEXT.md` for navigation
 
 The runner container at `docker/runner/` has specific patterns for keeping the Trivy CVE footprint low. **Before adding packages, building from source, patching CVEs, or touching anything in that directory, read `docker/runner/CLAUDE.md` — it covers the base-image policy, package-install order of preference, VEX vs `.trivyignore`, and verification workflow.** Run `make scan-runner` locally before pushing; CI has a Trivy gate that blocks merge.
 
+## Runner AMI
+
+The EC2 instances that host runners are built from a two-layer Packer pipeline in `packer/` (base AMI → runner AMI). **Before adding a package, language toolchain, or system dependency to either layer, read `packer/README.md` — it documents the layer split, which provisioner each kind of change belongs in, and how to add a new package without bloating the wrong layer.** Default rule: stable things (OS packages, toolchains, `actions/runner` deps) go in `packer/provision-base.sh`; only the `runs-fleet-agent` orchestration bits go in `packer/provision-runs-fleet.sh`.
+
 ## Stack
 
 - Go 1.25+ (AWS SDK v2, go-github)
