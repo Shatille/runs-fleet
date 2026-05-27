@@ -1,26 +1,20 @@
-{{- include "runs-fleet.validateMode" . -}}
-{{- if eq .Values.mode "ec2" }}
 {{- if not .Values.aws.queueUrl }}
-{{- fail "aws.queueUrl is required when mode is 'ec2'" }}
+{{- fail "aws.queueUrl is required" }}
 {{- end }}
 {{- if not .Values.aws.vpcId }}
-{{- fail "aws.vpcId is required when mode is 'ec2'" }}
+{{- fail "aws.vpcId is required" }}
 {{- end }}
 {{- if not .Values.aws.securityGroupId }}
-{{- fail "aws.securityGroupId is required when mode is 'ec2'" }}
+{{- fail "aws.securityGroupId is required" }}
 {{- end }}
 {{- if not .Values.aws.instanceProfileArn }}
-{{- fail "aws.instanceProfileArn is required when mode is 'ec2'" }}
+{{- fail "aws.instanceProfileArn is required" }}
 {{- end }}
 {{- if not .Values.aws.runnerImage }}
-{{- fail "aws.runnerImage is required when mode is 'ec2'" }}
+{{- fail "aws.runnerImage is required" }}
 {{- end }}
-{{- if and (not .Values.aws.publicSubnetIds) (not .Values.aws.privateSubnetIds) }}
-{{- fail "at least one of aws.publicSubnetIds or aws.privateSubnetIds is required when mode is 'ec2'" }}
-{{- end }}
-{{- end }}
-{{- if and (eq .Values.mode "k8s") (not .Values.valkey.enabled) }}
-{{- fail "valkey.enabled must be true when mode is 'k8s'" }}
+{{- if not .Values.aws.privateSubnetIds }}
+{{- fail "aws.privateSubnetIds is required" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -71,18 +65,12 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            # Mode selection
-            - name: RUNS_FLEET_MODE
-              value: {{ .Values.mode | quote }}
-            {{- if eq .Values.mode "ec2" }}
-            # EC2 mode: AWS configuration
+            # AWS configuration
             - name: AWS_REGION
               value: {{ .Values.aws.region | quote }}
             # Network
             - name: RUNS_FLEET_VPC_ID
               value: {{ .Values.aws.vpcId | quote }}
-            - name: RUNS_FLEET_PUBLIC_SUBNET_IDS
-              value: {{ .Values.aws.publicSubnetIds | join "," | quote }}
             - name: RUNS_FLEET_PRIVATE_SUBNET_IDS
               value: {{ .Values.aws.privateSubnetIds | join "," | quote }}
             - name: RUNS_FLEET_SECURITY_GROUP_ID
@@ -146,52 +134,6 @@ spec:
             {{- if .Values.aws.tags }}
             - name: RUNS_FLEET_TAGS
               value: {{ .Values.aws.tags | toJson | quote }}
-            {{- end }}
-            {{- end }}
-            {{- if eq .Values.mode "k8s" }}
-            # K8s mode: Kubernetes configuration
-            - name: RUNS_FLEET_KUBE_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: RUNS_FLEET_KUBE_SERVICE_ACCOUNT
-              value: {{ include "runs-fleet.runner.serviceAccountName" . }}
-            - name: RUNS_FLEET_KUBE_RUNNER_IMAGE
-              value: "{{ .Values.runner.image.repository }}:{{ .Values.runner.image.tag }}"
-            - name: RUNS_FLEET_KUBE_RELEASE_NAME
-              value: {{ include "runs-fleet.fullname" . }}
-            # DinD configuration
-            - name: RUNS_FLEET_KUBE_DIND_IMAGE
-              value: {{ .Values.docker.image | quote }}
-            {{- if .Values.docker.registryMirror }}
-            - name: RUNS_FLEET_KUBE_REGISTRY_MIRROR
-              value: {{ .Values.docker.registryMirror | quote }}
-            {{- end }}
-            {{- if .Values.docker.daemonJSONConfigMap }}
-            - name: RUNS_FLEET_KUBE_DAEMON_JSON_CONFIGMAP
-              value: {{ .Values.docker.daemonJSONConfigMap | quote }}
-            {{- end }}
-            - name: RUNS_FLEET_KUBE_DOCKER_WAIT_SECONDS
-              value: {{ .Values.docker.waitSeconds | quote }}
-            - name: RUNS_FLEET_KUBE_DOCKER_GROUP_GID
-              value: {{ .Values.docker.groupGID | quote }}
-            {{- if .Values.runner.nodeSelector }}
-            - name: RUNS_FLEET_KUBE_NODE_SELECTOR
-              value: {{ include "runs-fleet.nodeSelector.string" . | quote }}
-            {{- end }}
-            {{- if .Values.runner.tolerations }}
-            - name: RUNS_FLEET_KUBE_TOLERATIONS
-              value: {{ .Values.runner.tolerations | toJson | quote }}
-            {{- end }}
-            {{- if .Values.runner.labels }}
-            - name: RUNS_FLEET_KUBE_RESOURCE_LABELS
-              value: {{ .Values.runner.labels | toJson | quote }}
-            {{- end }}
-            {{- end }}
-            # Common configuration (both modes)
-            {{- if .Values.valkey.enabled }}
-            - name: RUNS_FLEET_VALKEY_ADDR
-              value: {{ include "runs-fleet.valkey.address" . }}
             {{- end }}
             # Secrets backend configuration
             - name: RUNS_FLEET_SECRETS_BACKEND

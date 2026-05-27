@@ -11,11 +11,3 @@ Webhook URL:
 {{- end }}
 
 Logs: kubectl logs -f deploy/{{ include "runs-fleet.fullname" . }}-orchestrator -n {{ .Release.Namespace }}
-{{- if .Values.warmPool.enabled }}
-
-Warm pool: kubectl get pods -l app.kubernetes.io/component=placeholder -n {{ .Release.Namespace }}
-{{- end }}
-{{- if .Values.karpenter.enabled }}
-
-Karpenter: kubectl get nodepools,ec2nodeclasses
-{{- end }}

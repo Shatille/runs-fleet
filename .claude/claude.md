@@ -52,11 +52,10 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/logging/` - Structured logging (slog JSON output)
 - `pkg/metrics/` - Multi-backend metrics (CloudWatch, Prometheus, Datadog)
 - `pkg/pools/` - Warm pool reconciliation (hot/stopped instances)
-- `pkg/provider/` - Compute provider abstraction (ec2/, k8s/ backends)
-- `pkg/queue/` - Queue abstraction (SQS for EC2, Valkey for K8s)
+- `pkg/provider/` - Compute provider abstraction (EC2-only impl currently)
+- `pkg/queue/` - Queue abstraction (SQS implementation)
 - `pkg/runner/` - Runner lifecycle management
 - `pkg/secrets/` - Secrets backend abstraction (SSM, Vault)
-- `pkg/state/` - State machine for job lifecycle
 - `pkg/termination/` - Instance termination notifications
 - `pkg/tracing/` - OpenTelemetry SDK, W3C TraceContext propagation, span instrumentation
 
@@ -77,7 +76,6 @@ GitHub Webhook → API Gateway → SQS FIFO
 - Multiple instances can reconcile different pools concurrently
 - Same pool is reconciled by only one instance at a time
 - Lock expiration prevents deadlocks from crashed instances
-- K8s backend: relies on API idempotency (no locks needed)
 
 ## Job Labels
 
@@ -106,8 +104,6 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 - `runs-fleet=<run-id>` - Workflow run identifier (required)
 - `pool=<name>` - Warm pool name (routes to pool queue)
 - `spot=false` - Force on-demand (skip spot)
-- `public=true` - Request public IP (uses public subnet; default: private subnet preferred)
-- `backend=<ec2|k8s>` - Override default compute backend
 - `region=<region>` - Target AWS region (multi-region support)
 - `env=<dev|staging|prod>` - Environment isolation
 
@@ -149,12 +145,11 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 
 ### Core
 - `AWS_REGION` - AWS region (default: ap-northeast-1)
-- `RUNS_FLEET_MODE` - Compute backend: `ec2` or `k8s` (default: ec2)
 - `RUNS_FLEET_GITHUB_APP_ID`, `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` - GitHub App auth
 - `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` - HMAC signature validation
 
-### EC2 Backend
-- `RUNS_FLEET_QUEUE_URL` - Main SQS queue (required for EC2)
+### Fleet
+- `RUNS_FLEET_QUEUE_URL` - Main SQS queue (required)
 - `RUNS_FLEET_POOL_QUEUE_URL` - Pool queue
 - `RUNS_FLEET_EVENTS_QUEUE_URL` - EventBridge events queue
 - `RUNS_FLEET_TERMINATION_QUEUE_URL` - Termination notifications queue
@@ -162,16 +157,10 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 - `RUNS_FLEET_JOBS_TABLE`, `RUNS_FLEET_POOLS_TABLE` - DynamoDB tables
 - `RUNS_FLEET_JOBS_POOL_STATUS_GSI` - Optional DynamoDB GSI name for pool busy instance queries
 - `RUNS_FLEET_CACHE_BUCKET` - S3 cache bucket
-- `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_*_SUBNET_IDS` - Network config
+- `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_PRIVATE_SUBNET_IDS` - Network config
 - `RUNS_FLEET_SECURITY_GROUP_ID`, `RUNS_FLEET_INSTANCE_PROFILE_ARN` - EC2 config
 - `RUNS_FLEET_RUNNER_IMAGE` - ECR image URL for runners
 - `RUNS_FLEET_SPOT_ENABLED` - Enable spot instances (default: true)
-
-### K8s Backend
-- `RUNS_FLEET_VALKEY_ADDR` - Valkey/Redis address (required for K8s)
-- `RUNS_FLEET_VALKEY_PASSWORD` - Valkey password (optional)
-- `RUNS_FLEET_KUBE_NAMESPACE` - Runner namespace
-- `RUNS_FLEET_KUBE_RUNNER_IMAGE` - Runner container image
 
 ### Secrets Backend
 - `RUNS_FLEET_SECRETS_BACKEND` - `ssm` or `vault` (default: ssm)

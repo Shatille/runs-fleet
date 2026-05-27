@@ -162,378 +162,24 @@ func splitEnv(s string) []string {
 	return []string{s, ""}
 }
 
-func TestIsEC2Backend(t *testing.T) {
-	tests := []struct {
-		backend string
-		want    bool
-	}{
-		{"", true},
-		{"ec2", true},
-		{"k8s", false},
+// ec2Env returns a baseline of env vars sufficient to satisfy Load's required-field
+// validation, optionally merged with caller-provided overrides.
+func ec2Env(extra map[string]string) map[string]string {
+	env := map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_PRIVATE_SUBNET_IDS":     "subnet-1,subnet-2",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
 	}
-	for _, tt := range tests {
-		t.Run(tt.backend, func(t *testing.T) {
-			cfg := &Config{DefaultBackend: tt.backend}
-			if got := cfg.IsEC2Backend(); got != tt.want {
-				t.Errorf("IsEC2Backend() = %v, want %v", got, tt.want)
-			}
-		})
+	for k, v := range extra {
+		env[k] = v
 	}
-}
-
-func TestIsK8sBackend(t *testing.T) {
-	tests := []struct {
-		backend string
-		want    bool
-	}{
-		{"", false},
-		{"ec2", false},
-		{"k8s", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.backend, func(t *testing.T) {
-			cfg := &Config{DefaultBackend: tt.backend}
-			if got := cfg.IsK8sBackend(); got != tt.want {
-				t.Errorf("IsK8sBackend() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestValidateK8sConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		cfg     *Config
-		wantErr bool
-	}{
-		{
-			name: "valid K8s config",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 120,
-				KubeDockerGroupGID:    123,
-			},
-			wantErr: false,
-		},
-		{
-			name: "missing namespace",
-			cfg: &Config{
-				KubeNamespace:         "",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 120,
-				KubeDockerGroupGID:    123,
-			},
-			wantErr: true,
-		},
-		{
-			name: "missing runner image",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "",
-				KubeDockerWaitSeconds: 120,
-				KubeDockerGroupGID:    123,
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid docker wait seconds too low",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 5,
-				KubeDockerGroupGID:    123,
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid docker wait seconds too high",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 500,
-				KubeDockerGroupGID:    123,
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid docker group GID zero",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 120,
-				KubeDockerGroupGID:    0,
-			},
-			wantErr: true,
-		},
-		{
-			name: "valid docker group GID upper bound",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 120,
-				KubeDockerGroupGID:    65535,
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid docker group GID overflow",
-			cfg: &Config{
-				KubeNamespace:         "runs-fleet",
-				KubeRunnerImage:       "runner:latest",
-				KubeDockerWaitSeconds: 120,
-				KubeDockerGroupGID:    65536,
-			},
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.cfg.validateK8sConfig()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateK8sConfig() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestParseNodeSelector(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    map[string]string
-		wantErr bool
-	}{
-		{
-			name:  "empty",
-			input: "",
-			want:  map[string]string{},
-		},
-		{
-			name:  "single pair",
-			input: "kubernetes.io/arch=arm64",
-			want:  map[string]string{"kubernetes.io/arch": "arm64"},
-		},
-		{
-			name:  "multiple pairs",
-			input: "kubernetes.io/arch=arm64,node.kubernetes.io/instance-type=c7g.xlarge",
-			want: map[string]string{
-				"kubernetes.io/arch":                "arm64",
-				"node.kubernetes.io/instance-type": "c7g.xlarge",
-			},
-		},
-		{
-			name:  "with spaces",
-			input: " key1=value1 , key2=value2 ",
-			want:  map[string]string{"key1": "value1", "key2": "value2"},
-		},
-		{
-			name:    "invalid value too long",
-			input:   "key=" + string(make([]byte, 64)),
-			wantErr: true,
-		},
-		{
-			name:    "invalid value starts with dash",
-			input:   "key=-value",
-			wantErr: true,
-		},
-		{
-			name:    "missing equals",
-			input:   "key-without-equals",
-			wantErr: true,
-		},
-		{
-			name:    "empty key",
-			input:   "=value",
-			wantErr: true,
-		},
-		{
-			name:    "invalid key too long",
-			input:   string(make([]byte, 64)) + "=value",
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseNodeSelector(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseNodeSelector() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if tt.wantErr {
-				return
-			}
-			if len(got) != len(tt.want) {
-				t.Errorf("parseNodeSelector() length = %v, want %v", len(got), len(tt.want))
-				return
-			}
-			for k, v := range tt.want {
-				if got[k] != v {
-					t.Errorf("parseNodeSelector()[%q] = %q, want %q", k, got[k], v)
-				}
-			}
-		})
-	}
-}
-
-func TestValidateK8sLabelKey(t *testing.T) {
-	tests := []struct {
-		key     string
-		wantErr bool
-	}{
-		{"valid", false},
-		{"valid-key", false},
-		{"valid_key", false},
-		{"valid.key", false},
-		{"kubernetes.io/arch", false},
-		{"node.kubernetes.io/instance-type", false},
-		{"example.com/key", false},
-		{"", true},
-		{"-invalid", true},
-		{"invalid-", true},
-		{"kubernetes.io/", true},
-		{"/name", true},
-		{string(make([]byte, 64)), true},
-		// Prefix validation edge cases
-		{"Kubernetes.io/arch", true},  // uppercase in prefix
-		{"-example.com/key", true},    // prefix starts with dash
-		{"example.com-/key", true},    // prefix ends with dash
-		{"example.Com/key", true},     // uppercase in prefix middle
-		{"9example.com/key", false},   // prefix starts with number (valid)
-		{"example.com9/key", false},   // prefix ends with number (valid)
-	}
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			err := validateK8sLabelKey(tt.key)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateK8sLabelKey(%q) error = %v, wantErr %v", tt.key, err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestIsValidK8sLabelValue(t *testing.T) {
-	tests := []struct {
-		value string
-		want  bool
-	}{
-		{"", true},
-		{"valid", true},
-		{"valid-value", true},
-		{"valid_value", true},
-		{"valid.value", true},
-		{"Valid123", true},
-		{"-invalid", false},
-		{"invalid-", false},
-		{".invalid", false},
-		{"invalid.", false},
-		{"in valid", false},
-		{string(make([]byte, 64)), false},
-		{"value\u00e9", false}, // non-ASCII character
-		{"v\u4e2d\u6587", false}, // Chinese characters
-	}
-	for _, tt := range tests {
-		t.Run(tt.value, func(t *testing.T) {
-			if got := isValidK8sLabelValue(tt.value); got != tt.want {
-				t.Errorf("isValidK8sLabelValue(%q) = %v, want %v", tt.value, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestValidateInvalidBackend(t *testing.T) {
-	cfg := &Config{
-		DefaultBackend:      "invalid",
-		GitHubWebhookSecret: "secret",
-		GitHubAppID:         "123",
-		GitHubAppPrivateKey: "key",
-		QueueURL:            "https://sqs.example.com",
-	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("Validate() should return error for invalid backend")
-	}
-}
-
-func TestParseTolerations(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    []Toleration
-		wantErr bool
-	}{
-		{
-			name:  "empty string",
-			input: "",
-			want:  nil,
-		},
-		{
-			name:  "single toleration",
-			input: `[{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"}]`,
-			want: []Toleration{
-				{Key: "dedicated", Operator: "Equal", Value: "github-actions", Effect: "NoSchedule"},
-			},
-		},
-		{
-			name:  "multiple tolerations",
-			input: `[{"key":"dedicated","operator":"Equal","value":"github-actions","effect":"NoSchedule"},{"key":"node-type","operator":"Exists","effect":"NoExecute"}]`,
-			want: []Toleration{
-				{Key: "dedicated", Operator: "Equal", Value: "github-actions", Effect: "NoSchedule"},
-				{Key: "node-type", Operator: "Exists", Effect: "NoExecute"},
-			},
-		},
-		{
-			name:  "toleration with only key",
-			input: `[{"key":"special-node"}]`,
-			want: []Toleration{
-				{Key: "special-node"},
-			},
-		},
-		{
-			name:  "toleration with Exists operator",
-			input: `[{"key":"gpu","operator":"Exists"}]`,
-			want: []Toleration{
-				{Key: "gpu", Operator: "Exists"},
-			},
-		},
-		{
-			name:    "invalid JSON",
-			input:   "not-valid-json",
-			wantErr: true,
-		},
-		{
-			name:    "invalid JSON structure",
-			input:   `{"key":"value"}`,
-			wantErr: true,
-		},
-		{
-			name:  "empty array",
-			input: `[]`,
-			want:  []Toleration{},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseTolerations(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseTolerations() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if tt.wantErr {
-				return
-			}
-			if len(got) != len(tt.want) {
-				t.Errorf("parseTolerations() length = %v, want %v", len(got), len(tt.want))
-				return
-			}
-			for i, w := range tt.want {
-				if got[i].Key != w.Key || got[i].Operator != w.Operator ||
-					got[i].Value != w.Value || got[i].Effect != w.Effect {
-					t.Errorf("parseTolerations()[%d] = %+v, want %+v", i, got[i], w)
-				}
-			}
-		})
-	}
+	return env
 }
 
 func TestGetEnvBool(t *testing.T) {
@@ -948,62 +594,37 @@ func TestVaultAuthConfigLoading(t *testing.T) {
 	}{
 		{
 			name: "defaults when not set",
-			env: map[string]string{
-				"RUNS_FLEET_MODE":                   "k8s",
-				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
-				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
-				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
-				"RUNS_FLEET_GITHUB_APP_ID":          "123",
-				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
-			},
+			env: ec2Env(nil),
 			wantVaultAuthMethod: "aws",
 			wantVaultK8sRole:    "",
 			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
 		},
 		{
 			name: "kubernetes auth method",
-			env: map[string]string{
-				"RUNS_FLEET_MODE":                   "k8s",
-				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
-				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
-				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
-				"RUNS_FLEET_GITHUB_APP_ID":          "123",
-				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
-				"VAULT_AUTH_METHOD":                 "kubernetes",
-				"VAULT_K8S_ROLE":                    "runs-fleet",
-				"VAULT_K8S_JWT_PATH":                "/var/run/secrets/custom/token",
-			},
+			env: ec2Env(map[string]string{
+				"VAULT_AUTH_METHOD":  "kubernetes",
+				"VAULT_K8S_ROLE":     "runs-fleet",
+				"VAULT_K8S_JWT_PATH": "/var/run/secrets/custom/token",
+			}),
 			wantVaultAuthMethod: "kubernetes",
 			wantVaultK8sRole:    "runs-fleet",
 			wantVaultK8sJWTPath: "/var/run/secrets/custom/token",
 		},
 		{
 			name: "k8s auth method alias",
-			env: map[string]string{
-				"RUNS_FLEET_MODE":                   "k8s",
-				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
-				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
-				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
-				"RUNS_FLEET_GITHUB_APP_ID":          "123",
-				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
-				"VAULT_AUTH_METHOD":                 "k8s",
-				"VAULT_K8S_ROLE":                    "my-role",
-			},
+			env: ec2Env(map[string]string{
+				"VAULT_AUTH_METHOD": "k8s",
+				"VAULT_K8S_ROLE":    "my-role",
+			}),
 			wantVaultAuthMethod: "k8s",
 			wantVaultK8sRole:    "my-role",
 			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
 		},
 		{
 			name: "token auth method",
-			env: map[string]string{
-				"RUNS_FLEET_MODE":                   "k8s",
-				"RUNS_FLEET_KUBE_NAMESPACE":         "test-ns",
-				"RUNS_FLEET_KUBE_RUNNER_IMAGE":      "runner:latest",
-				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
-				"RUNS_FLEET_GITHUB_APP_ID":          "123",
-				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
-				"VAULT_AUTH_METHOD":                 "token",
-			},
+			env: ec2Env(map[string]string{
+				"VAULT_AUTH_METHOD": "token",
+			}),
 			wantVaultAuthMethod: "token",
 			wantVaultK8sRole:    "",
 			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
@@ -1211,122 +832,6 @@ func TestValidateVaultK8sJWTPath(t *testing.T) {
 			}
 			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 				t.Errorf("ValidateK8sJWTPath(%q) error = %v, want error containing %q", tt.path, err, tt.errMsg)
-			}
-		})
-	}
-}
-
-func TestParseResourceLabels(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    map[string]string
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name:  "empty string",
-			input: "",
-			want:  nil,
-		},
-		{
-			name:  "single label",
-			input: `{"team":"platform"}`,
-			want:  map[string]string{"team": "platform"},
-		},
-		{
-			name:  "multiple labels",
-			input: `{"team":"platform","environment":"production","cost-center":"engineering"}`,
-			want: map[string]string{
-				"team":        "platform",
-				"environment": "production",
-				"cost-center": "engineering",
-			},
-		},
-		{
-			name:  "empty object",
-			input: `{}`,
-			want:  map[string]string{},
-		},
-		{
-			name:    "invalid JSON",
-			input:   "not-valid-json",
-			wantErr: true,
-			errMsg:  "invalid resource labels JSON",
-		},
-		{
-			name:    "runs-fleet.io prefix rejected",
-			input:   `{"runs-fleet.io/custom":"value"}`,
-			wantErr: true,
-			errMsg:  "reserved 'runs-fleet.io/' prefix",
-		},
-		{
-			name:    "kubernetes.io prefix rejected",
-			input:   `{"kubernetes.io/arch":"arm64"}`,
-			wantErr: true,
-			errMsg:  "reserved 'kubernetes.io/' prefix",
-		},
-		{
-			name:    "k8s.io prefix rejected",
-			input:   `{"k8s.io/component":"runner"}`,
-			wantErr: true,
-			errMsg:  "reserved 'k8s.io/' prefix",
-		},
-		{
-			name:    "app label rejected",
-			input:   `{"app":"custom-app"}`,
-			wantErr: true,
-			errMsg:  "reserved for system use",
-		},
-		{
-			name:    "app label uppercase rejected",
-			input:   `{"APP":"custom-app"}`,
-			wantErr: true,
-			errMsg:  "reserved for system use",
-		},
-		{
-			name:    "invalid label key",
-			input:   `{"-invalid-key":"value"}`,
-			wantErr: true,
-			errMsg:  "invalid resource label key",
-		},
-		{
-			name:    "invalid label value",
-			input:   `{"key":"-invalid-value"}`,
-			wantErr: true,
-			errMsg:  "invalid resource label value",
-		},
-		{
-			name:  "valid with prefix",
-			input: `{"example.com/label":"value"}`,
-			want:  map[string]string{"example.com/label": "value"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseResourceLabels(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseResourceLabels() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if tt.wantErr {
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("parseResourceLabels() error = %v, want error containing %q", err, tt.errMsg)
-				}
-				return
-			}
-			if tt.want == nil && got != nil {
-				t.Errorf("parseResourceLabels() = %v, want nil", got)
-				return
-			}
-			if len(got) != len(tt.want) {
-				t.Errorf("parseResourceLabels() length = %v, want %v", len(got), len(tt.want))
-				return
-			}
-			for k, v := range tt.want {
-				if got[k] != v {
-					t.Errorf("parseResourceLabels()[%q] = %q, want %q", k, got[k], v)
-				}
 			}
 		})
 	}

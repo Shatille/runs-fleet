@@ -6,16 +6,12 @@ commonLabels: {}
 #   team: platform
 #   environment: production
 
-# Mode selection: ec2 (direct EC2 Fleet) or k8s (Karpenter pods)
-mode: ec2
-
-# AWS configuration (required for mode: ec2)
+# AWS configuration (required)
 aws:
   region: ap-northeast-1
 
   # Network
   vpcId: ""
-  publicSubnetIds: []
   privateSubnetIds: []
   securityGroupId: ""
   instanceProfileArn: ""
@@ -105,34 +101,6 @@ orchestrator:
 
   affinity: {}
 
-# Runner configuration (mode: k8s only)
-runner:
-  image:
-    repository: runs-fleet-runner
-    tag: latest
-
-  serviceAccountName: runs-fleet-runner
-  serviceAccount:
-    annotations: {}
-
-  nodeSelector: {}
-  tolerations: []
-
-  # Custom labels for dynamically created runner resources (Pod, ConfigMap, Secret, PVC)
-  # System labels (app, runs-fleet.io/*) take precedence over custom labels
-  labels: {}
-  # Example:
-  #   team: platform
-  #   cost-center: engineering
-
-# Docker-in-Docker configuration (mode: k8s only)
-docker:
-  image: docker:dind
-  registryMirror: ""
-  daemonJSONConfigMap: ""
-  waitSeconds: 120
-  groupGID: 123
-
 # GitHub App configuration
 github:
   appId: "" # Required: GitHub App ID (ignored if existingSecret is set)
@@ -186,28 +154,6 @@ secrets:
     # Token auth configuration (authMethod: token)
     token: "" # Required for token auth (stored in secret)
 
-# Valkey (Redis-compatible) configuration (mode: k8s only)
-valkey:
-  enabled: false
-
-  image:
-    repository: valkey/valkey
-    tag: 8-alpine
-    pullPolicy: IfNotPresent
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
-
-  persistence:
-    enabled: true
-    size: 1Gi
-    storageClass: "" # Use default if empty
-
 # Ingress configuration
 ingress:
   enabled: false
@@ -229,7 +175,7 @@ metrics:
   # Defaults: CloudWatch="RunsFleet", Prometheus/Datadog="runs_fleet"
   namespace: ""
 
-  # CloudWatch metrics (EC2 mode, enabled by default)
+  # CloudWatch metrics (enabled by default)
   cloudwatch:
     enabled: true
 
@@ -253,31 +199,6 @@ metrics:
       enabled: false
       source: "runs-fleet"
       service: "" # Defaults to Release name if empty
-
-# Warm pool configuration (mode: k8s only, placeholder pods for faster job startup)
-warmPool:
-  enabled: false
-
-  # Placeholder pods keep nodes warm and images cached
-  # When a real job arrives, placeholder is preempted (~5-10s vs ~60-90s cold start)
-  placeholders:
-    arm64:
-      replicas: 0 # Number of placeholder pods for arm64
-      resources:
-        requests:
-          cpu: "2"
-          memory: 4Gi
-    amd64:
-      replicas: 0 # Number of placeholder pods for amd64
-      resources:
-        requests:
-          cpu: "2"
-          memory: 4Gi
-
-  # Priority class for placeholder pods (lower value = lower priority = evictable)
-  priorityClass:
-    name: runs-fleet-placeholder
-    value: -10 # Negative priority, easily preempted by real jobs
 
 # Istio service mesh configuration
 istio:
@@ -330,102 +251,3 @@ istio:
         interval: 30s
         baseEjectionTime: 30s
 
-# Karpenter configuration (mode: k8s only, requires Karpenter v1.0+ installed on EKS)
-karpenter:
-  enabled: false
-
-  # NodePool configuration
-  nodePool:
-    name: runs-fleet-runners
-    # Labels to apply to nodes provisioned by this pool
-    labels: {}
-    # Taints to apply to nodes provisioned by this pool
-    taints: []
-    # Node expiration (forces periodic refresh, prevents stale nodes)
-    expireAfter: 720h # 30 days
-    # Disruption settings
-    disruption:
-      consolidationPolicy: WhenEmpty
-      consolidateAfter: 30s
-    # Resource limits for this pool
-    limits:
-      cpu: "10000"
-      memory: 20480Gi
-    # Weight for scheduling priority (higher = preferred)
-    weight: 10
-
-  # EC2NodeClass configuration (set create: false to use existing EC2NodeClass)
-  ec2NodeClass:
-    create: true
-    name: runs-fleet-runners
-    # AMI configuration
-    amiFamily: AL2023
-    amiSelectorTerms: []
-    # - id: ami-0123456789abcdef0  # Specific AMI ID
-    # - name: "amazon-eks-node-al2023-*"  # AMI name pattern
-
-    # Instance profile for runner nodes (required)
-    instanceProfile: "" # e.g., KarpenterNodeInstanceProfile-my-cluster
-
-    # Subnet selection (required)
-    subnetSelectorTerms: []
-    # - tags:
-    #     karpenter.sh/discovery: my-cluster
-    # - id: subnet-0123456789abcdef0
-
-    # Security group selection (required)
-    securityGroupSelectorTerms: []
-    # - tags:
-    #     karpenter.sh/discovery: my-cluster
-    # - id: sg-0123456789abcdef0
-
-    # Block device mappings
-    blockDeviceMappings:
-      - deviceName: /dev/xvda
-        ebs:
-          volumeSize: 50Gi
-          volumeType: gp3
-          encrypted: true
-          deleteOnTermination: true
-
-    # Metadata options (IMDSv2 required)
-    metadataOptions:
-      httpEndpoint: enabled
-      httpProtocolIPv6: disabled
-      httpPutResponseHopLimit: 2
-      httpTokens: required # IMDSv2
-
-    # User data for node initialization (optional)
-    userData: ""
-
-  # Instance requirements
-  requirements:
-    # Architectures to use
-    architectures:
-      - arm64
-      - amd64
-    # Capacity types (spot preferred)
-    capacityTypes:
-      - spot
-      - on-demand
-    # Instance categories
-    instanceCategories:
-      - c # Compute optimized
-      - m # General purpose
-      - r # Memory optimized
-    # Instance families (optional, more specific than categories)
-    instanceFamilies: []
-    # - c7g
-    # - c6g
-    # - m7g
-    # Instance sizes
-    instanceSizes:
-      - medium
-      - large
-      - xlarge
-      - 2xlarge
-    # CPU limits (Gt/Lt are exclusive, so >1 means >=2, <17 means <=16)
-    minCpu: 1
-    maxCpu: 17
-    # Operating system
-    os: linux
