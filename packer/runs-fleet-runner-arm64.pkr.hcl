@@ -128,6 +128,14 @@ build {
     script = "${path.root}/provision-runs-fleet.sh"
   }
 
+  # Post-bake smoke test. Fails the build before snapshot if the extracted
+  # agent binary is the wrong arch, the systemd unit is malformed, or the
+  # bootstrap scripts are broken — defects Trivy and a successful Packer
+  # exit code don't catch.
+  provisioner "shell" {
+    script = "${path.root}/provision-validate-agent.sh"
+  }
+
   # Vulnerability gate: scan the provisioned filesystem before the AMI snapshot
   # is taken. Reuses the same Trivy config + VEX as the container path. If the
   # scan finds an unsuppressed HIGH/CRITICAL finding, the build fails and no
