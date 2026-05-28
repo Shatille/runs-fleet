@@ -283,3 +283,55 @@ jobs:
               fi
             done
           done
+
+  # Sweep Packer builder instances orphaned by hard-kill scenarios that
+  # bypass Packer's own cleanup: concurrency `cancel-in-progress: true`
+  # SIGKILLing the build mid-snapshot, spot interruption of the runner
+  # hosting Packer, AWS API errors between StopInstance and CreateImage.
+  # These leftovers sit in `stopped` state holding EBS volumes until
+  # something terminates them.
+  #
+  # `if: always()` here sweeps the current run's failures. Cancelled
+  # workflows skip this job entirely, but the next workflow run picks up
+  # the previous run's leftovers — orphans persist, the sweep is
+  # idempotent.
+  #
+  # Age gate (60 min) is well clear of the longest expected build
+  # (base AMI ~16 min, runner AMI ~3 min) so a slow in-flight builder in
+  # a parallel matrix arm isn't killed.
+  cleanup-orphan-builders:
+    name: Cleanup Orphan Packer Builders
+    needs: [build-base, build-runner-ami]
+    if: always()
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terminate orphaned builder instances
+        run: |
+          CUTOFF=$(date -u -d '60 minutes ago' --iso-8601=seconds)
+          echo "Sweeping created-by=runs-fleet-packer instances launched before $CUTOFF"
+
+          ORPHANS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:created-by,Values=runs-fleet-packer" \
+              "Name=instance-state-name,Values=running,stopped" \
+            --query "Reservations[].Instances[?LaunchTime<=\`$CUTOFF\`].[InstanceId,InstanceType,State.Name,LaunchTime]" \
+            --output text)
+
+          if [ -z "$ORPHANS" ]; then
+            echo "No orphan builders found"
+            exit 0
+          fi
+
+          echo "Found orphans:"
+          echo "$ORPHANS"
+
+          mapfile -t IDS < <(echo "$ORPHANS" | awk '{print $1}')
+          aws ec2 terminate-instances --instance-ids "${IDS[@]}" \
+            --query 'TerminatingInstances[].[InstanceId,CurrentState.Name]' \
+            --output table
