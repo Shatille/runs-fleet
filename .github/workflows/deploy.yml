@@ -233,6 +233,8 @@ jobs:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          set -euo pipefail
+
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition $ECS_SERVICE \
             --query 'taskDefinition' --output json)
@@ -246,11 +248,50 @@ jobs:
           NEW_TASK_ARN=$(aws ecs register-task-definition \
             --cli-input-json "$NEW_TASK_DEF" \
             --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "Registered $NEW_TASK_ARN"
 
-          aws ecs update-service \
+          DEPLOY_ID=$(aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
-            --task-definition "$NEW_TASK_ARN"
+            --task-definition "$NEW_TASK_ARN" \
+            --query 'service.deployments[?status==`PRIMARY`].id | [0]' \
+            --output text)
+          echo "Created deployment $DEPLOY_ID"
+
+          # Poll the deployment we just created until it reaches a terminal state.
+          # ECS removes failed deployments from the list once the circuit-breaker
+          # rollback completes, so a missing rolloutState also means failure.
+          for i in $(seq 1 60); do
+            STATE=$(aws ecs describe-services \
+              --cluster $ECS_CLUSTER --services $ECS_SERVICE \
+              --query "services[0].deployments[?id=='${DEPLOY_ID}'].rolloutState | [0]" \
+              --output text)
+
+            case "$STATE" in
+              COMPLETED)
+                echo "Deployment $DEPLOY_ID completed."
+                exit 0
+                ;;
+              FAILED|None|"")
+                echo "::error::Deployment $DEPLOY_ID failed (state=$STATE). ECS most likely rolled back via circuit breaker; recent events:"
+                aws ecs describe-services \
+                  --cluster $ECS_CLUSTER --services $ECS_SERVICE \
+                  --query 'services[0].events[:15].[createdAt,message]' \
+                  --output table
+                exit 1
+                ;;
+              IN_PROGRESS)
+                echo "  [$i/60] rolloutState=IN_PROGRESS"
+                ;;
+              *)
+                echo "  [$i/60] rolloutState=$STATE"
+                ;;
+            esac
+            sleep 15
+          done
+
+          echo "::error::Timed out after 15 minutes waiting for deployment $DEPLOY_ID."
+          exit 1
 
       - name: Summary
         env:
