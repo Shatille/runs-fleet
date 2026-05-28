@@ -1,0 +1,138 @@
+# Reference Deployment for the runs-fleet orchestrator on Kubernetes.
+#
+# Same posture as the ECS example: replace placeholders before applying.
+# The orchestrator is stateless and safe to scale horizontally (per-pool
+# reconciliation is locked in DynamoDB).
+#
+# Pair this with service-account.yaml so the pods get the AWS role from
+# ../../terraform/iam.tf via IRSA.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runs-fleet-orchestrator
+  namespace: runs-fleet
+  labels:
+    app.kubernetes.io/name: runs-fleet-orchestrator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runs-fleet-orchestrator
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runs-fleet-orchestrator
+    spec:
+      serviceAccountName: runs-fleet-orchestrator
+      containers:
+        - name: orchestrator
+          # Pin a vX.Y.Z tag in real deploys; :latest only shown for brevity.
+          image: 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/runs-fleet/orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: webhook
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+          # The orchestrator handles SIGTERM by draining in-flight reconciles
+          # before exit. The default 30s grace period is usually enough.
+          terminationGracePeriodSeconds: 60
+          env:
+            - name: AWS_REGION
+              value: "ap-northeast-1"
+
+            # GitHub App identity. Private key + webhook secret come from
+            # the secret block below.
+            - name: RUNS_FLEET_GITHUB_APP_ID
+              value: "<GITHUB_APP_ID>"
+
+            # SQS queue URLs.
+            - name: RUNS_FLEET_QUEUE_URL
+              value: "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-main"
+            - name: RUNS_FLEET_POOL_QUEUE_URL
+              value: "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-pool"
+            - name: RUNS_FLEET_EVENTS_QUEUE_URL
+              value: "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-events"
+            - name: RUNS_FLEET_TERMINATION_QUEUE_URL
+              value: "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-termination"
+            - name: RUNS_FLEET_HOUSEKEEPING_QUEUE_URL
+              value: "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-housekeeping"
+
+            # DynamoDB — names match deploy/terraform/dynamodb.tf.
+            - name: RUNS_FLEET_JOBS_TABLE
+              value: "runs-fleet-jobs"
+            - name: RUNS_FLEET_POOLS_TABLE
+              value: "runs-fleet-pools"
+            # Optional GSIs. Unset = Scan fallback. See comments in
+            # deploy/terraform/dynamodb.tf for what each unlocks.
+            - name: RUNS_FLEET_JOBS_INSTANCE_ID_GSI
+              value: "instance-id-index"
+            - name: RUNS_FLEET_JOBS_POOL_STATUS_GSI
+              value: "pool-status-index"
+
+            # EC2 runner fleet config.
+            - name: RUNS_FLEET_VPC_ID
+              value: "vpc-XXXXXXXX"
+            - name: RUNS_FLEET_SUBNET_IDS
+              value: "subnet-AAA,subnet-BBB"
+            - name: RUNS_FLEET_SECURITY_GROUP_ID
+              value: "sg-XXXXXXXX"
+            - name: RUNS_FLEET_INSTANCE_PROFILE_ARN
+              value: "arn:aws:iam::123456789012:instance-profile/runs-fleet-runner"
+            - name: RUNS_FLEET_RUNNER_IMAGE
+              value: "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/runs-fleet/runner:latest"
+
+            # Optional: S3 GitHub Actions cache.
+            - name: RUNS_FLEET_CACHE_BUCKET
+              value: "runs-fleet-cache"
+
+            # Sensitive values from a single Kubernetes Secret. Create it
+            # separately (kubectl create secret generic runs-fleet \
+            #   --from-file=github-app-private-key=...).
+            - name: RUNS_FLEET_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: github-app-private-key
+            - name: RUNS_FLEET_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: webhook-secret
+            - name: RUNS_FLEET_CACHE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: cache-secret
+            - name: RUNS_FLEET_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: admin-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runs-fleet-orchestrator
+  namespace: runs-fleet
+spec:
+  selector:
+    app.kubernetes.io/name: runs-fleet-orchestrator
+  ports:
+    - name: webhook
+      port: 80
+      targetPort: webhook
+      protocol: TCP
+  type: ClusterIP
