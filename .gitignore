@@ -24,7 +24,15 @@ go.work
 # Environment files
 .env
 .env.local
+
+# Terraform — sample HCL under deploy/terraform/ is meant to be read, not
+# applied from this repo. If someone runs `terraform init` to validate
+# locally, keep the artifacts out of the tree.
 *.tfvars
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
 
 # IDE
 .vscode/
