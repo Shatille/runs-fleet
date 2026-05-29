@@ -79,7 +79,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	jobQueue := initJobQueue(awsCfg, cfg)
+	// SQS long polling withholds response headers for up to the 20s long-poll
+	// wait, which exceeds awsCfg's 10s ResponseHeaderTimeout and aborts every
+	// empty poll. SQS clients use a dedicated config whose header timeout clears
+	// the long-poll wait; all other services keep the fast-abort awsCfg.
+	sqsCfg := awsCfg
+	sqsCfg.HTTPClient = newAWSHTTPClient(config.AWSSQSResponseHeaderTimeout)
+
+	jobQueue := initJobQueue(sqsCfg, cfg)
 	dbClient := db.NewClient(awsCfg, cfg.PoolsTableName, cfg.JobsTableName)
 	if cfg.JobsPoolStatusGSI != "" {
 		dbClient.SetJobsPoolStatusGSI(cfg.JobsPoolStatusGSI)
@@ -90,7 +97,7 @@ func main() {
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
 
-	eventsQueueClient := queue.NewClient(awsCfg, cfg.EventsQueueURL)
+	eventsQueueClient := queue.NewClient(sqsCfg, cfg.EventsQueueURL)
 	fleetManager := fleet.NewManager(awsCfg, cfg)
 	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
@@ -104,10 +111,10 @@ func main() {
 	secretsStore := initSecretsStore(ctx, awsCfg, cfg)
 	var terminationHandler *termination.Handler
 	if cfg.TerminationQueueURL != "" {
-		terminationQueueClient := queue.NewClient(awsCfg, cfg.TerminationQueueURL)
+		terminationQueueClient := queue.NewClient(sqsCfg, cfg.TerminationQueueURL)
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
 	}
-	housekeepingHandler, housekeepingScheduler := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient)
+	housekeepingHandler, housekeepingScheduler := initHousekeeping(awsCfg, sqsCfg, cfg, secretsStore, metricsPublisher, dbClient)
 
 	runnerManager := initRunnerManager(secretsStore, cfg)
 
@@ -126,6 +133,7 @@ func main() {
 	ws := &webhookServer{
 		cfg:                cfg,
 		awsCfg:             awsCfg,
+		sqsCfg:             sqsCfg,
 		jobQueue:           jobQueue,
 		dbClient:           dbClient,
 		metricsPublisher:   metricsPublisher,
@@ -236,10 +244,10 @@ func waitForWorkers(wg *sync.WaitGroup, timeout time.Duration) bool {
 	}
 }
 
-func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {
+func initJobQueue(sqsCfg aws.Config, cfg *config.Config) queue.Queue {
 	log := logging.WithComponent(logging.LogTypeQueue, "init")
 	log.Info("queue initialized", slog.String("type", "sqs"), slog.String(logging.KeyQueueURL, cfg.QueueURL))
-	return queue.NewSQSClient(awsCfg, cfg.QueueURL)
+	return queue.NewSQSClient(sqsCfg, cfg.QueueURL)
 }
 
 func initRunnerManager(secretsStore secrets.Store, cfg *config.Config) *runner.Manager {
@@ -301,12 +309,12 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	return store
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client) (*housekeeping.Handler, *housekeeping.Scheduler) {
+func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client) (*housekeeping.Handler, *housekeeping.Scheduler) {
 	if cfg.HousekeepingQueueURL == "" {
 		return nil, nil
 	}
 
-	housekeepingQueueClient := queue.NewClient(awsCfg, cfg.HousekeepingQueueURL)
+	housekeepingQueueClient := queue.NewClient(sqsCfg, cfg.HousekeepingQueueURL)
 
 	var costReporter housekeeping.CostReporter
 	if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
@@ -338,7 +346,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 	}
 
 	schedulerCfg := housekeeping.DefaultSchedulerConfig()
-	scheduler := housekeeping.NewSchedulerFromConfig(awsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
+	scheduler := housekeeping.NewSchedulerFromConfig(sqsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
 	scheduler.SetMetrics(metricsPublisher)
 
 	return h, scheduler
@@ -415,6 +423,7 @@ var validPoolName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 type webhookServer struct {
 	cfg                *config.Config
 	awsCfg             aws.Config
+	sqsCfg             aws.Config
 	jobQueue           queue.Queue
 	dbClient           *db.Client
 	metricsPublisher   metrics.Publisher
@@ -456,7 +465,7 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, adminAuth)
 	instancesHandler.RegisterRoutes(adminMux)
 
-	sqsClient := sqs.NewFromConfig(ws.awsCfg)
+	sqsClient := sqs.NewFromConfig(ws.sqsCfg)
 	queuesHandler := admin.NewQueuesHandler(sqsClient, admin.QueueConfig{
 		MainQueue:         ws.cfg.QueueURL,
 		MainQueueDLQ:      ws.cfg.QueueDLQURL,
