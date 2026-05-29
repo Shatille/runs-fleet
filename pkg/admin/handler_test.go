@@ -645,12 +645,6 @@ func TestPoolDiff(t *testing.T) {
 			want:    "none",
 		},
 		{
-			name:    "environment change",
-			old:     &db.PoolConfig{PoolName: "p", Environment: "dev"},
-			updated: &db.PoolConfig{PoolName: "p", Environment: "prod"},
-			want:    `environment: "dev" -> "prod"`,
-		},
-		{
 			name: "schedule content change same count",
 			old: &db.PoolConfig{PoolName: "p", Schedules: []db.PoolSchedule{
 				{Name: "biz", StartHour: 9, EndHour: 17},

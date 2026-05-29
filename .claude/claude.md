@@ -108,8 +108,6 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 - `runs-fleet=<run-id>` - Workflow run identifier (required)
 - `pool=<name>` - Warm pool name (routes to pool queue)
 - `spot=false` - Force on-demand (skip spot)
-- `region=<region>` - Target AWS region (multi-region support)
-- `env=<dev|staging|prod>` - Environment isolation
 
 ## Key Flows
 

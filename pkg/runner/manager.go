@@ -15,9 +15,9 @@ var runnerLog = logging.WithComponent(logging.LogTypeRunner, "manager")
 
 // ManagerConfig holds configuration for the runner manager.
 type ManagerConfig struct {
-	CacheSecret          string
-	CacheURL             string
-	TerminationQueueURL  string
+	CacheSecret         string
+	CacheURL            string
+	TerminationQueueURL string
 }
 
 // Manager handles runner registration and secrets configuration.
@@ -109,13 +109,6 @@ func (m *Manager) CleanupRunner(ctx context.Context, instanceID string) error {
 		return fmt.Errorf("failed to delete runner config: %w", err)
 	}
 	return nil
-}
-
-// GetRegistrationToken gets a registration token for GitHub Actions runners.
-// Used by K8s backend to get JIT token before pod creation.
-// EC2 backend uses PrepareRunner instead (handles SSM storage).
-func (m *Manager) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
-	return m.github.GetRegistrationToken(ctx, repo)
 }
 
 const runnerNameMaxLen = 64

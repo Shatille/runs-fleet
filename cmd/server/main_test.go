@@ -417,10 +417,9 @@ func TestJobMessage_AllFields(t *testing.T) {
 		OriginalLabel: "runs-fleet=456/cpu=2",
 		RetryCount:    3,
 		ForceOnDemand: true,
-		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
-		Traceparent: "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01",
+		Traceparent:   "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01",
 	}
 
 	if job.JobID != 123 {
@@ -657,7 +656,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		OriginalLabel: "runs-fleet=67890/cpu=2",
 		RetryCount:    0,
 		ForceOnDemand: false,
-		OS:            "linux",
 		Arch:          "arm64",
 		StorageGiB:    50,
 	}
@@ -673,7 +671,6 @@ func TestOnDemandFallbackMessage(t *testing.T) {
 		OriginalLabel: originalJob.OriginalLabel,
 		RetryCount:    originalJob.RetryCount + 1,
 		ForceOnDemand: true,
-		OS:            originalJob.OS,
 		Arch:          originalJob.Arch,
 		StorageGiB:    originalJob.StorageGiB,
 	}

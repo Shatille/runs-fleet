@@ -3,9 +3,9 @@
 [![CI](https://github.com/Shatille/runs-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/Shatille/runs-fleet/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Shavakan/089a4c604db357e35ee33f10be5a1bbf/raw/runs-fleet-coverage.json)](https://github.com/Shatille/runs-fleet)
 
-> Self-hosted ephemeral GitHub Actions runners on AWS/K8s
+> Self-hosted ephemeral GitHub Actions runners on AWS
 
-Spot-first EC2 instances or Kubernetes pods for workflow jobs. Warm pools for fast start times.
+Spot-first EC2 instances for workflow jobs. Warm pools for fast start times.
 
 ## Usage
 
@@ -40,7 +40,7 @@ See [docs/USAGE.md](docs/USAGE.md) for full label reference and examples. See [d
 ```
 GitHub Webhook → API Gateway → SQS FIFO → Orchestrator (Fargate)
                                               ↓
-                              EC2 Spot Fleet  OR  Kubernetes Pods
+                                   EC2 Spot Fleet
                                               ↓
                               Agent (register, execute, terminate)
 ```

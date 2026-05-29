@@ -87,7 +87,6 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		Repo:          job.Repo,
 		ForceOnDemand: job.ForceOnDemand,
 		RetryCount:    job.RetryCount,
-		OS:            job.OS,
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
 		Conditions:    BuildRunnerConditions(job),

@@ -25,8 +25,9 @@ import (
 
 var fleetLog = logging.WithComponent(logging.LogTypeFleet, "manager")
 
-//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 // EC2API defines EC2 operations for fleet management.
+//
+//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 type EC2API interface {
 	CreateFleet(ctx context.Context, params *ec2.CreateFleetInput, optFns ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error)
 	CreateTags(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
@@ -95,7 +96,6 @@ type LaunchSpec struct {
 	Repo          string // Repository name for cost allocation (Role tag)
 	ForceOnDemand bool   // Force on-demand even if spot is preferred (for retries)
 	RetryCount    int    // Number of times this job has been retried
-	OS            string // Operating system: linux, windows (Phase 4: Windows support)
 	Arch          string // Architecture: amd64, arm64
 	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
 	Conditions    string // Resource conditions for instance naming (e.g., "arm64-cpu4-ram16")
@@ -261,7 +261,7 @@ func (m *Manager) configureOnDemandRequest(req *ec2.CreateFleetInput, spec *Laun
 	req.LaunchTemplateConfigs = []types.FleetLaunchTemplateConfigRequest{
 		{
 			LaunchTemplateSpecification: &types.FleetLaunchTemplateSpecificationRequest{
-				LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(spec.OS, arch)),
+				LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(arch)),
 				Version:            aws.String("$Latest"),
 			},
 			Overrides: []types.FleetLaunchTemplateOverridesRequest{override},
@@ -304,31 +304,20 @@ func (m *Manager) checkFleetErrors(output *ec2.CreateFleetOutput) error {
 	return fmt.Errorf("fleet creation had errors: %s", strings.Join(errMsgs, ", "))
 }
 
-// getLaunchTemplateForArch returns the launch template name for a specific OS and architecture.
-// Supported OS values: "linux", "windows", or "" (defaults to linux).
+// getLaunchTemplateForArch returns the launch template name for a specific architecture.
 // Supported Arch values: "arm64", "amd64", or "" (defaults to arm64).
-func (m *Manager) getLaunchTemplateForArch(os, arch string) string {
+func (m *Manager) getLaunchTemplateForArch(arch string) string {
 	baseName := m.config.LaunchTemplateName
 	if baseName == "" {
 		baseName = "runs-fleet-runner"
 	}
 
-	// Windows instances use a separate launch template
-	if os == "windows" {
-		return baseName + "-windows"
-	}
-
-	// Validate OS - only linux (or empty, defaulting to linux) is supported beyond windows
-	if os != "" && os != "linux" {
-		fleetLog.Warn("unsupported OS, defaulting to linux", slog.String("os", os))
-	}
-
-	// amd64 Linux instances use a separate launch template (different AMI)
+	// amd64 instances use a separate launch template (different AMI)
 	if arch == "amd64" {
 		return baseName + "-amd64"
 	}
 
-	// ARM64 Linux instances (default)
+	// ARM64 instances (default)
 	return baseName + "-arm64"
 }
 
@@ -360,7 +349,7 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 			}
 		}
 		return []types.FleetLaunchTemplateConfigRequest{
-			m.buildSingleArchConfig(spec.OS, spec.Arch, instanceTypes, spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
+			m.buildSingleArchConfig(spec.Arch, instanceTypes, spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
 		}, nil
 	}
 
@@ -379,13 +368,13 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 	}
 
 	return []types.FleetLaunchTemplateConfigRequest{
-		m.buildSingleArchConfig(spec.OS, selectedArch, groupedTypes[selectedArch], spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
+		m.buildSingleArchConfig(selectedArch, groupedTypes[selectedArch], spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
 	}, nil
 }
 
 // buildSingleArchConfig creates a single launch template config for one architecture.
 // If storageGiB > 0, adds block device mappings to override root volume size.
-func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string, subnetID string, storageGiB, maxOverrides int) types.FleetLaunchTemplateConfigRequest {
+func (m *Manager) buildSingleArchConfig(arch string, instanceTypes []string, subnetID string, storageGiB, maxOverrides int) types.FleetLaunchTemplateConfigRequest {
 	if len(instanceTypes) > maxOverrides {
 		instanceTypes = instanceTypes[:maxOverrides]
 	}
@@ -417,7 +406,7 @@ func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string,
 
 	return types.FleetLaunchTemplateConfigRequest{
 		LaunchTemplateSpecification: &types.FleetLaunchTemplateSpecificationRequest{
-			LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(os, arch)),
+			LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(arch)),
 			Version:            aws.String("$Latest"),
 		},
 		Overrides: overrides,
@@ -427,7 +416,6 @@ func (m *Manager) buildSingleArchConfig(os, arch string, instanceTypes []string,
 // buildTags creates the tag set for the fleet resources.
 func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 	name := buildInstanceName(spec.Pool, spec.Repo, spec.Conditions)
-
 
 	tags := []types.Tag{
 		{
@@ -448,14 +436,6 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		tags = append(tags, types.Tag{
 			Key:   aws.String("runs-fleet:pool"),
 			Value: aws.String(spec.Pool),
-		})
-	}
-
-	// Add OS tag for Windows instances
-	if spec.OS != "" {
-		tags = append(tags, types.Tag{
-			Key:   aws.String("runs-fleet:os"),
-			Value: aws.String(spec.OS),
 		})
 	}
 
@@ -547,24 +527,6 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 	}
 
 	return tags
-}
-
-// WindowsInstanceTypes returns the list of supported Windows instance types.
-var WindowsInstanceTypes = map[string]bool{
-	"t3.medium":   true,
-	"t3.large":    true,
-	"t3.xlarge":   true,
-	"m6i.large":   true,
-	"m6i.xlarge":  true,
-	"m6i.2xlarge": true,
-	"c6i.large":   true,
-	"c6i.xlarge":  true,
-	"c6i.2xlarge": true,
-}
-
-// IsValidWindowsInstanceType checks if an instance type supports Windows.
-func IsValidWindowsInstanceType(instanceType string) bool {
-	return WindowsInstanceTypes[instanceType]
 }
 
 // getPrimaryInstanceType returns the primary instance type to use.
@@ -902,7 +864,7 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 			return "", fmt.Errorf("cannot determine architecture for instance type %q", spec.InstanceType)
 		}
 	}
-	launchTemplateName := m.getLaunchTemplateForArch(spec.OS, arch)
+	launchTemplateName := m.getLaunchTemplateForArch(arch)
 
 	input := &ec2.RunInstancesInput{
 		LaunchTemplate: &types.LaunchTemplateSpecification{

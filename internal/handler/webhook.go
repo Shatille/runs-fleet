@@ -77,7 +77,6 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		Pool:          jobConfig.Pool,
 		Spot:          jobConfig.Spot,
 		OriginalLabel: jobConfig.OriginalLabel,
-		OS:            jobConfig.OS,
 		Arch:          jobConfig.Arch,
 		InstanceTypes: jobConfig.InstanceTypes,
 		StorageGiB:    jobConfig.StorageGiB,

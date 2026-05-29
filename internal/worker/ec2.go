@@ -201,7 +201,6 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		Repo:          job.Repo,
 		ForceOnDemand: job.ForceOnDemand,
 		RetryCount:    job.RetryCount,
-		OS:            job.OS,
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
 		Conditions:    BuildRunnerConditions(&job),
@@ -349,7 +348,6 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 		OriginalLabel: job.OriginalLabel,
 		RetryCount:    job.RetryCount + 1,
 		ForceOnDemand: true,
-		OS:            job.OS,
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
 	}

@@ -46,10 +46,9 @@ func TestJobMessage_Fields(t *testing.T) {
 		OriginalLabel: "runs-on: self-hosted",
 		RetryCount:    2,
 		ForceOnDemand: true,
-		OS:            "linux",
 		Arch:          "arm64",
 		InstanceTypes: []string{"t4g.medium", "t4g.large"},
-		Traceparent: testTraceparent,
+		Traceparent:   testTraceparent,
 	}
 
 	if job.JobID != 123 {
@@ -78,9 +77,6 @@ func TestJobMessage_Fields(t *testing.T) {
 	}
 	if !job.ForceOnDemand {
 		t.Error("JobMessage.ForceOnDemand = false, want true")
-	}
-	if job.OS != "linux" {
-		t.Errorf("JobMessage.OS = %q, want %q", job.OS, "linux")
 	}
 	if job.Arch != "arm64" {
 		t.Errorf("JobMessage.Arch = %q, want %q", job.Arch, "arm64")

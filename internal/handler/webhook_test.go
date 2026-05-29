@@ -322,27 +322,12 @@ func TestHandleWorkflowJobQueued(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "job with environment",
+			name: "job with unknown label is silently ignored",
 			event: &github.WorkflowJobEvent{
 				WorkflowJob: &github.WorkflowJob{
 					ID:     github.Int64(12345),
 					Name:   github.String("test-job"),
-					Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64/env=prod"},
-				},
-				Repo: &github.Repository{
-					FullName: github.String("owner/repo"),
-				},
-			},
-			wantMsg: true,
-			wantErr: false,
-		},
-		{
-			name: "job with region",
-			event: &github.WorkflowJobEvent{
-				WorkflowJob: &github.WorkflowJob{
-					ID:     github.Int64(12345),
-					Name:   github.String("test-job"),
-					Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64/region=us-west-2"},
+					Labels: []string{"runs-fleet=67890/cpu=4/arch=arm64/unknown=value"},
 				},
 				Repo: &github.Repository{
 					FullName: github.String("owner/repo"),

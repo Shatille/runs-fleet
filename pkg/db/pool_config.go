@@ -38,11 +38,6 @@ type PoolConfig struct {
 	CurrentStopped     int            `dynamodbav:"current_stopped,omitempty"`
 	IdleTimeoutMinutes int            `dynamodbav:"idle_timeout_minutes,omitempty"`
 	Schedules          []PoolSchedule `dynamodbav:"schedules,omitempty"`
-	// Environment isolation
-	Environment string `dynamodbav:"environment,omitempty"` // dev, staging, prod
-	// Multi-region support
-	Region string `dynamodbav:"region,omitempty"` // AWS region for this pool
-
 	// Ephemeral pool support
 	Ephemeral   bool      `dynamodbav:"ephemeral,omitempty"`
 	LastJobTime time.Time `dynamodbav:"last_job_time,omitempty"`
@@ -201,21 +196,16 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 		},
 		UpdateExpression: aws.String(
 			"SET instance_type = :it, desired_running = :dr, desired_stopped = :ds, " +
-				"idle_timeout_minutes = :itm, schedules = :sc, environment = :env, #region = :reg, " +
+				"idle_timeout_minutes = :itm, schedules = :sc, " +
 				"ephemeral = :eph, last_job_time = :ljt, arch = :arch, cpu_min = :cpumin, " +
 				"cpu_max = :cpumax, ram_min = :rammin, ram_max = :rammax, families = :fam, " +
 				"multi_spec = :ms"),
-		ExpressionAttributeNames: map[string]string{
-			"#region": "region", // region is a reserved word
-		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":it":     attrOrNull(item, "instance_type"),
 			":dr":     attrOrNull(item, "desired_running"),
 			":ds":     attrOrNull(item, "desired_stopped"),
 			":itm":    attrOrNull(item, "idle_timeout_minutes"),
 			":sc":     attrOrNull(item, "schedules"),
-			":env":    attrOrNull(item, "environment"),
-			":reg":    attrOrNull(item, "region"),
 			":eph":    attrOrNull(item, "ephemeral"),
 			":ljt":    attrOrNull(item, "last_job_time"),
 			":arch":   attrOrNull(item, "arch"),

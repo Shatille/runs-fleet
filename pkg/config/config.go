@@ -34,13 +34,13 @@ type Config struct {
 	JobsInstanceIDGSI    string
 	PoolsTableName       string
 	CircuitBreakerTable  string
-	CacheBucketName    string
-	CostReportSNSTopic string
+	CacheBucketName      string
+	CostReportSNSTopic   string
 	CostReportBucket     string
 
 	// EC2 fleet configuration
 	VPCID              string
-	SubnetIDs   []string
+	SubnetIDs          []string
 	SecurityGroupID    string
 	InstanceProfileARN string
 	KeyName            string
@@ -59,10 +59,10 @@ type Config struct {
 	TraceUIURL     string
 
 	// Metrics configuration
-	MetricsNamespace         string   // Metric namespace/prefix (default: "RunsFleet" for CloudWatch, "runs_fleet" for others)
-	MetricsCloudWatchEnabled bool     // Enable CloudWatch metrics (default: true)
-	MetricsPrometheusEnabled bool     // Enable Prometheus /metrics endpoint
-	MetricsPrometheusPath    string   // HTTP path for Prometheus /metrics endpoint (default: "/metrics")
+	MetricsNamespace                string   // Metric namespace/prefix (default: "RunsFleet" for CloudWatch, "runs_fleet" for others)
+	MetricsCloudWatchEnabled        bool     // Enable CloudWatch metrics (default: true)
+	MetricsPrometheusEnabled        bool     // Enable Prometheus /metrics endpoint
+	MetricsPrometheusPath           string   // HTTP path for Prometheus /metrics endpoint (default: "/metrics")
 	MetricsDatadogEnabled           bool     // Enable Datadog DogStatsD metrics
 	MetricsDatadogAddr              string   // DogStatsD address (default: "127.0.0.1:8125")
 	MetricsDatadogTags              []string // Global Datadog tags
@@ -74,15 +74,15 @@ type Config struct {
 	// Tracing configuration
 	Tracing tracing.Config
 
-	// Secrets backend configuration (EC2 mode only)
+	// Secrets backend configuration
 	SecretsBackend    string // "ssm" or "vault" (default: "ssm")
 	SecretsPathPrefix string // Path prefix for secrets (default: "/runs-fleet/runners")
-	VaultAddr       string // Vault server address (required if vault backend)
-	VaultKVMount    string // Vault KV mount path (default: "secret")
-	VaultKVVersion  int    // Vault KV version: 0=auto-detect, 1, 2 (default: 0)
-	VaultBasePath   string // Vault KV path prefix (default: "runs-fleet/runners")
-	VaultAuthMethod string // Vault auth method: "aws", "kubernetes", "approle", "token" (default: "aws")
-	VaultAWSRole    string // Vault AWS auth role (default: "runs-fleet")
+	VaultAddr         string // Vault server address (required if vault backend)
+	VaultKVMount      string // Vault KV mount path (default: "secret")
+	VaultKVVersion    int    // Vault KV version: 0=auto-detect, 1, 2 (default: 0)
+	VaultBasePath     string // Vault KV path prefix (default: "runs-fleet/runners")
+	VaultAuthMethod   string // Vault auth method: "aws", "kubernetes", "approle", "token" (default: "aws")
+	VaultAWSRole      string // Vault AWS auth role (default: "runs-fleet")
 	VaultK8sAuthMount string // Vault Kubernetes auth mount path (default: "kubernetes")
 	VaultK8sRole      string // Vault Kubernetes auth role
 	VaultK8sJWTPath   string // Path to Kubernetes service account token (default: "/var/run/secrets/kubernetes.io/serviceaccount/token")
@@ -125,13 +125,13 @@ func Load() (*Config, error) {
 		JobsInstanceIDGSI:    getEnv("RUNS_FLEET_JOBS_INSTANCE_ID_GSI", ""),
 		PoolsTableName:       getEnv("RUNS_FLEET_POOLS_TABLE", ""),
 		CircuitBreakerTable:  getEnv("RUNS_FLEET_CIRCUIT_BREAKER_TABLE", "runs-fleet-circuit-state"),
-		CacheBucketName:    getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
-		CostReportSNSTopic: getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
+		CacheBucketName:      getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
+		CostReportSNSTopic:   getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
 		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
 
 		// EC2-specific
 		VPCID:              getEnv("RUNS_FLEET_VPC_ID", ""),
-		SubnetIDs:   splitAndFilter(getEnv("RUNS_FLEET_SUBNET_IDS", "")),
+		SubnetIDs:          splitAndFilter(getEnv("RUNS_FLEET_SUBNET_IDS", "")),
 		SecurityGroupID:    getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
 		InstanceProfileARN: getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
 		KeyName:            getEnv("RUNS_FLEET_KEY_NAME", ""),
@@ -149,10 +149,10 @@ func Load() (*Config, error) {
 		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
 
 		// Metrics
-		MetricsNamespace:         getEnv("RUNS_FLEET_METRICS_NAMESPACE", ""),
-		MetricsCloudWatchEnabled: getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
-		MetricsPrometheusEnabled: getEnvBool("RUNS_FLEET_METRICS_PROMETHEUS_ENABLED", false),
-		MetricsPrometheusPath:    getEnv("RUNS_FLEET_METRICS_PROMETHEUS_PATH", "/metrics"),
+		MetricsNamespace:                getEnv("RUNS_FLEET_METRICS_NAMESPACE", ""),
+		MetricsCloudWatchEnabled:        getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
+		MetricsPrometheusEnabled:        getEnvBool("RUNS_FLEET_METRICS_PROMETHEUS_ENABLED", false),
+		MetricsPrometheusPath:           getEnv("RUNS_FLEET_METRICS_PROMETHEUS_PATH", "/metrics"),
 		MetricsDatadogEnabled:           getEnvBool("RUNS_FLEET_METRICS_DATADOG_ENABLED", false),
 		MetricsDatadogAddr:              getEnv("RUNS_FLEET_METRICS_DATADOG_ADDR", "127.0.0.1:8125"),
 		MetricsDatadogTags:              splitAndFilter(getEnv("RUNS_FLEET_METRICS_DATADOG_TAGS", "")),
@@ -164,15 +164,15 @@ func Load() (*Config, error) {
 		// Tracing
 		Tracing: tracing.ParseConfig(),
 
-		// Secrets backend (EC2 mode)
+		// Secrets backend
 		SecretsBackend:    getEnv("RUNS_FLEET_SECRETS_BACKEND", "ssm"),
 		SecretsPathPrefix: getEnv("RUNS_FLEET_SECRETS_PATH_PREFIX", "/runs-fleet/runners"),
-		VaultAddr:      getEnv("VAULT_ADDR", ""),
-		VaultKVMount:   getEnv("VAULT_KV_MOUNT", "secret"),
-		VaultKVVersion: vaultKVVersion,
-		VaultBasePath:  getEnv("VAULT_BASE_PATH", "runs-fleet/runners"),
-		VaultAuthMethod: getEnv("VAULT_AUTH_METHOD", "aws"),
-		VaultAWSRole:    getEnv("VAULT_AWS_ROLE", "runs-fleet"),
+		VaultAddr:         getEnv("VAULT_ADDR", ""),
+		VaultKVMount:      getEnv("VAULT_KV_MOUNT", "secret"),
+		VaultKVVersion:    vaultKVVersion,
+		VaultBasePath:     getEnv("VAULT_BASE_PATH", "runs-fleet/runners"),
+		VaultAuthMethod:   getEnv("VAULT_AUTH_METHOD", "aws"),
+		VaultAWSRole:      getEnv("VAULT_AWS_ROLE", "runs-fleet"),
 		VaultK8sAuthMount: getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
 		VaultK8sRole:      getEnv("VAULT_K8S_ROLE", ""),
 		VaultK8sJWTPath:   getEnv("VAULT_K8S_JWT_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
@@ -454,24 +454,20 @@ func parseTags(s string) (map[string]string, error) {
 
 func validateTags(tags map[string]string) error {
 	const (
-		// AWS EC2 allows 50 tags max. System adds up to 13 tags:
+		// AWS EC2 allows 50 tags max. System adds up to 9 tags:
 		// - Name (always)
 		// - runs-fleet:run-id (always)
 		// - runs-fleet:managed (always)
 		// - runs-fleet:pool (conditional)
-		// - runs-fleet:os (conditional)
 		// - runs-fleet:arch (conditional)
-		// - runs-fleet:region (conditional)
-		// - runs-fleet:environment (conditional)
-		// - Environment (conditional, mirrors runs-fleet:environment)
 		// - runs-fleet:runner-image (conditional)
 		// - runs-fleet:termination-queue-url (conditional)
 		// - runs-fleet:cache-url (conditional)
 		// Reserve 15 for system tags to be safe, allowing 35 custom tags
 		systemTagReserve = 15
 		maxTags          = 50 - systemTagReserve
-		maxKeyLen   = 128
-		maxValueLen = 256
+		maxKeyLen        = 128
+		maxValueLen      = 256
 	)
 
 	if len(tags) > maxTags {
