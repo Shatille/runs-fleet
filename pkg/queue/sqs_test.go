@@ -174,48 +174,71 @@ func TestSQSClient_SendMessage(t *testing.T) {
 	}
 }
 
-func TestSQSClient_SendMessage_RetryGeneratesUniqueDedupID(t *testing.T) {
+func TestSQSClient_SendMessage_DeterministicDedupID(t *testing.T) {
 	t.Parallel()
 
-	var firstDedupID, secondDedupID string
-
-	job := &JobMessage{
-		JobID:        12345,
-		RunID:        67890,
-		InstanceType: "t4g.medium",
-		Spot:         true,
-	}
-
+	var dedupIDs []string
 	mock := &mockSQSClient{
 		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
-			if firstDedupID == "" {
-				firstDedupID = *params.MessageDeduplicationId
-			} else {
-				secondDedupID = *params.MessageDeduplicationId
-			}
+			dedupIDs = append(dedupIDs, *params.MessageDeduplicationId)
 			return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
 		},
 	}
-
 	client := &SQSClient{
 		sqsClient: mock,
 		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
 	}
 
+	// Same job + same retry count → identical dedup ID, so duplicate webhook
+	// deliveries of the same attempt are suppressed by SQS.
+	job := &JobMessage{JobID: 12345, RunID: 67890, InstanceType: "t4g.medium", RetryCount: 0}
 	if err := client.SendMessage(context.Background(), job); err != nil {
-		t.Fatalf("First SendMessage() failed: %v", err)
+		t.Fatalf("first send: %v", err)
 	}
-
 	if err := client.SendMessage(context.Background(), job); err != nil {
-		t.Fatalf("Second SendMessage() failed: %v", err)
+		t.Fatalf("second send: %v", err)
+	}
+	// A genuine retry (incremented RetryCount) → distinct dedup ID so it is not suppressed.
+	retry := &JobMessage{JobID: 12345, RunID: 67890, InstanceType: "t4g.medium", RetryCount: 1}
+	if err := client.SendMessage(context.Background(), retry); err != nil {
+		t.Fatalf("retry send: %v", err)
 	}
 
-	if firstDedupID == "" || secondDedupID == "" {
-		t.Fatal("Deduplication IDs were not captured")
+	if len(dedupIDs) != 3 {
+		t.Fatalf("expected 3 sends, got %d", len(dedupIDs))
+	}
+	if dedupIDs[0] != dedupIDs[1] {
+		t.Errorf("same attempt should share dedup ID: %s != %s", dedupIDs[0], dedupIDs[1])
+	}
+	if dedupIDs[0] == dedupIDs[2] {
+		t.Errorf("retry should get a distinct dedup ID, got %s for both attempt and retry", dedupIDs[0])
+	}
+}
+
+func TestSQSClient_SendMessage_StandardQueueOmitsFIFOParams(t *testing.T) {
+	t.Parallel()
+
+	var captured *sqs.SendMessageInput
+	mock := &mockSQSClient{
+		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+			captured = params
+			return &sqs.SendMessageOutput{MessageId: aws.String("msg-1")}, nil
+		},
+	}
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/standard-queue",
 	}
 
-	if firstDedupID == secondDedupID {
-		t.Errorf("Retry produced same deduplication ID, preventing retries. First=%s, Second=%s", firstDedupID, secondDedupID)
+	// RunID is intentionally zero: it is only required for FIFO grouping.
+	if err := client.SendMessage(context.Background(), &JobMessage{JobID: 1}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if captured.MessageGroupId != nil {
+		t.Error("standard (non-FIFO) queue must not set MessageGroupId")
+	}
+	if captured.MessageDeduplicationId != nil {
+		t.Error("standard (non-FIFO) queue must not set MessageDeduplicationId")
 	}
 }
 

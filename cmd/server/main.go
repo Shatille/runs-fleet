@@ -90,6 +90,7 @@ func main() {
 	fleetManager := fleet.NewManager(awsCfg, cfg)
 	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
+	eventHandler.SetJobQueue(jobQueue)
 
 	ec2Client := ec2.NewFromConfig(awsCfg)
 	poolManager.SetEC2Client(ec2Client)

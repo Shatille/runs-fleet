@@ -1249,6 +1249,7 @@ func TestSpotInterruptionHandling(t *testing.T) {
 				metrics:     mockMetrics,
 				config:      &config.Config{},
 			}
+			handler.SetJobQueue(mockQueue)
 
 			eventBody := fmt.Sprintf(`{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
@@ -1319,6 +1320,7 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 		metrics:     mockMetrics,
 		config:      &config.Config{},
 	}
+	handler.SetJobQueue(mockQueue)
 
 	msg := queue.Message{
 		Body: `{
@@ -1352,6 +1354,52 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	// When ForceOnDemand is true, Spot should be false
 	if capturedMessage.Spot {
 		t.Errorf("Spot: expected false (ForceOnDemand=true), got %v", capturedMessage.Spot)
+	}
+}
+
+func TestSpotInterruptionRequeuesToJobQueueNotEvents(t *testing.T) {
+	var jobQueueGot, eventsQueueGot *queue.JobMessage
+
+	eventsQueue := &MockQueueAPI{
+		SendMessageFunc: func(_ context.Context, job *queue.JobMessage) error {
+			eventsQueueGot = job
+			return nil
+		},
+		DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
+	}
+	jobQueue := &MockQueueAPI{
+		SendMessageFunc: func(_ context.Context, job *queue.JobMessage) error {
+			jobQueueGot = job
+			return nil
+		},
+	}
+	mockDB := &MockDBAPI{
+		MarkInstanceTerminatingFunc: func(_ context.Context, _ string) error { return nil },
+		GetJobByInstanceFunc: func(_ context.Context, _ string) (*JobInfo, error) {
+			return &JobInfo{JobID: 12345, RunID: 67890, InstanceType: "t4g.medium"}, nil
+		},
+	}
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error { return nil },
+	}
+
+	handler := NewHandler(eventsQueue, mockDB, mockMetrics, &config.Config{})
+	handler.SetJobQueue(jobQueue)
+
+	msg := queue.Message{
+		Body:   `{"detail-type":"EC2 Spot Instance Interruption Warning","detail":{"instance-id":"i-x","instance-action":"terminate"}}`,
+		Handle: "receipt-test",
+	}
+	handler.processEvent(context.Background(), msg)
+
+	if jobQueueGot == nil {
+		t.Fatal("requeue was not sent to the job queue")
+	}
+	if jobQueueGot.JobID != 12345 {
+		t.Errorf("requeued JobID = %d, want 12345", jobQueueGot.JobID)
+	}
+	if eventsQueueGot != nil {
+		t.Error("requeue must not be sent to the events queue")
 	}
 }
 
@@ -1586,6 +1634,7 @@ func TestSpotInterruptionPublishesCircuitBreakerMetric(t *testing.T) {
 				config:         &config.Config{},
 				circuitBreaker: mockCB,
 			}
+			handler.SetJobQueue(mockQueue)
 
 			msg := queue.Message{
 				Body: `{
