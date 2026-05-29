@@ -217,8 +217,11 @@ type mockTaskSQSAPI struct {
 	getQueueAttrsErrors    []error                         // Multiple errors for successive calls
 	startMoveTaskOutput    *sqs.StartMessageMoveTaskOutput
 	startMoveTaskErr       error
+	listMoveTasksOutput    *sqs.ListMessageMoveTasksOutput
+	listMoveTasksErr       error
 	getQueueAttrsCalls     int
 	startMoveTaskCalls     int
+	listMoveTasksCalls     int
 	lastGetQueueAttrsInput *sqs.GetQueueAttributesInput
 }
 
@@ -246,6 +249,17 @@ func (m *mockTaskSQSAPI) StartMessageMoveTask(_ context.Context, _ *sqs.StartMes
 		return nil, m.startMoveTaskErr
 	}
 	return m.startMoveTaskOutput, nil
+}
+
+func (m *mockTaskSQSAPI) ListMessageMoveTasks(_ context.Context, _ *sqs.ListMessageMoveTasksInput, _ ...func(*sqs.Options)) (*sqs.ListMessageMoveTasksOutput, error) {
+	m.listMoveTasksCalls++
+	if m.listMoveTasksErr != nil {
+		return nil, m.listMoveTasksErr
+	}
+	if m.listMoveTasksOutput != nil {
+		return m.listMoveTasksOutput, nil
+	}
+	return &sqs.ListMessageMoveTasksOutput{}, nil
 }
 
 func TestExecuteOrphanedInstances_NoOrphans(t *testing.T) {
@@ -1151,6 +1165,49 @@ func TestExecuteDLQRedrive_EmptyDLQ(t *testing.T) {
 	}
 	if sqsClient.startMoveTaskCalls != 0 {
 		t.Errorf("expected 0 start move task calls for empty DLQ, got %d", sqsClient.startMoveTaskCalls)
+	}
+}
+
+func TestExecuteDLQRedrive_SkipsWhenMoveTaskRunning(t *testing.T) {
+	t.Parallel()
+
+	sqsClient := &mockTaskSQSAPI{
+		getQueueAttrsOutputs: []*sqs.GetQueueAttributesOutput{
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "5",
+					string(sqstypes.QueueAttributeNameQueueArn):                    "arn:aws:sqs:us-east-1:123456789012:dlq",
+				},
+			},
+			{
+				Attributes: map[string]string{
+					string(sqstypes.QueueAttributeNameQueueArn): "arn:aws:sqs:us-east-1:123456789012:main-queue",
+				},
+			},
+		},
+		listMoveTasksOutput: &sqs.ListMessageMoveTasksOutput{
+			Results: []sqstypes.ListMessageMoveTasksResultEntry{
+				{Status: aws.String("RUNNING")},
+			},
+		},
+	}
+
+	tasks := &Tasks{
+		sqsClient: sqsClient,
+		config: &config.Config{
+			QueueDLQURL: "https://sqs.example.com/dlq",
+			QueueURL:    "https://sqs.example.com/main-queue",
+		},
+	}
+
+	if err := tasks.ExecuteDLQRedrive(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sqsClient.startMoveTaskCalls != 0 {
+		t.Errorf("expected 0 start move task calls when a task is running, got %d", sqsClient.startMoveTaskCalls)
+	}
+	if sqsClient.listMoveTasksCalls != 1 {
+		t.Errorf("expected 1 list move tasks call, got %d", sqsClient.listMoveTasksCalls)
 	}
 }
 
