@@ -16,6 +16,10 @@ const (
 
 	// CleanupTimeout for deferred cleanup operations
 	CleanupTimeout = 5 * time.Second
+
+	// AWSResponseHeaderTimeout bounds how long an AWS SDK request waits for
+	// response headers before failing
+	AWSResponseHeaderTimeout = 10 * time.Second
 )
 
 // HTTP body size limits
