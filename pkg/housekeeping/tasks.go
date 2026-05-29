@@ -70,6 +70,7 @@ type GitHubJobChecker interface {
 type SQSAPI interface {
 	GetQueueAttributes(ctx context.Context, params *sqs.GetQueueAttributesInput, optFns ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error)
 	StartMessageMoveTask(ctx context.Context, params *sqs.StartMessageMoveTaskInput, optFns ...func(*sqs.Options)) (*sqs.StartMessageMoveTaskOutput, error)
+	ListMessageMoveTasks(ctx context.Context, params *sqs.ListMessageMoveTasksInput, optFns ...func(*sqs.Options)) (*sqs.ListMessageMoveTasksOutput, error)
 }
 
 // PoolConfig represents pool configuration for housekeeping.
@@ -642,7 +643,8 @@ func isNilInterface(i interface{}) bool {
 	return v.Kind() == reflect.Ptr && v.IsNil()
 }
 
-// ExecuteDLQRedrive moves messages from the DLQ back to the main queue.
+// ExecuteDLQRedrive moves messages from the DLQ back to the main queue via an
+// SQS message-move task, skipping if one is already in progress.
 func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 	if t.config.QueueDLQURL == "" || t.config.QueueURL == "" {
 		return nil
@@ -684,6 +686,18 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		return fmt.Errorf("failed to get main queue ARN")
 	}
 
+	// SQS permits only one active move task per source queue; skip if one is
+	// already running rather than erroring on every redrive tick.
+	running, err := t.dlqMoveTaskRunning(ctx, dlqArn)
+	if err != nil {
+		return fmt.Errorf("failed to list message move tasks: %w", err)
+	}
+	if running {
+		t.logger().Info("dlq redrive skipped; move task already running",
+			slog.String("message_count", msgCount))
+		return nil
+	}
+
 	output, err := t.sqsClient.StartMessageMoveTask(ctx, &sqs.StartMessageMoveTaskInput{
 		SourceArn:      aws.String(dlqArn),
 		DestinationArn: aws.String(mainQueueArn),
@@ -696,6 +710,25 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		slog.String("message_count", msgCount),
 		slog.String("task_handle", aws.ToString(output.TaskHandle)))
 	return nil
+}
+
+// dlqMoveTaskRunning reports whether an SQS message-move task is currently
+// running for the given source queue ARN.
+func (t *Tasks) dlqMoveTaskRunning(ctx context.Context, sourceArn string) (bool, error) {
+	out, err := t.sqsClient.ListMessageMoveTasks(ctx, &sqs.ListMessageMoveTasksInput{
+		SourceArn:  aws.String(sourceArn),
+		MaxResults: aws.Int32(1),
+	})
+	if err != nil {
+		return false, err
+	}
+	for _, task := range out.Results {
+		// RUNNING and CANCELLING are both live states in which SQS rejects a new task.
+		if status := aws.ToString(task.Status); status == "RUNNING" || status == "CANCELLING" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // SetPoolDB sets the pool database client for ephemeral pool cleanup.
