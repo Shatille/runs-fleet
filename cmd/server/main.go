@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 
@@ -138,27 +139,36 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	go worker.RunEC2Worker(ctx, worker.EC2WorkerDeps{
-		Queue:       jobQueue,
-		Fleet:       fleetManager,
-		Pool:        poolManager,
-		Metrics:     metricsPublisher,
-		Runner:      runnerManager,
-		DB:          dbClient,
-		Config:      cfg,
-		SubnetIndex: &subnetIndex,
+	var workers sync.WaitGroup
+	runWorker := func(fn func(context.Context)) {
+		workers.Go(func() {
+			fn(ctx)
+		})
+	}
+
+	runWorker(func(c context.Context) {
+		worker.RunEC2Worker(c, worker.EC2WorkerDeps{
+			Queue:       jobQueue,
+			Fleet:       fleetManager,
+			Pool:        poolManager,
+			Metrics:     metricsPublisher,
+			Runner:      runnerManager,
+			DB:          dbClient,
+			Config:      cfg,
+			SubnetIndex: &subnetIndex,
+		})
 	})
-	go poolManager.ReconcileLoop(ctx)
-	go eventHandler.Run(ctx)
+	runWorker(poolManager.ReconcileLoop)
+	runWorker(eventHandler.Run)
 
 	if terminationHandler != nil {
-		go terminationHandler.Run(ctx)
+		runWorker(terminationHandler.Run)
 	}
 	if housekeepingHandler != nil {
-		go housekeepingHandler.Run(ctx)
+		runWorker(housekeepingHandler.Run)
 	}
 	if housekeepingScheduler != nil {
-		go housekeepingScheduler.Run(ctx)
+		runWorker(housekeepingScheduler.Run)
 	}
 
 	go func() {
@@ -175,13 +185,24 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
 
-	if err := tracing.Shutdown(shutdownCtx, tp); err != nil {
-		log.Warn("tracing shutdown failed", slog.String("error", err.Error()))
-	}
-
+	// Stop accepting new HTTP/webhook traffic before draining workers.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Error("server shutdown failed", slog.String("error", err.Error()))
 		os.Exit(1)
+	}
+
+	// Workers share the signal context and are already cancelling; wait for them
+	// to return (bounded) before flushing telemetry so their final spans and
+	// metrics are captured, rather than abandoning them mid-iteration.
+	if waitForWorkers(&workers, workerDrainTimeout) {
+		log.Info("background workers stopped")
+	} else {
+		log.Warn("background workers did not stop within grace period",
+			slog.Duration("timeout", workerDrainTimeout))
+	}
+
+	if err := tracing.Shutdown(shutdownCtx, tp); err != nil {
+		log.Warn("tracing shutdown failed", slog.String("error", err.Error()))
 	}
 
 	if err := metricsPublisher.Close(); err != nil {
@@ -189,6 +210,26 @@ func main() {
 	}
 
 	log.Info("server stopped")
+}
+
+// workerDrainTimeout bounds how long shutdown waits for background workers to
+// observe the cancelled context and return.
+const workerDrainTimeout = 15 * time.Second
+
+// waitForWorkers waits for the worker WaitGroup to drain, returning false if the
+// timeout elapses first.
+func waitForWorkers(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func initJobQueue(awsCfg aws.Config, cfg *config.Config) queue.Queue {

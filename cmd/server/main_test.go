@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -404,6 +405,28 @@ func TestSelectSubnet_NilSubnets(t *testing.T) {
 	if result != "" {
 		t.Errorf("SelectSubnet() = %q, want empty string", result)
 	}
+}
+
+func TestWaitForWorkers(t *testing.T) {
+	t.Run("returns true when workers finish before timeout", func(t *testing.T) {
+		var wg sync.WaitGroup
+		wg.Go(func() { time.Sleep(5 * time.Millisecond) })
+		if !waitForWorkers(&wg, time.Second) {
+			t.Error("expected true when workers finish within timeout")
+		}
+	})
+
+	t.Run("returns false when workers exceed timeout", func(t *testing.T) {
+		var wg sync.WaitGroup
+		release := make(chan struct{})
+		wg.Go(func() { <-release })
+		// Release after the timeout assertion so the WaitGroup (and the internal
+		// wg.Wait goroutine in waitForWorkers) unblock before the subtest returns.
+		defer close(release)
+		if waitForWorkers(&wg, 10*time.Millisecond) {
+			t.Error("expected false when workers exceed timeout")
+		}
+	})
 }
 
 func TestJobMessage_AllFields(t *testing.T) {
