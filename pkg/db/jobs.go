@@ -138,7 +138,14 @@ func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName:           aws.String(c.jobsTable),
 		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(job_id)"),
+		ConditionExpression: aws.String("attribute_not_exists(job_id) OR #status IN (:requeued, :terminating)"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":requeued":    &types.AttributeValueMemberS{Value: string(JobStatusRequeued)},
+			":terminating": &types.AttributeValueMemberS{Value: string(JobStatusTerminating)},
+		},
 	})
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException

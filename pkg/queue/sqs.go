@@ -6,13 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
+	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
-	"github.com/google/uuid"
 )
 
 // SQSAPI defines SQS operations for queue message handling.
@@ -52,13 +51,11 @@ func NewSQSClientWithAPI(api SQSAPI, queueURL string) *SQSClient {
 	}
 }
 
-// SendMessage sends job message to SQS FIFO queue with deduplication.
+// SendMessage sends a job message to SQS, adding FIFO message-group and
+// deduplication IDs when the target queue is a FIFO queue.
 func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
 	if job.JobID == 0 {
-		return fmt.Errorf("job ID is required for SQS FIFO deduplication")
-	}
-	if job.RunID == 0 {
-		return fmt.Errorf("run ID is required for SQS FIFO message grouping")
+		return fmt.Errorf("job ID is required")
 	}
 
 	body, err := json.Marshal(job)
@@ -66,15 +63,19 @@ func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
 		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
-	dedupKey := fmt.Sprintf("%d-%d-%s", job.JobID, time.Now().UnixNano(), uuid.New().String()[:8])
-	hash := sha256.Sum256([]byte(dedupKey))
-	dedupID := hex.EncodeToString(hash[:])
-
 	input := &sqs.SendMessageInput{
-		QueueUrl:               aws.String(c.queueURL),
-		MessageBody:            aws.String(string(body)),
-		MessageGroupId:         aws.String(fmt.Sprintf("%d", job.RunID)),
-		MessageDeduplicationId: aws.String(dedupID),
+		QueueUrl:    aws.String(c.queueURL),
+		MessageBody: aws.String(string(body)),
+	}
+
+	if strings.HasSuffix(c.queueURL, ".fifo") {
+		if job.RunID == 0 {
+			return fmt.Errorf("run ID is required for FIFO message grouping")
+		}
+		dedupKey := fmt.Sprintf("%d-%d", job.JobID, job.RetryCount)
+		hash := sha256.Sum256([]byte(dedupKey))
+		input.MessageGroupId = aws.String(fmt.Sprintf("%d", job.RunID))
+		input.MessageDeduplicationId = aws.String(hex.EncodeToString(hash[:]))
 	}
 
 	traceparent := tracing.InjectTraceContext(ctx)

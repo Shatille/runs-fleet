@@ -37,6 +37,11 @@ type QueueAPI interface {
 	SendMessage(ctx context.Context, job *queue.JobMessage) error
 }
 
+// JobRequeuer re-enqueues jobs onto the main job queue after an interruption.
+type JobRequeuer interface {
+	SendMessage(ctx context.Context, job *queue.JobMessage) error
+}
+
 // DBAPI provides database operations for event processing.
 type DBAPI interface {
 	MarkInstanceTerminating(ctx context.Context, instanceID string) error
@@ -72,6 +77,7 @@ type CircuitBreakerAPI interface {
 // Handler processes EventBridge events from SQS queue.
 type Handler struct {
 	queueClient    QueueAPI
+	jobQueue       JobRequeuer
 	dbClient       DBAPI
 	metrics        MetricsAPI
 	config         *config.Config
@@ -86,6 +92,12 @@ func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, cfg *config.Config) *Handler
 		metrics:     m,
 		config:      cfg,
 	}
+}
+
+// SetJobQueue sets the main job queue used to re-enqueue jobs after an
+// interruption. It must be set before the handler processes events.
+func (h *Handler) SetJobQueue(q JobRequeuer) {
+	h.jobQueue = q
 }
 
 // SetCircuitBreaker sets the circuit breaker for recording interruptions.
@@ -355,7 +367,10 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		RetryCount:    job.RetryCount + 1, // Increment retry count
 		ForceOnDemand: true,               // Force on-demand for retries after spot interruption
 	}
-	if err := h.queueClient.SendMessage(ctx, requeueMsg); err != nil {
+	if h.jobQueue == nil {
+		return fmt.Errorf("job queue not configured; cannot re-queue job %d", job.JobID)
+	}
+	if err := h.jobQueue.SendMessage(ctx, requeueMsg); err != nil {
 		return fmt.Errorf("failed to re-queue job %d: %w", job.JobID, err)
 	}
 

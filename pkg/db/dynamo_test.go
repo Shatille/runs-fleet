@@ -1288,8 +1288,18 @@ func TestClaimJob_Success(t *testing.T) {
 
 	mockDB := &MockDynamoDBAPI{
 		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			if params.ConditionExpression == nil || *params.ConditionExpression != "attribute_not_exists(job_id)" {
-				t.Error("ClaimJob() should use conditional expression on job_id")
+			want := "attribute_not_exists(job_id) OR #status IN (:requeued, :terminating)"
+			if params.ConditionExpression == nil || *params.ConditionExpression != want {
+				t.Errorf("ClaimJob() condition = %v, want %q", params.ConditionExpression, want)
+			}
+			if params.ExpressionAttributeNames["#status"] != "status" {
+				t.Error("ClaimJob() should map #status -> status")
+			}
+			if _, ok := params.ExpressionAttributeValues[":requeued"]; !ok {
+				t.Error("ClaimJob() should permit re-claim of requeued jobs")
+			}
+			if _, ok := params.ExpressionAttributeValues[":terminating"]; !ok {
+				t.Error("ClaimJob() should permit re-claim of terminating jobs")
 			}
 			return &dynamodb.PutItemOutput{}, nil
 		},
