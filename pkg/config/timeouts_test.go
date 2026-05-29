@@ -38,6 +38,18 @@ func TestTimeoutConstants(t *testing.T) {
 			want:     5 * time.Second,
 			minValue: time.Second,
 		},
+		{
+			name:     "AWSResponseHeaderTimeout",
+			got:      AWSResponseHeaderTimeout,
+			want:     10 * time.Second,
+			minValue: time.Second,
+		},
+		{
+			name:     "AWSSQSResponseHeaderTimeout",
+			got:      AWSSQSResponseHeaderTimeout,
+			want:     25 * time.Second,
+			minValue: 21 * time.Second,
+		},
 	}
 
 	for _, tt := range tests {
@@ -97,5 +109,32 @@ func TestTimeoutRelationships(t *testing.T) {
 	if CleanupTimeout > MessageReceiveTimeout {
 		t.Errorf("CleanupTimeout (%v) should not exceed MessageReceiveTimeout (%v)",
 			CleanupTimeout, MessageReceiveTimeout)
+	}
+}
+
+func TestAWSSQSResponseHeaderTimeoutClearsLongPoll(t *testing.T) {
+	t.Parallel()
+
+	// Every SQS consumer long-polls with WaitTimeSeconds=20, during which SQS
+	// withholds response headers on an empty queue. The SQS client's header
+	// timeout must exceed that wait, or empty polls fail instead of returning
+	// no-message responses.
+	const longPollWait = 20 * time.Second
+
+	if AWSSQSResponseHeaderTimeout <= longPollWait {
+		t.Errorf("AWSSQSResponseHeaderTimeout (%v) must exceed the 20s long-poll wait (%v)",
+			AWSSQSResponseHeaderTimeout, longPollWait)
+	}
+
+	// It must outlast the fast client so SQS gets the longer budget, but stay
+	// below MessageProcessTimeout so an empty poll never outlives the per-message
+	// processing budget.
+	if AWSSQSResponseHeaderTimeout <= AWSResponseHeaderTimeout {
+		t.Errorf("AWSSQSResponseHeaderTimeout (%v) must exceed AWSResponseHeaderTimeout (%v)",
+			AWSSQSResponseHeaderTimeout, AWSResponseHeaderTimeout)
+	}
+	if AWSSQSResponseHeaderTimeout >= MessageProcessTimeout {
+		t.Errorf("AWSSQSResponseHeaderTimeout (%v) must stay below MessageProcessTimeout (%v)",
+			AWSSQSResponseHeaderTimeout, MessageProcessTimeout)
 	}
 }
