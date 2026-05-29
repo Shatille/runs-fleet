@@ -61,8 +61,6 @@ type PoolResponse struct {
 	BusyInstances      int                `json:"busy_instances"`
 	IdleTimeoutMinutes int                `json:"idle_timeout_minutes,omitempty"`
 	Ephemeral          bool               `json:"ephemeral"`
-	Environment        string             `json:"environment,omitempty"`
-	Region             string             `json:"region,omitempty"`
 	Arch               string             `json:"arch,omitempty"`
 	CPUMin             int                `json:"cpu_min,omitempty"`
 	CPUMax             int                `json:"cpu_max,omitempty"`
@@ -89,8 +87,6 @@ type PoolRequest struct {
 	DesiredRunning     int               `json:"desired_running"`
 	DesiredStopped     int               `json:"desired_stopped"`
 	IdleTimeoutMinutes int               `json:"idle_timeout_minutes,omitempty"`
-	Environment        string            `json:"environment,omitempty"`
-	Region             string            `json:"region,omitempty"`
 	Arch               string            `json:"arch,omitempty"`
 	CPUMin             int               `json:"cpu_min,omitempty"`
 	CPUMax             int               `json:"cpu_max,omitempty"`
@@ -403,8 +399,6 @@ func (h *Handler) configToResponseWithBusy(config *db.PoolConfig, busyCount int)
 		BusyInstances:      busyCount,
 		IdleTimeoutMinutes: config.IdleTimeoutMinutes,
 		Ephemeral:          config.Ephemeral,
-		Environment:        config.Environment,
-		Region:             config.Region,
 		Arch:               config.Arch,
 		CPUMin:             config.CPUMin,
 		CPUMax:             config.CPUMax,
@@ -437,8 +431,6 @@ func (h *Handler) requestToConfig(req *PoolRequest) *db.PoolConfig {
 		DesiredRunning:     req.DesiredRunning,
 		DesiredStopped:     req.DesiredStopped,
 		IdleTimeoutMinutes: req.IdleTimeoutMinutes,
-		Environment:        req.Environment,
-		Region:             req.Region,
 		Arch:               req.Arch,
 		CPUMin:             req.CPUMin,
 		CPUMax:             req.CPUMax,
@@ -544,12 +536,6 @@ func poolDiff(old, updated *db.PoolConfig) string {
 	}
 	if old.RAMMax != updated.RAMMax {
 		diffs = append(diffs, fmt.Sprintf("ram_max: %g -> %g", old.RAMMax, updated.RAMMax))
-	}
-	if old.Environment != updated.Environment {
-		diffs = append(diffs, fmt.Sprintf("environment: %q -> %q", old.Environment, updated.Environment))
-	}
-	if old.Region != updated.Region {
-		diffs = append(diffs, fmt.Sprintf("region: %q -> %q", old.Region, updated.Region))
 	}
 	oldFamilies := slices.Sorted(slices.Values(old.Families))
 	updatedFamilies := slices.Sorted(slices.Values(updated.Families))

@@ -8,8 +8,6 @@ export interface Pool {
   busy_instances: number;
   idle_timeout_minutes?: number;
   ephemeral: boolean;
-  environment?: string;
-  region?: string;
   arch?: string;
   cpu_min?: number;
   cpu_max?: number;
@@ -34,8 +32,6 @@ export interface PoolFormData {
   desired_running: number;
   desired_stopped: number;
   idle_timeout_minutes: number;
-  environment: string;
-  region: string;
   arch: string;
   cpu_min: number;
   cpu_max: number;

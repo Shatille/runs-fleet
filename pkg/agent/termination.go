@@ -19,7 +19,7 @@ const (
 var ec2TerminationDelay = 2 * time.Second
 
 // InstanceTerminator defines the interface for instance termination.
-// Implementations handle backend-specific termination (EC2 API vs K8s pod exit).
+// Implementations handle instance termination via the EC2 API.
 type InstanceTerminator interface {
 	TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error
 }

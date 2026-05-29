@@ -83,7 +83,6 @@ type JobConfig struct {
 	InstanceType string
 	Pool         string
 	Spot         bool
-	OS           string // Operating system (linux, windows)
 	Arch         string // Architecture (amd64, arm64)
 
 	// Flexible instance selection
@@ -100,7 +99,6 @@ type JobConfig struct {
 	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
 }
 
-
 // ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
 //
 // Format:
@@ -113,7 +111,6 @@ type JobConfig struct {
 func ParseLabels(labels []string) (*JobConfig, error) {
 	cfg := &JobConfig{
 		Spot: true,
-		OS:   "linux",
 		Arch: "", // Empty = arch doesn't matter, uses non-suffixed launch template
 	}
 
@@ -147,11 +144,6 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 
 	if err := ResolveFlexibleSpec(cfg); err != nil {
 		return nil, err
-	}
-
-	// Validate Windows only supports amd64 architecture
-	if cfg.OS == "windows" && cfg.Arch != "" && cfg.Arch != ArchAMD64 {
-		return nil, fmt.Errorf("windows runners only support amd64 architecture, got %q", cfg.Arch)
 	}
 
 	return cfg, nil
@@ -282,9 +274,6 @@ func ResolveFlexibleSpec(cfg *JobConfig) error {
 		cfg.CPUMax = cfg.CPUMin * 2
 	}
 
-	// Determine OS from arch (flexible specs default to linux)
-	cfg.OS = "linux"
-
 	// Build flexible spec for resolution
 	spec := fleet.FlexibleSpec{
 		CPUMin:   cfg.CPUMin,
@@ -314,4 +303,3 @@ func ResolveFlexibleSpec(cfg *JobConfig) error {
 
 	return nil
 }
-

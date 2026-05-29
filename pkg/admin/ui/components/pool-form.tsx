@@ -29,8 +29,6 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
     desired_running: pool?.desired_running || 0,
     desired_stopped: pool?.desired_stopped || 0,
     idle_timeout_minutes: pool?.idle_timeout_minutes || 60,
-    environment: pool?.environment || '',
-    region: pool?.region || '',
     arch: pool?.arch || '',
     cpu_min: pool?.cpu_min || 0,
     cpu_max: pool?.cpu_max || 0,
@@ -197,41 +195,6 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             onChange={handleChange}
             min="0"
             className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="environment" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Environment
-          </label>
-          <select
-            id="environment"
-            name="environment"
-            value={formData.environment}
-            onChange={handleChange}
-            disabled={isEdit}
-            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-600"
-          >
-            <option value="">None</option>
-            <option value="dev">dev</option>
-            <option value="staging">staging</option>
-            <option value="prod">prod</option>
-          </select>
-        </div>
-
-        <div>
-          <label htmlFor="region" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Region
-          </label>
-          <input
-            type="text"
-            id="region"
-            name="region"
-            value={formData.region}
-            onChange={handleChange}
-            disabled={isEdit}
-            className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-600"
-            placeholder="ap-northeast-1"
           />
         </div>
 

@@ -127,7 +127,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "Spot Request",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -141,7 +141,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "With Pool",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -157,7 +157,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "Explicit On-Demand",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "c7g.xlarge",
 				SubnetID:     "subnet-1",
 				Spot:         false,
@@ -171,7 +171,7 @@ func TestCreateFleet(t *testing.T) {
 		{
 			name: "Spot Disabled Globally",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -260,7 +260,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "API error",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -278,7 +278,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "Fleet creation errors",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -302,7 +302,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "Fleet creation errors with nil message",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -326,7 +326,7 @@ func TestCreateFleet_Errors(t *testing.T) {
 		{
 			name: "No instances created",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -570,64 +570,37 @@ func TestGetLaunchTemplateForArch(t *testing.T) {
 	tests := []struct {
 		name     string
 		config   *config.Config
-		os       string
 		arch     string
 		expected string
 	}{
 		{
-			name:     "ARM64 Linux",
+			name:     "ARM64",
 			config:   &config.Config{},
-			os:       "linux",
 			arch:     "arm64",
 			expected: "runs-fleet-runner-arm64",
 		},
 		{
-			name:     "amd64 Linux",
+			name:     "amd64",
 			config:   &config.Config{},
-			os:       "linux",
 			arch:     "amd64",
 			expected: "runs-fleet-runner-amd64",
 		},
 		{
-			name:     "Windows ignores arch",
-			config:   &config.Config{},
-			os:       "windows",
-			arch:     "amd64",
-			expected: "runs-fleet-runner-windows",
-		},
-		{
-			name:     "Windows with ARM64 arch still uses windows template",
-			config:   &config.Config{},
-			os:       "windows",
-			arch:     "arm64",
-			expected: "runs-fleet-runner-windows",
-		},
-		{
 			name:     "Custom base name ARM64",
 			config:   &config.Config{LaunchTemplateName: "custom-runner"},
-			os:       "linux",
 			arch:     "arm64",
 			expected: "custom-runner-arm64",
 		},
 		{
 			name:     "Custom base name amd64",
 			config:   &config.Config{LaunchTemplateName: "custom-runner"},
-			os:       "linux",
 			arch:     "amd64",
 			expected: "custom-runner-amd64",
 		},
 		{
 			name:     "Empty arch defaults to arm64",
 			config:   &config.Config{},
-			os:       "linux",
 			arch:     "",
-			expected: "runs-fleet-runner-arm64",
-		},
-		{
-			name:     "Unsupported OS defaults to Linux with specified arch",
-			config:   &config.Config{},
-			os:       "macos",
-			arch:     "arm64",
 			expected: "runs-fleet-runner-arm64",
 		},
 	}
@@ -635,7 +608,7 @@ func TestGetLaunchTemplateForArch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &Manager{config: tt.config}
-			got := m.getLaunchTemplateForArch(tt.os, tt.arch)
+			got := m.getLaunchTemplateForArch(tt.arch)
 			if got != tt.expected {
 				t.Errorf("getLaunchTemplateForArch() = %q, want %q", got, tt.expected)
 			}
@@ -654,7 +627,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "Custom storage 100 GiB",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -668,7 +641,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "Large storage 500 GiB",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "c7g.xlarge",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -682,7 +655,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "No storage specified (use launch template default)",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "t4g.medium",
 				SubnetID:     "subnet-1",
 				Spot:         true,
@@ -696,7 +669,7 @@ func TestCreateFleet_Storage(t *testing.T) {
 		{
 			name: "Storage with on-demand",
 			spec: &LaunchSpec{
-				RunID: 12345,
+				RunID:        12345,
 				InstanceType: "c7g.xlarge",
 				SubnetID:     "subnet-1",
 				Spot:         false,
@@ -852,39 +825,6 @@ func TestCreateFleet_CreateTagsFallback(t *testing.T) {
 	})
 }
 
-func TestIsValidWindowsInstanceType(t *testing.T) {
-	tests := []struct {
-		instanceType string
-		want         bool
-	}{
-		// Valid Windows instance types
-		{"t3.medium", true},
-		{"t3.large", true},
-		{"t3.xlarge", true},
-		{"m6i.large", true},
-		{"m6i.xlarge", true},
-		{"m6i.2xlarge", true},
-		{"c6i.large", true},
-		{"c6i.xlarge", true},
-		{"c6i.2xlarge", true},
-		// Invalid Windows instance types
-		{"t4g.medium", false}, // ARM64, not supported for Windows
-		{"c7g.xlarge", false}, // ARM64, not supported for Windows
-		{"t3.micro", false},   // Too small
-		{"m6i.4xlarge", false},
-		{"invalid", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.instanceType, func(t *testing.T) {
-			if got := IsValidWindowsInstanceType(tt.instanceType); got != tt.want {
-				t.Errorf("IsValidWindowsInstanceType(%q) = %v, want %v", tt.instanceType, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBuildTags(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -941,18 +881,16 @@ func TestBuildTags(t *testing.T) {
 			},
 		},
 		{
-			name: "With OS and arch",
+			name:   "With arch",
 			config: &config.Config{},
 			spec: &LaunchSpec{
 				RunID: 12345,
-				OS:    "linux",
 				Arch:  "arm64",
 			},
 			wantTags: map[string]string{
 				"Name":               "runs-fleet-runner",
 				"runs-fleet:run-id":  "12345",
 				"runs-fleet:managed": "true",
-				"runs-fleet:os":      "linux",
 				"runs-fleet:arch":    "arm64",
 			},
 		},
@@ -1001,7 +939,7 @@ func TestBuildTags(t *testing.T) {
 				"Name":                             "runs-fleet-runner",
 				"runs-fleet:run-id":                "12345",
 				"runs-fleet:managed":               "true",
-				"runs-fleet:runner-image":           "ghcr.io/org/runner:latest",
+				"runs-fleet:runner-image":          "ghcr.io/org/runner:latest",
 				"runs-fleet:termination-queue-url": "https://sqs.us-west-2.amazonaws.com/123/term-queue",
 				"runs-fleet:cache-url":             "https://cache.example.com",
 			},
@@ -1127,7 +1065,6 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			name:   "Specified arch creates single config",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				OS:            "linux",
 				Arch:          "arm64",
 				InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
 				SubnetID:      "subnet-1",
@@ -1139,7 +1076,6 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			name:   "Empty arch with ARM64 only creates single config",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				OS:            "linux",
 				Arch:          "",
 				InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
 				SubnetID:      "subnet-1",
@@ -1151,7 +1087,6 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			name:   "Empty arch with AMD64 only creates single config",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				OS:            "linux",
 				Arch:          "",
 				InstanceTypes: []string{"c6i.xlarge", "t3.medium"},
 				SubnetID:      "subnet-1",
@@ -1163,7 +1098,6 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			name:   "Empty arch with mixed architectures selects cheapest (arm64)",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				OS:            "linux",
 				Arch:          "",
 				InstanceTypes: []string{"c7g.xlarge", "t3.medium", "t4g.medium", "c6i.large"},
 				SubnetID:      "subnet-1",
@@ -1175,7 +1109,6 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			name:   "Empty arch with unknown types returns error",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				OS:            "linux",
 				Arch:          "",
 				InstanceTypes: []string{"unknown.type"},
 				SubnetID:      "subnet-1",
@@ -1187,7 +1120,6 @@ func TestBuildLaunchTemplateConfigs(t *testing.T) {
 			name:   "Arch mismatch returns error",
 			config: &config.Config{},
 			spec: &LaunchSpec{
-				OS:            "linux",
 				Arch:          "arm64",
 				InstanceTypes: []string{"t3.medium"}, // AMD64 type with ARM64 arch
 				SubnetID:      "subnet-1",

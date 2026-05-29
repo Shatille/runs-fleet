@@ -380,7 +380,7 @@ func TestSaveJob(t *testing.T) {
 		{
 			name: "Empty Instance ID",
 			job: &JobRecord{
-				JobID: 12345,
+				JobID:      12345,
 				InstanceID: "",
 			},
 			mockDB:  &MockDynamoDBAPI{},
@@ -501,8 +501,6 @@ func TestSavePoolConfig(t *testing.T) {
 				InstanceType:   "t4g.medium",
 				DesiredRunning: 5,
 				DesiredStopped: 2,
-				Environment:    "prod",
-				Region:         "us-east-1",
 			},
 			mockDB: &MockDynamoDBAPI{
 				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
@@ -839,7 +837,7 @@ func TestSaveJob_NoJobsTable(t *testing.T) {
 	}
 
 	err := client.SaveJob(context.Background(), &JobRecord{
-		JobID: 12345,
+		JobID:      12345,
 		InstanceID: "i-123",
 	})
 	if err == nil {
@@ -949,8 +947,6 @@ func TestPoolConfig_Structure(t *testing.T) {
 		DesiredRunning:     10,
 		DesiredStopped:     5,
 		IdleTimeoutMinutes: 30,
-		Environment:        "production",
-		Region:             "us-west-2",
 	}
 
 	if cfg.PoolName != "test-pool" {
@@ -968,14 +964,7 @@ func TestPoolConfig_Structure(t *testing.T) {
 	if cfg.IdleTimeoutMinutes != 30 {
 		t.Errorf("IdleTimeoutMinutes = %d, want 30", cfg.IdleTimeoutMinutes)
 	}
-	if cfg.Environment != "production" {
-		t.Errorf("Environment = %s, want production", cfg.Environment)
-	}
-	if cfg.Region != "us-west-2" {
-		t.Errorf("Region = %s, want us-west-2", cfg.Region)
-	}
 }
-
 
 func TestGetJobByInstance_DynamoDBError(t *testing.T) {
 	t.Parallel()
@@ -1012,7 +1001,7 @@ func TestSaveJob_DynamoDBError(t *testing.T) {
 	}
 
 	err := client.SaveJob(context.Background(), &JobRecord{
-		JobID: 12345,
+		JobID:      12345,
 		InstanceID: "i-123",
 	})
 	if err == nil {
@@ -3414,12 +3403,12 @@ func TestGetPoolBusyInstanceIDs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		poolName    string
-		jobsTable   string
-		mockDB      *MockDynamoDBAPI
-		wantIDs     []string
-		wantErr     bool
+		name      string
+		poolName  string
+		jobsTable string
+		mockDB    *MockDynamoDBAPI
+		wantIDs   []string
+		wantErr   bool
 	}{
 		{
 			name:      "Returns instance IDs for running jobs",

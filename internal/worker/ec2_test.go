@@ -471,7 +471,6 @@ func TestProcessEC2Message_ValidJSON_NilFleet(_ *testing.T) {
 		RunID:        67890,
 		Repo:         "owner/repo",
 		InstanceType: "t3.micro",
-		OS:           "linux",
 		Arch:         "amd64",
 	}
 	jobBytes, _ := json.Marshal(job)

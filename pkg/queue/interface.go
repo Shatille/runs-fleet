@@ -53,7 +53,6 @@ type JobMessage struct {
 	OriginalLabel string   `json:"original_label,omitempty"`
 	RetryCount    int      `json:"retry_count,omitempty"`
 	ForceOnDemand bool     `json:"force_on_demand,omitempty"`
-	OS            string   `json:"os,omitempty"`   // linux, windows
 	Arch          string   `json:"arch,omitempty"` // amd64, arm64
 	InstanceTypes []string `json:"instance_types,omitempty"`
 	StorageGiB    int      `json:"storage_gib,omitempty"` // Disk storage in GiB
@@ -67,4 +66,3 @@ type JobMessage struct {
 	Families []string `json:"families,omitempty"`
 	Gen      int      `json:"gen,omitempty"`
 }
-

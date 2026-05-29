@@ -30,12 +30,6 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
               Arch
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Env
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Region
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Type
             </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -78,12 +72,6 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500 dark:text-gray-400">
                 {pool.arch || '-'}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-gray-500 dark:text-gray-400">
-                {pool.environment || '-'}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-gray-500 dark:text-gray-400">
-                {pool.region || '-'}
               </td>
               <td className="px-6 py-4 whitespace-nowrap">
                 {pool.ephemeral ? (
