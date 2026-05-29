@@ -70,7 +70,10 @@ func main() {
 	}
 	otel.SetTracerProvider(tp)
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(cfg.AWSRegion),
+		awsconfig.WithHTTPClient(newAWSHTTPClient(config.AWSResponseHeaderTimeout)),
+	)
 	if err != nil {
 		log.Error("aws config load failed", slog.String("error", err.Error()))
 		os.Exit(1)
