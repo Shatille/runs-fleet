@@ -1416,6 +1416,33 @@ func TestClaimJob_OmitsPoolAttribute(t *testing.T) {
 	}
 }
 
+// Empty-string instance_id violates the instance-id-index GSI and causes
+// DynamoDB to reject the write. ClaimJob runs before a runner is assigned,
+// so the marshaled item must omit instance_id entirely rather than serialize "".
+func TestClaimJob_OmitsInstanceIDAttribute(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]types.AttributeValue
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	if err := client.ClaimJob(context.Background(), 12345); err != nil {
+		t.Fatalf("ClaimJob() unexpected error: %v", err)
+	}
+	if _, present := captured["instance_id"]; present {
+		t.Errorf("ClaimJob() wrote instance_id attribute, must omit when unset; got: %#v", captured["instance_id"])
+	}
+}
+
 // SaveJob with a JobRecord that has no Pool set must omit the pool
 // attribute from the marshaled item, matching ClaimJob behavior.
 func TestSaveJob_OmitsEmptyPoolAttribute(t *testing.T) {

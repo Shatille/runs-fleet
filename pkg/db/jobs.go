@@ -22,7 +22,7 @@ var ErrJobAlreadyClaimed = errors.New("job already claimed")
 // jobRecord represents a job stored in DynamoDB.
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
-	InstanceID     string `dynamodbav:"instance_id"`
+	InstanceID     string `dynamodbav:"instance_id,omitempty"`
 	JobID          int64  `dynamodbav:"job_id"`
 	RunID          int64  `dynamodbav:"run_id"`
 	Repo           string `dynamodbav:"repo"`
@@ -1011,7 +1011,6 @@ func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*Adm
 	return stats, nil
 }
 
-
 func parseJobItem(item map[string]types.AttributeValue) AdminJobEntry {
 	return AdminJobEntry{
 		JobID:           getInt64Attr(item, "job_id"),
@@ -1111,4 +1110,3 @@ func extractTraceID(traceparent string) string {
 	}
 	return traceID
 }
-
