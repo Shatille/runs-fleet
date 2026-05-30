@@ -32,16 +32,34 @@ type mockEC2API struct {
 	cancelSpotCalls     int
 	terminatedIDs       []string
 	cancelledSpotReqIDs []string
+	describeInput       *ec2.DescribeInstancesInput
 }
 
-func (m *mockEC2API) DescribeInstances(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 	m.describeCalls++
+	m.describeInput = in
 	if m.describeErr != nil {
 		return nil, m.describeErr
 	}
 	return &ec2.DescribeInstancesOutput{
 		Reservations: m.instances,
 	}, nil
+}
+
+// instanceStateFilter returns the values of the instance-state-name filter from
+// a captured DescribeInstances request, failing the test if it is absent.
+func instanceStateFilter(t *testing.T, in *ec2.DescribeInstancesInput) []string {
+	t.Helper()
+	if in == nil {
+		t.Fatal("no DescribeInstances input captured")
+	}
+	for _, f := range in.Filters {
+		if aws.ToString(f.Name) == "instance-state-name" {
+			return f.Values
+		}
+	}
+	t.Fatal("instance-state-name filter not found")
+	return nil
 }
 
 func (m *mockEC2API) TerminateInstances(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
@@ -74,12 +92,12 @@ func (m *mockEC2API) CancelSpotInstanceRequests(_ context.Context, params *ec2.C
 
 // mockSecretsStore implements secrets.Store for testing.
 type mockSecretsStore struct {
-	runnerIDs    []string
-	listErr      error
-	deleteErr    error
-	listCalls    int
-	deleteCalls  int
-	deletedIDs   []string
+	runnerIDs   []string
+	listErr     error
+	deleteErr   error
+	listCalls   int
+	deleteCalls int
+	deletedIDs  []string
 }
 
 func (m *mockSecretsStore) List(_ context.Context) ([]string, error) {
@@ -1406,12 +1424,12 @@ func TestExecuteDLQRedrive_GetMainQueueAttributesError(t *testing.T) {
 
 // mockPoolDBAPI implements PoolDBAPI for testing.
 type mockPoolDBAPI struct {
-	pools         []string
-	poolConfigs   map[string]*PoolConfig
-	listErr       error
-	getErr        error
-	deleteErr     error
-	deletedPools  []string
+	pools        []string
+	poolConfigs  map[string]*PoolConfig
+	listErr      error
+	getErr       error
+	deleteErr    error
+	deletedPools []string
 }
 
 func (m *mockPoolDBAPI) ListPools(_ context.Context) ([]string, error) {

@@ -3,6 +3,7 @@ package housekeeping
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -90,6 +91,58 @@ func TestExecuteOrphanedPackerInstances_WithOrphans(t *testing.T) {
 	}
 	if metrics.orphanedCount != 1 {
 		t.Errorf("expected metric count 1, got %d", metrics.orphanedCount)
+	}
+}
+
+func TestExecuteOrphanedPackerInstances_ScansStoppedState(t *testing.T) {
+	t.Parallel()
+
+	// A workflow killed after packer stops the builder for AMI creation leaves it
+	// in "stopped" state; the reaper must scan that state to catch the leak, while
+	// the 1h LaunchTime guard still spares a builder legitimately stopped for an
+	// in-progress snapshot.
+	oldLaunch := time.Now().Add(-2 * time.Hour)
+	youngLaunch := time.Now().Add(-5 * time.Minute)
+	ec2Client := &mockEC2API{
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: strPtr("i-stopped-builder"),
+						LaunchTime: &oldLaunch,
+						State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+					},
+					{
+						InstanceId: strPtr("i-stopped-young"),
+						LaunchTime: &youngLaunch,
+						State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+					},
+				},
+			},
+		},
+	}
+	metrics := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		ec2Client: ec2Client,
+		metrics:   metrics,
+		config:    &config.Config{},
+	}
+
+	if err := tasks.ExecuteOrphanedPackerInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	states := instanceStateFilter(t, ec2Client.describeInput)
+	for _, want := range []string{"stopping", "stopped"} {
+		if !slices.Contains(states, want) {
+			t.Errorf("expected describe filter to include %q state, got %v", want, states)
+		}
+	}
+
+	if ec2Client.terminateCalls != 1 || len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-stopped-builder" {
+		t.Errorf("expected to terminate only 'i-stopped-builder', got calls=%d ids=%v",
+			ec2Client.terminateCalls, ec2Client.terminatedIDs)
 	}
 }
 
