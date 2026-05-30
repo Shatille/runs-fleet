@@ -26,6 +26,26 @@ const (
 	// wait on an empty queue, so this must exceed 20s; it stays below
 	// MessageProcessTimeout so an empty poll never outlives the message budget.
 	AWSSQSResponseHeaderTimeout = 25 * time.Second
+
+	// AWSTCPUserTimeout bounds how long transmitted data may stay unacknowledged
+	// before the kernel tears the connection down (Linux TCP_USER_TIMEOUT). It
+	// covers the write/ACK phase that ResponseHeaderTimeout does not: a peer that
+	// stops ACKing leaves bytes wedged in Send-Q with no RST, and the kernel would
+	// otherwise retry for ~15 minutes (tcp_retries2). Must stay below
+	// MessageProcessTimeout so the dead socket is dropped and the SDK retries on a
+	// fresh connection well within the per-message budget.
+	AWSTCPUserTimeout = 20 * time.Second
+
+	// AWSKeepAliveIdle is the idle period before TCP keepalive probing begins on
+	// AWS connections.
+	AWSKeepAliveIdle = 15 * time.Second
+
+	// AWSKeepAliveInterval is the gap between TCP keepalive probes.
+	AWSKeepAliveInterval = 5 * time.Second
+
+	// AWSKeepAliveCount is the number of unanswered TCP keepalive probes that
+	// marks an idle connection dead.
+	AWSKeepAliveCount = 4
 )
 
 // HTTP body size limits

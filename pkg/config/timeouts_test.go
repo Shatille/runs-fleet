@@ -50,6 +50,24 @@ func TestTimeoutConstants(t *testing.T) {
 			want:     25 * time.Second,
 			minValue: 21 * time.Second,
 		},
+		{
+			name:     "AWSTCPUserTimeout",
+			got:      AWSTCPUserTimeout,
+			want:     20 * time.Second,
+			minValue: time.Second,
+		},
+		{
+			name:     "AWSKeepAliveIdle",
+			got:      AWSKeepAliveIdle,
+			want:     15 * time.Second,
+			minValue: time.Second,
+		},
+		{
+			name:     "AWSKeepAliveInterval",
+			got:      AWSKeepAliveInterval,
+			want:     5 * time.Second,
+			minValue: time.Second,
+		},
 	}
 
 	for _, tt := range tests {
@@ -136,5 +154,44 @@ func TestAWSSQSResponseHeaderTimeoutClearsLongPoll(t *testing.T) {
 	if AWSSQSResponseHeaderTimeout >= MessageProcessTimeout {
 		t.Errorf("AWSSQSResponseHeaderTimeout (%v) must stay below MessageProcessTimeout (%v)",
 			AWSSQSResponseHeaderTimeout, MessageProcessTimeout)
+	}
+}
+
+func TestAWSTCPUserTimeoutBoundsWritePhase(t *testing.T) {
+	t.Parallel()
+
+	// TCP_USER_TIMEOUT tears down a connection whose transmitted data is never
+	// ACKed. It must be positive and stay below MessageProcessTimeout so the dead
+	// socket is dropped and the SDK retries on a fresh connection inside the
+	// per-message budget, instead of the request hanging until the job context
+	// expires.
+	if AWSTCPUserTimeout <= 0 {
+		t.Errorf("AWSTCPUserTimeout must be positive, got %v", AWSTCPUserTimeout)
+	}
+	if AWSTCPUserTimeout >= MessageProcessTimeout {
+		t.Errorf("AWSTCPUserTimeout (%v) must stay below MessageProcessTimeout (%v) so a retry fits the job budget",
+			AWSTCPUserTimeout, MessageProcessTimeout)
+	}
+}
+
+func TestAWSKeepAliveConstantsAreSane(t *testing.T) {
+	t.Parallel()
+
+	if AWSKeepAliveIdle <= 0 {
+		t.Errorf("AWSKeepAliveIdle must be positive, got %v", AWSKeepAliveIdle)
+	}
+	if AWSKeepAliveInterval <= 0 {
+		t.Errorf("AWSKeepAliveInterval must be positive, got %v", AWSKeepAliveInterval)
+	}
+	if AWSKeepAliveCount <= 0 {
+		t.Errorf("AWSKeepAliveCount must be positive, got %d", AWSKeepAliveCount)
+	}
+
+	// The full keepalive detection window (idle + interval*count) must clear an
+	// idle connection well within MessageProcessTimeout.
+	window := AWSKeepAliveIdle + AWSKeepAliveInterval*time.Duration(AWSKeepAliveCount)
+	if window >= MessageProcessTimeout {
+		t.Errorf("keepalive detection window (%v) must stay below MessageProcessTimeout (%v)",
+			window, MessageProcessTimeout)
 	}
 }
