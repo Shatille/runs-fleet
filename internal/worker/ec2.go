@@ -59,6 +59,17 @@ type EC2WorkerDeps struct {
 	// WarmPoolAssigner allows injection of custom assigner for testing.
 	// If nil, creates default WarmPoolAssigner from Pool, Runner, DB.
 	WarmPoolAssigner WarmPoolAssignerInterface
+
+	// CreateFleetFn allows injection of a custom fleet creator for testing.
+	// If nil, defaults to CreateFleetWithRetry against the embedded Fleet manager.
+	CreateFleetFn func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+}
+
+func (d EC2WorkerDeps) createFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
+	if d.CreateFleetFn != nil {
+		return d.CreateFleetFn(ctx, spec)
+	}
+	return CreateFleetWithRetry(ctx, d.Fleet, spec)
 }
 
 // RunEC2Worker starts the EC2 queue processing loop.
@@ -206,7 +217,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		Conditions:    BuildRunnerConditions(&job),
 	}
 
-	instanceIDs, err := CreateFleetWithRetry(ctx, deps.Fleet, spec)
+	instanceIDs, err := deps.createFleet(ctx, spec)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -214,7 +225,16 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			slog.Int64(logging.KeyRunID, job.RunID),
 			slog.String("error", err.Error()))
 		if deps.DB != nil && deps.DB.HasJobsTable() {
-			_ = deps.DB.DeleteJobClaim(ctx, job.JobID)
+			// Release the claim on a fresh context; the job ctx may already be
+			// expired on a wedged connection, and a leaked claim would block the
+			// on-demand fallback requeue below from re-claiming the job.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			if err := deps.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
+				ec2Log.Error("job claim delete failed",
+					slog.Int64(logging.KeyJobID, job.JobID),
+					slog.String("error", err.Error()))
+			}
+			cancel()
 		}
 
 		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {

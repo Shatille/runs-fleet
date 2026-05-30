@@ -74,6 +74,12 @@ func TestTimeoutConstants(t *testing.T) {
 			want:     2 * time.Second,
 			minValue: time.Second,
 		},
+		{
+			name:     "AWSPerOpTimeout",
+			got:      AWSPerOpTimeout,
+			want:     15 * time.Second,
+			minValue: time.Second,
+		},
 	}
 
 	for _, tt := range tests {
@@ -214,5 +220,21 @@ func TestAWSSlowCallThreshold(t *testing.T) {
 	if AWSSlowCallThreshold >= MessageProcessTimeout {
 		t.Errorf("AWSSlowCallThreshold (%v) must stay below MessageProcessTimeout (%v)",
 			AWSSlowCallThreshold, MessageProcessTimeout)
+	}
+}
+
+func TestAWSPerOpTimeoutBoundsBlastRadius(t *testing.T) {
+	t.Parallel()
+
+	// The per-operation timeout must be positive so it ever bounds a call, and
+	// strictly below MessageProcessTimeout so one wedged AWS operation cannot
+	// consume the whole job budget and cascade context-deadline errors across
+	// the rest of the work.
+	if AWSPerOpTimeout <= 0 {
+		t.Errorf("AWSPerOpTimeout (%v) must be positive", AWSPerOpTimeout)
+	}
+	if AWSPerOpTimeout >= MessageProcessTimeout {
+		t.Errorf("AWSPerOpTimeout (%v) must stay below MessageProcessTimeout (%v)",
+			AWSPerOpTimeout, MessageProcessTimeout)
 	}
 }

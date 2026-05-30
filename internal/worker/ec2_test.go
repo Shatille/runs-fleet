@@ -1009,6 +1009,60 @@ func TestHandleOnDemandFallback_UsesFreshContext(t *testing.T) {
 	}
 }
 
+func TestProcessEC2Message_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T) {
+	origRetryDelay := RetryDelay
+	origFleetDelay := FleetRetryBaseDelay
+	defer func() {
+		RetryDelay = origRetryDelay
+		FleetRetryBaseDelay = origFleetDelay
+	}()
+	RetryDelay = 1 * time.Millisecond
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	// Job WITHOUT a pool label and not spot, so it skips warm pool and the
+	// on-demand fallback, isolating the cold-start fleet-failure claim release.
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Spot:         false,
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	mockDynamo := &mockDynamoForClaim{}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       &fleet.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("fleet creation failed")
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+
+	// Already-canceled job context simulates the strained ctx seen on a wedged
+	// connection; the claim release must still run on a fresh, live context.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	processEC2Message(canceledCtx, deps, msg)
+
+	if !mockDynamo.deleteCalled {
+		t.Fatal("expected DeleteJobClaim (DeleteItem) to be invoked on the cold-start fleet-failure path")
+	}
+	if mockDynamo.deleteCtxDone {
+		t.Error("claim cleanup must run on a fresh (non-canceled) context, not the strained job context")
+	}
+}
+
 // Silence unused variable warnings for test imports
 var (
 	_ = db.ErrJobAlreadyClaimed

@@ -72,10 +72,19 @@ func main() {
 	otel.SetTracerProvider(tp)
 
 	awsObsLog := logging.WithComponent(logging.LogTypeAWS, "observability")
+	// SQS ReceiveMessage long-polls with WaitTimeSeconds=20, which exceeds
+	// AWSPerOpTimeout (15s); bounding it would abort every empty poll, so it is
+	// exempt from the per-operation timeout. Other SQS ops (SendMessage,
+	// DeleteMessage) are fast and stay bounded.
+	perOpTimeout := awsobs.PerOperationTimeout(config.AWSPerOpTimeout, map[string]bool{"ReceiveMessage": true})
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.AWSRegion),
 		awsconfig.WithHTTPClient(newAWSHTTPClient(config.AWSResponseHeaderTimeout)),
-		awsconfig.WithAPIOptions(awsobs.Middlewares(awsObsLog.Logger)),
+		// Observability is registered first so it stays the outermost Initialize
+		// middleware and records the full operation duration, including a
+		// per-operation-timeout abort; the timeout middleware inserts itself just
+		// inside it.
+		awsconfig.WithAPIOptions(append(awsobs.Middlewares(awsObsLog.Logger), perOpTimeout)),
 	)
 	if err != nil {
 		log.Error("aws config load failed", slog.String("error", err.Error()))
