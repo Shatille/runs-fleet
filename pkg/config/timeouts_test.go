@@ -68,6 +68,12 @@ func TestTimeoutConstants(t *testing.T) {
 			want:     5 * time.Second,
 			minValue: time.Second,
 		},
+		{
+			name:     "AWSSlowCallThreshold",
+			got:      AWSSlowCallThreshold,
+			want:     2 * time.Second,
+			minValue: time.Second,
+		},
 	}
 
 	for _, tt := range tests {
@@ -156,7 +162,6 @@ func TestAWSSQSResponseHeaderTimeoutClearsLongPoll(t *testing.T) {
 			AWSSQSResponseHeaderTimeout, MessageProcessTimeout)
 	}
 }
-
 func TestAWSTCPUserTimeoutBoundsWritePhase(t *testing.T) {
 	t.Parallel()
 
@@ -193,5 +198,21 @@ func TestAWSKeepAliveConstantsAreSane(t *testing.T) {
 	if window >= MessageProcessTimeout {
 		t.Errorf("keepalive detection window (%v) must stay below MessageProcessTimeout (%v)",
 			window, MessageProcessTimeout)
+	}
+}
+
+func TestAWSSlowCallThreshold(t *testing.T) {
+	t.Parallel()
+
+	// The threshold must be positive so the middleware can ever flag a slow
+	// call, and well below the per-message processing budget so a single slow
+	// AWS operation is surfaced long before it consumes the whole budget and
+	// surfaces only as an opaque context-deadline error.
+	if AWSSlowCallThreshold <= 0 {
+		t.Errorf("AWSSlowCallThreshold (%v) must be positive", AWSSlowCallThreshold)
+	}
+	if AWSSlowCallThreshold >= MessageProcessTimeout {
+		t.Errorf("AWSSlowCallThreshold (%v) must stay below MessageProcessTimeout (%v)",
+			AWSSlowCallThreshold, MessageProcessTimeout)
 	}
 }

@@ -46,6 +46,12 @@ const (
 	// AWSKeepAliveCount is the number of unanswered TCP keepalive probes that
 	// marks an idle connection dead.
 	AWSKeepAliveCount = 4
+
+	// AWSSlowCallThreshold is the elapsed-time bound above which an AWS SDK
+	// operation is logged as slow by the awsobs middleware. Calls slower than
+	// this are surfaced so a wedged connection can be localized to a specific
+	// service and operation before it escalates into a context-deadline cascade.
+	AWSSlowCallThreshold = 2 * time.Second
 )
 
 // HTTP body size limits

@@ -69,8 +69,10 @@ const (
 	KeyJobName      = "job_name"
 	KeyLogType      = "log_type"
 	KeyNamespace    = "namespace"
+	KeyOperation    = "operation"
 	KeyOwner        = "owner"
 	KeyPoolName     = "pool_name"
+	KeyService      = "service"
 	KeyQueueURL     = "queue_url"
 	KeyReason       = "reason"
 	KeyRemoteAddr   = "remote_addr"
@@ -101,6 +103,7 @@ const (
 	LogTypeMetrics     = "metrics"
 	LogTypeDB          = "db"
 	LogTypeAgent       = "agent"
+	LogTypeAWS         = "aws"
 )
 
 // Logger wraps slog.Logger with convenience methods.
