@@ -848,6 +848,167 @@ func TestProcessEC2Message_WithPool_FallsBackToColdStart(t *testing.T) {
 	// This is fine - we've verified the warm pool was tried and returned false
 }
 
+func TestHandleOnDemandFallback_SendFails_DoesNotDelete(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	var calls []string
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			calls = append(calls, "send")
+			return errors.New("send failed")
+		},
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			calls = append(calls, "delete")
+			return nil
+		},
+	}
+
+	deps := EC2WorkerDeps{
+		Queue:   mockQueue,
+		Metrics: metrics.NoopPublisher{},
+	}
+
+	job := &queue.JobMessage{
+		JobID:      12345,
+		RunID:      67890,
+		Repo:       "owner/repo",
+		Spot:       true,
+		RetryCount: 0,
+	}
+
+	handleOnDemandFallback(context.Background(), deps, job, "handle-1")
+
+	// Send must be attempted; delete must NOT be called when send fails (no job loss).
+	for _, c := range calls {
+		if c == "delete" {
+			t.Fatalf("DeleteMessage must not be called when SendMessage fails; calls = %v", calls)
+		}
+	}
+	if len(calls) == 0 || calls[0] != "send" {
+		t.Fatalf("expected SendMessage to be attempted first, calls = %v", calls)
+	}
+}
+
+func TestHandleOnDemandFallback_SendSucceeds_ThenDeletes(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	var calls []string
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			calls = append(calls, "send")
+			return nil
+		},
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			calls = append(calls, "delete")
+			return nil
+		},
+	}
+
+	mockMetrics := &mockMetricsPublisher{}
+	deps := EC2WorkerDeps{
+		Queue:   mockQueue,
+		Metrics: mockMetrics,
+	}
+
+	job := &queue.JobMessage{
+		JobID:      12345,
+		RunID:      67890,
+		Repo:       "owner/repo",
+		Spot:       true,
+		RetryCount: 0,
+	}
+
+	handleOnDemandFallback(context.Background(), deps, job, "handle-1")
+
+	// Send must happen before delete (send-before-delete invariant).
+	if len(calls) != 2 || calls[0] != "send" || calls[1] != "delete" {
+		t.Fatalf("expected send then delete, calls = %v", calls)
+	}
+}
+
+func TestHandleOnDemandFallback_DeleteFails_NonFatal(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	sendCalls := 0
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			sendCalls++
+			return nil
+		},
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			return errors.New("delete failed")
+		},
+	}
+
+	deps := EC2WorkerDeps{
+		Queue:   mockQueue,
+		Metrics: metrics.NoopPublisher{},
+	}
+
+	job := &queue.JobMessage{
+		JobID:      12345,
+		RunID:      67890,
+		Repo:       "owner/repo",
+		Spot:       true,
+		RetryCount: 0,
+	}
+
+	// A failed delete after a successful send is non-fatal and must not panic.
+	handleOnDemandFallback(context.Background(), deps, job, "handle-1")
+
+	if sendCalls == 0 {
+		t.Fatal("expected SendMessage to be attempted")
+	}
+}
+
+func TestHandleOnDemandFallback_UsesFreshContext(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	sendCtxDone := true
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(ctx context.Context, _ *queue.JobMessage) error {
+			select {
+			case <-ctx.Done():
+				sendCtxDone = true
+			default:
+				sendCtxDone = false
+			}
+			return nil
+		},
+	}
+
+	deps := EC2WorkerDeps{
+		Queue:   mockQueue,
+		Metrics: metrics.NoopPublisher{},
+	}
+
+	job := &queue.JobMessage{
+		JobID:      12345,
+		RunID:      67890,
+		Repo:       "owner/repo",
+		Spot:       true,
+		RetryCount: 0,
+	}
+
+	// Pass an already-canceled job context; the requeue send must run on a fresh context.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	handleOnDemandFallback(canceledCtx, deps, job, "handle-1")
+
+	if sendCtxDone {
+		t.Error("SendMessage should run on a fresh (non-canceled) context, not the strained job context")
+	}
+}
+
 // Silence unused variable warnings for test imports
 var (
 	_ = db.ErrJobAlreadyClaimed
