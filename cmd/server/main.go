@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/internal/awsobs"
 	"github.com/Shavakan/runs-fleet/internal/handler"
 	"github.com/Shavakan/runs-fleet/internal/worker"
 	"github.com/Shavakan/runs-fleet/pkg/admin"
@@ -29,18 +30,18 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
-	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/Shavakan/runs-fleet/pkg/termination"
+	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"go.opentelemetry.io/otel"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/go-github/v57/github"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 )
 
 var (
@@ -70,9 +71,11 @@ func main() {
 	}
 	otel.SetTracerProvider(tp)
 
+	awsObsLog := logging.WithComponent(logging.LogTypeAWS, "observability")
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.AWSRegion),
 		awsconfig.WithHTTPClient(newAWSHTTPClient(config.AWSResponseHeaderTimeout)),
+		awsconfig.WithAPIOptions(awsobs.Middlewares(awsObsLog.Logger)),
 	)
 	if err != nil {
 		log.Error("aws config load failed", slog.String("error", err.Error()))
