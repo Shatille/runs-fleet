@@ -326,16 +326,9 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 	}
 }
 
-func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
+func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-	if delErr := deleteMessageWithRetry(cleanupCtx, deps.Queue, msgHandle); delErr != nil {
-		cleanupCancel()
-		ec2Log.Error("message delete failed, skipping fallback",
-			slog.Int64(logging.KeyJobID, job.JobID),
-			slog.String("error", delErr.Error()))
-		return
-	}
-	cleanupCancel()
+	defer cleanupCancel()
 
 	fallbackJob := &queue.JobMessage{
 		JobID:         job.JobID,
@@ -351,19 +344,30 @@ func handleOnDemandFallback(ctx context.Context, deps EC2WorkerDeps, job *queue.
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
 	}
-	if sendErr := sendMessageWithRetry(ctx, deps.Queue, fallbackJob); sendErr != nil {
-		ec2Log.Error("job lost - fallback requeue failed",
+
+	// Send before delete so a failed requeue leaves the original for redelivery.
+	if sendErr := sendMessageWithRetry(cleanupCtx, deps.Queue, fallbackJob); sendErr != nil {
+		ec2Log.Error("on-demand fallback requeue failed, leaving original message for redelivery",
 			slog.Int64(logging.KeyJobID, job.JobID),
 			slog.String("error", sendErr.Error()))
-	} else {
-		ec2Log.Info("job requeued with on-demand fallback",
-			slog.Int64(logging.KeyJobID, job.JobID),
-			slog.Int("retry_count", fallbackJob.RetryCount))
-		if deps.Metrics != nil {
-			if err := deps.Metrics.PublishJobQueued(ctx); err != nil {
-				ec2Log.Error("job queued metric failed", slog.String("error", err.Error()))
-			}
+		return
+	}
+
+	ec2Log.Info("job requeued with on-demand fallback",
+		slog.Int64(logging.KeyJobID, job.JobID),
+		slog.Int("retry_count", fallbackJob.RetryCount))
+	if deps.Metrics != nil {
+		if err := deps.Metrics.PublishJobQueued(cleanupCtx); err != nil {
+			ec2Log.Error("job queued metric failed", slog.String("error", err.Error()))
 		}
+	}
+
+	// Delete only after a successful send. A failed delete is non-fatal: any
+	// redelivered duplicate is deduped by ClaimJob's job-id claim.
+	if delErr := deleteMessageWithRetry(cleanupCtx, deps.Queue, msgHandle); delErr != nil {
+		ec2Log.Error("original message delete failed after fallback requeue (duplicate possible, deduped by claim)",
+			slog.Int64(logging.KeyJobID, job.JobID),
+			slog.String("error", delErr.Error()))
 	}
 }
 

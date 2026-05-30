@@ -2,14 +2,83 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
+
+// mockDynamoForClaim implements db.DynamoDBAPI, recording the context seen by
+// DeleteItem so tests can assert the claim cleanup runs on a live context.
+type mockDynamoForClaim struct {
+	db.DynamoDBAPI
+	deleteCalled  bool
+	deleteCtxDone bool
+}
+
+func (m *mockDynamoForClaim) PutItem(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	return &dynamodb.PutItemOutput{}, nil
+}
+
+func (m *mockDynamoForClaim) DeleteItem(ctx context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+	m.deleteCalled = true
+	select {
+	case <-ctx.Done():
+		m.deleteCtxDone = true
+	default:
+		m.deleteCtxDone = false
+	}
+	return &dynamodb.DeleteItemOutput{}, nil
+}
+
+func TestProcessJobDirect_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T) {
+	mockDynamo := &mockDynamoForClaim{}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:       &fleet.Manager{},
+		Pool:        &pools.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("fleet creation failed")
+		},
+	}
+
+	job := &queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+	}
+
+	// Already-canceled job context simulates the strained ctx seen on a wedged
+	// connection. ClaimJob/DeleteJobClaim must still succeed via a fresh context.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := processor.ProcessJobDirect(canceledCtx, job)
+
+	if result {
+		t.Fatal("expected ProcessJobDirect to return false on fleet creation failure")
+	}
+	if !mockDynamo.deleteCalled {
+		t.Fatal("expected DeleteJobClaim (DeleteItem) to be invoked on the failure path")
+	}
+	if mockDynamo.deleteCtxDone {
+		t.Error("claim cleanup must run on a fresh (non-canceled) context, not the strained job context")
+	}
+}
 
 func TestTryDirectProcessing_NilProcessor(t *testing.T) {
 	sem := make(chan struct{}, 5)

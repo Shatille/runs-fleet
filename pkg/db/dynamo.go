@@ -41,6 +41,16 @@ func NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client {
 	}
 }
 
+// NewClientWithAPI creates a Client backed by the provided DynamoDBAPI.
+// It enables dependency injection of a custom or mock DynamoDB implementation.
+func NewClientWithAPI(api DynamoDBAPI, poolsTable, jobsTable string) *Client {
+	return &Client{
+		dynamoClient: api,
+		poolsTable:   poolsTable,
+		jobsTable:    jobsTable,
+	}
+}
+
 // SetJobsPoolStatusGSI configures the GSI name for pool+status queries on the jobs table.
 // When set, GetPoolBusyInstanceIDs uses Query on this GSI instead of Scan.
 func (c *Client) SetJobsPoolStatusGSI(gsiName string) {

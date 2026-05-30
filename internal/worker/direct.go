@@ -28,6 +28,17 @@ type DirectProcessor struct {
 	DB          *db.Client
 	Config      *config.Config
 	SubnetIndex *uint64
+
+	// CreateFleetFn allows injection of a custom fleet creator for testing.
+	// If nil, defaults to CreateFleetWithRetry against the embedded Fleet manager.
+	CreateFleetFn func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+}
+
+func (p *DirectProcessor) createFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
+	if p.CreateFleetFn != nil {
+		return p.CreateFleetFn(ctx, spec)
+	}
+	return CreateFleetWithRetry(ctx, p.Fleet, spec)
 }
 
 // ProcessJobDirect processes a job immediately without SQS.
@@ -92,17 +103,20 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		Conditions:    BuildRunnerConditions(job),
 	}
 
-	instanceIDs, err := CreateFleetWithRetry(ctx, p.Fleet, spec)
+	instanceIDs, err := p.createFleet(ctx, spec)
 	if err != nil {
 		directLog.Error("fleet creation failed",
 			slog.Int64(logging.KeyJobID, job.JobID),
 			slog.String("error", err.Error()))
 		if p.DB != nil && p.DB.HasJobsTable() {
-			if err := p.DB.DeleteJobClaim(ctx, job.JobID); err != nil {
+			// Release the claim on a fresh context; the job ctx may already be expired.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			if err := p.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
 				directLog.Error("job claim delete failed",
 					slog.Int64(logging.KeyJobID, job.JobID),
 					slog.String("error", err.Error()))
 			}
+			cancel()
 		}
 		return false
 	}
