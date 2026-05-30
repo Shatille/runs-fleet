@@ -24,16 +24,19 @@ const packerOrphanThreshold = 1 * time.Hour
 // Packer normally terminates its own builder when a build ends (success or
 // failure), but workflow cancellation (e.g. concurrency-group eviction)
 // SIGKILLs packer mid-build before its cleanup runs. ExecuteOrphanedInstances
-// only sees instances tagged `runs-fleet:managed` or using the runner IAM
-// profile — packer builders have neither, so without this task they leak
-// indefinitely.
+// keys its cleanup on the `runs-fleet:managed` tag, which packer builders never
+// carry, so without this task they leak indefinitely.
 func (t *Tasks) ExecuteOrphanedPackerInstances(ctx context.Context) error {
 	cutoffTime := time.Now().Add(-packerOrphanThreshold)
 
 	input := &ec2.DescribeInstancesInput{
 		Filters: []ec2types.Filter{
 			{Name: aws.String("tag:created-by"), Values: []string{"runs-fleet-packer"}},
-			{Name: aws.String("instance-state-name"), Values: []string{"running", "pending"}},
+			// "stopping"/"stopped" are included because packer's amazon-ebs builder
+			// stops the instance to snapshot the AMI; a build killed during that
+			// window leaves the builder stopped, where it would otherwise leak
+			// indefinitely.
+			{Name: aws.String("instance-state-name"), Values: []string{"pending", "running", "stopping", "stopped"}},
 		},
 	}
 
