@@ -52,6 +52,14 @@ const (
 	// this are surfaced so a wedged connection can be localized to a specific
 	// service and operation before it escalates into a context-deadline cascade.
 	AWSSlowCallThreshold = 2 * time.Second
+
+	// AWSPerOpTimeout bounds a single AWS SDK operation so one wedged call cannot
+	// consume the whole MessageProcessTimeout budget and cascade deadline errors
+	// across the rest of a job; it must stay below MessageProcessTimeout. It sits
+	// below the 20s SQS long-poll wait, so it must NOT be applied to SQS
+	// ReceiveMessage (long-poll WaitTimeSeconds=20) or it would abort every empty
+	// poll; the per-operation timeout middleware exempts ReceiveMessage.
+	AWSPerOpTimeout = 15 * time.Second
 )
 
 // HTTP body size limits
