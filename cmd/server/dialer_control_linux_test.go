@@ -38,8 +38,8 @@ func TestSetTCPUserTimeoutAppliesSockopt(t *testing.T) {
 	}
 
 	const timeout = 20 * time.Second
-	if err := setTCPUserTimeout(timeout)("tcp", ln.Addr().String(), rawConn); err != nil {
-		t.Fatalf("setTCPUserTimeout: %v", err)
+	if serr := setTCPUserTimeout(timeout)("tcp", ln.Addr().String(), rawConn); serr != nil {
+		t.Fatalf("setTCPUserTimeout: %v", serr)
 	}
 
 	var got int
