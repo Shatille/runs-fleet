@@ -566,7 +566,7 @@ func TestStopInstances(t *testing.T) {
 			manager.instanceIdle["i-123"] = time.Now()
 			manager.instanceIdle["i-456"] = time.Now()
 
-			err := manager.stopInstances(context.Background(), tt.instanceIDs)
+			err := manager.stopInstances(context.Background(), tt.instanceIDs, "excess_ready")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("stopInstances() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -634,7 +634,7 @@ func TestTerminateInstances(t *testing.T) {
 			manager.instanceIdle["i-123"] = time.Now()
 			manager.instanceIdle["i-456"] = time.Now()
 
-			err := manager.terminateInstances(context.Background(), tt.instanceIDs)
+			err := manager.terminateInstances(context.Background(), tt.instanceIDs, "excess_idle")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("terminateInstances() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -3286,7 +3286,7 @@ func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
 
 	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium", DesiredRunning: 3}
 
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 3, poolConfig)
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", "ready_deficit", 3, poolConfig)
 	if created != 2 {
 		t.Errorf("created = %d, want 2 (1 failed out of 3)", created)
 	}
@@ -3312,7 +3312,7 @@ func TestCreatePoolFleetInstances_NoSubnets(t *testing.T) {
 
 	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
 
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 2, poolConfig)
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", "ready_deficit", 2, poolConfig)
 	if created != 0 {
 		t.Errorf("created = %d, want 0 when no subnets", created)
 	}
@@ -3337,7 +3337,7 @@ func TestCreatePoolFleetInstances_AllFail(t *testing.T) {
 
 	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: "t4g.medium"}
 
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 3, poolConfig)
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", "ready_deficit", 3, poolConfig)
 	if created != 0 {
 		t.Errorf("created = %d, want 0 when all calls fail", created)
 	}
@@ -3369,7 +3369,7 @@ func TestCreatePoolFleetInstances_SpecFields(t *testing.T) {
 		Arch:         "arm64",
 	}
 
-	manager.createPoolFleetInstances(context.Background(), "my-pool", 1, poolConfig)
+	manager.createPoolFleetInstances(context.Background(), "my-pool", "ready_deficit", 1, poolConfig)
 
 	if capturedSpec == nil {
 		t.Fatal("CreateOnDemandInstance was not called")
@@ -3431,7 +3431,7 @@ func TestCreatePoolFleetInstances_WeightedRandomSelection(t *testing.T) {
 		Arch: "arm64",
 	}
 
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 5, poolConfig)
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", "ready_deficit", 5, poolConfig)
 	if created != 5 {
 		t.Fatalf("created = %d, want 5", created)
 	}
@@ -3462,7 +3462,7 @@ func TestCreatePoolFleetInstances_EmptyInstanceTypes(t *testing.T) {
 	// Empty InstanceType should fail resolvePoolInstanceTypes
 	poolConfig := &db.PoolConfig{PoolName: "test-pool", InstanceType: ""}
 
-	created := manager.createPoolFleetInstances(context.Background(), "test-pool", 2, poolConfig)
+	created := manager.createPoolFleetInstances(context.Background(), "test-pool", "ready_deficit", 2, poolConfig)
 	if created != 0 {
 		t.Errorf("created = %d, want 0 when no instance types resolved", created)
 	}
