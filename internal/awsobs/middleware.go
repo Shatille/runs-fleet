@@ -24,6 +24,14 @@ import (
 // the Initialize step. The step rejects duplicate IDs.
 const middlewareID = "RunsFleetAWSObservability"
 
+// registerServiceMetadataID is the SDK middleware
+// (github.com/aws/aws-sdk-go-v2/aws/middleware RegisterServiceMetadata) that
+// seeds the service ID and operation name into the context. The awsobs
+// middlewares anchor after it so their GetServiceID/GetOperationName reads see
+// populated values: context changes propagate downward only, so a middleware
+// registered ahead of it always observes empty service and operation.
+const registerServiceMetadataID = "RegisterServiceMetadata"
+
 // Middlewares returns the API options to register on the shared aws.Config via
 // awsconfig.WithAPIOptions, attaching the observability middleware to every AWS
 // client built from that config. The provided logger should already carry the
@@ -42,9 +50,17 @@ func register(log *slog.Logger, threshold time.Duration) func(*middleware.Stack)
 	}
 	mw := &observe{log: obsLog, threshold: threshold}
 	return func(stack *middleware.Stack) error {
-		// Insert at the front of the Initialize step so the recorded elapsed
-		// time spans the entire downstream stack (serialize, retry, signing,
-		// HTTP round-trip) rather than a partial inner segment.
+		// Anchor directly after RegisterServiceMetadata so GetServiceID and
+		// GetOperationName are populated when HandleInitialize reads them, while
+		// the recorded elapsed time still spans the entire downstream stack
+		// (serialize, retry, signing, HTTP round-trip) since that runs inside
+		// next(). The metadata seeder runs at the head of Initialize, so this
+		// position remains effectively outermost for timing.
+		if _, ok := stack.Initialize.Get(registerServiceMetadataID); ok {
+			return stack.Initialize.Insert(mw, registerServiceMetadataID, middleware.After)
+		}
+		// The anchor is absent (e.g. a bare test stack); fall back to the head of
+		// the step so the recorded time still spans everything downstream.
 		return stack.Initialize.Add(mw, middleware.Before)
 	}
 }

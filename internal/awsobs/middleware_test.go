@@ -35,9 +35,12 @@ func runStack(t *testing.T, threshold, sleep time.Duration, retErr error) []map[
 	if err := register(log, threshold)(stack); err != nil {
 		t.Fatalf("register middleware: %v", err)
 	}
-	// RegisterServiceMetadata seeds service/operation into the context. It must
-	// run before the observability middleware reads them, so add it Before too;
-	// added last with Before, it sits at the head of the step and executes first.
+	// On this bare stack RegisterServiceMetadata is not yet present when register
+	// runs, so the observability middleware takes its fallback head-of-step
+	// position. RegisterServiceMetadata, added last with Before, then sits ahead
+	// of it and seeds service/operation before the observability middleware reads
+	// them. The real SDK ordering (metadata present first, anchored after) is
+	// covered in realstack_test.go.
 	if err := stack.Initialize.Add(&awsmiddleware.RegisterServiceMetadata{
 		ServiceID:     "DynamoDB",
 		OperationName: "GetItem",

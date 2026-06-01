@@ -20,11 +20,14 @@ const timeoutMiddlewareID = "RunsFleetAWSPerOpTimeout"
 //
 // The exemption exists for SQS ReceiveMessage: it long-polls with
 // WaitTimeSeconds=20, which is longer than d, so applying the timeout would
-// abort every empty poll.
+// abort every empty poll. The exemption matches on GetOperationName, so the
+// middleware must run after RegisterServiceMetadata has populated it; otherwise
+// the empty name never matches and ReceiveMessage is wrongly bounded.
 //
 // The middleware is inserted immediately inside the observability middleware so
 // observability stays outermost and records the full operation duration,
-// including a per-operation-timeout abort.
+// including a per-operation-timeout abort. Observability itself anchors after
+// RegisterServiceMetadata, so this position is transitively after it too.
 func PerOperationTimeout(d time.Duration, exempt map[string]bool) func(*middleware.Stack) error {
 	mw := &perOpTimeout{timeout: d, exempt: exempt}
 	return func(stack *middleware.Stack) error {
@@ -35,8 +38,14 @@ func PerOperationTimeout(d time.Duration, exempt map[string]bool) func(*middlewa
 		if _, ok := stack.Initialize.Get(middlewareID); ok {
 			return stack.Initialize.Insert(mw, middlewareID, middleware.After)
 		}
-		// Observability is not registered; fall back to the head of the step so
-		// the bounded sub-context still wraps everything downstream.
+		// Observability is absent; anchor after RegisterServiceMetadata so the
+		// exemption still sees a populated operation name.
+		if _, ok := stack.Initialize.Get(registerServiceMetadataID); ok {
+			return stack.Initialize.Insert(mw, registerServiceMetadataID, middleware.After)
+		}
+		// Neither anchor is present (e.g. a bare test stack); fall back to the
+		// head of the step so the bounded sub-context still wraps everything
+		// downstream.
 		return stack.Initialize.Add(mw, middleware.Before)
 	}
 }
