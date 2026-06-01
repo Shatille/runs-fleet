@@ -27,6 +27,10 @@ type DirectProcessor struct {
 	Config      *config.Config
 	SubnetIndex *uint64
 
+	// WarmPoolAssigner allows injection of a custom assigner for testing.
+	// If nil, creates a default WarmPoolAssigner from Pool, Runner, DB.
+	WarmPoolAssigner WarmPoolAssignerInterface
+
 	// CreateFleetFn allows injection of a custom fleet creator for testing.
 	// If nil, defaults to CreateFleetWithRetry against the embedded Fleet manager.
 	CreateFleetFn func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
@@ -78,14 +82,20 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	}
 
 	if job.Pool != "" {
-		assigner := &WarmPoolAssigner{
-			Pool:   p.Pool,
-			Runner: p.Runner,
-			DB:     p.DB,
+		var assigner WarmPoolAssignerInterface
+		if p.WarmPoolAssigner != nil {
+			assigner = p.WarmPoolAssigner
+		} else {
+			assigner = &WarmPoolAssigner{
+				Pool:   p.Pool,
+				Runner: p.Runner,
+				DB:     p.DB,
+			}
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, job)
 		if err != nil {
 			directLog.Error(ctx, "warm pool assignment failed",
+				slog.String(logging.KeyPoolName, job.Pool),
 				slog.String("error", err.Error()))
 		} else if result.Assigned {
 			if p.Metrics != nil {

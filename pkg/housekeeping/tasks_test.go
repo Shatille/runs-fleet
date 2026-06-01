@@ -1,6 +1,7 @@
 package housekeeping
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -2143,6 +2145,48 @@ func TestExecuteStaleJobs_ReconcilesCompletedJobs(t *testing.T) {
 	}
 	if metricsClient.staleJobsCount != 1 {
 		t.Errorf("expected stale jobs metric 1, got %d", metricsClient.staleJobsCount)
+	}
+}
+
+func TestExecuteStaleJobs_ReconcileLogCarriesRunID(t *testing.T) {
+	var buf bytes.Buffer
+	captureCtxLogs(t, &buf)
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"run_id": &types.AttributeValueMemberN{Value: "67890"},
+				"repo":   &types.AttributeValueMemberS{Value: "org/repo"},
+				"status": &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: true, Conclusion: "success"},
+		},
+	}
+
+	tasks := &Tasks{
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		metrics:       &mockTaskMetricsAPI{},
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec := findLog(t, &buf, "stale job reconciled")
+	if got := rec[logging.KeyRunID]; got != float64(67890) {
+		t.Errorf("stale job reconciled: %s = %v, want 67890", logging.KeyRunID, got)
+	}
+	if got := rec[logging.KeyJobID]; got != float64(12345) {
+		t.Errorf("stale job reconciled: %s = %v, want 12345", logging.KeyJobID, got)
 	}
 }
 

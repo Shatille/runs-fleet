@@ -752,6 +752,7 @@ const maxStaleJobChecks = 30
 // staleJobCandidate holds job info for stale job detection.
 type staleJobCandidate struct {
 	JobID  int64
+	RunID  int64
 	Repo   string
 	Status string
 }
@@ -780,7 +781,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
-		ProjectionExpression: aws.String("job_id, repo, #status"),
+		ProjectionExpression: aws.String("job_id, run_id, repo, #status"),
 	}
 
 	var candidates []staleJobCandidate
@@ -795,7 +796,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 		}
 
 		for _, item := range output.Items {
-			var jobID int64
+			var jobID, runID int64
 			var repo, status string
 
 			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
@@ -804,6 +805,11 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 					continue
 				}
 				jobID = parsed
+			}
+			if v, ok := item["run_id"].(*types.AttributeValueMemberN); ok {
+				if parsed, err := strconv.ParseInt(v.Value, 10, 64); err == nil {
+					runID = parsed
+				}
 			}
 			if v, ok := item["repo"].(*types.AttributeValueMemberS); ok {
 				repo = v.Value
@@ -821,6 +827,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 
 			candidates = append(candidates, staleJobCandidate{
 				JobID:  jobID,
+				RunID:  runID,
 				Repo:   repo,
 				Status: status,
 			})
@@ -848,6 +855,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 
 		jobCtx := logging.ContextWith(ctx,
 			slog.Int64(logging.KeyJobID, c.JobID),
+			slog.Int64(logging.KeyRunID, c.RunID),
 			slog.String(logging.KeyRepo, c.Repo))
 
 		owner, _, ok := splitRepo(c.Repo)

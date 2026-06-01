@@ -367,6 +367,10 @@ func PrepareRunners(ctx context.Context, preparer RunnerPreparer, job *queue.Job
 	}
 	var failed []string
 	for _, instanceID := range instanceIDs {
+		// Stash instance_id so the runner manager's config logs (fetching token,
+		// storing config, config stored) carry it on the direct/cold-start path,
+		// matching the warm-pool path which stashes it before PrepareRunner.
+		instanceCtx := logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instanceID))
 		label := handler.BuildRunnerLabel(job)
 		prepareReq := runner.PrepareRunnerRequest{
 			InstanceID: instanceID,
@@ -377,9 +381,8 @@ func PrepareRunners(ctx context.Context, preparer RunnerPreparer, job *queue.Job
 			Pool:       job.Pool,
 			Conditions: BuildRunnerConditions(job),
 		}
-		if err := preparer.PrepareRunner(ctx, prepareReq); err != nil {
-			ec2Log.Error(ctx, "runner config preparation failed",
-				slog.String(logging.KeyInstanceID, instanceID),
+		if err := preparer.PrepareRunner(instanceCtx, prepareReq); err != nil {
+			ec2Log.Error(instanceCtx, "runner config preparation failed",
 				slog.String("error", err.Error()))
 			failed = append(failed, instanceID)
 		}
