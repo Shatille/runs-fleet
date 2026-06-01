@@ -383,16 +383,24 @@ func (c *Client) getJobByInstanceViaScan(ctx context.Context, instanceID string)
 		Limit: aws.Int32(1),
 	}
 
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan for job by instance: %w", err)
-	}
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
 
-	if len(output.Items) == 0 {
-		return nil, nil
-	}
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan for job by instance: %w", err)
+		}
 
-	return unmarshalJobInfo(output.Items[0])
+		if len(output.Items) > 0 {
+			return unmarshalJobInfo(output.Items[0])
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			return nil, nil
+		}
+	}
 }
 
 func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, error) {
@@ -422,10 +430,10 @@ const poolCreatedAtIndexName = "pool-created-at-index"
 // a filtered table Scan if the GSI is not yet provisioned (DynamoDB returns
 // ValidationException), so a code deploy can land before the matching infra change.
 //
-// Both paths read a single page (DynamoDB's ~1 MB limit). Sufficient for current
-// scale (~100 jobs/day) and a 1-hour window; if a single pool ever sustains tens of
-// thousands of jobs in an hour, p90 concurrency will be computed from a truncated
-// dataset and read under the true value.
+// The Scan fallback paginates across all pages. The GSI Query path reads a single
+// page (DynamoDB's ~1 MB limit), sufficient for current scale (~100 jobs/day) and a
+// 1-hour window; if a single pool ever sustains tens of thousands of jobs in an hour,
+// p90 concurrency would be computed from a truncated dataset and read under the true value.
 func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since time.Time) ([]JobHistoryEntry, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
@@ -493,12 +501,25 @@ func (c *Client) queryPoolJobHistoryViaScan(ctx context.Context, poolName string
 		},
 	}
 
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan jobs: %w", err)
+	var entries []JobHistoryEntry
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan jobs: %w", err)
+		}
+
+		entries = append(entries, parseJobHistoryItems(output.Items)...)
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
 	}
 
-	return parseJobHistoryItems(output.Items), nil
+	return entries, nil
 }
 
 func parseJobHistoryItems(items []map[string]types.AttributeValue) []JobHistoryEntry {
@@ -691,12 +712,25 @@ func (c *Client) getPoolBusyInstanceIDsViaScan(ctx context.Context, poolName str
 		ProjectionExpression: aws.String("instance_id"),
 	}
 
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan jobs: %w", err)
+	var ids []string
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan jobs: %w", err)
+		}
+
+		ids = append(ids, extractInstanceIDs(output.Items)...)
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
 	}
 
-	return extractInstanceIDs(output.Items), nil
+	return ids, nil
 }
 
 func extractInstanceIDs(items []map[string]types.AttributeValue) []string {
@@ -907,15 +941,24 @@ func (c *Client) ListJobsForAdmin(ctx context.Context, filter AdminJobFilter) ([
 		input.ExpressionAttributeValues = exprValues
 	}
 
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to scan jobs: %w", err)
-	}
-
 	var entries []AdminJobEntry
-	for _, item := range output.Items {
-		entry := parseJobItem(item)
-		entries = append(entries, entry)
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan jobs: %w", err)
+		}
+
+		for _, item := range output.Items {
+			entries = append(entries, parseJobItem(item))
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
 	}
 
 	// Sort by created_at descending
@@ -984,34 +1027,44 @@ func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*Adm
 		},
 	}
 
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan jobs: %w", err)
-	}
-
 	stats := &AdminJobStats{}
-	for _, item := range output.Items {
-		stats.Total++
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
 
-		if status, ok := item["status"]; ok {
-			if s, ok := status.(*types.AttributeValueMemberS); ok {
-				switch s.Value {
-				case string(JobStatusCompleted), string(JobStatusSuccess):
-					stats.Completed++
-				case string(JobStatusFailed), string(JobStatusError):
-					stats.Failed++
-				case string(JobStatusRunning), string(JobStatusClaiming):
-					stats.Running++
-				case string(JobStatusRequeued):
-					stats.Requeued++
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan jobs: %w", err)
+		}
+
+		for _, item := range output.Items {
+			stats.Total++
+
+			if status, ok := item["status"]; ok {
+				if s, ok := status.(*types.AttributeValueMemberS); ok {
+					switch s.Value {
+					case string(JobStatusCompleted), string(JobStatusSuccess):
+						stats.Completed++
+					case string(JobStatusFailed), string(JobStatusError):
+						stats.Failed++
+					case string(JobStatusRunning), string(JobStatusClaiming):
+						stats.Running++
+					case string(JobStatusRequeued):
+						stats.Requeued++
+					}
+				}
+			}
+
+			if warmHit, ok := item["warm_pool_hit"]; ok {
+				if b, ok := warmHit.(*types.AttributeValueMemberBOOL); ok && b.Value {
+					stats.WarmPoolHit++
 				}
 			}
 		}
 
-		if warmHit, ok := item["warm_pool_hit"]; ok {
-			if b, ok := warmHit.(*types.AttributeValueMemberBOOL); ok && b.Value {
-				stats.WarmPoolHit++
-			}
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
 		}
 	}
 
