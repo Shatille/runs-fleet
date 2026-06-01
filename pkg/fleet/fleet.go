@@ -163,7 +163,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		Resources: instanceIDs,
 		Tags:      tags,
 	}); tagErr != nil {
-		fleetLog.Warn("failed to apply tags to fleet instances",
+		fleetLog.WarnContext(ctx, "failed to apply tags to fleet instances",
 			slog.String("error", tagErr.Error()),
 			slog.Any("instance_ids", instanceIDs))
 	}
@@ -184,11 +184,11 @@ func (m *Manager) shouldUseSpot(ctx context.Context, spec *LaunchSpec) bool {
 	primaryType := m.getPrimaryInstanceType(spec)
 	state, err := m.circuitBreaker.CheckCircuit(ctx, primaryType)
 	if err != nil {
-		fleetLog.Warn("circuit breaker check failed", slog.String("error", err.Error()))
+		fleetLog.WarnContext(ctx, "circuit breaker check failed", slog.String("error", err.Error()))
 		return true
 	}
 	if state == circuit.StateOpen {
-		fleetLog.Info("circuit breaker open, forcing on-demand",
+		fleetLog.InfoContext(ctx, "circuit breaker open, forcing on-demand",
 			slog.String("instance_type", primaryType))
 		return false
 	}
@@ -559,7 +559,7 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 	if len(archPrices) == 0 {
 		// Couldn't get prices, default to arm64 (generally cheaper)
 		if _, ok := groupedTypes[archARM64]; ok {
-			fleetLog.Info("spot prices unavailable, defaulting to arm64")
+			fleetLog.InfoContext(ctx, "spot prices unavailable, defaulting to arm64")
 			return archARM64
 		}
 		for arch := range groupedTypes {
@@ -578,7 +578,7 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 		}
 	}
 
-	fleetLog.Debug("architecture selected based on spot price",
+	fleetLog.DebugContext(ctx, "architecture selected based on spot price",
 		slog.String("arch", cheapestArch),
 		slog.Float64("avg_price", cheapestPrice))
 	return cheapestArch
@@ -633,7 +633,7 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 		MaxResults:          aws.Int32(100),
 	})
 	if err != nil {
-		fleetLog.Warn("spot price query failed", slog.String("error", err.Error()))
+		fleetLog.WarnContext(ctx, "spot price query failed", slog.String("error", err.Error()))
 		return 0
 	}
 
@@ -779,7 +779,7 @@ func interleaveWeighted(items []weightedType) []string {
 // Uses cached availability data, loading from AWS API on first call.
 func (m *Manager) filterAvailableInstanceTypes(ctx context.Context, instanceTypes []string) []string {
 	if err := m.ensureAvailabilityLoaded(ctx); err != nil {
-		fleetLog.Warn("failed to load instance type availability, using all types",
+		fleetLog.WarnContext(ctx, "failed to load instance type availability, using all types",
 			slog.String("error", err.Error()))
 		return instanceTypes
 	}
@@ -795,7 +795,7 @@ func (m *Manager) filterAvailableInstanceTypes(ctx context.Context, instanceType
 	}
 
 	if len(filtered) < len(instanceTypes) {
-		fleetLog.Debug("filtered unavailable instance types",
+		fleetLog.DebugContext(ctx, "filtered unavailable instance types",
 			slog.Int("original", len(instanceTypes)),
 			slog.Int("available", len(filtered)))
 	}
@@ -846,7 +846,7 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 	m.availabilityCache.available = available
 	m.availabilityCache.loaded = true
 	m.availabilityCache.expires = time.Now().Add(availabilityCacheTTL)
-	fleetLog.Info("loaded instance type availability",
+	fleetLog.InfoContext(ctx, "loaded instance type availability",
 		slog.Int("available_types", len(available)))
 
 	return nil
@@ -908,7 +908,7 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 
 	instanceID := aws.ToString(output.Instances[0].InstanceId)
 
-	fleetLog.Info("on-demand pool instance created",
+	fleetLog.InfoContext(ctx, "on-demand pool instance created",
 		slog.String(logging.KeyInstanceID, instanceID),
 		slog.String("instance_type", spec.InstanceType),
 		slog.String("pool", spec.Pool))

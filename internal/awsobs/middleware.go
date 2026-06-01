@@ -101,7 +101,10 @@ func (m *observe) HandleInitialize(
 	if err != nil {
 		attrs = append(attrs, slog.String(logging.KeyError, err.Error()))
 	}
-	m.log.Warn("slow or failed AWS SDK call", attrs...)
+	// WarnContext (not Warn) so task identity stashed on the call ctx via
+	// logging.ContextWith flows into the AWS-call observability record, making a
+	// wedged AWS connection attributable to the job that issued the call.
+	m.log.WarnContext(ctx, "slow or failed AWS SDK call", attrs...)
 
 	return out, metadata, err
 }

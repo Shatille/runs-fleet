@@ -28,9 +28,12 @@ func Init() {
 	baseHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
-	handler := baseHandler.WithAttrs([]slog.Attr{
+	// Wrap with contextHandler so attrs stashed via ContextWith are emitted on
+	// *Context log calls. Host is added on the inner JSON handler so it appears
+	// on every record regardless of context.
+	handler := newContextHandler(baseHandler.WithAttrs([]slog.Attr{
 		slog.String(KeyHost, hostname),
-	})
+	}))
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 

@@ -90,26 +90,26 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		Gen:      jobConfig.Gen,
 	}
 
+	// Stash task identity so all downstream logs (enqueue, metrics, deep AWS
+	// calls) inherit job_id/run_id/repo without restating them at each site.
+	ctx = logging.ContextWithJob(ctx, msg.JobID, msg.RunID, msg.Repo)
+
 	if err := q.SendMessage(ctx, msg); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		webhookLog.Error("job enqueue failed",
-			slog.Int64(logging.KeyJobID, msg.JobID),
+		webhookLog.ErrorContext(ctx, "job enqueue failed",
 			slog.String("error", err.Error()))
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
 	if err := m.PublishJobQueued(ctx); err != nil {
-		webhookLog.Error("job queued metric failed", slog.String("error", err.Error()))
+		webhookLog.ErrorContext(ctx, "job queued metric failed", slog.String("error", err.Error()))
 	}
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
-		webhookLog.Error("queue depth metric failed", slog.String("error", err.Error()))
+		webhookLog.ErrorContext(ctx, "queue depth metric failed", slog.String("error", err.Error()))
 	}
 
-	webhookLog.Info("job enqueued",
-		slog.Int64(logging.KeyJobID, msg.JobID),
-		slog.Int64(logging.KeyRunID, runID),
-		slog.String(logging.KeyRepo, msg.Repo),
+	webhookLog.InfoContext(ctx, "job enqueued",
 		slog.String("arch", jobConfig.Arch),
 		slog.String(logging.KeyPoolName, jobConfig.Pool))
 	return msg, nil

@@ -166,7 +166,7 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 		record.State = string(StateOpen)
 		record.OpenedAt = now.Format(time.RFC3339)
 		record.AutoResetAt = now.Add(CooldownPeriod).Format(time.RFC3339)
-		circuitLog.Warn("circuit breaker opened",
+		circuitLog.WarnContext(ctx, "circuit breaker opened",
 			slog.String(logging.KeyInstanceType, instanceType),
 			slog.Int(logging.KeyCount, record.InterruptionCount))
 	}
@@ -234,11 +234,11 @@ func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (State,
 			record.AutoResetAt = ""
 
 			if err := b.putRecord(ctx, record); err != nil {
-				circuitLog.Error("circuit reset failed",
+				circuitLog.ErrorContext(ctx, "circuit reset failed",
 					slog.String(logging.KeyInstanceType, instanceType),
 					slog.String("error", err.Error()))
 			} else {
-				circuitLog.Info("circuit breaker auto-reset",
+				circuitLog.InfoContext(ctx, "circuit breaker auto-reset",
 					slog.String(logging.KeyInstanceType, instanceType))
 			}
 		}
@@ -275,7 +275,7 @@ func (b *Breaker) ResetCircuit(ctx context.Context, instanceType string) error {
 	delete(b.cache, instanceType)
 	b.mu.Unlock()
 
-	circuitLog.Info("circuit breaker manually reset",
+	circuitLog.InfoContext(ctx, "circuit breaker manually reset",
 		slog.String(logging.KeyInstanceType, instanceType))
 	return nil
 }

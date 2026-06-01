@@ -9,9 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/smithy-go/middleware"
 )
+
+// testServiceID is the service name the bare-stack metadata seeder injects and
+// the slow/timeout assertions expect.
+const testServiceID = "DynamoDB"
 
 // timeoutErr is a net.Error whose Timeout reports true, used to exercise the
 // timeout branch without relying on context.DeadlineExceeded.
@@ -27,9 +32,20 @@ func (timeoutErr) Temporary() bool { return false }
 // the captured log records as decoded JSON maps.
 func runStack(t *testing.T, threshold, sleep time.Duration, retErr error) []map[string]any {
 	t.Helper()
+	return runStackCtx(context.Background(), t, threshold, sleep, retErr)
+}
+
+// runStackCtx is runStack with an explicit invocation context, used to assert
+// that task identity stashed on the context via logging.ContextWith reaches the
+// observability record. The logger is wrapped exactly as production wires it (a
+// contextHandler over the JSON handler) so context-stashed attrs are injected.
+func runStackCtx(
+	ctx context.Context, t *testing.T, threshold, sleep time.Duration, retErr error,
+) []map[string]any {
+	t.Helper()
 
 	var buf bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(newCtxJSONHandler(&buf))
 
 	stack := middleware.NewStack("test", smithyRequestNew)
 	if err := register(log, threshold)(stack); err != nil {
@@ -42,7 +58,7 @@ func runStack(t *testing.T, threshold, sleep time.Duration, retErr error) []map[
 	// them. The real SDK ordering (metadata present first, anchored after) is
 	// covered in realstack_test.go.
 	if err := stack.Initialize.Add(&awsmiddleware.RegisterServiceMetadata{
-		ServiceID:     "DynamoDB",
+		ServiceID:     testServiceID,
 		OperationName: "GetItem",
 	}, middleware.Before); err != nil {
 		t.Fatalf("register metadata middleware: %v", err)
@@ -55,7 +71,7 @@ func runStack(t *testing.T, threshold, sleep time.Duration, retErr error) []map[
 		return nil, middleware.Metadata{}, retErr
 	})
 
-	_, _, err := stack.HandleMiddleware(context.Background(), nil, terminal)
+	_, _, err := stack.HandleMiddleware(ctx, nil, terminal)
 	if !errors.Is(err, retErr) {
 		t.Fatalf("HandleMiddleware error = %v, want %v", err, retErr)
 	}
@@ -66,6 +82,12 @@ func runStack(t *testing.T, threshold, sleep time.Duration, retErr error) []map[
 // smithyRequestNew is a no-op request factory; the observability middleware
 // never inspects the request value.
 func smithyRequestNew() any { return nil }
+
+// newCtxJSONHandler builds the production handler chain (contextHandler over a
+// JSON handler) so context-stashed task identity is emitted on *Context logs.
+func newCtxJSONHandler(buf *bytes.Buffer) slog.Handler {
+	return logging.NewContextHandler(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
 
 func decodeRecords(t *testing.T, b []byte) []map[string]any {
 	t.Helper()
@@ -102,7 +124,7 @@ func TestMiddlewareSlowCallLogged(t *testing.T) {
 	if got := rec["level"]; got != "WARN" {
 		t.Errorf("level = %v, want WARN", got)
 	}
-	if got := rec["service"]; got != "DynamoDB" {
+	if got := rec["service"]; got != testServiceID {
 		t.Errorf("service = %v, want DynamoDB", got)
 	}
 	if got := rec["operation"]; got != "GetItem" {
@@ -148,11 +170,56 @@ func TestMiddlewareDeadlineExceededLogged(t *testing.T) {
 	if got := rec["error"]; got != context.DeadlineExceeded.Error() {
 		t.Errorf("error = %v, want %q", got, context.DeadlineExceeded.Error())
 	}
-	if got := rec["service"]; got != "DynamoDB" {
+	if got := rec["service"]; got != testServiceID {
 		t.Errorf("service = %v, want DynamoDB", got)
 	}
 	if got := rec["operation"]; got != "GetItem" {
 		t.Errorf("operation = %v, want GetItem", got)
+	}
+}
+
+func TestMiddlewareCarriesTaskIdentityFromContext(t *testing.T) {
+	t.Parallel()
+
+	// Identity stashed on the call context (as the worker/webhook entry points do)
+	// must appear on the AWS-call observability record so a wedged AWS call is
+	// attributable to the job that issued it. The middleware itself adds no
+	// job/run/repo fields.
+	ctx := logging.ContextWithJob(context.Background(), 4242, 9999, "octo/repo")
+	records := runStackCtx(ctx, t, time.Hour, 0, context.DeadlineExceeded)
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
+	}
+	rec := records[0]
+
+	if got := rec[logging.KeyJobID]; got != float64(4242) {
+		t.Errorf("job_id = %v, want 4242 (must come from the call context)", got)
+	}
+	if got := rec[logging.KeyRunID]; got != float64(9999) {
+		t.Errorf("run_id = %v, want 9999", got)
+	}
+	if got := rec[logging.KeyRepo]; got != "octo/repo" {
+		t.Errorf("repo = %v, want octo/repo", got)
+	}
+	// The middleware's own fields must still be present alongside the identity.
+	if got := rec["timeout"]; got != true {
+		t.Errorf("timeout = %v, want true", got)
+	}
+	if got := rec["service"]; got != testServiceID {
+		t.Errorf("service = %v, want DynamoDB", got)
+	}
+}
+
+func TestMiddlewareNoTaskIdentityWhenContextEmpty(t *testing.T) {
+	t.Parallel()
+
+	// A bare context carries no identity; the record must not invent job fields.
+	records := runStackCtx(context.Background(), t, time.Hour, 0, context.DeadlineExceeded)
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
+	}
+	if _, present := records[0][logging.KeyJobID]; present {
+		t.Errorf("job_id must be absent when the context carries no identity, got %v", records[0][logging.KeyJobID])
 	}
 }
 
