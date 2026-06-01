@@ -186,21 +186,24 @@ func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
 	return nil
 }
 
-// MarkJobComplete marks a job as complete in DynamoDB with exit status.
-// Uses job_id as primary key (Number type in DynamoDB).
-func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error {
+// MarkJobComplete marks a job as complete in DynamoDB with exit status and
+// returns the updated job record. Uses job_id as primary key (Number type in
+// DynamoDB). ReturnValueAllNew makes the write echo back the full post-update
+// item, so callers can read identity fields (run_id, repo) off the record
+// without a second GetItem.
+func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) (*events.JobInfo, error) {
 	if jobID == 0 {
-		return fmt.Errorf("job ID cannot be zero")
+		return nil, fmt.Errorf("job ID cannot be zero")
 	}
 	if status == "" {
-		return fmt.Errorf("status cannot be empty")
+		return nil, fmt.Errorf("status cannot be empty")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]int64{
 		"job_id": jobID,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to marshal key: %w", err)
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
 	}
 
 	update := "SET #status = :status, exit_code = :exit_code, duration_seconds = :duration, completed_at = :completed_at"
@@ -214,21 +217,22 @@ func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string
 		":completed_at": time.Now().Format(time.RFC3339),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to marshal values: %w", err)
+		return nil, fmt.Errorf("failed to marshal values: %w", err)
 	}
 
-	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	output, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(c.jobsTable),
 		Key:                       key,
 		UpdateExpression:          aws.String(update),
 		ExpressionAttributeNames:  exprNames,
 		ExpressionAttributeValues: exprValues,
+		ReturnValues:              types.ReturnValueAllNew,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to update job: %w", err)
+		return nil, fmt.Errorf("failed to update job: %w", err)
 	}
 
-	return nil
+	return unmarshalJobInfo(output.Attributes)
 }
 
 // UpdateJobMetrics updates job timing metrics in DynamoDB.

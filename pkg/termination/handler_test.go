@@ -10,6 +10,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
@@ -23,17 +24,18 @@ func init() {
 const (
 	testReceiptTermination = "test-receipt"
 	testStatusSuccess      = string(db.JobStatusSuccess)
+	testRepo               = "octo/repo"
 )
 
 // mockQueueAPI implements QueueAPI for testing.
 type mockQueueAPI struct {
-	messages       []queue.Message
-	receiveErr     error
-	deleteErr      error
-	receiveCalls   int
-	deleteCalls    int
-	deleteReceipt  string
-	receiveCalled  chan struct{} // signals when ReceiveMessages is called
+	messages      []queue.Message
+	receiveErr    error
+	deleteErr     error
+	receiveCalls  int
+	deleteCalls   int
+	deleteReceipt string
+	receiveCalled chan struct{} // signals when ReceiveMessages is called
 }
 
 func (m *mockQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
@@ -64,13 +66,20 @@ type mockDBAPI struct {
 	metricsCalls     int
 	lastJobID        int64
 	lastStatus       string
+	completeRecord   *events.JobInfo
 }
 
-func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status string, _, _ int) error {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status string, _, _ int) (*events.JobInfo, error) {
 	m.completeCalls++
 	m.lastJobID = jobID
 	m.lastStatus = status
-	return m.markCompleteErr
+	if m.markCompleteErr != nil {
+		return nil, m.markCompleteErr
+	}
+	if m.completeRecord != nil {
+		return m.completeRecord, nil
+	}
+	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo}, nil
 }
 
 func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time) error {
@@ -641,7 +650,6 @@ func TestMessage_RequiredFieldsNotOmitted(t *testing.T) {
 		t.Errorf("expected empty InstanceID, got '%s'", decoded.InstanceID)
 	}
 }
-
 
 func TestHandler_processTermination_NoDuration(t *testing.T) {
 	q := &mockQueueAPI{}

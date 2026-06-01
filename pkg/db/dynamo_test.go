@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -629,6 +630,7 @@ func TestMarkJobComplete(t *testing.T) {
 		duration int
 		mockDB   *MockDynamoDBAPI
 		wantErr  bool
+		want     *events.JobInfo
 	}{
 		{
 			name:     "Success",
@@ -642,10 +644,28 @@ func TestMarkJobComplete(t *testing.T) {
 					if params.UpdateExpression == nil {
 						t.Error("UpdateExpression should not be nil")
 					}
-					return &dynamodb.UpdateItemOutput{}, nil
+					// The updated record must be returned so callers can enrich
+					// their logging context with run_id/repo without a second read.
+					if params.ReturnValues != types.ReturnValueAllNew {
+						t.Errorf("ReturnValues = %v, want %v", params.ReturnValues, types.ReturnValueAllNew)
+					}
+					return &dynamodb.UpdateItemOutput{
+						Attributes: map[string]types.AttributeValue{
+							"job_id":     &types.AttributeValueMemberN{Value: "12345678901"},
+							"run_id":     &types.AttributeValueMemberN{Value: "99"},
+							"repo":       &types.AttributeValueMemberS{Value: "octo/repo"},
+							"status":     &types.AttributeValueMemberS{Value: string(JobStatusCompleted)},
+							"created_at": &types.AttributeValueMemberS{Value: "2026-06-01T00:00:00Z"},
+						},
+					}, nil
 				},
 			},
 			wantErr: false,
+			want: &events.JobInfo{
+				JobID: 12345678901,
+				RunID: 99,
+				Repo:  "octo/repo",
+			},
 		},
 		{
 			name:     "Zero job ID",
@@ -689,9 +709,21 @@ func TestMarkJobComplete(t *testing.T) {
 				jobsTable:    "jobs-table",
 			}
 
-			err := client.MarkJobComplete(context.Background(), tt.jobID, tt.status, tt.exitCode, tt.duration)
+			got, err := client.MarkJobComplete(context.Background(), tt.jobID, tt.status, tt.exitCode, tt.duration)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("MarkJobComplete() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if got != nil {
+					t.Errorf("MarkJobComplete() returned non-nil record on error: %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("MarkJobComplete() returned nil record without error")
+			}
+			if got.JobID != tt.want.JobID || got.RunID != tt.want.RunID || got.Repo != tt.want.Repo {
+				t.Errorf("MarkJobComplete() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

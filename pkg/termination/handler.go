@@ -14,6 +14,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
@@ -33,7 +34,7 @@ type QueueAPI interface {
 
 // DBAPI provides database operations for termination processing.
 type DBAPI interface {
-	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) error
+	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) (*events.JobInfo, error)
 	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 }
 
@@ -146,9 +147,13 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		slog.String(logging.KeyInstanceID, termMsg.InstanceID),
 		slog.String(logging.KeyJobID, termMsg.JobID))
 
-	termLog.Info(ctx, "processing termination",
-		slog.String("status", termMsg.Status),
-		slog.Int("exit_code", termMsg.ExitCode))
+	// "started" events carry no completion to process; they only announce the
+	// runner came up. Log them at Debug so they don't masquerade as the
+	// "processing termination" line, which processTermination emits for
+	// completion events once the DB record (run_id/repo) is in hand.
+	if termMsg.Status == "started" {
+		termLog.Debug(ctx, "runner started")
+	}
 
 	if err := h.validateMessage(&termMsg); err != nil {
 		return fmt.Errorf("invalid message: %w", err)
@@ -204,12 +209,26 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("failed to parse job ID %q: %w", msg.JobID, err)
 	}
 
-	// Update DynamoDB job record (keyed by job_id)
-	if err := h.dbClient.MarkJobComplete(ctx, jobID, msg.Status, msg.ExitCode, msg.DurationSeconds); err != nil {
+	// Update DynamoDB job record (keyed by job_id). The returned record is the
+	// source of run_id/repo: the termination Message carries only instance_id and
+	// job_id, so we enrich the context from the DB so every log below (and the
+	// "processing termination" line) carries the full job identity.
+	rec, err := h.dbClient.MarkJobComplete(ctx, jobID, msg.Status, msg.ExitCode, msg.DurationSeconds)
+	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to mark job complete: %w", err)
 	}
+	if rec != nil {
+		// job_id is already stashed by processMessage; pass 0 so ContextWithJob
+		// stashes only run_id/repo and job_id is not emitted twice (slog does not
+		// de-duplicate stashed attrs). Zero-valued run_id/repo are omitted.
+		ctx = logging.ContextWithJob(ctx, 0, rec.RunID, rec.Repo)
+	}
+
+	termLog.Info(ctx, "processing termination",
+		slog.String("status", msg.Status),
+		slog.Int("exit_code", msg.ExitCode))
 
 	// Update job metrics (timestamps)
 	if !msg.StartedAt.IsZero() && !msg.CompletedAt.IsZero() {
