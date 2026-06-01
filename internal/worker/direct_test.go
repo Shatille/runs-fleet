@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -170,6 +173,51 @@ func TestDirectProcessor_ZeroValues(t *testing.T) {
 	}
 	if processor.SubnetIndex != nil {
 		t.Error("Expected SubnetIndex to be nil for zero value")
+	}
+}
+
+func TestProcessJobDirect_WarmPoolFailureLogCarriesPoolName(t *testing.T) {
+	var buf bytes.Buffer
+	captureCtxLogs(t, &buf)
+
+	mockDynamo := &mockDynamoForClaim{}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:   &fleet.Manager{},
+		Metrics: metrics.NoopPublisher{},
+		DB:      dbClient,
+		Config:  &config.Config{SubnetIDs: []string{"subnet-a"}},
+		WarmPoolAssigner: &mockWarmPoolAssigner{
+			tryAssignFunc: func(_ context.Context, _ *queue.JobMessage) (*WarmPoolResult, error) {
+				return nil, errors.New("claim pool instance failed")
+			},
+		},
+		SubnetIndex: &subnetIndex,
+		// Fail fleet creation so the test ends after the warm-pool error log.
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("fleet creation failed")
+		},
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "default",
+	}
+
+	processor.ProcessJobDirect(context.Background(), job)
+
+	failedLogs := recordsWithMsg(t, &buf, "warm pool assignment failed")
+	if len(failedLogs) != 1 {
+		t.Fatalf("expected 1 'warm pool assignment failed' log, got %d", len(failedLogs))
+	}
+	var rec map[string]any
+	_ = json.Unmarshal([]byte(failedLogs[0]), &rec)
+	if got := rec[logging.KeyPoolName]; got != "default" {
+		t.Errorf("warm pool assignment failed: %s = %v, want default", logging.KeyPoolName, got)
 	}
 }
 

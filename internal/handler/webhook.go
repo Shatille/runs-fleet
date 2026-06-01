@@ -107,7 +107,16 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 
 	webhookLog.Info(ctx, "job enqueued",
 		slog.String("arch", jobConfig.Arch),
-		slog.String(logging.KeyPoolName, jobConfig.Pool))
+		slog.String(logging.KeyPoolName, jobConfig.Pool),
+		slog.Int("cpu_min", jobConfig.CPUMin),
+		slog.Int("cpu_max", jobConfig.CPUMax),
+		slog.Float64("ram_min", jobConfig.RAMMin),
+		slog.Float64("ram_max", jobConfig.RAMMax),
+		slog.Any("families", jobConfig.Families),
+		slog.Int("gen", jobConfig.Gen),
+		slog.Int("disk", jobConfig.StorageGiB),
+		slog.Bool("spot", jobConfig.Spot),
+		slog.String("original_label", jobConfig.OriginalLabel))
 	return msg, nil
 }
 
