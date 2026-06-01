@@ -511,7 +511,7 @@ func (ws *webhookServer) handleReadiness(w http.ResponseWriter, r *http.Request)
 		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := pinger.Ping(pingCtx); err != nil {
-			serverLog.Warn("readiness check failed", slog.String("error", err.Error()))
+			serverLog.WarnContext(pingCtx, "readiness check failed", slog.String("error", err.Error()))
 			http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -529,7 +529,7 @@ func (ws *webhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := gh.ParseWebhook(r, ws.cfg.GitHubWebhookSecret)
 	if err != nil {
-		log.Warn("webhook parse failed", slog.String("error", err.Error()))
+		log.WarnContext(r.Context(), "webhook parse failed", slog.String("error", err.Error()))
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
@@ -568,8 +568,8 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		}
 		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
 		if err != nil {
-			webhookLog.Error("job failure handling failed",
-				slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
+			failCtx := logging.ContextWithJob(ctx, event.GetWorkflowJob().GetID(), 0, event.GetRepo().GetFullName())
+			webhookLog.ErrorContext(failCtx, "job failure handling failed",
 				slog.String("error", err.Error()))
 		}
 		if requeued {

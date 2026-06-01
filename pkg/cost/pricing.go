@@ -80,7 +80,7 @@ func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float
 
 	price, err := p.fetchPriceFromAPI(ctx, instanceType)
 	if err != nil {
-		pricingLog.Warn("pricing api fetch failed, using fallback",
+		pricingLog.WarnContext(ctx, "pricing api fetch failed, using fallback",
 			slog.String(logging.KeyInstanceType, instanceType),
 			slog.String("error", err.Error()))
 		p.useFallback = true
@@ -119,7 +119,7 @@ func (p *PriceFetcher) RefreshCache(ctx context.Context) error {
 	for _, instanceType := range knownTypes {
 		_, err := p.GetPrice(ctx, instanceType)
 		if err != nil {
-			pricingLog.Warn("price refresh failed",
+			pricingLog.WarnContext(ctx, "price refresh failed",
 				slog.String(logging.KeyInstanceType, instanceType),
 				slog.String("error", err.Error()))
 		}

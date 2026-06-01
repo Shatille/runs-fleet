@@ -327,6 +327,7 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 		return
 	}
 	for _, instanceID := range instanceIDs {
+		instanceCtx := logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instanceID))
 		label := handler.BuildRunnerLabel(job)
 		prepareReq := runner.PrepareRunnerRequest{
 			InstanceID: instanceID,
@@ -337,9 +338,8 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 			Pool:       job.Pool,
 			Conditions: BuildRunnerConditions(job),
 		}
-		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
-			ec2Log.ErrorContext(ctx, "runner config preparation failed",
-				slog.String(logging.KeyInstanceID, instanceID),
+		if err := rm.PrepareRunner(instanceCtx, prepareReq); err != nil {
+			ec2Log.ErrorContext(instanceCtx, "runner config preparation failed",
 				slog.String("error", err.Error()))
 		}
 	}

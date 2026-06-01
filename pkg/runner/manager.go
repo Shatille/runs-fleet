@@ -64,10 +64,9 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions, req.JobID)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
-	runnerLog.Info("fetching registration token",
+	runnerLog.InfoContext(ctx, "fetching registration token",
 		slog.String("runner_name", runnerName),
-		slog.String(logging.KeyOwner, org),
-		slog.String(logging.KeyRepo, req.Repo))
+		slog.String(logging.KeyOwner, org))
 	regResult, err := m.github.GetRegistrationToken(ctx, req.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get registration token: %w", err)
@@ -94,12 +93,12 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		IsOrg:               regResult.IsOrg,
 	}
 
-	runnerLog.Info("storing runner config", slog.String(logging.KeyInstanceID, req.InstanceID))
+	runnerLog.InfoContext(ctx, "storing runner config")
 	if err := m.secretsStore.Put(ctx, req.InstanceID, config); err != nil {
 		return fmt.Errorf("failed to store runner config: %w", err)
 	}
 
-	runnerLog.Info("runner config stored", slog.String(logging.KeyInstanceID, req.InstanceID))
+	runnerLog.InfoContext(ctx, "runner config stored")
 	return nil
 }
 

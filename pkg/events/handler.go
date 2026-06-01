@@ -132,7 +132,7 @@ type StateChangeDetail struct {
 
 // Run starts the event handler loop.
 func (h *Handler) Run(ctx context.Context) {
-	eventsLog.Info("event handler starting")
+	eventsLog.InfoContext(ctx, "event handler starting")
 	ticker := time.NewTicker(eventsTickInterval)
 	defer ticker.Stop()
 
@@ -156,9 +156,9 @@ func (h *Handler) Run(ctx context.Context) {
 			cancel()
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					eventsLog.Warn("receive messages failed", slog.String("error", err.Error()))
+					eventsLog.WarnContext(ctx, "receive messages failed", slog.String("error", err.Error()))
 				} else {
-					eventsLog.Error("receive messages failed", slog.String("error", err.Error()))
+					eventsLog.ErrorContext(ctx, "receive messages failed", slog.String("error", err.Error()))
 				}
 				continue
 			}
@@ -180,7 +180,7 @@ func (h *Handler) Run(ctx context.Context) {
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
-							eventsLog.Error("panic in event processor", slog.Any("panic", r))
+							eventsLog.ErrorContext(ctx, "panic in event processor", slog.Any("panic", r))
 						}
 					}()
 					defer wg.Done()
@@ -210,29 +210,29 @@ func (h *Handler) Run(ctx context.Context) {
 
 func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 	if msg.Handle == "" {
-		eventsLog.Warn("message with empty handle")
+		eventsLog.WarnContext(ctx, "message with empty handle")
 		return
 	}
 
 	defer func() {
 		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
-			eventsLog.Error("message delete failed", slog.String("error", err.Error()))
+			eventsLog.ErrorContext(ctx, "message delete failed", slog.String("error", err.Error()))
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
 			if err := h.metrics.PublishMessageDeletionFailure(metricCtx); err != nil {
-				eventsLog.Error("message deletion metric failed", slog.String("error", err.Error()))
+				eventsLog.ErrorContext(ctx, "message deletion metric failed", slog.String("error", err.Error()))
 			}
 		}
 	}()
 
 	if msg.Body == "" {
-		eventsLog.Warn("message with empty body")
+		eventsLog.WarnContext(ctx, "message with empty body")
 		return
 	}
 
 	var event EventBridgeEvent
 	if err := json.Unmarshal([]byte(msg.Body), &event); err != nil {
-		eventsLog.Error("event unmarshal failed", slog.String("error", err.Error()))
+		eventsLog.ErrorContext(ctx, "event unmarshal failed", slog.String("error", err.Error()))
 		return
 	}
 
@@ -243,12 +243,12 @@ func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 	case "EC2 Instance State-change Notification":
 		processErr = h.handleStateChange(ctx, event.Detail)
 	default:
-		eventsLog.Warn("unknown event type", slog.String("detail_type", event.DetailType))
+		eventsLog.WarnContext(ctx, "unknown event type", slog.String("detail_type", event.DetailType))
 		return
 	}
 
 	if processErr != nil {
-		eventsLog.Error("event processing failed", slog.String("error", processErr.Error()))
+		eventsLog.ErrorContext(ctx, "event processing failed", slog.String("error", processErr.Error()))
 	}
 }
 
@@ -292,8 +292,9 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		))
 	defer span.End()
 
-	eventsLog.Info("spot interruption received",
-		slog.String(logging.KeyInstanceID, detail.InstanceID))
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, detail.InstanceID))
+
+	eventsLog.InfoContext(ctx, "spot interruption received")
 
 	if err := h.retryWithBackoff(ctx, h.metrics.PublishSpotInterruption); err != nil {
 		span.RecordError(err)
@@ -320,8 +321,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		)
 	}
 	if job == nil {
-		eventsLog.Warn("no job for spot interruption requeue",
-			slog.String(logging.KeyInstanceID, detail.InstanceID))
+		eventsLog.WarnContext(ctx, "no job for spot interruption requeue")
 		return nil
 	}
 
@@ -329,23 +329,25 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return nil
 	}
 
+	ctx = logging.ContextWithJob(ctx, job.JobID, job.RunID, job.Repo)
+
 	// Record interruption in circuit breaker
 	if h.circuitBreaker != nil && job.InstanceType != "" {
 		if err := h.circuitBreaker.RecordInterruption(ctx, job.InstanceType); err != nil {
-			eventsLog.Warn("circuit breaker record failed",
+			eventsLog.WarnContext(ctx, "circuit breaker record failed",
 				slog.String("instance_type", job.InstanceType),
 				slog.String("error", err.Error()))
 		} else {
 			open, err := h.circuitBreaker.IsOpen(ctx, job.InstanceType)
 			if err != nil {
-				eventsLog.Warn("circuit breaker state check failed",
+				eventsLog.WarnContext(ctx, "circuit breaker state check failed",
 					slog.String("instance_type", job.InstanceType),
 					slog.String("error", err.Error()))
 			} else if open {
 				metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 				defer metricCancel()
 				if err := h.metrics.PublishCircuitBreakerTriggered(metricCtx, job.InstanceType); err != nil {
-					eventsLog.Warn("circuit breaker metric failed",
+					eventsLog.WarnContext(metricCtx, "circuit breaker metric failed",
 						slog.String("instance_type", job.InstanceType),
 						slog.String("error", err.Error()))
 				}
@@ -374,9 +376,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to re-queue job %d: %w", job.JobID, err)
 	}
 
-	eventsLog.Info("job requeued after spot interruption",
-		slog.Int64(logging.KeyJobID, job.JobID),
-		slog.String(logging.KeyInstanceID, detail.InstanceID),
+	eventsLog.InfoContext(ctx, "job requeued after spot interruption",
 		slog.Int("retry_count", requeueMsg.RetryCount))
 	return nil
 }
@@ -387,8 +387,9 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 		return fmt.Errorf("failed to unmarshal state change detail: %w", err)
 	}
 
-	eventsLog.Info("instance state change",
-		slog.String(logging.KeyInstanceID, detail.InstanceID),
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, detail.InstanceID))
+
+	eventsLog.InfoContext(ctx, "instance state change",
 		slog.String("state", detail.State))
 
 	switch detail.State {
@@ -403,8 +404,7 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 	case "pending", "stopping", "shutting-down":
 		// Intermediate states, no action needed
 	default:
-		eventsLog.Warn("unknown instance state",
-			slog.String(logging.KeyInstanceID, detail.InstanceID),
+		eventsLog.WarnContext(ctx, "unknown instance state",
 			slog.String("state", detail.State))
 	}
 	return nil

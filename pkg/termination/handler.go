@@ -83,7 +83,7 @@ func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, secretsStore secrets.Store, 
 
 // Run starts the termination handler loop.
 func (h *Handler) Run(ctx context.Context) {
-	termLog.Info("termination handler starting")
+	termLog.InfoContext(ctx, "termination handler starting")
 
 	const maxConcurrency = 5
 	sem := make(chan struct{}, maxConcurrency)
@@ -96,16 +96,16 @@ func (h *Handler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
-			termLog.Info("termination handler shutdown complete")
+			termLog.InfoContext(ctx, "termination handler shutdown complete")
 			return
 
 		case <-ticker.C:
 			messages, err := h.queueClient.ReceiveMessages(ctx, 10, 20)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					termLog.Warn("receive messages failed", slog.String("error", err.Error()))
+					termLog.WarnContext(ctx, "receive messages failed", slog.String("error", err.Error()))
 				} else {
-					termLog.Error("receive messages failed", slog.String("error", err.Error()))
+					termLog.ErrorContext(ctx, "receive messages failed", slog.String("error", err.Error()))
 				}
 				continue
 			}
@@ -123,7 +123,7 @@ func (h *Handler) Run(ctx context.Context) {
 					defer cancel()
 
 					if err := h.processMessage(msgCtx, m); err != nil {
-						termLog.Error("message processing failed", slog.String("error", err.Error()))
+						termLog.ErrorContext(msgCtx, "message processing failed", slog.String("error", err.Error()))
 					}
 				}(msg)
 			}
@@ -142,9 +142,11 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
-	termLog.Info("processing termination",
+	ctx = logging.ContextWith(ctx,
 		slog.String(logging.KeyInstanceID, termMsg.InstanceID),
-		slog.String(logging.KeyJobID, termMsg.JobID),
+		slog.String(logging.KeyJobID, termMsg.JobID))
+
+	termLog.InfoContext(ctx, "processing termination",
 		slog.String("status", termMsg.Status),
 		slog.Int("exit_code", termMsg.ExitCode))
 
@@ -212,8 +214,7 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	// Update job metrics (timestamps)
 	if !msg.StartedAt.IsZero() && !msg.CompletedAt.IsZero() {
 		if err := h.dbClient.UpdateJobMetrics(ctx, jobID, msg.StartedAt, msg.CompletedAt); err != nil {
-			termLog.Warn("job metrics update failed",
-				slog.Int64(logging.KeyJobID, jobID),
+			termLog.WarnContext(ctx, "job metrics update failed",
 				slog.String("error", err.Error()))
 		}
 	}
@@ -221,24 +222,23 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	// Publish CloudWatch metrics
 	if msg.DurationSeconds > 0 {
 		if err := h.metrics.PublishJobDuration(ctx, msg.DurationSeconds); err != nil {
-			termLog.Warn("job duration metric publish failed", slog.String("error", err.Error()))
+			termLog.WarnContext(ctx, "job duration metric publish failed", slog.String("error", err.Error()))
 		}
 	}
 
 	if msg.Status == string(db.JobStatusSuccess) {
 		if err := h.metrics.PublishJobSuccess(ctx); err != nil {
-			termLog.Warn("job success metric publish failed", slog.String("error", err.Error()))
+			termLog.WarnContext(ctx, "job success metric publish failed", slog.String("error", err.Error()))
 		}
 	} else {
 		if err := h.metrics.PublishJobFailure(ctx); err != nil {
-			termLog.Warn("job failure metric publish failed", slog.String("error", err.Error()))
+			termLog.WarnContext(ctx, "job failure metric publish failed", slog.String("error", err.Error()))
 		}
 	}
 
 	// Clean up runner config from secrets store
 	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {
-		termLog.Warn("runner config delete failed",
-			slog.String(logging.KeyInstanceID, msg.InstanceID),
+		termLog.WarnContext(ctx, "runner config delete failed",
 			slog.String("error", err.Error()))
 	}
 
@@ -260,7 +260,6 @@ func (h *Handler) deleteRunnerConfig(ctx context.Context, instanceID string) err
 		return fmt.Errorf("failed to delete runner config for %s: %w", instanceID, err)
 	}
 
-	termLog.Info("runner config deleted",
-		slog.String(logging.KeyInstanceID, instanceID))
+	termLog.InfoContext(ctx, "runner config deleted")
 	return nil
 }

@@ -140,6 +140,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 
 	if p.Runner != nil {
 		for _, instanceID := range instanceIDs {
+			instanceCtx := logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instanceID))
 			label := handler.BuildRunnerLabel(job)
 			prepareReq := runner.PrepareRunnerRequest{
 				InstanceID: instanceID,
@@ -150,9 +151,8 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				Pool:       job.Pool,
 				Conditions: BuildRunnerConditions(job),
 			}
-			if err := p.Runner.PrepareRunner(ctx, prepareReq); err != nil {
-				directLog.ErrorContext(ctx, "runner config preparation failed",
-					slog.String(logging.KeyInstanceID, instanceID),
+			if err := p.Runner.PrepareRunner(instanceCtx, prepareReq); err != nil {
+				directLog.ErrorContext(instanceCtx, "runner config preparation failed",
 					slog.String("error", err.Error()))
 			}
 		}
