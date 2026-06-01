@@ -235,12 +235,26 @@ reconcile:
 	}
 
 	for poolName := range pools {
+		if ctx.Err() != nil {
+			break
+		}
 		pctx := logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
 		if err := m.reconcilePool(pctx, poolName); err != nil {
+			if isShutdownErr(err) {
+				poolLog.Debug(pctx, "reconciliation aborted: shutting down",
+					slog.String("error", err.Error()))
+				break
+			}
 			poolLog.Error(pctx, "demand-driven reconciliation failed",
 				slog.String("error", err.Error()))
 		}
 	}
+}
+
+// isShutdownErr reports whether err stems from context cancellation or deadline
+// expiry, which during graceful shutdown is expected rather than a fault.
+func isShutdownErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (m *Manager) reconcile(ctx context.Context) {
@@ -255,8 +269,16 @@ func (m *Manager) reconcile(ctx context.Context) {
 	}
 
 	for _, poolName := range pools {
+		if ctx.Err() != nil {
+			break
+		}
 		pctx := logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
 		if err := m.reconcilePool(pctx, poolName); err != nil {
+			if isShutdownErr(err) {
+				poolLog.Debug(pctx, "reconciliation aborted: shutting down",
+					slog.String("error", err.Error()))
+				break
+			}
 			poolLog.Error(pctx, "pool reconciliation failed",
 				slog.String("error", err.Error()))
 		}
@@ -275,6 +297,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	}
 	defer func() {
 		if err := m.dbClient.ReleasePoolReconcileLock(ctx, poolName, m.instanceID); err != nil {
+			if isShutdownErr(err) {
+				poolLog.Debug(ctx, "pool lock release aborted: shutting down",
+					slog.String("error", err.Error()))
+				return
+			}
 			poolLog.Error(ctx, "pool lock release failed",
 				slog.String("error", err.Error()))
 		}
@@ -340,7 +367,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 
 		if deficit > 0 {
-			created += m.createPoolFleetInstances(ctx, poolName, deficit, poolConfig)
+			created += m.createPoolFleetInstances(ctx, poolName, "ready_deficit", deficit, poolConfig)
 		}
 	} else if ready > desiredRunning {
 		// Too many ready (idle) instances - stop or terminate excess
@@ -367,7 +394,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			for i := 0; i < canStop; i++ {
 				instanceIDs[i] = candidateInstances[i].InstanceID
 			}
-			if err := m.stopInstances(ctx, instanceIDs); err != nil {
+			if err := m.stopInstances(ctx, instanceIDs, "excess_ready"); err != nil {
 				poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
 			} else {
 				stoppedCount += canStop
@@ -383,7 +410,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				for i := 0; i < toTerminate; i++ {
 					instanceIDs[i] = candidateInstances[i].InstanceID
 				}
-				if err := m.terminateInstances(ctx, instanceIDs); err != nil {
+				if err := m.terminateInstances(ctx, instanceIDs, "excess_idle"); err != nil {
 					poolLog.Error(ctx, "instances terminate failed", slog.String("error", err.Error()))
 				} else {
 					terminated += toTerminate
@@ -404,7 +431,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			for i := 0; i < toTerminate; i++ {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
-			if err := m.terminateInstances(ctx, instanceIDs); err != nil {
+			if err := m.terminateInstances(ctx, instanceIDs, "over_desired_stopped"); err != nil {
 				poolLog.Error(ctx, "stopped instances terminate failed", slog.String("error", err.Error()))
 			} else {
 				terminated += toTerminate
@@ -413,7 +440,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	} else if stopped < desiredStopped && desiredRunning == 0 {
 		// Need more stopped instances for warm/ephemeral pools (desiredRunning=0, desiredStopped>0)
 		deficit := desiredStopped - stopped
-		created += m.createPoolFleetInstances(ctx, poolName, deficit, poolConfig)
+		created += m.createPoolFleetInstances(ctx, poolName, "stopped_replenish", deficit, poolConfig)
 	}
 
 	// Log reconciliation only when changes occurred
@@ -685,7 +712,7 @@ func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) erro
 	return nil
 }
 
-func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string) error {
+func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
 	}
@@ -706,11 +733,12 @@ func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string) error
 
 	poolLog.Info(ctx, "instances stopped",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
+		slog.String("reason", reason),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
 }
 
-func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) error {
+func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
 	}
@@ -731,6 +759,7 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 
 	poolLog.Info(ctx, "instances terminated",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
+		slog.String("reason", reason),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
 }
@@ -1068,7 +1097,7 @@ func countInstanceStates(instances []PoolInstance, busyIDs []string) (running, s
 // Returns the number of instances successfully created.
 // Uses on-demand instances for warm pools because stop/start reliability
 // matters more than spot savings on short-lived job execution.
-func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string, count int, poolConfig *db.PoolConfig) int {
+func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName, reason string, count int, poolConfig *db.PoolConfig) int {
 	instanceTypes, arch := resolvePoolInstanceTypes(ctx, poolConfig)
 	if len(instanceTypes) == 0 {
 		poolLog.Warn(ctx, "no instance types resolved")
@@ -1090,6 +1119,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 			SubnetID:     subnetID,
 			Pool:         poolName,
 			Arch:         arch,
+			Reason:       reason,
 		}
 		if _, err := m.fleetManager.CreateOnDemandInstance(ctx, spec); err != nil {
 			poolLog.Error(ctx, "on-demand instance creation failed",

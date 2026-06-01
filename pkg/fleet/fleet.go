@@ -99,6 +99,7 @@ type LaunchSpec struct {
 	Arch          string // Architecture: amd64, arm64
 	StorageGiB    int    // Disk storage in GiB (0 = use launch template default)
 	Conditions    string // Resource conditions for instance naming (e.g., "arm64-cpu4-ram16")
+	Reason        string // Why this instance is being created (e.g., "ready_deficit", "stopped_replenish")
 }
 
 // CreateFleet launches EC2 instances using spot or on-demand capacity via FleetTypeInstant.
@@ -911,7 +912,8 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 	fleetLog.Info(ctx, "on-demand pool instance created",
 		slog.String(logging.KeyInstanceID, instanceID),
 		slog.String("instance_type", spec.InstanceType),
-		slog.String("pool", spec.Pool))
+		slog.String("pool", spec.Pool),
+		slog.String("reason", spec.Reason))
 
 	return instanceID, nil
 }
