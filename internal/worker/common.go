@@ -14,21 +14,37 @@ import (
 
 var workerLog = logging.WithComponent(logging.LogTypeQueue, "worker")
 
+const (
+	// maxConcurrency bounds the number of messages processed simultaneously.
+	maxConcurrency = 5
+	// maxMessagesPerReceive is the SQS ReceiveMessage per-call ceiling.
+	maxMessagesPerReceive = 10
+	// receiveWaitSeconds is the SQS long-poll wait; it doubles as the idle
+	// backoff so an empty queue does not busy-loop.
+	receiveWaitSeconds = 20
+	// idlePollInterval is how often the worker re-polls once the queue has been
+	// drained. It is independent of the per-receive timeout below.
+	idlePollInterval = 25 * time.Second
+)
+
 // MessageProcessor processes a single queue message.
 type MessageProcessor func(ctx context.Context, msg queue.Message)
 
 // RunWorkerLoop runs a generic worker loop that polls a queue and processes messages concurrently.
 func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor MessageProcessor) {
-	ticker := time.NewTicker(25 * time.Second)
+	ticker := time.NewTicker(idlePollInterval)
 	defer ticker.Stop()
 	RunWorkerLoopWithTicker(ctx, name, q, processor, ticker.C)
 }
 
 // RunWorkerLoopWithTicker runs the worker loop with an injectable ticker for testing.
+//
+// Each tick triggers a drain that keeps receiving while the queue returns full
+// batches, so intake is bounded by processing throughput rather than capped at
+// one batch per tick. The ticker only paces re-polling once the queue is drained.
 func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, tick <-chan time.Time) {
 	workerLog.Info("worker starting", slog.String("worker", name))
 
-	const maxConcurrency = 5
 	sem := make(chan struct{}, maxConcurrency)
 	var activeWork sync.WaitGroup
 
@@ -42,53 +58,73 @@ func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, pr
 		case <-ctx.Done():
 			return
 		case <-tick:
-			timeout := 25 * time.Second
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := time.Until(deadline)
-				if remaining < timeout {
-					timeout = remaining
-				}
-			}
-			recvCtx, cancel := context.WithTimeout(ctx, timeout)
-			messages, err := q.ReceiveMessages(recvCtx, 10, 20)
-			cancel()
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					workerLog.Warn("receive messages failed",
-						slog.String("worker", name),
-						slog.String("error", err.Error()))
-				} else {
-					workerLog.Error("receive messages failed",
-						slog.String("worker", name),
-						slog.String("error", err.Error()))
-				}
-				continue
-			}
+			drainQueue(ctx, name, q, processor, sem, &activeWork)
+		}
+	}
+}
 
-			if len(messages) == 0 {
-				continue
+// drainQueue receives and dispatches messages until the queue returns a
+// partial/empty batch or an error, then returns so the caller waits for the
+// next tick. Draining continuously while batches come back full prevents the
+// per-tick batch size from throttling intake when a backlog is present.
+func drainQueue(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, sem chan struct{}, activeWork *sync.WaitGroup) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		timeout := config.MessageReceiveTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < timeout {
+				timeout = remaining
 			}
+		}
+		recvCtx, cancel := context.WithTimeout(ctx, timeout)
+		messages, err := q.ReceiveMessages(recvCtx, maxMessagesPerReceive, receiveWaitSeconds)
+		cancel()
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				workerLog.Warn("receive messages failed",
+					slog.String("worker", name),
+					slog.String("error", err.Error()))
+			} else {
+				workerLog.Error("receive messages failed",
+					slog.String("worker", name),
+					slog.String("error", err.Error()))
+			}
+			return
+		}
 
-			for _, msg := range messages {
-				msg := msg
-				activeWork.Add(1)
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							workerLog.Error("panic in message processor",
-								slog.String("worker", name),
-								slog.Any("panic", r))
-						}
-					}()
-					defer activeWork.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
-					defer processCancel()
-					processor(processCtx, msg)
+		for i := range messages {
+			msg := messages[i]
+			// Acquire a slot before spawning so the number of in-flight
+			// goroutines (and the SQS visibility leases they hold) stays bounded
+			// by maxConcurrency even while draining a deep backlog.
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+			activeWork.Add(1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						workerLog.Error("panic in message processor",
+							slog.String("worker", name),
+							slog.Any("panic", r))
+					}
 				}()
-			}
+				defer activeWork.Done()
+				defer func() { <-sem }()
+
+				processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
+				defer processCancel()
+				processor(processCtx, msg)
+			}()
+		}
+
+		if len(messages) == 0 {
+			return
 		}
 	}
 }

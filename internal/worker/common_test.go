@@ -120,14 +120,17 @@ func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
 		panic("test panic")
 	}, tick)
 
+	// A single tick drives continuous draining; the loop must recover from each
+	// panicking processor and keep going, so panics accumulate without a stall.
 	tick <- time.Now()
-	time.Sleep(50 * time.Millisecond)
 
-	tick <- time.Now()
-	time.Sleep(50 * time.Millisecond)
-
-	if atomic.LoadInt32(&panicCount) < 2 {
-		t.Error("Worker should continue after panic")
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&panicCount) < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("worker did not continue after panic: panicCount=%d", atomic.LoadInt32(&panicCount))
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
@@ -299,6 +302,53 @@ func TestRunWorkerLoop_ReceiveError(t *testing.T) {
 
 	if atomic.LoadInt32(&errorCount) < 2 {
 		t.Fatal("Worker loop did not continue after receive error")
+	}
+}
+
+func TestRunWorkerLoop_DrainsBacklogOnSingleTick(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tick := make(chan time.Time, 1)
+
+	// A partial batch (7) sits between full batches: the drain must continue past
+	// it and stop only on an empty receive, so a single tick drains all 27.
+	batchSizes := []int{10, 7, 10}
+	wantProcessed := int32(27)
+
+	var recvCalls int32
+	var processed int32
+
+	mockQueue := &MockQueue{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			n := int(atomic.AddInt32(&recvCalls, 1))
+			if n > len(batchSizes) {
+				return nil, nil // backlog drained
+			}
+			size := batchSizes[n-1]
+			msgs := make([]queue.Message, size)
+			for i := range msgs {
+				msgs[i] = queue.Message{ID: fmt.Sprintf("m-%d-%d", n, i), Body: `{"run_id": 1}`, Handle: "h"}
+			}
+			return msgs, nil
+		},
+	}
+
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+		atomic.AddInt32(&processed, 1)
+	}, tick)
+
+	// A single tick must drain the entire backlog, not just one batch: the loop
+	// keeps receiving until an empty batch instead of idling until the next tick.
+	tick <- time.Now()
+
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&processed) < wantProcessed {
+		select {
+		case <-deadline:
+			t.Fatalf("single tick drained only %d/%d messages (receive calls=%d); loop did not drain backlog continuously",
+				atomic.LoadInt32(&processed), wantProcessed, atomic.LoadInt32(&recvCalls))
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
