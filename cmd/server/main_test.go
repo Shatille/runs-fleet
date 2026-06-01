@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +18,7 @@ import (
 	"github.com/Shavakan/runs-fleet/internal/worker"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/google/go-github/v57/github"
 )
@@ -503,7 +510,7 @@ func TestHandleJobFailure_NoRunnerName(t *testing.T) {
 		},
 	}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -521,7 +528,7 @@ func TestHandleJobFailure_NonRunsFleetRunner(t *testing.T) {
 		},
 	}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -539,7 +546,7 @@ func TestHandleJobFailure_NoRunsFleetLabels(t *testing.T) {
 		},
 	}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -559,7 +566,7 @@ func TestHandleJobFailure_NoJobsTable(t *testing.T) {
 
 	wrapper := &db.Client{}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, wrapper, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, wrapper)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -745,4 +752,114 @@ func TestMockQueue_DeleteMessage_WithError(t *testing.T) {
 	if !errors.Is(err, testErr) {
 		t.Errorf("DeleteMessage() error = %v, want %v", err, testErr)
 	}
+}
+
+// recordingMetrics records best-effort metric publishes and can fail them.
+type recordingMetrics struct {
+	metrics.NoopPublisher
+	jobQueued  atomic.Bool
+	queueDepth atomic.Bool
+	fail       bool
+}
+
+func (m *recordingMetrics) PublishJobQueued(context.Context) error {
+	m.jobQueued.Store(true)
+	if m.fail {
+		return errors.New("metrics error")
+	}
+	return nil
+}
+
+func (m *recordingMetrics) PublishQueueDepth(context.Context, float64) error {
+	m.queueDepth.Store(true)
+	if m.fail {
+		return errors.New("metrics error")
+	}
+	return nil
+}
+
+// gatedNotifier blocks NotifyPoolDemand until release is closed, then records
+// the pool name. It lets a test assert the notification is deferred past the ack.
+type gatedNotifier struct {
+	release  chan struct{}
+	called   atomic.Bool
+	notified chan string
+}
+
+func (n *gatedNotifier) NotifyPoolDemand(poolName string) {
+	<-n.release
+	n.called.Store(true)
+	n.notified <- poolName
+}
+
+func signWebhook(t *testing.T, secret string, body []byte) *http.Request {
+	t.Helper()
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	return req
+}
+
+// TestHandleWebhook_AcksBeforeBestEffortWork verifies the handler enqueues the
+// job durably and returns 2xx even when post-ack best-effort work (metrics,
+// pool-demand notification) errors.
+func TestHandleWebhook_AcksBeforeBestEffortWork(t *testing.T) {
+	const secret = "test-secret"
+	body := []byte(`{"action":"queued","workflow_job":{"id":12345,"labels":["runs-fleet=67890/cpu=4/arch=arm64/pool=default"]},"repository":{"full_name":"owner/repo"}}`)
+
+	q := &mockQueue{}
+	met := &recordingMetrics{fail: true}
+	notifier := &gatedNotifier{release: make(chan struct{}), notified: make(chan string, 1)}
+
+	ws := &webhookServer{
+		cfg:              &config.Config{GitHubWebhookSecret: secret},
+		jobQueue:         q,
+		metricsPublisher: met,
+		poolNotifier:     notifier,
+	}
+
+	rec := httptest.NewRecorder()
+	ws.handleWebhook(rec, signWebhook(t, secret, body))
+
+	// The handler must have returned 2xx with the job durably enqueued, while the
+	// best-effort pool-demand notification is still blocked (i.e. deferred past ack).
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleWebhook() status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if len(q.sentMessages) != 1 {
+		t.Fatalf("durable enqueue count = %d, want 1", len(q.sentMessages))
+	}
+	if got := q.sentMessages[0].JobID; got != 12345 {
+		t.Errorf("enqueued JobID = %d, want 12345", got)
+	}
+	if notifier.called.Load() {
+		t.Fatal("NotifyPoolDemand ran before the ack; best-effort work must be deferred")
+	}
+
+	close(notifier.release)
+	select {
+	case pool := <-notifier.notified:
+		if pool != "default" {
+			t.Errorf("NotifyPoolDemand pool = %q, want %q", pool, "default")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-ack pool-demand notification never fired")
+	}
+
+	waitFor(t, func() bool { return met.jobQueued.Load() && met.queueDepth.Load() },
+		"post-ack metrics never published")
+}
+
+func waitFor(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal(msg)
 }

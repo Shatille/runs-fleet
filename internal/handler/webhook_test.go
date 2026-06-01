@@ -347,7 +347,7 @@ func TestHandleWorkflowJobQueued(t *testing.T) {
 			}
 			mockMetrics := &MockMetrics{}
 
-			msg, err := HandleWorkflowJobQueued(context.Background(), tt.event, mockQueue, nil, mockMetrics)
+			msg, err := HandleWorkflowJobQueued(context.Background(), tt.event, mockQueue, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("HandleWorkflowJobQueued() error = %v, wantErr %v", err, tt.wantErr)
@@ -365,6 +365,7 @@ func TestHandleWorkflowJobQueued(t *testing.T) {
 				if msg.Repo != tt.event.GetRepo().GetFullName() {
 					t.Errorf("Message Repo = %s, want %s", msg.Repo, tt.event.GetRepo().GetFullName())
 				}
+				PublishJobQueuedMetrics(context.Background(), mockMetrics)
 				if !mockMetrics.JobQueuedCalled {
 					t.Error("Expected PublishJobQueued to be called")
 				}
@@ -440,7 +441,8 @@ func TestBuildRunnerLabel(t *testing.T) {
 }
 
 func TestHandleWorkflowJobQueued_MetricsPublishErrors(t *testing.T) {
-	// Test that metric publish errors don't cause the handler to fail
+	// Enqueue is durable and runs before the ack; the best-effort metrics run
+	// after and must swallow their own errors so they never affect delivery.
 	event := &github.WorkflowJobEvent{
 		WorkflowJob: &github.WorkflowJob{
 			ID:     github.Int64(12345),
@@ -459,12 +461,17 @@ func TestHandleWorkflowJobQueued_MetricsPublishErrors(t *testing.T) {
 		},
 	}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
 	if err != nil {
-		t.Errorf("HandleWorkflowJobQueued() should not fail on metrics error: %v", err)
+		t.Errorf("HandleWorkflowJobQueued() should not fail: %v", err)
 	}
 	if msg == nil {
-		t.Error("HandleWorkflowJobQueued() should return message despite metrics error")
+		t.Error("HandleWorkflowJobQueued() should return message")
+	}
+
+	PublishJobQueuedMetrics(context.Background(), mockMetrics)
+	if !mockMetrics.JobQueuedCalled {
+		t.Error("PublishJobQueuedMetrics should attempt PublishJobQueued despite errors")
 	}
 }
 
@@ -481,9 +488,8 @@ func TestHandleWorkflowJobQueued_MultipleInstanceTypes(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
@@ -509,9 +515,8 @@ func TestHandleWorkflowJobQueued_EmptyLabels(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
@@ -530,9 +535,8 @@ func TestHandleJobFailure_NoRunner(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, mockMetrics)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -551,9 +555,8 @@ func TestHandleJobFailure_NonRunsFleetRunner(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, mockMetrics)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -573,9 +576,8 @@ func TestHandleJobFailure_ShortRunnerName(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, mockMetrics)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -594,9 +596,8 @@ func TestHandleJobFailure_NoDBClient(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, mockMetrics)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -616,9 +617,8 @@ func TestHandleJobFailure_NonRunsFleetLabels(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, mockMetrics)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -640,9 +640,8 @@ func TestHandleWorkflowJobQueued_DiskStorage(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
@@ -668,9 +667,8 @@ func TestHandleWorkflowJobQueued_InvalidDisk(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	mockMetrics := &MockMetrics{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, mockMetrics)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}

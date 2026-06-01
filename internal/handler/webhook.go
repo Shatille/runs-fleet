@@ -35,8 +35,11 @@ type PoolDBClient interface {
 	TouchPoolActivity(ctx context.Context, poolName string) error
 }
 
-// HandleWorkflowJobQueued processes queued workflow_job events.
-func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (*queue.JobMessage, error) {
+// HandleWorkflowJobQueued processes queued workflow_job events. It performs only
+// the durable work (label parse, ephemeral pool ensure, SQS enqueue) so the
+// webhook can be acked before best-effort observability runs; see
+// PublishJobQueuedMetrics for the deferred metrics.
+func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client) (*queue.JobMessage, error) {
 	ctx, span := tracing.Tracer().Start(ctx, "webhook.process",
 		trace.WithAttributes(
 			attribute.String("github.event_type", "workflow_job"),
@@ -102,17 +105,22 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
+	webhookLog.Info(ctx, "job enqueued",
+		slog.String("arch", jobConfig.Arch),
+		slog.String(logging.KeyPoolName, jobConfig.Pool))
+	return msg, nil
+}
+
+// PublishJobQueuedMetrics emits the best-effort enqueue metrics for a queued
+// job. These observability calls run after the webhook is acked so they never
+// count against GitHub's delivery budget; failures are logged, not returned.
+func PublishJobQueuedMetrics(ctx context.Context, m metrics.Publisher) {
 	if err := m.PublishJobQueued(ctx); err != nil {
 		webhookLog.Error(ctx, "job queued metric failed", slog.String("error", err.Error()))
 	}
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
 		webhookLog.Error(ctx, "queue depth metric failed", slog.String("error", err.Error()))
 	}
-
-	webhookLog.Info(ctx, "job enqueued",
-		slog.String("arch", jobConfig.Arch),
-		slog.String(logging.KeyPoolName, jobConfig.Pool))
-	return msg, nil
 }
 
 // EnsureEphemeralPool creates or updates an ephemeral pool for the given job config.
@@ -162,7 +170,7 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 }
 
 // HandleJobFailure processes workflow_job completed events with failure conclusion.
-func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, m metrics.Publisher) (bool, error) {
+func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client) (bool, error) {
 	job := event.GetWorkflowJob()
 	runnerName := job.GetRunnerName()
 
@@ -231,10 +239,6 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 
 	webhookLog.Info(ctx, "job requeued",
 		slog.Int("retry_count", requeueMsg.RetryCount))
-
-	if err := m.PublishJobQueued(ctx); err != nil {
-		webhookLog.Error(ctx, "job queued metric failed", slog.String("error", err.Error()))
-	}
 
 	return true, nil
 }

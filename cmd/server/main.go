@@ -535,7 +535,7 @@ func (ws *webhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	processed, response := ws.processWebhookEvent(r.Context(), payload)
+	processed, response, postAck := ws.processWebhookEvent(r.Context(), payload)
 
 	w.WriteHeader(http.StatusOK)
 	if processed {
@@ -543,41 +543,71 @@ func (ws *webhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_, _ = fmt.Fprintf(w, "Event acknowledged\n")
 	}
+
+	ws.runPostAck(postAck)
 }
 
-func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interface{}) (bool, string) {
+// runPostAck executes best-effort work that must not count against GitHub's 10s
+// delivery budget. It runs on a background context because the request context
+// is canceled once the handler returns, and recovers panics so a failed
+// observability call never crashes the server.
+func (ws *webhookServer) runPostAck(postAck func(context.Context)) {
+	if postAck == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				webhookLog.Error(context.Background(), "panic in post-ack webhook work",
+					slog.Any("panic", r))
+			}
+		}()
+		postAck(context.Background())
+	}()
+}
+
+// processWebhookEvent performs the durable work for a webhook event (the SQS
+// enqueue that must complete before acking GitHub) and returns a closure for the
+// best-effort work (metrics, pool-demand notification, direct processing) to run
+// after the ack. The closure is nil when there is nothing more to do.
+func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interface{}) (bool, string, func(context.Context)) {
 	event, ok := payload.(*github.WorkflowJobEvent)
 	if !ok {
-		return false, ""
+		return false, "", nil
 	}
 
 	switch event.GetAction() {
 	case "queued":
-		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
+		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, ws.jobQueue, ws.dbClient)
 		if err != nil || jobMsg == nil {
-			return false, ""
+			return false, "", nil
 		}
-		if jobMsg.Pool != "" && len(jobMsg.Pool) <= 63 && validPoolName.MatchString(jobMsg.Pool) && ws.poolNotifier != nil {
-			ws.poolNotifier.NotifyPoolDemand(jobMsg.Pool)
+		postAck := func(bgCtx context.Context) {
+			handler.PublishJobQueuedMetrics(bgCtx, ws.metricsPublisher)
+			if jobMsg.Pool != "" && len(jobMsg.Pool) <= 63 && validPoolName.MatchString(jobMsg.Pool) && ws.poolNotifier != nil {
+				ws.poolNotifier.NotifyPoolDemand(jobMsg.Pool)
+			}
+			worker.TryDirectProcessing(bgCtx, ws.directProcessor, ws.directProcessorSem, jobMsg)
 		}
-		worker.TryDirectProcessing(ctx, ws.directProcessor, ws.directProcessorSem, jobMsg)
-		return true, "Job queued"
+		return true, "Job queued", postAck
 
 	case "completed":
 		if event.GetWorkflowJob().GetConclusion() != "failure" {
-			return false, ""
+			return false, "", nil
 		}
-		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
+		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient)
 		if err != nil {
 			failCtx := logging.ContextWithJob(ctx, event.GetWorkflowJob().GetID(), 0, event.GetRepo().GetFullName())
 			webhookLog.Error(failCtx, "job failure handling failed",
 				slog.String("error", err.Error()))
 		}
 		if requeued {
-			return true, "Job requeued"
+			return true, "Job requeued", func(bgCtx context.Context) {
+				handler.PublishJobQueuedMetrics(bgCtx, ws.metricsPublisher)
+			}
 		}
 	}
-	return false, ""
+	return false, "", nil
 }
 
 // housekeepingMetricsAdapter adapts metrics.Publisher to housekeeping.MetricsAPI.
