@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -24,11 +25,37 @@ import (
 const (
 	maxRetries    = 3
 	maxRetryDelay = 10 * time.Second
+
+	// tokenRefreshBuffer re-mints a cached installation token this long before
+	// it actually expires, to avoid using a token that expires mid-request.
+	tokenRefreshBuffer = 5 * time.Minute
+	// tokenDefaultTTL is the assumed installation-token lifetime when the
+	// access-tokens response omits or has an unparseable expires_at.
+	tokenDefaultTTL = 50 * time.Minute
+	// maxRetryAfterDelay caps how long a Retry-After / rate-limit-reset header
+	// can make a single retry wait.
+	maxRetryAfterDelay = 60 * time.Second
 )
 
 // baseRetryDelay is the base delay for retry backoff.
 // Exposed as a variable to allow testing with shorter durations.
 var baseRetryDelay = 500 * time.Millisecond
+
+// isSecondaryRateLimited reports whether a 403/429 response carries a GitHub
+// secondary-rate-limit signal (a Retry-After header or an exhausted rate-limit
+// budget). A 403 without such a signal is a permission error and not retryable.
+func isSecondaryRateLimited(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	if resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	return resp.Header.Get("X-RateLimit-Remaining") == "0"
+}
 
 // isRetryableError returns true if the HTTP response indicates a retryable error.
 func isRetryableError(resp *http.Response, err error) bool {
@@ -38,8 +65,37 @@ func isRetryableError(resp *http.Response, err error) bool {
 	if resp == nil {
 		return true
 	}
-	// Retry on rate limit (429) or server errors (5xx)
-	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+	// Retry on rate limit (429) or server errors (5xx).
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return true
+	}
+	// A 403 is retryable only when it is a secondary rate limit, not a
+	// permission error.
+	return resp.StatusCode == http.StatusForbidden && isSecondaryRateLimited(resp)
+}
+
+// retryAfterDelay returns the delay GitHub asks the client to wait, parsed from
+// the Retry-After header or, failing that, the X-RateLimit-Reset epoch when the
+// remaining budget is exhausted. ok is false when no such hint is present.
+func retryAfterDelay(resp *http.Response) (time.Duration, bool) {
+	if resp == nil {
+		return 0, false
+	}
+	if v := strings.TrimSpace(resp.Header.Get("Retry-After")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			return time.Duration(secs) * time.Second, true
+		}
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		if v := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")); v != "" {
+			if epoch, err := strconv.ParseInt(v, 10, 64); err == nil {
+				if d := time.Until(time.Unix(epoch, 0)); d > 0 {
+					return d, true
+				}
+			}
+		}
+	}
+	return 0, false
 }
 
 // retryDelay calculates exponential backoff with jitter.
@@ -53,12 +109,31 @@ func retryDelay(attempt int) time.Duration {
 	return delay/2 + jitter
 }
 
+// backoffDelay returns how long to wait before the next attempt, honoring a
+// server-supplied Retry-After (capped) when present and otherwise falling back
+// to exponential backoff.
+func backoffDelay(resp *http.Response, attempt int) time.Duration {
+	delay := retryDelay(attempt)
+	if d, ok := retryAfterDelay(resp); ok {
+		if d > maxRetryAfterDelay {
+			d = maxRetryAfterDelay
+		}
+		if d > delay {
+			delay = d
+		}
+	}
+	return delay
+}
+
 // GitHubClient handles GitHub App authentication and runner registration.
 type GitHubClient struct {
 	appID      int64
 	privateKey *rsa.PrivateKey
 	httpClient *http.Client
 	baseURL    string // API base URL, defaults to https://api.github.com
+
+	tokenMu    sync.Mutex
+	tokenCache map[string]*installationInfo // keyed by owner
 }
 
 // NewGitHubClient creates a new GitHub client for runner operations.
@@ -98,6 +173,7 @@ func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, erro
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		baseURL:    "https://api.github.com",
+		tokenCache: make(map[string]*installationInfo),
 	}, nil
 }
 
@@ -116,18 +192,54 @@ func (c *GitHubClient) generateJWT() (string, error) {
 
 // installationInfo holds installation token and account type.
 type installationInfo struct {
-	Token string
-	IsOrg bool // true for Organization, false for User
+	Token     string
+	IsOrg     bool // true for Organization, false for User
+	expiresAt time.Time
 }
 
-// getInstallationInfo gets an installation access token and account type.
-// It tries org-level first, then falls back to user-level for personal accounts.
-// Uses raw HTTP with Bearer prefix for JWT auth (go-github's WithAuthToken uses token prefix).
+// getInstallationInfo returns an installation access token for owner, reusing a
+// cached token until it nears expiry. Caching collapses the per-runner GET
+// /installation + POST /access_tokens calls (the App-JWT-authed requests that
+// trip GitHub's secondary rate limits) into one mint per token lifetime.
 func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
 	if owner == "" {
 		return nil, fmt.Errorf("owner is required")
 	}
 
+	if info := c.cachedInstallationInfo(owner); info != nil {
+		return info, nil
+	}
+
+	info, err := c.fetchInstallationInfo(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	c.storeInstallationInfo(owner, info)
+	return info, nil
+}
+
+// cachedInstallationInfo returns a still-valid cached token for owner, or nil.
+func (c *GitHubClient) cachedInstallationInfo(owner string) *installationInfo {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	info, ok := c.tokenCache[owner]
+	if !ok || time.Until(info.expiresAt) <= tokenRefreshBuffer {
+		return nil
+	}
+	return info
+}
+
+// storeInstallationInfo caches a freshly minted token for owner.
+func (c *GitHubClient) storeInstallationInfo(owner string, info *installationInfo) {
+	c.tokenMu.Lock()
+	c.tokenCache[owner] = info
+	c.tokenMu.Unlock()
+}
+
+// fetchInstallationInfo mints a new installation access token and account type.
+// It tries org-level first, then falls back to user-level for personal accounts.
+// Uses raw HTTP with Bearer prefix for JWT auth (go-github's WithAuthToken uses token prefix).
+func (c *GitHubClient) fetchInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
 	jwt, err := c.generateJWT()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate JWT: %w", err)
@@ -205,13 +317,21 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 	}
 
 	var tokenResp struct {
-		Token string `json:"token"`
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 		return nil, fmt.Errorf("failed to decode token response: %w", err)
 	}
 
-	return &installationInfo{Token: tokenResp.Token, IsOrg: isOrg}, nil
+	expiresAt := time.Now().Add(tokenDefaultTTL)
+	if tokenResp.ExpiresAt != "" {
+		if t, perr := time.Parse(time.RFC3339, tokenResp.ExpiresAt); perr == nil {
+			expiresAt = t
+		}
+	}
+
+	return &installationInfo{Token: tokenResp.Token, IsOrg: isOrg, expiresAt: expiresAt}, nil
 }
 
 // getInstallationToken is a convenience wrapper that returns just the token.
@@ -288,13 +408,13 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 	url := fmt.Sprintf("%s/repos/%s/actions/runners/registration-token", c.baseURL, repo)
 
 	var lastErr error
+	var nextDelay time.Duration
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			delay := retryDelay(attempt - 1)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(nextDelay):
 			}
 		}
 
@@ -308,6 +428,7 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to execute request: %w", err)
+			nextDelay = retryDelay(attempt)
 			continue
 		}
 
@@ -323,12 +444,14 @@ func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*
 			return &RegistrationResult{Token: result.Token, IsOrg: false}, nil
 		}
 
-		// Read error body for debugging
+		// Decide retryability and the next delay from headers before closing the body.
+		retryable := isRetryableError(resp, nil)
+		nextDelay = backoffDelay(resp, attempt)
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		lastErr = fmt.Errorf("failed to create registration token for %s: status=%d body=%s", repo, resp.StatusCode, string(body))
 
-		if !isRetryableError(resp, nil) {
+		if !retryable {
 			return nil, lastErr
 		}
 	}
@@ -352,19 +475,20 @@ func (c *GitHubClient) GetWorkflowJobByID(ctx context.Context, repo string, jobI
 	owner := parts[0]
 
 	var lastErr error
+	var nextDelay time.Duration
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			delay := retryDelay(attempt - 1)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(nextDelay):
 			}
 		}
 
 		token, err := c.getInstallationToken(ctx, owner)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to get installation token: %w", err)
+			nextDelay = retryDelay(attempt)
 			continue
 		}
 
@@ -390,6 +514,7 @@ func (c *GitHubClient) GetWorkflowJobByID(ctx context.Context, repo string, jobI
 			if !isRetryableError(httpResp, err) {
 				return nil, lastErr
 			}
+			nextDelay = backoffDelay(httpResp, attempt)
 			continue
 		}
 
