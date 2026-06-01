@@ -1328,6 +1328,13 @@ func TestGetWorkflowJobByID_DoesNotCorruptHTTPTransport(t *testing.T) {
 		t.Fatalf("first call failed: %v", err)
 	}
 
+	// Clear the installation-token cache so the second call performs a fresh
+	// lookup; otherwise the cached token short-circuits the installation request
+	// this test is asserting on.
+	client.tokenMu.Lock()
+	client.tokenCache = make(map[string]*installationInfo)
+	client.tokenMu.Unlock()
+
 	// Second call must also succeed — the installation endpoint must still receive a JWT,
 	// not the installation token from the previous go-github WithAuthToken call.
 	_, err = client.GetWorkflowJobByID(context.Background(), "myorg/myrepo", 99999)
