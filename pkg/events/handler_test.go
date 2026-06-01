@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -881,6 +882,10 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 }
 
 func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
+	// Exercises retryWithBackoff via the state-change path (PublishFleetSizeIncrement),
+	// which still retries metric publishes. The spot-interruption path intentionally
+	// no longer retries its metric (it is best-effort; see
+	// TestSpotInterruptionMetricFailureDoesNotBlockRequeue).
 	// Note: In tests, retryBackoffs is set to 1ms in init() for fast execution.
 	// We just verify retry count behavior, not timing.
 	tests := []struct {
@@ -918,7 +923,7 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			expectedCallsReached := make(chan struct{}, 1)
 
 			mockMetrics := &MockMetricsAPI{
-				PublishSpotInterruptionFunc: func(_ context.Context) error {
+				PublishFleetSizeIncrementFunc: func(_ context.Context) error {
 					mu.Lock()
 					callCount++
 					currentCall := callCount
@@ -949,8 +954,8 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 						messageReturned = true
 						return []queue.Message{{
 							Body: `{
-								"detail-type": "EC2 Spot Instance Interruption Warning",
-								"detail": {"instance-id": "i-test", "instance-action": "terminate"}
+								"detail-type": "EC2 Instance State-change Notification",
+								"detail": {"instance-id": "i-test", "state": "running"}
 							}`,
 							Handle: "receipt-test",
 						}}, nil
@@ -1354,6 +1359,49 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	// When ForceOnDemand is true, Spot should be false
 	if capturedMessage.Spot {
 		t.Errorf("Spot: expected false (ForceOnDemand=true), got %v", capturedMessage.Spot)
+	}
+}
+
+func TestSpotInterruptionMetricFailureDoesNotBlockRequeue(t *testing.T) {
+	var markCalled, requeued bool
+	mockDB := &MockDBAPI{
+		MarkInstanceTerminatingFunc: func(_ context.Context, _ string) error {
+			markCalled = true
+			return nil
+		},
+		GetJobByInstanceFunc: func(_ context.Context, _ string) (*JobInfo, error) {
+			return &JobInfo{JobID: 12345, RunID: 67890, InstanceType: "t4g.medium"}, nil
+		},
+	}
+	mockQueue := &MockQueueAPI{
+		SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			requeued = true
+			return nil
+		},
+		DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
+	}
+	mockMetrics := &MockMetricsAPI{
+		PublishSpotInterruptionFunc: func(_ context.Context) error {
+			return errors.New("cloudwatch throttled")
+		},
+	}
+
+	handler := &Handler{queueClient: mockQueue, dbClient: mockDB, metrics: mockMetrics, config: &config.Config{}}
+	handler.SetJobQueue(mockQueue)
+
+	msg := queue.Message{
+		Body:   `{"detail-type":"EC2 Spot Instance Interruption Warning","detail":{"instance-id":"i-x","instance-action":"terminate"}}`,
+		Handle: "receipt-test",
+	}
+	handler.processEvent(context.Background(), msg)
+
+	// A throttled observability metric must not abort interruption handling:
+	// the instance must still be marked terminating and the job re-queued.
+	if !markCalled {
+		t.Error("MarkInstanceTerminating must be called even when the metric publish fails")
+	}
+	if !requeued {
+		t.Error("job must be re-queued even when the metric publish fails")
 	}
 }
 

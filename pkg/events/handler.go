@@ -292,14 +292,26 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		))
 	defer span.End()
 
+	// Publish the interruption count best-effort and after the critical work
+	// below: a throttled CloudWatch metric must never abort marking the instance
+	// terminating or re-queuing the in-flight job (the SQS message is deleted
+	// unconditionally, so an aborted handler loses the job). Deferred so it runs
+	// on every exit path without gating.
+	defer func() {
+		// Detach from ctx cancellation (keeping trace values) so the metric is
+		// still attempted when the request ctx is already cancelled — e.g. the
+		// spot reclaim itself tore down the handler's context.
+		mctx, mcancel := context.WithTimeout(context.WithoutCancel(ctx), config.ShortTimeout)
+		defer mcancel()
+		if err := h.metrics.PublishSpotInterruption(mctx); err != nil {
+			eventsLog.Warn("spot interruption metric publish failed",
+				slog.String(logging.KeyInstanceID, detail.InstanceID),
+				slog.String("error", err.Error()))
+		}
+	}()
+
 	eventsLog.Info("spot interruption received",
 		slog.String(logging.KeyInstanceID, detail.InstanceID))
-
-	if err := h.retryWithBackoff(ctx, h.metrics.PublishSpotInterruption); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("failed to publish spot interruption metric: %w", err)
-	}
 
 	if err := h.dbClient.MarkInstanceTerminating(ctx, detail.InstanceID); err != nil {
 		span.RecordError(err)
