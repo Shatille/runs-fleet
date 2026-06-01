@@ -70,7 +70,7 @@ func (t *Tasks) ExecuteOrphanedPackerInstances(ctx context.Context) error {
 	}
 
 	if t.metrics != nil {
-		_ = t.metrics.PublishOrphanedInstancesTerminated(ctx, len(orphanedIDs))
+		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionOrphanedInstances, len(orphanedIDs))
 	}
 
 	return nil

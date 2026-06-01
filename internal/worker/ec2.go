@@ -33,6 +33,14 @@ const (
 	maxJobRetries         = 2
 )
 
+// Metric label constants for the job-assignment and queue families.
+const (
+	queueMain                 = "main"
+	sourceWarmPool            = "warm_pool"
+	sourceColdStart           = "cold_start"
+	schedulingFailureJobClaim = "job_claim"
+)
+
 var (
 	// RetryDelay is the delay between retry attempts for queue operations.
 	RetryDelay = 1 * time.Second
@@ -88,16 +96,20 @@ func (d EC2WorkerDeps) prepareRunners(ctx context.Context, job *queue.JobMessage
 
 // RunEC2Worker starts the EC2 queue processing loop.
 func RunEC2Worker(ctx context.Context, deps EC2WorkerDeps) {
-	RunWorkerLoop(ctx, "EC2", deps.Queue, func(ctx context.Context, msg queue.Message) {
+	var observe ReceiveObserver
+	if deps.Metrics != nil {
+		observe = func(c context.Context, result string) {
+			_ = deps.Metrics.PublishQueueReceive(c, queueMain, result)
+		}
+	}
+	RunWorkerLoopWithObserver(ctx, "EC2", deps.Queue, func(ctx context.Context, msg queue.Message) {
 		processEC2Message(ctx, deps, msg)
-	})
+	}, observe)
 }
 
 //nolint:gocyclo // Core message processing with warm pool + cold start paths
 func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Message) {
-	startTime := time.Now()
 	jobProcessed := false
-	fleetCreated := false
 	poisonMessage := false
 	alreadyClaimed := false
 
@@ -110,13 +122,8 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				ec2Log.Error(cleanupCtx, "message delete failed", slog.String("error", err.Error()))
 			}
 			if deps.Metrics != nil {
-				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, queueMain, -1); err != nil {
 					ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
-				}
-				if fleetCreated {
-					if err := deps.Metrics.PublishFleetSizeIncrement(cleanupCtx); err != nil {
-						ec2Log.Error(cleanupCtx, "fleet size increment metric failed", slog.String("error", err.Error()))
-					}
 				}
 			}
 		}
@@ -126,21 +133,21 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				ec2Log.Error(cleanupCtx, "already claimed message delete failed", slog.String("error", err.Error()))
 			}
 			if deps.Metrics != nil {
-				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, queueMain, -1); err != nil {
 					ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
 				}
 			}
 		}
 
 		if poisonMessage && deps.Metrics != nil {
-			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, -1); err != nil {
+			if err := deps.Metrics.PublishQueueDepth(cleanupCtx, queueMain, -1); err != nil {
 				ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
 			}
 		}
 
-		if deps.Metrics != nil {
-			_ = deps.Metrics.PublishJobDuration(cleanupCtx, int(time.Since(startTime).Seconds()))
-		}
+		// TODO(metrics): capture processing start at function entry and emit
+		// message processing latency via PublishMessageProcessingSeconds(cleanupCtx,
+		// queueMain, result, elapsed) once timing instrumentation lands.
 	}()
 
 	var job queue.JobMessage
@@ -151,7 +158,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		if deps.Metrics != nil {
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
-			_ = deps.Metrics.PublishMessageDeletionFailure(metricCtx)
+			_ = deps.Metrics.PublishMessageDeletionFailure(metricCtx, queueMain)
 		}
 		return
 	}
@@ -178,7 +185,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				return
 			}
 			if deps.Metrics != nil {
-				_ = deps.Metrics.PublishJobClaimFailure(ctx)
+				_ = deps.Metrics.PublishSchedulingFailure(ctx, schedulingFailureJobClaim)
 			}
 			return
 		}
@@ -204,7 +211,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		} else if result.Assigned {
 			jobProcessed = true
 			if deps.Metrics != nil {
-				_ = deps.Metrics.PublishWarmPoolHit(ctx)
+				_ = deps.Metrics.PublishJobAssigned(ctx, job.Pool, sourceWarmPool, job.Repo)
 			}
 			ec2Log.Info(ctx, "job assigned to warm pool",
 				slog.String(logging.KeyInstanceID, result.InstanceID))
@@ -258,7 +265,6 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	}
 
 	jobProcessed = true
-	fleetCreated = true
 
 	SaveJobRecords(ctx, deps.DB, &job, instanceIDs)
 
@@ -270,7 +276,6 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		// reaped by housekeeping.
 		span.SetStatus(codes.Error, "runner preparation failed")
 		jobProcessed = false
-		fleetCreated = false
 		if deps.DB != nil && deps.DB.HasJobsTable() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
@@ -290,6 +295,14 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			deps.Pool.MarkInstanceBusy(instanceID)
 		}
 	}
+
+	if deps.Metrics != nil {
+		_ = deps.Metrics.PublishJobAssigned(ctx, job.Pool, sourceColdStart, job.Repo)
+	}
+	// TODO(metrics): emit wait and provision latency via
+	// PublishJobWaitSeconds(ctx, job.Pool, sourceColdStart, waited) and
+	// PublishInstanceProvisionSeconds(ctx, sourceColdStart, family, provisioned)
+	// once timing instrumentation lands.
 
 	ec2Log.Info(ctx, "instances launched",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
@@ -420,8 +433,8 @@ func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.Jo
 	ec2Log.Info(cleanupCtx, "job requeued with on-demand fallback",
 		slog.Int("retry_count", fallbackJob.RetryCount))
 	if deps.Metrics != nil {
-		if err := deps.Metrics.PublishJobQueued(cleanupCtx); err != nil {
-			ec2Log.Error(cleanupCtx, "job queued metric failed", slog.String("error", err.Error()))
+		if err := deps.Metrics.PublishJobRequeued(cleanupCtx, "on_demand_fallback"); err != nil {
+			ec2Log.Error(cleanupCtx, "job requeued metric failed", slog.String("error", err.Error()))
 		}
 	}
 

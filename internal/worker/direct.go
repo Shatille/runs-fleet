@@ -73,7 +73,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 			directLog.Warn(ctx, "job claim failed, deferring to queue",
 				slog.String("error", err.Error()))
 			if p.Metrics != nil {
-				if err := p.Metrics.PublishJobClaimFailure(ctx); err != nil {
+				if err := p.Metrics.PublishSchedulingFailure(ctx, schedulingFailureJobClaim); err != nil {
 					directLog.Error(ctx, "job claim failure metric failed", slog.String("error", err.Error()))
 				}
 			}
@@ -99,7 +99,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				slog.String("error", err.Error()))
 		} else if result.Assigned {
 			if p.Metrics != nil {
-				_ = p.Metrics.PublishWarmPoolHit(ctx)
+				_ = p.Metrics.PublishJobAssigned(ctx, job.Pool, sourceWarmPool, job.Repo)
 			}
 			directLog.Info(ctx, "job assigned to warm pool",
 				slog.String(logging.KeyInstanceID, result.InstanceID))
@@ -186,8 +186,8 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	}
 
 	if p.Metrics != nil {
-		if err := p.Metrics.PublishFleetSizeIncrement(ctx); err != nil {
-			directLog.Error(ctx, "fleet size increment metric failed", slog.String("error", err.Error()))
+		if err := p.Metrics.PublishJobAssigned(ctx, job.Pool, sourceColdStart, job.Repo); err != nil {
+			directLog.Error(ctx, "job assigned metric failed", slog.String("error", err.Error()))
 		}
 	}
 

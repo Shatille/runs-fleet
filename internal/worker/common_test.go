@@ -57,7 +57,7 @@ func TestRunWorkerLoop_ContextCancellation(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, tick)
+		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, tick)
 		close(done)
 	}()
 
@@ -88,7 +88,7 @@ func TestRunWorkerLoop_ProcessesMessages(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	}, tick)
+	}, nil, tick)
 
 	for atomic.LoadInt32(&processed) < processedCount {
 		tick <- time.Now()
@@ -118,7 +118,7 @@ func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&panicCount, 1)
 		panic("test panic")
-	}, tick)
+	}, nil, tick)
 
 	// A single tick drives continuous draining; the loop must recover from each
 	// panicking processor and keep going, so panics accumulate without a stall.
@@ -175,7 +175,7 @@ func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
 
 		<-allowProcessing
 		atomic.AddInt32(&concurrent, -1)
-	}, tick)
+	}, nil, tick)
 
 	tick <- time.Now()
 
@@ -226,7 +226,7 @@ func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 				time.Sleep(50 * time.Millisecond)
 				close(processingCompleted)
 			}
-		}, tick)
+		}, nil, tick)
 		close(workerDone)
 	}()
 
@@ -268,7 +268,7 @@ func TestRunWorkerLoop_EmptyMessages(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processorCalled, 1)
-	}, tick)
+	}, nil, tick)
 
 	for i := 0; i < 5; i++ {
 		tick <- time.Now()
@@ -294,7 +294,7 @@ func TestRunWorkerLoop_ReceiveError(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, tick)
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, tick)
 
 	tick <- time.Now()
 	tick <- time.Now()
@@ -335,7 +335,7 @@ func TestRunWorkerLoop_DrainsBacklogOnSingleTick(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	}, tick)
+	}, nil, tick)
 
 	// A single tick must drain the entire backlog, not just one batch: the loop
 	// keeps receiving until an empty batch instead of idling until the next tick.
@@ -368,7 +368,7 @@ func TestRunWorkerLoop_ContextDeadline(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, tick)
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, tick)
 
 	tick <- time.Now()
 	time.Sleep(50 * time.Millisecond)

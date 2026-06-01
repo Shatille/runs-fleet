@@ -42,13 +42,19 @@ type DynamoDBAPI interface {
 
 // MetricsAPI defines CloudWatch metrics publishing.
 type MetricsAPI interface {
-	PublishOrphanedInstancesTerminated(ctx context.Context, count int) error
-	PublishSSMParametersDeleted(ctx context.Context, count int) error
-	PublishJobRecordsArchived(ctx context.Context, count int) error
-	PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error
-	PublishStaleJobsReconciled(ctx context.Context, count int) error
-	PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error
+	PublishHousekeepingAction(ctx context.Context, action string, count int) error
+	PublishPoolInstances(ctx context.Context, pool, state string, n int) error
+	PublishPoolDesired(ctx context.Context, pool, kind string, n int) error
 }
+
+// Housekeeping action labels for PublishHousekeepingAction.
+const (
+	housekeepingActionOrphanedInstances = "orphaned_instances"
+	housekeepingActionSSMParams         = "ssm_params"
+	housekeepingActionJobRecords        = "job_records"
+	housekeepingActionOrphanedJobs      = "orphaned_jobs"
+	housekeepingActionStaleJobs         = "stale_jobs"
+)
 
 // CostReporter generates cost reports.
 type CostReporter interface {
@@ -168,7 +174,7 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	}
 
 	if t.metrics != nil {
-		_ = t.metrics.PublishOrphanedInstancesTerminated(ctx, len(orphanedIDs))
+		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionOrphanedInstances, len(orphanedIDs))
 	}
 
 	t.logger().Info(ctx, "orphaned instances terminated",
@@ -389,7 +395,7 @@ func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
 	}
 
 	if t.metrics != nil && deletedCount > 0 {
-		_ = t.metrics.PublishSSMParametersDeleted(ctx, deletedCount)
+		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionSSMParams, deletedCount)
 	}
 
 	if deletedCount > 0 {
@@ -511,7 +517,7 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 	}
 
 	if t.metrics != nil && deletedCount > 0 {
-		_ = t.metrics.PublishJobRecordsArchived(ctx, deletedCount)
+		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionJobRecords, deletedCount)
 	}
 
 	if deletedCount > 0 {
@@ -575,7 +581,7 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 	}
 
 	if t.metrics != nil && orphanedCount > 0 {
-		_ = t.metrics.PublishOrphanedJobsCleanedUp(ctx, orphanedCount)
+		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionOrphanedJobs, orphanedCount)
 	}
 
 	if orphanedCount > 0 {
@@ -616,10 +622,11 @@ func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
 			continue
 		}
 
-		utilization := float64(currentRunning) / float64(desiredRunning) * 100
-
+		// Utilization is derivable from the running and desired-running gauges,
+		// so emit those states rather than a precomputed percentage.
 		if t.metrics != nil {
-			_ = t.metrics.PublishPoolUtilization(ctx, poolName, utilization)
+			_ = t.metrics.PublishPoolInstances(ctx, poolName, "running", currentRunning)
+			_ = t.metrics.PublishPoolDesired(ctx, poolName, "running", desiredRunning)
 		}
 	}
 
@@ -888,7 +895,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 	}
 
 	if t.metrics != nil && reconciled > 0 {
-		if err := t.metrics.PublishStaleJobsReconciled(ctx, reconciled); err != nil {
+		if err := t.metrics.PublishHousekeepingAction(ctx, housekeepingActionStaleJobs, reconciled); err != nil {
 			t.logger().Warn(ctx, "failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
 		}
 	}

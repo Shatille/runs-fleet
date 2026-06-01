@@ -514,7 +514,7 @@ func TestRunEC2Worker_ContextCancellation(t *testing.T) {
 	go func() {
 		RunWorkerLoopWithTicker(ctx, "EC2", deps.Queue, func(_ context.Context, _ queue.Message) {
 			processEC2Message(ctx, deps, queue.Message{})
-		}, tick)
+		}, nil, tick)
 		close(done)
 	}()
 
@@ -560,7 +560,7 @@ func TestRunEC2Worker_ProcessesMessages(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "EC2", deps.Queue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	}, tick)
+	}, nil, tick)
 
 	// Send ticks to trigger message processing with timeout
 	timeout := time.After(1 * time.Second)
@@ -622,25 +622,36 @@ func (m *mockWarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *que
 type mockMetricsPublisher struct {
 	metrics.NoopPublisher
 	warmPoolHitCalled  bool
+	coldStartCalled    bool
 	queueDepthDelta    float64
-	fleetSizeIncCalled bool
-	jobDurationCalled  bool
+	queueReceiveResult string
+	requeuedReason     string
+	schedulingFailures int
 }
 
-func (m *mockMetricsPublisher) PublishQueueDepth(_ context.Context, delta float64) error {
+func (m *mockMetricsPublisher) PublishQueueDepth(_ context.Context, _ string, delta float64) error {
 	m.queueDepthDelta += delta
 	return nil
 }
-func (m *mockMetricsPublisher) PublishFleetSizeIncrement(_ context.Context) error {
-	m.fleetSizeIncCalled = true
+func (m *mockMetricsPublisher) PublishJobAssigned(_ context.Context, _, source, _ string) error {
+	switch source {
+	case sourceWarmPool:
+		m.warmPoolHitCalled = true
+	case sourceColdStart:
+		m.coldStartCalled = true
+	}
 	return nil
 }
-func (m *mockMetricsPublisher) PublishJobDuration(_ context.Context, _ int) error {
-	m.jobDurationCalled = true
+func (m *mockMetricsPublisher) PublishJobRequeued(_ context.Context, reason string) error {
+	m.requeuedReason = reason
 	return nil
 }
-func (m *mockMetricsPublisher) PublishWarmPoolHit(_ context.Context) error {
-	m.warmPoolHitCalled = true
+func (m *mockMetricsPublisher) PublishQueueReceive(_ context.Context, _, result string) error {
+	m.queueReceiveResult = result
+	return nil
+}
+func (m *mockMetricsPublisher) PublishSchedulingFailure(_ context.Context, _ string) error {
+	m.schedulingFailures++
 	return nil
 }
 

@@ -25,6 +25,8 @@ const (
 	testReceiptTermination = "test-receipt"
 	testStatusSuccess      = string(db.JobStatusSuccess)
 	testRepo               = "octo/repo"
+	testResultSuccess      = "success"
+	testResultTimeout      = "timeout"
 )
 
 // mockQueueAPI implements QueueAPI for testing.
@@ -89,29 +91,30 @@ func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time)
 
 // mockMetricsAPI implements MetricsAPI for testing.
 type mockMetricsAPI struct {
-	durationCalls int
-	successCalls  int
-	failureCalls  int
-	durationErr   error
-	successErr    error
-	failureErr    error
-	lastDuration  int
+	completedCalls int
+	successCalls   int
+	failureCalls   int
+	lastResult     string
+	lastPool       string
+	lastRepo       string
+	completedErr   error
 }
 
-func (m *mockMetricsAPI) PublishJobDuration(_ context.Context, duration int) error {
-	m.durationCalls++
-	m.lastDuration = duration
-	return m.durationErr
+func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, repo string) error {
+	m.completedCalls++
+	m.lastResult = result
+	m.lastPool = pool
+	m.lastRepo = repo
+	if result == testResultSuccess {
+		m.successCalls++
+	} else {
+		m.failureCalls++
+	}
+	return m.completedErr
 }
 
-func (m *mockMetricsAPI) PublishJobSuccess(_ context.Context) error {
-	m.successCalls++
-	return m.successErr
-}
-
-func (m *mockMetricsAPI) PublishJobFailure(_ context.Context) error {
-	m.failureCalls++
-	return m.failureErr
+func (m *mockMetricsAPI) PublishJobExecutionSeconds(_ context.Context, _, _ string, _ float64) error {
+	return nil
 }
 
 // mockSecretsStore implements secrets.Store for testing.
@@ -207,11 +210,11 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	if metrics.successCalls != 1 {
 		t.Errorf("expected 1 success metric call, got %d", metrics.successCalls)
 	}
-	if metrics.durationCalls != 1 {
-		t.Errorf("expected 1 duration metric call, got %d", metrics.durationCalls)
+	if metrics.completedCalls != 1 {
+		t.Errorf("expected 1 completed metric call, got %d", metrics.completedCalls)
 	}
-	if metrics.lastDuration != 120 {
-		t.Errorf("expected duration 120, got %d", metrics.lastDuration)
+	if metrics.lastResult != testResultSuccess {
+		t.Errorf("expected result 'success', got %q", metrics.lastResult)
 	}
 
 	if q.deleteCalls != 1 {
@@ -671,9 +674,10 @@ func TestHandler_processTermination_NoDuration(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should not publish duration metric when duration is 0
-	if metrics.durationCalls != 0 {
-		t.Errorf("expected 0 duration calls when duration is 0, got %d", metrics.durationCalls)
+	// The completion counter is emitted regardless of duration (execution-latency
+	// emission is a follow-up).
+	if metrics.completedCalls != 1 {
+		t.Errorf("expected 1 completed call when duration is 0, got %d", metrics.completedCalls)
 	}
 }
 
@@ -804,8 +808,7 @@ func TestHandler_processTermination_MetricsErrors(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{
-		durationErr: errors.New("duration error"),
-		successErr:  errors.New("success error"),
+		completedErr: errors.New("completed metric error"),
 	}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
@@ -829,7 +832,7 @@ func TestHandler_processTermination_FailureMetricsError(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{
-		failureErr: errors.New("failure metric error"),
+		completedErr: errors.New("failure metric error"),
 	}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
@@ -924,9 +927,12 @@ func TestHandler_processTermination_Timeout(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Timeout should be treated as failure
-	if metrics.failureCalls != 1 {
-		t.Errorf("expected 1 failure call for timeout, got %d", metrics.failureCalls)
+	// Timeout maps to the "timeout" result.
+	if metrics.completedCalls != 1 {
+		t.Errorf("expected 1 completed call for timeout, got %d", metrics.completedCalls)
+	}
+	if metrics.lastResult != testResultTimeout {
+		t.Errorf("expected result 'timeout', got %q", metrics.lastResult)
 	}
 }
 
@@ -950,9 +956,12 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Interrupted should be treated as failure
-	if metrics.failureCalls != 1 {
-		t.Errorf("expected 1 failure call for interrupted, got %d", metrics.failureCalls)
+	// Interrupted maps to the "error" result.
+	if metrics.completedCalls != 1 {
+		t.Errorf("expected 1 completed call for interrupted, got %d", metrics.completedCalls)
+	}
+	if metrics.lastResult != "error" {
+		t.Errorf("expected result 'error', got %q", metrics.lastResult)
 	}
 }
 

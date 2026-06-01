@@ -30,11 +30,21 @@ const (
 // MessageProcessor processes a single queue message.
 type MessageProcessor func(ctx context.Context, msg queue.Message)
 
+// ReceiveObserver reports the outcome of each queue receive: "messages",
+// "empty", or "error". It is invoked once per ReceiveMessages call.
+type ReceiveObserver func(ctx context.Context, result string)
+
 // RunWorkerLoop runs a generic worker loop that polls a queue and processes messages concurrently.
 func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor MessageProcessor) {
+	RunWorkerLoopWithObserver(ctx, name, q, processor, nil)
+}
+
+// RunWorkerLoopWithObserver runs the worker loop and reports each receive
+// outcome to the observer (nil disables reporting).
+func RunWorkerLoopWithObserver(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, observe ReceiveObserver) {
 	ticker := time.NewTicker(idlePollInterval)
 	defer ticker.Stop()
-	RunWorkerLoopWithTicker(ctx, name, q, processor, ticker.C)
+	RunWorkerLoopWithTicker(ctx, name, q, processor, observe, ticker.C)
 }
 
 // RunWorkerLoopWithTicker runs the worker loop with an injectable ticker for testing.
@@ -42,7 +52,7 @@ func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor Me
 // Each tick triggers a drain that keeps receiving while the queue returns full
 // batches, so intake is bounded by processing throughput rather than capped at
 // one batch per tick. The ticker only paces re-polling once the queue is drained.
-func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, tick <-chan time.Time) {
+func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, observe ReceiveObserver, tick <-chan time.Time) {
 	workerLog.Info(ctx, "worker starting", slog.String("worker", name))
 
 	sem := make(chan struct{}, maxConcurrency)
@@ -58,7 +68,7 @@ func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, pr
 		case <-ctx.Done():
 			return
 		case <-tick:
-			drainQueue(ctx, name, q, processor, sem, &activeWork)
+			drainQueue(ctx, name, q, processor, observe, sem, &activeWork)
 		}
 	}
 }
@@ -67,7 +77,7 @@ func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, pr
 // partial/empty batch or an error, then returns so the caller waits for the
 // next tick. Draining continuously while batches come back full prevents the
 // per-tick batch size from throttling intake when a backlog is present.
-func drainQueue(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, sem chan struct{}, activeWork *sync.WaitGroup) {
+func drainQueue(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, observe ReceiveObserver, sem chan struct{}, activeWork *sync.WaitGroup) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -83,6 +93,7 @@ func drainQueue(ctx context.Context, name string, q queue.Queue, processor Messa
 		messages, err := q.ReceiveMessages(recvCtx, maxMessagesPerReceive, receiveWaitSeconds)
 		cancel()
 		if err != nil {
+			reportReceive(ctx, observe, "error")
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				workerLog.Warn(ctx, "receive messages failed",
 					slog.String("worker", name),
@@ -95,11 +106,19 @@ func drainQueue(ctx context.Context, name string, q queue.Queue, processor Messa
 			return
 		}
 
+		if len(messages) == 0 {
+			reportReceive(ctx, observe, "empty")
+		} else {
+			reportReceive(ctx, observe, "messages")
+		}
+
 		for i := range messages {
 			msg := messages[i]
 			// Acquire a slot before spawning so the number of in-flight
 			// goroutines (and the SQS visibility leases they hold) stays bounded
 			// by maxConcurrency even while draining a deep backlog.
+			// TODO(metrics): track in-flight workers via PublishWorkerInflight(ctx,
+			// queue, len(sem)) once timing instrumentation lands.
 			select {
 			case <-ctx.Done():
 				return
@@ -126,5 +145,12 @@ func drainQueue(ctx context.Context, name string, q queue.Queue, processor Messa
 		if len(messages) == 0 {
 			return
 		}
+	}
+}
+
+// reportReceive invokes the observer with the receive outcome when one is set.
+func reportReceive(ctx context.Context, observe ReceiveObserver, result string) {
+	if observe != nil {
+		observe(ctx, result)
 	}
 }

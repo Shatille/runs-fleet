@@ -52,6 +52,21 @@ type FleetAPI interface {
 	RankInstanceTypesByPrice(ctx context.Context, instanceTypes []string) []string
 }
 
+// MetricsAPI publishes pool scaling metrics.
+type MetricsAPI interface {
+	PublishPoolAction(ctx context.Context, pool, action, reason string) error
+	PublishPoolDesired(ctx context.Context, pool, kind string, n int) error
+	PublishPoolInstances(ctx context.Context, pool, state string, n int) error
+}
+
+// Pool action labels for PublishPoolAction.
+const (
+	poolActionCreate    = "create"
+	poolActionStop      = "stop"
+	poolActionTerminate = "terminate"
+	poolActionStart     = "start"
+)
+
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 // EC2API defines EC2 operations for instance management.
 type EC2API interface {
@@ -125,6 +140,7 @@ type Manager struct {
 	fleetManager FleetAPI
 	ec2Client    EC2API
 	config       *config.Config
+	metrics      MetricsAPI
 	instanceID   string // Unique identifier for this instance (for distributed locking)
 
 	idleMu       sync.Mutex           // Guards instanceIdle only
@@ -183,6 +199,11 @@ func (m *Manager) NotifyPoolDemand(poolName string) {
 // SetEC2Client sets the EC2 client for instance management.
 func (m *Manager) SetEC2Client(ec2Client EC2API) {
 	m.ec2Client = ec2Client
+}
+
+// SetMetrics sets the metrics publisher for the manager.
+func (m *Manager) SetMetrics(metrics MetricsAPI) {
+	m.metrics = metrics
 }
 
 // selectSubnet returns the next private subnet ID in round-robin fashion.
@@ -288,6 +309,8 @@ func (m *Manager) reconcile(ctx context.Context) {
 //nolint:gocyclo // Core reconciliation logic with multiple scale up/down paths
 func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	// Acquire per-pool lock (65s TTL > 60s reconcile interval)
+	// TODO(metrics): emit lock wait time via PublishLockWaitSeconds(ctx,
+	// "pool_reconcile", elapsed) once timing instrumentation lands.
 	if err := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, 65*time.Second); err != nil {
 		// Lock held by another instance or pool deleted - skip silently
 		if errors.Is(err, db.ErrPoolReconcileLockHeld) || errors.Is(err, db.ErrPoolNotFound) {
@@ -358,7 +381,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			for i := 0; i < toStart; i++ {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
-			if err := m.startInstances(ctx, instanceIDs); err != nil {
+			if err := m.startInstances(ctx, poolName, instanceIDs, "ready_deficit"); err != nil {
 				poolLog.Error(ctx, "instances start failed", slog.String("error", err.Error()))
 			} else {
 				started += toStart
@@ -394,7 +417,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			for i := 0; i < canStop; i++ {
 				instanceIDs[i] = candidateInstances[i].InstanceID
 			}
-			if err := m.stopInstances(ctx, instanceIDs, "excess_ready"); err != nil {
+			if err := m.stopInstances(ctx, poolName, instanceIDs, "excess_ready"); err != nil {
 				poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
 			} else {
 				stoppedCount += canStop
@@ -410,7 +433,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				for i := 0; i < toTerminate; i++ {
 					instanceIDs[i] = candidateInstances[i].InstanceID
 				}
-				if err := m.terminateInstances(ctx, instanceIDs, "excess_idle"); err != nil {
+				if err := m.terminateInstances(ctx, poolName, instanceIDs, "excess_idle"); err != nil {
 					poolLog.Error(ctx, "instances terminate failed", slog.String("error", err.Error()))
 				} else {
 					terminated += toTerminate
@@ -431,7 +454,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			for i := 0; i < toTerminate; i++ {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
-			if err := m.terminateInstances(ctx, instanceIDs, "over_desired_stopped"); err != nil {
+			if err := m.terminateInstances(ctx, poolName, instanceIDs, "over_desired_stopped"); err != nil {
 				poolLog.Error(ctx, "stopped instances terminate failed", slog.String("error", err.Error()))
 			} else {
 				terminated += toTerminate
@@ -456,6 +479,20 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			slog.Int("stopped_count", stoppedCount),
 			slog.Int("created", created),
 			slog.Int("terminated", terminated))
+	}
+
+	// Publish the post-reconcile pool state gauges every cycle (utilization is
+	// derivable from these states). The pool reconcile latency histogram is a
+	// follow-up.
+	// TODO(metrics): emit reconcile latency via PublishPoolReconcileSeconds(ctx,
+	// elapsed) once timing instrumentation lands.
+	if m.metrics != nil {
+		_ = m.metrics.PublishPoolInstances(ctx, poolName, "running", running)
+		_ = m.metrics.PublishPoolInstances(ctx, poolName, "stopped", stopped)
+		_ = m.metrics.PublishPoolInstances(ctx, poolName, "ready", ready)
+		_ = m.metrics.PublishPoolInstances(ctx, poolName, "busy", busy)
+		_ = m.metrics.PublishPoolDesired(ctx, poolName, "running", desiredRunning)
+		_ = m.metrics.PublishPoolDesired(ctx, poolName, "stopped", desiredStopped)
 	}
 
 	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {
@@ -694,7 +731,7 @@ func filterMatchingInstances(instances []PoolInstance, instanceIDs []string) []P
 	return matched
 }
 
-func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) error {
+func (m *Manager) startInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
 	}
@@ -706,13 +743,26 @@ func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) erro
 		return fmt.Errorf("failed to start instances: %w", err)
 	}
 
+	m.publishPoolAction(ctx, poolName, poolActionStart, reason, len(instanceIDs))
+
 	poolLog.Info(ctx, "instances started",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
 }
 
-func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string, reason string) error {
+// publishPoolAction emits one pool action metric per affected instance so the
+// pool_actions counter reflects instance-level scaling volume.
+func (m *Manager) publishPoolAction(ctx context.Context, poolName, action, reason string, count int) {
+	if m.metrics == nil {
+		return
+	}
+	for i := 0; i < count; i++ {
+		_ = m.metrics.PublishPoolAction(ctx, poolName, action, reason)
+	}
+}
+
+func (m *Manager) stopInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
 	}
@@ -731,6 +781,8 @@ func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string, reaso
 	}
 	m.idleMu.Unlock()
 
+	m.publishPoolAction(ctx, poolName, poolActionStop, reason, len(instanceIDs))
+
 	poolLog.Info(ctx, "instances stopped",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
 		slog.String("reason", reason),
@@ -738,7 +790,7 @@ func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string, reaso
 	return nil
 }
 
-func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string, reason string) error {
+func (m *Manager) terminateInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
 	}
@@ -756,6 +808,8 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string, 
 		delete(m.instanceIdle, id)
 	}
 	m.idleMu.Unlock()
+
+	m.publishPoolAction(ctx, poolName, poolActionTerminate, reason, len(instanceIDs))
 
 	poolLog.Info(ctx, "instances terminated",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
@@ -1127,6 +1181,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName, reason
 			continue
 		}
 		created++
+		m.publishPoolAction(ctx, poolName, poolActionCreate, reason, 1)
 	}
 	return created
 }

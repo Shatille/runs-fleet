@@ -70,44 +70,60 @@ func (m *MockDBAPI) GetJobByInstance(ctx context.Context, instanceID string) (*J
 
 // MockMetricsAPI implements MetricsAPI interface
 type MockMetricsAPI struct {
-	PublishSpotInterruptionFunc        func(ctx context.Context) error
-	PublishFleetSizeIncrementFunc      func(ctx context.Context) error
-	PublishFleetSizeDecrementFunc      func(ctx context.Context) error
-	PublishMessageDeletionFailureFunc  func(ctx context.Context) error
-	PublishCircuitBreakerTriggeredFunc func(ctx context.Context, instanceType string) error
+	PublishSpotInterruptionFunc       func(ctx context.Context, family string) error
+	PublishInstancesFunc              func(ctx context.Context, state, capacity, pool string, n int) error
+	PublishMessageDeletionFailureFunc func(ctx context.Context, queue string) error
+	PublishCircuitBreakerTripFunc     func(ctx context.Context, instanceType string) error
+	PublishCircuitBreakerOpenFunc     func(ctx context.Context, instanceType string, open bool) error
+	PublishJobRequeuedFunc            func(ctx context.Context, reason string) error
+	PublishQueueReceiveFunc           func(ctx context.Context, queue, result string) error
 }
 
-func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context) error {
+func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context, family string) error {
 	if m.PublishSpotInterruptionFunc != nil {
-		return m.PublishSpotInterruptionFunc(ctx)
+		return m.PublishSpotInterruptionFunc(ctx, family)
 	}
 	return nil
 }
 
-func (m *MockMetricsAPI) PublishFleetSizeIncrement(ctx context.Context) error {
-	if m.PublishFleetSizeIncrementFunc != nil {
-		return m.PublishFleetSizeIncrementFunc(ctx)
+func (m *MockMetricsAPI) PublishInstances(ctx context.Context, state, capacity, pool string, n int) error {
+	if m.PublishInstancesFunc != nil {
+		return m.PublishInstancesFunc(ctx, state, capacity, pool, n)
 	}
 	return nil
 }
 
-func (m *MockMetricsAPI) PublishFleetSizeDecrement(ctx context.Context) error {
-	if m.PublishFleetSizeDecrementFunc != nil {
-		return m.PublishFleetSizeDecrementFunc(ctx)
-	}
-	return nil
-}
-
-func (m *MockMetricsAPI) PublishMessageDeletionFailure(ctx context.Context) error {
+func (m *MockMetricsAPI) PublishMessageDeletionFailure(ctx context.Context, queue string) error {
 	if m.PublishMessageDeletionFailureFunc != nil {
-		return m.PublishMessageDeletionFailureFunc(ctx)
+		return m.PublishMessageDeletionFailureFunc(ctx, queue)
 	}
 	return nil
 }
 
-func (m *MockMetricsAPI) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error {
-	if m.PublishCircuitBreakerTriggeredFunc != nil {
-		return m.PublishCircuitBreakerTriggeredFunc(ctx, instanceType)
+func (m *MockMetricsAPI) PublishCircuitBreakerTrip(ctx context.Context, instanceType string) error {
+	if m.PublishCircuitBreakerTripFunc != nil {
+		return m.PublishCircuitBreakerTripFunc(ctx, instanceType)
+	}
+	return nil
+}
+
+func (m *MockMetricsAPI) PublishCircuitBreakerOpen(ctx context.Context, instanceType string, open bool) error {
+	if m.PublishCircuitBreakerOpenFunc != nil {
+		return m.PublishCircuitBreakerOpenFunc(ctx, instanceType, open)
+	}
+	return nil
+}
+
+func (m *MockMetricsAPI) PublishJobRequeued(ctx context.Context, reason string) error {
+	if m.PublishJobRequeuedFunc != nil {
+		return m.PublishJobRequeuedFunc(ctx, reason)
+	}
+	return nil
+}
+
+func (m *MockMetricsAPI) PublishQueueReceive(ctx context.Context, queue, result string) error {
+	if m.PublishQueueReceiveFunc != nil {
+		return m.PublishQueueReceiveFunc(ctx, queue, result)
 	}
 	return nil
 }
@@ -134,12 +150,17 @@ func (m *MockCircuitBreakerAPI) IsOpen(ctx context.Context, instanceType string)
 
 func TestProcessEvent(t *testing.T) {
 	tests := []struct {
-		name          string
-		eventBody     string
-		expectMetrics func(t *testing.T, m *MockMetricsAPI)
+		name string
+		// expectSpotInterruption is true when the event should publish the
+		// spot-interruption metric. State-change events publish no metric: the
+		// global instances gauge is deferred (see handleStateChange TODO), so
+		// these cases assert it stays unwired.
+		expectSpotInterruption bool
+		eventBody              string
 	}{
 		{
-			name: "Spot Interruption",
+			name:                   "Spot Interruption",
+			expectSpotInterruption: true,
 			eventBody: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {
@@ -147,11 +168,6 @@ func TestProcessEvent(t *testing.T) {
 					"instance-action": "terminate"
 				}
 			}`,
-			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
-				m.PublishSpotInterruptionFunc = func(_ context.Context) error {
-					return nil
-				}
-			},
 		},
 		{
 			name: "State Change - Terminated",
@@ -162,11 +178,6 @@ func TestProcessEvent(t *testing.T) {
 					"state": "terminated"
 				}
 			}`,
-			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeDecrementFunc = func(_ context.Context) error {
-					return nil
-				}
-			},
 		},
 		{
 			name: "State Change - Running",
@@ -177,11 +188,6 @@ func TestProcessEvent(t *testing.T) {
 					"state": "running"
 				}
 			}`,
-			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeIncrementFunc = func(_ context.Context) error {
-					return nil
-				}
-			},
 		},
 		{
 			name: "State Change - Stopped",
@@ -192,51 +198,22 @@ func TestProcessEvent(t *testing.T) {
 					"state": "stopped"
 				}
 			}`,
-			expectMetrics: func(_ *testing.T, m *MockMetricsAPI) {
-				m.PublishFleetSizeDecrementFunc = func(_ context.Context) error {
-					return nil
-				}
-			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockMetrics := &MockMetricsAPI{}
-			if tt.expectMetrics != nil {
-				tt.expectMetrics(t, mockMetrics)
-			}
-
-			// Ensure mocks are called
-			called := false
-			switch tt.name {
-			case "Spot Interruption":
-				originalFunc := mockMetrics.PublishSpotInterruptionFunc
-				mockMetrics.PublishSpotInterruptionFunc = func(ctx context.Context) error {
-					called = true
-					if originalFunc != nil {
-						return originalFunc(ctx)
-					}
+			spotCalled := false
+			instancesCalled := false
+			mockMetrics := &MockMetricsAPI{
+				PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
+					spotCalled = true
 					return nil
-				}
-			case "State Change - Running":
-				originalFunc := mockMetrics.PublishFleetSizeIncrementFunc
-				mockMetrics.PublishFleetSizeIncrementFunc = func(ctx context.Context) error {
-					called = true
-					if originalFunc != nil {
-						return originalFunc(ctx)
-					}
+				},
+				PublishInstancesFunc: func(_ context.Context, _, _, _ string, _ int) error {
+					instancesCalled = true
 					return nil
-				}
-			default:
-				originalFunc := mockMetrics.PublishFleetSizeDecrementFunc
-				mockMetrics.PublishFleetSizeDecrementFunc = func(ctx context.Context) error {
-					called = true
-					if originalFunc != nil {
-						return originalFunc(ctx)
-					}
-					return nil
-				}
+				},
 			}
 
 			handler := &Handler{
@@ -257,8 +234,11 @@ func TestProcessEvent(t *testing.T) {
 
 			handler.processEvent(context.Background(), msg)
 
-			if !called {
-				t.Errorf("Expected metric function was not called")
+			if spotCalled != tt.expectSpotInterruption {
+				t.Errorf("PublishSpotInterruption called = %v, want %v", spotCalled, tt.expectSpotInterruption)
+			}
+			if instancesCalled {
+				t.Errorf("PublishInstances should not be called; the global gauge is deferred")
 			}
 		})
 	}
@@ -318,13 +298,10 @@ func TestProcessEventErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			deleteCalled := false
 			mockMetrics := &MockMetricsAPI{
-				PublishSpotInterruptionFunc: func(_ context.Context) error {
+				PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 					return tt.metricsError
 				},
-				PublishFleetSizeIncrementFunc: func(_ context.Context) error {
-					return tt.metricsError
-				},
-				PublishFleetSizeDecrementFunc: func(_ context.Context) error {
+				PublishInstancesFunc: func(_ context.Context, _, _, _ string, _ int) error {
 					return tt.metricsError
 				},
 			}
@@ -358,10 +335,10 @@ func TestProcessEventErrors(t *testing.T) {
 func TestDeleteMessageFailureMetric(t *testing.T) {
 	metricCalled := false
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			return nil
 		},
-		PublishMessageDeletionFailureFunc: func(_ context.Context) error {
+		PublishMessageDeletionFailureFunc: func(_ context.Context, _ string) error {
 			metricCalled = true
 			return nil
 		},
@@ -543,7 +520,7 @@ func TestConcurrentEventProcessing(t *testing.T) {
 	}
 
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			// Signal that this goroutine has started
 			atomic.AddInt32(&startedCount, 1)
 			startedChan <- struct{}{}
@@ -635,7 +612,7 @@ func TestBoundedConcurrency(t *testing.T) {
 	}
 
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			active := atomic.AddInt32(&activeTasks, 1)
 
 			mu.Lock()
@@ -717,7 +694,7 @@ func TestMetricsCallsHaveTimeout(t *testing.T) {
 	var mu sync.Mutex
 	metricsCalled := make(chan struct{}, 1)
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(ctx context.Context) error {
+		PublishSpotInterruptionFunc: func(ctx context.Context, _ string) error {
 			mu.Lock()
 			capturedCtx = ctx
 			mu.Unlock()
@@ -806,7 +783,7 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 	secondStarted := make(chan struct{}, 1)
 
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			currentCount := atomic.AddInt32(&callCount, 1)
 
 			if currentCount == 1 {
@@ -882,9 +859,10 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 }
 
 func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
-	// Exercises retryWithBackoff via the state-change path (PublishFleetSizeIncrement),
-	// which still retries metric publishes. The spot-interruption path intentionally
-	// no longer retries its metric (it is best-effort; see
+	// Exercises retryWithBackoff directly. The operation publishes a metric the
+	// events handler still emits (PublishQueueReceive) and fails the configured
+	// number of times to verify the retry count. The spot-interruption path
+	// intentionally does not retry its metric (it is best-effort; see
 	// TestSpotInterruptionMetricFailureDoesNotBlockRequeue).
 	// Note: In tests, retryBackoffs is set to 1ms in init() for fast execution.
 	// We just verify retry count behavior, not timing.
@@ -892,6 +870,7 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 		name          string
 		failCount     int
 		expectedCalls int
+		expectErr     bool
 	}{
 		{
 			name:          "Success on first try",
@@ -912,31 +891,18 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			name:          "Fail all retries",
 			failCount:     3,
 			expectedCalls: 3,
+			expectErr:     true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			callCount := 0
-			var mu sync.Mutex
-			messageReturned := false
-			expectedCallsReached := make(chan struct{}, 1)
 
 			mockMetrics := &MockMetricsAPI{
-				PublishFleetSizeIncrementFunc: func(_ context.Context) error {
-					mu.Lock()
+				PublishQueueReceiveFunc: func(_ context.Context, _, _ string) error {
 					callCount++
-					currentCall := callCount
-					// Signal when we've reached the expected number of calls
-					if currentCall >= tt.expectedCalls {
-						select {
-						case expectedCallsReached <- struct{}{}:
-						default:
-						}
-					}
-					mu.Unlock()
-
-					if currentCall <= tt.failCount {
+					if callCount <= tt.failCount {
 						return fmt.Errorf("cloudwatch throttled")
 					}
 					return nil
@@ -944,55 +910,25 @@ func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
 			}
 
 			handler := &Handler{
-				queueClient: &MockQueueAPI{
-					ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-						mu.Lock()
-						defer mu.Unlock()
-						if messageReturned {
-							return nil, nil
-						}
-						messageReturned = true
-						return []queue.Message{{
-							Body: `{
-								"detail-type": "EC2 Instance State-change Notification",
-								"detail": {"instance-id": "i-test", "state": "running"}
-							}`,
-							Handle: "receipt-test",
-						}}, nil
-					},
-					DeleteMessageFunc: func(_ context.Context, _ string) error {
-						return nil
-					},
-				},
-				dbClient: &MockDBAPI{},
-				metrics:  mockMetrics,
-				config:   &config.Config{},
+				queueClient: &MockQueueAPI{},
+				dbClient:    &MockDBAPI{},
+				metrics:     mockMetrics,
+				config:      &config.Config{},
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			err := handler.retryWithBackoff(context.Background(), func(c context.Context) error {
+				return handler.metrics.PublishQueueReceive(c, "events", "messages")
+			})
 
-			done := make(chan struct{})
-			go func() {
-				handler.Run(ctx)
-				close(done)
-			}()
-
-			// Wait for expected number of calls to be reached
-			select {
-			case <-expectedCallsReached:
-			case <-time.After(5 * time.Second):
-				t.Fatal("Timeout waiting for expected calls to be reached")
+			if tt.expectErr && err == nil {
+				t.Errorf("Expected error after exhausting retries, got nil")
 			}
-			cancel()
-			<-done
+			if !tt.expectErr && err != nil {
+				t.Errorf("Expected success, got error: %v", err)
+			}
 
-			mu.Lock()
-			actualCallCount := callCount
-			mu.Unlock()
-
-			if actualCallCount != tt.expectedCalls {
-				t.Errorf("Expected %d calls, got %d", tt.expectedCalls, actualCallCount)
+			if callCount != tt.expectedCalls {
+				t.Errorf("Expected %d calls, got %d", tt.expectedCalls, callCount)
 			}
 		})
 	}
@@ -1023,7 +959,7 @@ func TestPanicRecovery(t *testing.T) {
 	}
 
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			mu.Lock()
 			processCount++
 			currentCount := processCount
@@ -1243,7 +1179,7 @@ func TestSpotInterruptionHandling(t *testing.T) {
 			}
 
 			mockMetrics := &MockMetricsAPI{
-				PublishSpotInterruptionFunc: func(_ context.Context) error {
+				PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 					return nil
 				},
 			}
@@ -1314,7 +1250,7 @@ func TestSpotInterruptionJobRequeueContent(t *testing.T) {
 	}
 
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			return nil
 		},
 	}
@@ -1381,7 +1317,7 @@ func TestSpotInterruptionMetricFailureDoesNotBlockRequeue(t *testing.T) {
 		DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
 	}
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error {
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 			return errors.New("cloudwatch throttled")
 		},
 	}
@@ -1428,7 +1364,7 @@ func TestSpotInterruptionRequeuesToJobQueueNotEvents(t *testing.T) {
 		},
 	}
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error { return nil },
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error { return nil },
 	}
 
 	handler := NewHandler(eventsQueue, mockDB, mockMetrics, &config.Config{})
@@ -1632,10 +1568,10 @@ func TestSpotInterruptionPublishesCircuitBreakerMetric(t *testing.T) {
 			var metricInstanceType atomic.Value
 
 			mockMetrics := &MockMetricsAPI{
-				PublishSpotInterruptionFunc: func(_ context.Context) error {
+				PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
 					return nil
 				},
-				PublishCircuitBreakerTriggeredFunc: func(_ context.Context, instanceType string) error {
+				PublishCircuitBreakerTripFunc: func(_ context.Context, instanceType string) error {
 					metricCalled.Store(true)
 					metricInstanceType.Store(instanceType)
 					return nil
@@ -1698,11 +1634,11 @@ func TestSpotInterruptionPublishesCircuitBreakerMetric(t *testing.T) {
 			handler.processEvent(context.Background(), msg)
 
 			if metricCalled.Load() != tt.expectMetricCalled {
-				t.Errorf("PublishCircuitBreakerTriggered called = %v, want %v", metricCalled.Load(), tt.expectMetricCalled)
+				t.Errorf("PublishCircuitBreakerTrip called = %v, want %v", metricCalled.Load(), tt.expectMetricCalled)
 			}
 			if tt.expectMetricCalled {
 				if v, ok := metricInstanceType.Load().(string); !ok || v != "t4g.medium" {
-					t.Errorf("PublishCircuitBreakerTriggered instanceType = %v, want t4g.medium", metricInstanceType.Load())
+					t.Errorf("PublishCircuitBreakerTrip instanceType = %v, want t4g.medium", metricInstanceType.Load())
 				}
 			}
 		})

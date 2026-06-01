@@ -38,11 +38,25 @@ type DBAPI interface {
 	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 }
 
-// MetricsAPI provides CloudWatch metrics publishing for job completion.
+// MetricsAPI provides metrics publishing for job completion.
 type MetricsAPI interface {
-	PublishJobDuration(ctx context.Context, duration int) error
-	PublishJobSuccess(ctx context.Context) error
-	PublishJobFailure(ctx context.Context) error
+	PublishJobCompleted(ctx context.Context, pool, result, repo string) error
+	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
+}
+
+// jobResult maps an agent termination status to the small job-result enum used
+// by the metrics taxonomy (success, failure, error, timeout).
+func jobResult(status string) string {
+	switch status {
+	case string(db.JobStatusSuccess):
+		return "success"
+	case "timeout":
+		return "timeout"
+	case "interrupted":
+		return "error"
+	default:
+		return "failure"
+	}
 }
 
 // Message represents a termination notification from an agent.
@@ -238,22 +252,20 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		}
 	}
 
-	// Publish CloudWatch metrics
-	if msg.DurationSeconds > 0 {
-		if err := h.metrics.PublishJobDuration(ctx, msg.DurationSeconds); err != nil {
-			termLog.Warn(ctx, "job duration metric publish failed", slog.String("error", err.Error()))
+	// Publish job completion metrics. The job record (from MarkJobComplete above)
+	// supplies pool and repo so the completion counter carries those labels.
+	var pool, repo string
+	if rec != nil {
+		pool, repo = rec.Pool, rec.Repo
+	}
+	result := jobResult(msg.Status)
+	if h.metrics != nil {
+		if err := h.metrics.PublishJobCompleted(ctx, pool, result, repo); err != nil {
+			termLog.Warn(ctx, "job completed metric publish failed", slog.String("error", err.Error()))
 		}
 	}
-
-	if msg.Status == string(db.JobStatusSuccess) {
-		if err := h.metrics.PublishJobSuccess(ctx); err != nil {
-			termLog.Warn(ctx, "job success metric publish failed", slog.String("error", err.Error()))
-		}
-	} else {
-		if err := h.metrics.PublishJobFailure(ctx); err != nil {
-			termLog.Warn(ctx, "job failure metric publish failed", slog.String("error", err.Error()))
-		}
-	}
+	// TODO(metrics): emit job execution latency via PublishJobExecutionSeconds(ctx,
+	// pool, result, msg.DurationSeconds) once timing instrumentation lands.
 
 	// Clean up runner config from secrets store
 	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {

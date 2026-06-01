@@ -116,7 +116,9 @@ func main() {
 
 	eventsQueueClient := queue.NewClient(sqsCfg, cfg.EventsQueueURL)
 	fleetManager := fleet.NewManager(awsCfg, cfg)
+	fleetManager.SetMetrics(metricsPublisher)
 	poolManager := pools.NewManager(dbClient, fleetManager, cfg)
+	poolManager.SetMetrics(metricsPublisher)
 	eventHandler := events.NewHandler(eventsQueueClient, dbClient, metricsPublisher, cfg)
 	eventHandler.SetJobQueue(jobQueue)
 
@@ -338,8 +340,7 @@ func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStor
 		costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
 	}
 
-	housekeepingMetrics := &housekeepingMetricsAdapter{publisher: metricsPublisher}
-	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, housekeepingMetrics, costReporter)
+	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, metricsPublisher, costReporter)
 
 	if dbClient != nil {
 		tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
@@ -587,7 +588,7 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 			return false, "", nil
 		}
 		postAck := func(bgCtx context.Context) {
-			handler.PublishJobQueuedMetrics(bgCtx, ws.metricsPublisher)
+			handler.PublishJobQueuedMetrics(bgCtx, ws.metricsPublisher, jobMsg)
 			if jobMsg.Pool != "" && len(jobMsg.Pool) <= 63 && validPoolName.MatchString(jobMsg.Pool) && ws.poolNotifier != nil {
 				ws.poolNotifier.NotifyPoolDemand(jobMsg.Pool)
 			}
@@ -607,40 +608,16 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		}
 		if requeued {
 			return true, "Job requeued", func(bgCtx context.Context) {
-				handler.PublishJobQueuedMetrics(bgCtx, ws.metricsPublisher)
+				if err := ws.metricsPublisher.PublishJobRequeued(bgCtx, "job_failure"); err != nil {
+					webhookLog.Error(bgCtx, "job requeued metric failed", slog.String("error", err.Error()))
+				}
+				if err := ws.metricsPublisher.PublishQueueDepth(bgCtx, "main", 1); err != nil {
+					webhookLog.Error(bgCtx, "queue depth metric failed", slog.String("error", err.Error()))
+				}
 			}
 		}
 	}
 	return false, "", nil
-}
-
-// housekeepingMetricsAdapter adapts metrics.Publisher to housekeeping.MetricsAPI.
-type housekeepingMetricsAdapter struct {
-	publisher metrics.Publisher
-}
-
-func (h *housekeepingMetricsAdapter) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error {
-	return h.publisher.PublishOrphanedInstancesTerminated(ctx, count)
-}
-
-func (h *housekeepingMetricsAdapter) PublishSSMParametersDeleted(ctx context.Context, count int) error {
-	return h.publisher.PublishSSMParametersDeleted(ctx, count)
-}
-
-func (h *housekeepingMetricsAdapter) PublishJobRecordsArchived(ctx context.Context, count int) error {
-	return h.publisher.PublishJobRecordsArchived(ctx, count)
-}
-
-func (h *housekeepingMetricsAdapter) PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error {
-	return h.publisher.PublishOrphanedJobsCleanedUp(ctx, count)
-}
-
-func (h *housekeepingMetricsAdapter) PublishStaleJobsReconciled(ctx context.Context, count int) error {
-	return h.publisher.PublishStaleJobsReconciled(ctx, count)
-}
-
-func (h *housekeepingMetricsAdapter) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error {
-	return h.publisher.PublishPoolUtilization(ctx, poolName, utilization)
 }
 
 // poolDBAdapter adapts db.Client to housekeeping.PoolDBAPI.

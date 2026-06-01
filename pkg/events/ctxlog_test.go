@@ -57,7 +57,7 @@ func TestSpotInterruptionLogsCarryStashedIdentity(t *testing.T) {
 		DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
 	}
 	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context) error { return nil },
+		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error { return nil },
 	}
 
 	handler := &Handler{
