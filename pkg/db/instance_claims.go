@@ -110,9 +110,8 @@ func (c *Client) ReleaseInstanceClaim(ctx context.Context, instanceID string, jo
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			dbLog.Debug("instance claim not held",
-				slog.String(logging.KeyInstanceID, instanceID),
-				slog.Int64(logging.KeyJobID, jobID))
+			dbLog.DebugContext(ctx, "instance claim not held",
+				slog.String(logging.KeyInstanceID, instanceID))
 			return nil
 		}
 		return fmt.Errorf("failed to release instance claim: %w", err)

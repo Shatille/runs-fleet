@@ -145,6 +145,9 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	if tp := job.Traceparent; tp != "" {
 		ctx = tracing.ExtractTraceContext(tp)
 	}
+	// Stash task identity so all downstream logs (including deep AWS calls)
+	// carry job_id/run_id/repo without restating them at each site.
+	ctx = logging.ContextWithJob(ctx, job.JobID, job.RunID, job.Repo)
 	ctx, span := tracing.Tracer().Start(ctx, "worker.process_job",
 		trace.WithAttributes(
 			attribute.Int64("job.id", job.JobID),
@@ -180,8 +183,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, &job)
 		if err != nil {
-			ec2Log.Error("warm pool assignment failed",
-				slog.Int64(logging.KeyJobID, job.JobID),
+			ec2Log.ErrorContext(ctx, "warm pool assignment failed",
 				slog.String(logging.KeyPoolName, job.Pool),
 				slog.String("error", err.Error()))
 			// Fall through to cold start
@@ -190,15 +192,14 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			if deps.Metrics != nil {
 				_ = deps.Metrics.PublishWarmPoolHit(ctx)
 			}
-			ec2Log.Info("job assigned to warm pool",
-				slog.Int64(logging.KeyJobID, job.JobID),
+			ec2Log.InfoContext(ctx, "job assigned to warm pool",
 				slog.String(logging.KeyInstanceID, result.InstanceID))
 			return
 		}
 	}
 
 	if deps.Fleet == nil {
-		ec2Log.Error("fleet manager nil", slog.Int64(logging.KeyJobID, job.JobID))
+		ec2Log.ErrorContext(ctx, "fleet manager nil")
 		return
 	}
 
@@ -221,17 +222,16 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		ec2Log.Error("fleet creation failed",
-			slog.Int64(logging.KeyRunID, job.RunID),
+		ec2Log.ErrorContext(ctx, "fleet creation failed",
 			slog.String("error", err.Error()))
 		if deps.DB != nil && deps.DB.HasJobsTable() {
 			// Release the claim on a fresh context; the job ctx may already be
 			// expired on a wedged connection, and a leaked claim would block the
 			// on-demand fallback requeue below from re-claiming the job.
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
 			if err := deps.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
-				ec2Log.Error("job claim delete failed",
-					slog.Int64(logging.KeyJobID, job.JobID),
+				ec2Log.ErrorContext(cleanupCtx, "job claim delete failed",
 					slog.String("error", err.Error()))
 			}
 			cancel()
@@ -255,8 +255,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 	}
 
-	ec2Log.Info("instances launched",
-		slog.Int64(logging.KeyRunID, job.RunID),
+	ec2Log.InfoContext(ctx, "instances launched",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
 }
 
@@ -315,7 +314,7 @@ func SaveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 			}
 		}
 		if saveErr != nil {
-			ec2Log.Error("job record save failed",
+			ec2Log.ErrorContext(ctx, "job record save failed",
 				slog.String(logging.KeyInstanceID, instanceID),
 				slog.String("error", saveErr.Error()))
 		}
@@ -339,7 +338,7 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 			Conditions: BuildRunnerConditions(job),
 		}
 		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
-			ec2Log.Error("runner config preparation failed",
+			ec2Log.ErrorContext(ctx, "runner config preparation failed",
 				slog.String(logging.KeyInstanceID, instanceID),
 				slog.String("error", err.Error()))
 		}
@@ -349,6 +348,7 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 	defer cleanupCancel()
+	cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
 
 	fallbackJob := &queue.JobMessage{
 		JobID:         job.JobID,
@@ -367,26 +367,23 @@ func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.Jo
 
 	// Send before delete so a failed requeue leaves the original for redelivery.
 	if sendErr := sendMessageWithRetry(cleanupCtx, deps.Queue, fallbackJob); sendErr != nil {
-		ec2Log.Error("on-demand fallback requeue failed, leaving original message for redelivery",
-			slog.Int64(logging.KeyJobID, job.JobID),
+		ec2Log.ErrorContext(cleanupCtx, "on-demand fallback requeue failed, leaving original message for redelivery",
 			slog.String("error", sendErr.Error()))
 		return
 	}
 
-	ec2Log.Info("job requeued with on-demand fallback",
-		slog.Int64(logging.KeyJobID, job.JobID),
+	ec2Log.InfoContext(cleanupCtx, "job requeued with on-demand fallback",
 		slog.Int("retry_count", fallbackJob.RetryCount))
 	if deps.Metrics != nil {
 		if err := deps.Metrics.PublishJobQueued(cleanupCtx); err != nil {
-			ec2Log.Error("job queued metric failed", slog.String("error", err.Error()))
+			ec2Log.ErrorContext(cleanupCtx, "job queued metric failed", slog.String("error", err.Error()))
 		}
 	}
 
 	// Delete only after a successful send. A failed delete is non-fatal: any
 	// redelivered duplicate is deduped by ClaimJob's job-id claim.
 	if delErr := deleteMessageWithRetry(cleanupCtx, deps.Queue, msgHandle); delErr != nil {
-		ec2Log.Error("original message delete failed after fallback requeue (duplicate possible, deduped by claim)",
-			slog.Int64(logging.KeyJobID, job.JobID),
+		ec2Log.ErrorContext(cleanupCtx, "original message delete failed after fallback requeue (duplicate possible, deduped by claim)",
 			slog.String("error", delErr.Error()))
 	}
 }
