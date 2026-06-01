@@ -80,6 +80,7 @@ func main() {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.AWSRegion),
 		awsconfig.WithHTTPClient(newAWSHTTPClient(config.AWSResponseHeaderTimeout)),
+		awsconfig.WithRetryer(awsRetryer),
 		// Observability is registered first so it stays the outermost Initialize
 		// middleware and records the full operation duration, including a
 		// per-operation-timeout abort; the timeout middleware inserts itself just

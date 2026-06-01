@@ -41,5 +41,7 @@ func newAWSHTTPClient(responseHeaderTimeout time.Duration) *awshttp.BuildableCli
 		}).
 		WithTransportOptions(func(tr *http.Transport) {
 			tr.ResponseHeaderTimeout = responseHeaderTimeout
+			tr.MaxIdleConns = awsMaxIdleConns
+			tr.MaxIdleConnsPerHost = awsMaxIdleConnsPerHost
 		})
 }
