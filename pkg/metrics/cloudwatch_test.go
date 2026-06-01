@@ -456,6 +456,74 @@ func TestPublishCircuitBreakerTriggered(t *testing.T) {
 	}
 }
 
+func TestPublishAWSCallDuration(t *testing.T) {
+	t.Parallel()
+
+	const namespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
+	// Duration is high-frequency; the CloudWatch backend deliberately drops it to
+	// avoid a synchronous PutMetricData per AWS call. Prometheus and Datadog carry
+	// the latency histogram. Assert no PutMetricData is issued.
+	mockClient := &MockCloudWatchAPI{
+		PutMetricDataFunc: func(_ context.Context, _ *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+			t.Error("PublishAWSCallDuration must not call PutMetricData on the CloudWatch backend")
+			return &cloudwatch.PutMetricDataOutput{}, nil
+		},
+	}
+	publisher := &CloudWatchPublisher{client: mockClient, namespace: namespace}
+
+	if err := publisher.PublishAWSCallDuration(context.Background(), "SQS", "ReceiveMessage", 1.5); err != nil {
+		t.Errorf("PublishAWSCallDuration() error = %v", err)
+	}
+}
+
+func TestPublishAWSCallFailure(t *testing.T) {
+	t.Parallel()
+
+	const namespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
+	mockClient := &MockCloudWatchAPI{
+		PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+			datum := params.MetricData[0]
+			if *datum.MetricName != "AWSCallFailures" {
+				t.Errorf("MetricName = %s, want AWSCallFailures", *datum.MetricName)
+			}
+			if datum.Unit != types.StandardUnitCount {
+				t.Errorf("Unit = %v, want Count", datum.Unit)
+			}
+			if *datum.Value != 1 {
+				t.Errorf("Value = %f, want 1", *datum.Value)
+			}
+			assertDimensions(t, datum.Dimensions, map[string]string{
+				"Service": "DynamoDB", "Operation": "GetItem", "Result": "timeout",
+			})
+			return &cloudwatch.PutMetricDataOutput{}, nil
+		},
+	}
+	publisher := &CloudWatchPublisher{client: mockClient, namespace: namespace}
+
+	if err := publisher.PublishAWSCallFailure(context.Background(), "DynamoDB", "GetItem", "timeout"); err != nil {
+		t.Errorf("PublishAWSCallFailure() error = %v", err)
+	}
+}
+
+// assertDimensions checks the datum carries exactly the wanted dimension
+// name/value pairs.
+func assertDimensions(t *testing.T, dims []types.Dimension, want map[string]string) {
+	t.Helper()
+	if len(dims) != len(want) {
+		t.Fatalf("Dimensions length = %d, want %d: %v", len(dims), len(want), dims)
+	}
+	for _, d := range dims {
+		v, ok := want[*d.Name]
+		if !ok {
+			t.Errorf("unexpected dimension %s", *d.Name)
+			continue
+		}
+		if *d.Value != v {
+			t.Errorf("dimension %s = %s, want %s", *d.Name, *d.Value, v)
+		}
+	}
+}
+
 func TestPublishMetricsError(t *testing.T) {
 	t.Parallel()
 

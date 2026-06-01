@@ -71,12 +71,15 @@ func main() {
 	}
 	otel.SetTracerProvider(tp)
 
-	awsObsLog := logging.WithComponent(logging.LogTypeAWS, "observability")
 	// SQS ReceiveMessage long-polls with WaitTimeSeconds=20, which exceeds
 	// AWSPerOpTimeout (15s); bounding it would abort every empty poll, so it is
 	// exempt from the per-operation timeout. Other SQS ops (SendMessage,
 	// DeleteMessage) are fast and stay bounded.
 	perOpTimeout := awsobs.PerOperationTimeout(config.AWSPerOpTimeout, map[string]bool{"ReceiveMessage": true})
+	// The observability middleware emits AWS-call latency and failure metrics; its
+	// publisher is installed after initMetrics builds it (the CloudWatch backend
+	// depends on awsCfg, which carries this middleware).
+	awsObsMiddlewares, awsObsRecorder := awsobs.Middlewares()
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.AWSRegion),
 		awsconfig.WithHTTPClient(newAWSHTTPClient(config.AWSResponseHeaderTimeout)),
@@ -85,7 +88,7 @@ func main() {
 		// middleware and records the full operation duration, including a
 		// per-operation-timeout abort; the timeout middleware inserts itself just
 		// inside it.
-		awsconfig.WithAPIOptions(append(awsobs.Middlewares(awsObsLog), perOpTimeout)),
+		awsconfig.WithAPIOptions(append(awsObsMiddlewares, perOpTimeout)),
 	)
 	if err != nil {
 		log.Error(ctx, "aws config load failed", slog.String("error", err.Error()))
@@ -109,6 +112,7 @@ func main() {
 	}
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
+	awsObsRecorder.SetPublisher(metricsPublisher)
 
 	eventsQueueClient := queue.NewClient(sqsCfg, cfg.EventsQueueURL)
 	fleetManager := fleet.NewManager(awsCfg, cfg)

@@ -156,6 +156,8 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 		{"PublishPoolRunningJobs", func() error { return multi.PublishPoolRunningJobs(ctx, "default", 5) }},
 		{"PublishSchedulingFailure", func() error { return multi.PublishSchedulingFailure(ctx, "runner-provision") }},
 		{"PublishCircuitBreakerTriggered", func() error { return multi.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
+		{"PublishAWSCallDuration", func() error { return multi.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5) }},
+		{"PublishAWSCallFailure", func() error { return multi.PublishAWSCallFailure(ctx, "SQS", "ReceiveMessage", "timeout") }},
 	}
 
 	for _, tt := range tests {

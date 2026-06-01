@@ -38,6 +38,8 @@ type PrometheusPublisher struct {
 	jobClaimFailures            prometheus.Counter
 	warmPoolHits                prometheus.Counter
 	fleetSize                   prometheus.Gauge
+	awsCallDuration             *prometheus.HistogramVec
+	awsCallFailures             *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -175,6 +177,17 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 			Name:      "fleet_size",
 			Help:      "Current absolute fleet size",
 		}),
+		awsCallDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: cfg.Namespace,
+			Name:      "aws_call_duration_seconds",
+			Help:      "Latency of AWS SDK calls in seconds, by service and operation",
+			Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30},
+		}, []string{"service", "operation"}),
+		awsCallFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: cfg.Namespace,
+			Name:      "aws_call_failures_total",
+			Help:      "Total number of failed AWS SDK calls, by service, operation, and result",
+		}, []string{"service", "operation", "result"}),
 	}
 
 	registry.MustRegister(
@@ -201,6 +214,8 @@ func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
 		p.jobClaimFailures,
 		p.warmPoolHits,
 		p.fleetSize,
+		p.awsCallDuration,
+		p.awsCallFailures,
 	)
 
 	return p
@@ -346,5 +361,15 @@ func (p *PrometheusPublisher) PublishServiceCheck(_ context.Context, _ string, _
 
 // PublishEvent is a no-op for Prometheus (Datadog-specific feature).
 func (p *PrometheusPublisher) PublishEvent(_ context.Context, _, _, _ string, _ []string) error { //nolint:revive
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishAWSCallDuration(_ context.Context, service, operation string, durationSeconds float64) error { //nolint:revive
+	p.awsCallDuration.WithLabelValues(service, operation).Observe(durationSeconds)
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishAWSCallFailure(_ context.Context, service, operation, result string) error { //nolint:revive
+	p.awsCallFailures.WithLabelValues(service, operation, result).Inc()
 	return nil
 }

@@ -1,18 +1,15 @@
 package awsobs
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -38,19 +35,20 @@ func (b *blockingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 // realStackConfig builds an aws.Config wired exactly as cmd/server/main.go wires
-// it: the observability middleware (at the given threshold) followed by the
-// per-operation timeout middleware (with the given exemptions). It uses the
-// supplied HTTP client so no network is involved, disables retries so a bounded
-// operation surfaces its deadline error directly, and captures observability log
-// records via the returned buffer.
+// it: the observability middleware followed by the per-operation timeout
+// middleware (with the given exemptions). It uses the supplied HTTP client so no
+// network is involved, disables retries so a bounded operation surfaces its
+// deadline error directly, and captures emitted AWS-call metrics via the
+// returned fakePublisher.
 func realStackConfig(
-	httpClient aws.HTTPClient, threshold, perOp time.Duration, exempt map[string]bool,
-) (aws.Config, *bytes.Buffer) {
-	var buf bytes.Buffer
-	log := logging.NewWithHandler(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	httpClient aws.HTTPClient, perOp time.Duration, exempt map[string]bool,
+) (aws.Config, *fakePublisher) {
+	fake := &fakePublisher{}
+	rec := NewRecorder()
+	rec.SetPublisher(fake)
 
 	apiOptions := append(
-		[]func(*middleware.Stack) error{register(log, threshold)},
+		[]func(*middleware.Stack) error{register(rec)},
 		PerOperationTimeout(perOp, exempt),
 	)
 
@@ -61,12 +59,13 @@ func realStackConfig(
 		APIOptions:       apiOptions,
 		RetryMaxAttempts: 1,
 	}
-	return cfg, &buf
+	return cfg, fake
 }
 
 // delayHTTPClient is an aws.HTTPClient that sleeps for delay before returning a
-// canned awsjson1.0 response, so the observability middleware records a slow
-// call. "{}" deserializes to an empty result for both GetItem and ReceiveMessage.
+// canned awsjson1.0 response, so the call completes successfully through the
+// real stack. "{}" deserializes to an empty result for both GetItem and
+// ReceiveMessage.
 type delayHTTPClient struct {
 	delay time.Duration
 }
@@ -86,11 +85,11 @@ func (d *delayHTTPClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 // TestRealStack_ObservabilityCapturesServiceAndOperation builds real DynamoDB and
-// SQS clients through the actual SDK middleware stack and asserts that a slow
-// call's observability record carries a non-empty service and operation. It
-// fails against a head-of-Initialize registration (where RegisterServiceMetadata
-// has not yet populated the context) and passes once the middleware anchors
-// after RegisterServiceMetadata.
+// SQS clients through the actual SDK middleware stack and asserts that the
+// emitted duration metric carries a non-empty service and operation. It fails
+// against a head-of-Initialize registration (where RegisterServiceMetadata has
+// not yet populated the context) and passes once the middleware anchors after
+// RegisterServiceMetadata.
 func TestRealStack_ObservabilityCapturesServiceAndOperation(t *testing.T) {
 	t.Parallel()
 
@@ -129,24 +128,24 @@ func TestRealStack_ObservabilityCapturesServiceAndOperation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// A response delayed past the slow threshold forces an observability
-			// record without depending on the error path.
-			cfg, buf := realStackConfig(&delayHTTPClient{delay: 20 * time.Millisecond}, 5*time.Millisecond, 0, nil)
+			// A successful call must still emit one duration metric carrying the
+			// service and operation; no per-op timeout is applied here.
+			cfg, fake := realStackConfig(&delayHTTPClient{delay: time.Millisecond}, 0, nil)
 
 			if err := tt.invoke(context.Background(), cfg); err != nil {
 				t.Fatalf("invoke %s: %v", tt.name, err)
 			}
 
-			records := decodeRecords(t, buf.Bytes())
-			if len(records) != 1 {
-				t.Fatalf("expected exactly one observability record, got %d: %v", len(records), records)
+			durations := fake.snapshotDurations()
+			if len(durations) != 1 {
+				t.Fatalf("expected exactly one duration metric, got %d: %v", len(durations), durations)
 			}
-			rec := records[0]
-			if got := rec["service"]; got != tt.wantService {
-				t.Errorf("service = %q, want %q (empty means the middleware ran before RegisterServiceMetadata)", got, tt.wantService)
+			d := durations[0]
+			if d.service != tt.wantService {
+				t.Errorf("service = %q, want %q (empty means the middleware ran before RegisterServiceMetadata)", d.service, tt.wantService)
 			}
-			if got := rec["operation"]; got != tt.wantOperation {
-				t.Errorf("operation = %q, want %q (empty means the middleware ran before RegisterServiceMetadata)", got, tt.wantOperation)
+			if d.operation != tt.wantOperation {
+				t.Errorf("operation = %q, want %q (empty means the middleware ran before RegisterServiceMetadata)", d.operation, tt.wantOperation)
 			}
 		})
 	}
@@ -170,7 +169,7 @@ func TestRealStack_ReceiveMessageExemptFromPerOpTimeout(t *testing.T) {
 		t.Parallel()
 
 		httpClient := &blockingHTTPClient{}
-		cfg, _ := realStackConfig(httpClient, time.Hour, perOp, exempt)
+		cfg, _ := realStackConfig(httpClient, perOp, exempt)
 
 		// No outer deadline: the only deadline that could reach the stub is the
 		// per-op timeout. The exemption must keep it off, so the call blocks until
@@ -203,7 +202,7 @@ func TestRealStack_ReceiveMessageExemptFromPerOpTimeout(t *testing.T) {
 		t.Parallel()
 
 		httpClient := &blockingHTTPClient{}
-		cfg, _ := realStackConfig(httpClient, time.Hour, perOp, exempt)
+		cfg, _ := realStackConfig(httpClient, perOp, exempt)
 
 		// No outer deadline: the only thing that can cut the call is the per-op
 		// timeout.

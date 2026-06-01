@@ -38,6 +38,8 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 		{"PublishPoolRunningJobs", func() error { return pub.PublishPoolRunningJobs(ctx, "default", 5) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "runner-provision") }},
 		{"PublishCircuitBreakerTriggered", func() error { return pub.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
+		{"PublishAWSCallDuration", func() error { return pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5) }},
+		{"PublishAWSCallFailure", func() error { return pub.PublishAWSCallFailure(ctx, "SQS", "ReceiveMessage", "timeout") }},
 	}
 
 	for _, tt := range tests {

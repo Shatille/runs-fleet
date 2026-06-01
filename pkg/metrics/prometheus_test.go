@@ -116,6 +116,8 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishPoolRunningJobs", func() error { return pub.PublishPoolRunningJobs(ctx, "default", 5) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "runner-provision") }},
 		{"PublishCircuitBreakerTriggered", func() error { return pub.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
+		{"PublishAWSCallDuration", func() error { return pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5) }},
+		{"PublishAWSCallFailure", func() error { return pub.PublishAWSCallFailure(ctx, "SQS", "ReceiveMessage", "timeout") }},
 	}
 
 	for _, tt := range tests {
@@ -140,6 +142,8 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	_ = pub.PublishQueueDepth(ctx, 5.0)
 	_ = pub.PublishJobSuccess(ctx)
 	_ = pub.PublishPoolUtilization(ctx, "mypool", 80.0)
+	_ = pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5)
+	_ = pub.PublishAWSCallFailure(ctx, "DynamoDB", "GetItem", "timeout")
 
 	// Check that metrics are exposed via handler
 	req := httptest.NewRequest("GET", "/metrics", nil)
@@ -152,6 +156,8 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 		"test_queue_depth 5",
 		"test_job_success_total 1",
 		"test_pool_utilization_percent{pool_name=\"mypool\"} 80",
+		"test_aws_call_duration_seconds_count{operation=\"ReceiveMessage\",service=\"SQS\"} 1",
+		"test_aws_call_failures_total{operation=\"GetItem\",result=\"timeout\",service=\"DynamoDB\"} 1",
 	}
 
 	for _, metric := range expectedMetrics {

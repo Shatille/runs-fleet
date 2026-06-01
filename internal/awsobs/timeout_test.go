@@ -118,7 +118,8 @@ func TestPerOperationTimeout_ObservabilityStaysOutermost(t *testing.T) {
 	t.Parallel()
 
 	stack := middleware.NewStack("test", smithyRequestNew)
-	for _, apply := range Middlewares(nil) {
+	apps, _ := Middlewares()
+	for _, apply := range apps {
 		if err := apply(stack); err != nil {
 			t.Fatalf("apply observability middleware: %v", err)
 		}

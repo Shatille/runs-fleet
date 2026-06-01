@@ -87,6 +87,17 @@ type Publisher interface {
 	// PublishEvent publishes a notable event (e.g., spot interruption, circuit breaker triggered).
 	// alertType: "info", "warning", "error", "success"
 	PublishEvent(ctx context.Context, title, text, alertType string, tags []string) error
+
+	// PublishAWSCallDuration publishes the latency of a single AWS SDK call,
+	// dimensioned by service and operation. Emitted on every call so latency
+	// distributions and percentiles are observable. service and operation form a
+	// small fixed set; callers must not pass unbounded values.
+	PublishAWSCallDuration(ctx context.Context, service, operation string, durationSeconds float64) error
+
+	// PublishAWSCallFailure increments a counter for a failed AWS SDK call,
+	// dimensioned by service, operation, and a low-cardinality result
+	// ("timeout" or "error").
+	PublishAWSCallFailure(ctx context.Context, service, operation, result string) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -170,6 +181,16 @@ func (NoopPublisher) PublishServiceCheck(context.Context, string, int, string) e
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishEvent(context.Context, string, string, string, []string) error {
+	return nil
+}
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishAWSCallDuration(context.Context, string, string, float64) error {
+	return nil
+}
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishAWSCallFailure(context.Context, string, string, string) error {
 	return nil
 }
 

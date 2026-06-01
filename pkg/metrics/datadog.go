@@ -221,6 +221,20 @@ func (p *DatadogPublisher) PublishServiceCheck(_ context.Context, name string, s
 	})
 }
 
+// PublishAWSCallDuration publishes AWS SDK call latency as a Distribution for
+// global percentile aggregation, tagged by service and operation.
+func (p *DatadogPublisher) PublishAWSCallDuration(_ context.Context, service, operation string, durationSeconds float64) error { //nolint:revive
+	return p.client.Distribution("aws_call_duration_seconds", durationSeconds,
+		[]string{"service:" + service, "operation:" + operation}, 1)
+}
+
+// PublishAWSCallFailure increments the AWS SDK call failure counter, tagged by
+// service, operation, and result.
+func (p *DatadogPublisher) PublishAWSCallFailure(_ context.Context, service, operation, result string) error { //nolint:revive
+	return p.client.Incr("aws_call_failures",
+		[]string{"service:" + service, "operation:" + operation, "result:" + result}, 1)
+}
+
 // PublishEvent publishes a Datadog event.
 func (p *DatadogPublisher) PublishEvent(_ context.Context, title, text, alertType string, tags []string) error { //nolint:revive
 	var ddAlertType statsd.EventAlertType
