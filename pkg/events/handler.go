@@ -27,10 +27,6 @@ var eventsLog = logging.WithComponent(logging.LogTypeEvents, "handler")
 // Exposed as a variable to allow testing with shorter durations.
 var eventsTickInterval = 1 * time.Second
 
-// retryBackoffs are the delays between retry attempts.
-// Exposed as a variable to allow testing with shorter durations.
-var retryBackoffs = []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second}
-
 // QueueAPI provides queue operations for event processing.
 type QueueAPI interface {
 	ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]queue.Message, error)
@@ -68,7 +64,12 @@ type MetricsAPI interface {
 	PublishCircuitBreakerOpen(ctx context.Context, instanceType string, open bool) error
 	PublishJobRequeued(ctx context.Context, reason string) error
 	PublishQueueReceive(ctx context.Context, queue, result string) error
+	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
 }
+
+// queueEvents is the queue label for the events worker's message-processing
+// latency metric.
+const queueEvents = "events"
 
 // instanceFamily returns the instance family (the segment before the dot, e.g.
 // "c7g" for "c7g.xlarge"). It returns "" for an empty or malformed type so the
@@ -200,7 +201,16 @@ func (h *Handler) Run(ctx context.Context) {
 				msg := msg
 				wg.Add(1)
 				go func() {
+					// Default to "error"; set to "ok" only on a clean return so a
+					// recovered panic reports "error".
+					result := "error"
+					var start time.Time
 					defer func() {
+						// start is zero only if the slot was never acquired (ctx
+						// done); skip the metric in that case.
+						if h.metrics != nil && !start.IsZero() {
+							_ = h.metrics.PublishMessageProcessingSeconds(ctx, queueEvents, result, time.Since(start).Seconds())
+						}
 						if r := recover(); r != nil {
 							eventsLog.Error(ctx, "panic in event processor", slog.Any("panic", r))
 						}
@@ -209,9 +219,13 @@ func (h *Handler) Run(ctx context.Context) {
 					sem <- struct{}{}
 					defer func() { <-sem }()
 
+					// Start timing after acquiring the concurrency slot so the
+					// metric reflects processing time, not slot-wait time.
+					start = time.Now()
 					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
 					defer processCancel()
 					h.processEvent(processCtx, msg)
+					result = "ok"
 				}()
 			}
 
@@ -272,34 +286,6 @@ func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 	if processErr != nil {
 		eventsLog.Error(ctx, "event processing failed", slog.String("error", processErr.Error()))
 	}
-}
-
-func (h *Handler) retryWithBackoff(ctx context.Context, operation func(context.Context) error) error {
-	var lastErr error
-
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			backoffIdx := attempt - 1
-			if backoffIdx >= len(retryBackoffs) {
-				backoffIdx = len(retryBackoffs) - 1
-			}
-			select {
-			case <-time.After(retryBackoffs[backoffIdx]):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		mctx, mcancel := context.WithTimeout(ctx, config.ShortTimeout)
-		err := operation(mctx)
-		mcancel()
-
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-	}
-	return lastErr
 }
 
 func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.RawMessage) error {
@@ -442,7 +428,9 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 	eventsLog.Info(ctx, "instance state change",
 		slog.String("state", detail.State))
 
-	// TODO(metrics): emit a correct aggregate instances gauge from a periodic source (or derive from pool_instances) — per-event delta tracking drifts and loses state on restart.
+	// The instances gauge is published from the pool reconcile loop using the
+	// authoritative per-pool running/stopped counts (see pkg/pools), not from
+	// per-event deltas here, which would drift and lose state on restart.
 	switch detail.State {
 	case "running", "stopped", "terminated", "pending", "stopping", "shutting-down":
 		// Known states, no action needed.

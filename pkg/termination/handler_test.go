@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ const (
 	testRepo               = "octo/repo"
 	testResultSuccess      = "success"
 	testResultTimeout      = "timeout"
+	testResultError        = "error"
 )
 
 // mockQueueAPI implements QueueAPI for testing.
@@ -98,6 +100,12 @@ type mockMetricsAPI struct {
 	lastPool       string
 	lastRepo       string
 	completedErr   error
+
+	processingMu          sync.Mutex
+	processingCalls       int
+	lastProcessingQueue   string
+	lastProcessingResult  string
+	lastProcessingSeconds float64
 }
 
 func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, repo string) error {
@@ -115,6 +123,22 @@ func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, re
 
 func (m *mockMetricsAPI) PublishJobExecutionSeconds(_ context.Context, _, _ string, _ float64) error {
 	return nil
+}
+
+func (m *mockMetricsAPI) PublishMessageProcessingSeconds(_ context.Context, queue, result string, seconds float64) error {
+	m.processingMu.Lock()
+	defer m.processingMu.Unlock()
+	m.processingCalls++
+	m.lastProcessingQueue = queue
+	m.lastProcessingResult = result
+	m.lastProcessingSeconds = seconds
+	return nil
+}
+
+func (m *mockMetricsAPI) processingSnapshot() (int, string, string) {
+	m.processingMu.Lock()
+	defer m.processingMu.Unlock()
+	return m.processingCalls, m.lastProcessingQueue, m.lastProcessingResult
 }
 
 // mockSecretsStore implements secrets.Store for testing.
@@ -762,6 +786,48 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 	}
 }
 
+// TestHandler_Run_EmitsMessageProcessingSeconds proves the termination worker
+// emits the message-processing latency tagged with the termination queue and an
+// "ok" result for a successfully processed message.
+func TestHandler_Run_EmitsMessageProcessingSeconds(t *testing.T) {
+	msg := Message{InstanceID: "i-1", JobID: "12345678901", Status: testStatusSuccess, DurationSeconds: 60}
+	body, _ := json.Marshal(msg)
+
+	q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: "r1"}}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, &mockDBAPI{}, metrics, &mockSecretsStore{}, &config.Config{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		n, queueLabel, result := metrics.processingSnapshot()
+		if n > 0 {
+			if queueLabel != queueTermination {
+				t.Errorf("processing queue label = %q, want termination", queueLabel)
+			}
+			if result != "ok" {
+				t.Errorf("processing result = %q, want ok", result)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatal("message-processing metric was never emitted")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+}
+
 func TestHandler_Run_ReceiveError(t *testing.T) {
 	receiveCalled := make(chan struct{}, 1)
 	q := &mockQueueAPI{
@@ -960,7 +1026,7 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 	if metrics.completedCalls != 1 {
 		t.Errorf("expected 1 completed call for interrupted, got %d", metrics.completedCalls)
 	}
-	if metrics.lastResult != "error" {
+	if metrics.lastResult != testResultError {
 		t.Errorf("expected result 'error', got %q", metrics.lastResult)
 	}
 }

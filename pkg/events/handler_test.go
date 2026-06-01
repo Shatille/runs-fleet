@@ -16,8 +16,6 @@ import (
 func init() {
 	// Use short tick interval in tests to avoid slow test execution
 	eventsTickInterval = 10 * time.Millisecond
-	// Use short retry backoffs in tests
-	retryBackoffs = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond}
 }
 
 // MockQueueAPI implements QueueAPI interface
@@ -70,13 +68,14 @@ func (m *MockDBAPI) GetJobByInstance(ctx context.Context, instanceID string) (*J
 
 // MockMetricsAPI implements MetricsAPI interface
 type MockMetricsAPI struct {
-	PublishSpotInterruptionFunc       func(ctx context.Context, family string) error
-	PublishInstancesFunc              func(ctx context.Context, state, capacity, pool string, n int) error
-	PublishMessageDeletionFailureFunc func(ctx context.Context, queue string) error
-	PublishCircuitBreakerTripFunc     func(ctx context.Context, instanceType string) error
-	PublishCircuitBreakerOpenFunc     func(ctx context.Context, instanceType string, open bool) error
-	PublishJobRequeuedFunc            func(ctx context.Context, reason string) error
-	PublishQueueReceiveFunc           func(ctx context.Context, queue, result string) error
+	PublishSpotInterruptionFunc         func(ctx context.Context, family string) error
+	PublishInstancesFunc                func(ctx context.Context, state, capacity, pool string, n int) error
+	PublishMessageDeletionFailureFunc   func(ctx context.Context, queue string) error
+	PublishCircuitBreakerTripFunc       func(ctx context.Context, instanceType string) error
+	PublishCircuitBreakerOpenFunc       func(ctx context.Context, instanceType string, open bool) error
+	PublishJobRequeuedFunc              func(ctx context.Context, reason string) error
+	PublishQueueReceiveFunc             func(ctx context.Context, queue, result string) error
+	PublishMessageProcessingSecondsFunc func(ctx context.Context, queue, result string, seconds float64) error
 }
 
 func (m *MockMetricsAPI) PublishSpotInterruption(ctx context.Context, family string) error {
@@ -124,6 +123,13 @@ func (m *MockMetricsAPI) PublishJobRequeued(ctx context.Context, reason string) 
 func (m *MockMetricsAPI) PublishQueueReceive(ctx context.Context, queue, result string) error {
 	if m.PublishQueueReceiveFunc != nil {
 		return m.PublishQueueReceiveFunc(ctx, queue, result)
+	}
+	return nil
+}
+
+func (m *MockMetricsAPI) PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error {
+	if m.PublishMessageProcessingSecondsFunc != nil {
+		return m.PublishMessageProcessingSecondsFunc(ctx, queue, result, seconds)
 	}
 	return nil
 }
@@ -496,6 +502,68 @@ func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
 	}
 }
 
+// TestHandlerRun_EmitsMessageProcessingSeconds proves the events worker emits
+// the message-processing latency tagged with the events queue and an "ok"
+// result for a cleanly processed event.
+func TestHandlerRun_EmitsMessageProcessingSeconds(t *testing.T) {
+	type call struct {
+		queue   string
+		result  string
+		seconds float64
+	}
+	got := make(chan call, 1)
+
+	var returned bool
+	var mu sync.Mutex
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if returned {
+					return nil, nil
+				}
+				returned = true
+				return []queue.Message{{
+					Body:   `{"detail-type": "EC2 Instance State-change Notification", "detail": {"instance-id": "i-1", "state": "running"}}`,
+					Handle: "r1",
+				}}, nil
+			},
+			DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
+		},
+		dbClient: &MockDBAPI{},
+		metrics: &MockMetricsAPI{
+			PublishMessageProcessingSecondsFunc: func(_ context.Context, queue, result string, seconds float64) error {
+				select {
+				case got <- call{queue: queue, result: result, seconds: seconds}:
+				default:
+				}
+				return nil
+			},
+		},
+		config: &config.Config{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go handler.Run(ctx)
+
+	select {
+	case c := <-got:
+		if c.queue != queueEvents {
+			t.Errorf("queue label = %q, want events", c.queue)
+		}
+		if c.result != "ok" {
+			t.Errorf("result = %q, want ok", c.result)
+		}
+		if c.seconds < 0 {
+			t.Errorf("seconds = %v, want >= 0", c.seconds)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("message-processing metric was never emitted")
+	}
+}
+
 func TestConcurrentEventProcessing(t *testing.T) {
 	const numMessages = 10
 	const minConcurrent = 3 // At least this many must start concurrently
@@ -855,82 +923,6 @@ func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
 	finalCount := atomic.LoadInt32(&callCount)
 	if finalCount < 2 {
 		t.Errorf("Expected at least 2 metrics calls, got %d", finalCount)
-	}
-}
-
-func TestMetricsRetryWithExponentialBackoff(t *testing.T) {
-	// Exercises retryWithBackoff directly. The operation publishes a metric the
-	// events handler still emits (PublishQueueReceive) and fails the configured
-	// number of times to verify the retry count. The spot-interruption path
-	// intentionally does not retry its metric (it is best-effort; see
-	// TestSpotInterruptionMetricFailureDoesNotBlockRequeue).
-	// Note: In tests, retryBackoffs is set to 1ms in init() for fast execution.
-	// We just verify retry count behavior, not timing.
-	tests := []struct {
-		name          string
-		failCount     int
-		expectedCalls int
-		expectErr     bool
-	}{
-		{
-			name:          "Success on first try",
-			failCount:     0,
-			expectedCalls: 1,
-		},
-		{
-			name:          "Success on second try",
-			failCount:     1,
-			expectedCalls: 2,
-		},
-		{
-			name:          "Success on third try",
-			failCount:     2,
-			expectedCalls: 3,
-		},
-		{
-			name:          "Fail all retries",
-			failCount:     3,
-			expectedCalls: 3,
-			expectErr:     true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			callCount := 0
-
-			mockMetrics := &MockMetricsAPI{
-				PublishQueueReceiveFunc: func(_ context.Context, _, _ string) error {
-					callCount++
-					if callCount <= tt.failCount {
-						return fmt.Errorf("cloudwatch throttled")
-					}
-					return nil
-				},
-			}
-
-			handler := &Handler{
-				queueClient: &MockQueueAPI{},
-				dbClient:    &MockDBAPI{},
-				metrics:     mockMetrics,
-				config:      &config.Config{},
-			}
-
-			err := handler.retryWithBackoff(context.Background(), func(c context.Context) error {
-				return handler.metrics.PublishQueueReceive(c, "events", "messages")
-			})
-
-			if tt.expectErr && err == nil {
-				t.Errorf("Expected error after exhausting retries, got nil")
-			}
-			if !tt.expectErr && err != nil {
-				t.Errorf("Expected success, got error: %v", err)
-			}
-
-			if callCount != tt.expectedCalls {
-				t.Errorf("Expected %d calls, got %d", tt.expectedCalls, callCount)
-			}
-		})
 	}
 }
 
@@ -1539,10 +1531,10 @@ func TestSpotInterruptionDetail_Structure(t *testing.T) {
 
 func TestSpotInterruptionPublishesCircuitBreakerMetric(t *testing.T) {
 	tests := []struct {
-		name                string
-		isOpen              bool
-		isOpenErr           error
-		expectMetricCalled  bool
+		name               string
+		isOpen             bool
+		isOpenErr          error
+		expectMetricCalled bool
 	}{
 		{
 			name:               "circuit open publishes metric",

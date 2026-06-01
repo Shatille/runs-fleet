@@ -3,6 +3,7 @@ package queue
 
 import (
 	"context"
+	"time"
 )
 
 // Pinger is an optional interface for health checking queue connectivity.
@@ -40,6 +41,12 @@ type Message struct {
 
 	// Attributes contains message metadata (trace context, etc).
 	Attributes map[string]string
+
+	// SentAt is the time the message was enqueued, parsed from the SQS
+	// SentTimestamp system attribute. It is the zero value when the attribute is
+	// absent (e.g. non-SQS backends or older messages), in which case callers
+	// must not compute a wait duration from it.
+	SentAt time.Time
 }
 
 // JobMessage represents workflow job configuration for queue transport.

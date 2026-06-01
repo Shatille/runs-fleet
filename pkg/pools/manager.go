@@ -31,8 +31,9 @@ const (
 	stateStopped = "stopped"
 )
 
-//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 // DBClient defines DynamoDB operations for pool configuration.
+//
+//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 type DBClient interface {
 	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
@@ -57,7 +58,20 @@ type MetricsAPI interface {
 	PublishPoolAction(ctx context.Context, pool, action, reason string) error
 	PublishPoolDesired(ctx context.Context, pool, kind string, n int) error
 	PublishPoolInstances(ctx context.Context, pool, state string, n int) error
+	PublishPoolReconcileSeconds(ctx context.Context, seconds float64) error
+	PublishLockWaitSeconds(ctx context.Context, lock string, seconds float64) error
+	PublishInstances(ctx context.Context, state, capacity, pool string, n int) error
 }
+
+// Lock labels for PublishLockWaitSeconds.
+const (
+	lockPoolReconcile = "pool_reconcile"
+	lockClaim         = "claim"
+)
+
+// Pool instances are on-demand only (warm pools favor stop/start reliability
+// over spot savings), so the global instances gauge is dimensioned accordingly.
+const capacityOnDemand = "on_demand"
 
 // Pool action labels for PublishPoolAction.
 const (
@@ -67,8 +81,9 @@ const (
 	poolActionStart     = "start"
 )
 
-//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 // EC2API defines EC2 operations for instance management.
+//
+//nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 type EC2API interface {
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	StartInstances(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
@@ -308,16 +323,32 @@ func (m *Manager) reconcile(ctx context.Context) {
 
 //nolint:gocyclo // Core reconciliation logic with multiple scale up/down paths
 func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
-	// Acquire per-pool lock (65s TTL > 60s reconcile interval)
-	// TODO(metrics): emit lock wait time via PublishLockWaitSeconds(ctx,
-	// "pool_reconcile", elapsed) once timing instrumentation lands.
+	// Time the whole reconcile pass (lock wait + AWS work) so slow passes are
+	// observable. The pass only runs when this instance wins the lock; contended
+	// passes that skip are captured by the lock-wait histogram below.
+	reconcileStart := time.Now()
+
+	// Acquire per-pool lock (65s TTL > 60s reconcile interval). Time the acquire
+	// wait — this is the contention signal that would have surfaced #298.
+	lockStart := time.Now()
 	if err := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, 65*time.Second); err != nil {
+		if m.metrics != nil {
+			_ = m.metrics.PublishLockWaitSeconds(ctx, lockPoolReconcile, time.Since(lockStart).Seconds())
+		}
 		// Lock held by another instance or pool deleted - skip silently
 		if errors.Is(err, db.ErrPoolReconcileLockHeld) || errors.Is(err, db.ErrPoolNotFound) {
 			return nil
 		}
 		return fmt.Errorf("failed to acquire pool lock: %w", err)
 	}
+	if m.metrics != nil {
+		_ = m.metrics.PublishLockWaitSeconds(ctx, lockPoolReconcile, time.Since(lockStart).Seconds())
+	}
+	defer func() {
+		if m.metrics != nil {
+			_ = m.metrics.PublishPoolReconcileSeconds(ctx, time.Since(reconcileStart).Seconds())
+		}
+	}()
 	defer func() {
 		if err := m.dbClient.ReleasePoolReconcileLock(ctx, poolName, m.instanceID); err != nil {
 			if isShutdownErr(err) {
@@ -482,10 +513,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	}
 
 	// Publish the post-reconcile pool state gauges every cycle (utilization is
-	// derivable from these states). The pool reconcile latency histogram is a
-	// follow-up.
-	// TODO(metrics): emit reconcile latency via PublishPoolReconcileSeconds(ctx,
-	// elapsed) once timing instrumentation lands.
+	// derivable from these states).
 	if m.metrics != nil {
 		_ = m.metrics.PublishPoolInstances(ctx, poolName, "running", running)
 		_ = m.metrics.PublishPoolInstances(ctx, poolName, "stopped", stopped)
@@ -493,6 +521,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		_ = m.metrics.PublishPoolInstances(ctx, poolName, "busy", busy)
 		_ = m.metrics.PublishPoolDesired(ctx, poolName, "running", desiredRunning)
 		_ = m.metrics.PublishPoolDesired(ctx, poolName, "stopped", desiredStopped)
+		// Feed the global instances gauge from the authoritative per-pool counts
+		// computed above (real running/stopped totals, not per-event 0/1 deltas
+		// that drift and lose state on restart). Pool instances are on-demand.
+		_ = m.metrics.PublishInstances(ctx, stateRunning, capacityOnDemand, poolName, running)
+		_ = m.metrics.PublishInstances(ctx, stateStopped, capacityOnDemand, poolName, stopped)
 	}
 
 	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {
@@ -1009,6 +1042,20 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 
 	pl := m.poolLockFor(poolName)
 
+	// Time the DynamoDB claim acquire across all candidates: from the first
+	// attempt to either a successful claim or exhaustion. This is the cross-
+	// instance contention signal (the conditional write is the authoritative
+	// guard); emitted once per claim attempt regardless of outcome.
+	claimStart := time.Now()
+	claimEmitted := false
+	emitClaimWait := func() {
+		if !claimEmitted && m.metrics != nil {
+			_ = m.metrics.PublishLockWaitSeconds(ctx, lockClaim, time.Since(claimStart).Seconds())
+		}
+		claimEmitted = true
+	}
+	defer emitClaimWait()
+
 	// Try to claim and start each candidate instance.
 	for _, inst := range candidates {
 		// Reserve the candidate locally under a short per-pool lock so two
@@ -1033,6 +1080,9 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 			}
 			return nil, fmt.Errorf("failed to claim instance in DynamoDB: %w", err)
 		}
+		// Claim acquired: record the wait now so the subsequent StartInstances
+		// call is not counted as lock-wait time.
+		emitClaimWait()
 
 		// Start the instance. The DynamoDB claim holds the cross-process lock;
 		// the local reservation can be dropped now that the claim is authoritative.

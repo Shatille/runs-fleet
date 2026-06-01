@@ -47,6 +47,7 @@ type CircuitBreaker interface {
 // MetricsAPI publishes fleet creation metrics.
 type MetricsAPI interface {
 	PublishFleetCreate(ctx context.Context, capacity, result string) error
+	PublishFleetCreateSeconds(ctx context.Context, capacity string, seconds float64) error
 }
 
 // spotPriceCache caches spot prices with TTL.
@@ -96,9 +97,21 @@ func (m *Manager) SetMetrics(metrics MetricsAPI) {
 	m.metrics = metrics
 }
 
-// fleetTargetCapacity is the per-CreateFleet target capacity. Each call requests
-// a single instance, so the capacity label is a fixed low-cardinality value.
-const fleetTargetCapacity = "1"
+// Capacity labels for the fleet_create metrics. CreateFleet requests either spot
+// or on-demand capacity; the label set is therefore fixed and low-cardinality.
+const (
+	capacitySpot     = "spot"
+	capacityOnDemand = "on_demand"
+)
+
+// fleetCapacityLabel maps the resolved spot decision to the capacity metric
+// label so the counter and the latency histogram share the same dimension.
+func fleetCapacityLabel(useSpot bool) string {
+	if useSpot {
+		return capacitySpot
+	}
+	return capacityOnDemand
+}
 
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
@@ -138,6 +151,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	defer span.End()
 
 	useSpot := m.shouldUseSpot(ctx, spec)
+	capacity := fleetCapacityLabel(useSpot)
 	tags := m.buildTags(spec)
 
 	req, err := m.buildFleetRequest(ctx, spec, useSpot, tags)
@@ -153,15 +167,21 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 	result := "failure"
 	defer func() {
 		if m.metrics != nil {
-			if mErr := m.metrics.PublishFleetCreate(ctx, fleetTargetCapacity, result); mErr != nil {
+			if mErr := m.metrics.PublishFleetCreate(ctx, capacity, result); mErr != nil {
 				fleetLog.Warn(ctx, "fleet create metric failed", slog.String("error", mErr.Error()))
 			}
 		}
 	}()
-	// TODO(metrics): emit CreateFleet latency via PublishFleetCreateSeconds(ctx,
-	// fleetTargetCapacity, elapsed) once timing instrumentation lands.
 
+	// Time only the EC2 CreateFleet call; this is the latency the operator cares
+	// about (the rest of this function is local request building).
+	createStart := time.Now()
 	output, err := m.ec2Client.CreateFleet(ctx, req)
+	if m.metrics != nil {
+		if mErr := m.metrics.PublishFleetCreateSeconds(ctx, capacity, time.Since(createStart).Seconds()); mErr != nil {
+			fleetLog.Warn(ctx, "fleet create latency metric failed", slog.String("error", mErr.Error()))
+		}
+	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

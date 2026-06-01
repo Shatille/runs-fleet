@@ -126,7 +126,7 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "empty job ID",
 			job: &JobMessage{
-				RunID: 67890,
+				RunID:        67890,
 				InstanceType: "t4g.medium",
 			},
 			mock:    &mockSQSClient{},
@@ -135,7 +135,7 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "empty run ID",
 			job: &JobMessage{
-				JobID: 12345,
+				JobID:        12345,
 				InstanceType: "t4g.medium",
 			},
 			mock:    &mockSQSClient{},
@@ -144,8 +144,8 @@ func TestSQSClient_SendMessage(t *testing.T) {
 		{
 			name: "sqs error",
 			job: &JobMessage{
-				JobID: 12345,
-				RunID: 67890,
+				JobID:        12345,
+				RunID:        67890,
 				InstanceType: "t4g.medium",
 			},
 			mock: &mockSQSClient{
@@ -642,5 +642,99 @@ func TestNewSQSClientWithAPI(t *testing.T) {
 	}
 	if client.sqsClient != mock {
 		t.Error("sqsClient not set correctly")
+	}
+}
+
+// TestReceiveMessages_RequestsSentTimestamp proves ReceiveMessages asks SQS for
+// the SentTimestamp system attribute, which is the source of job-wait latency.
+func TestReceiveMessages_RequestsSentTimestamp(t *testing.T) {
+	t.Parallel()
+
+	var gotInput *sqs.ReceiveMessageInput
+	mock := &mockSQSClient{
+		ReceiveMessageFunc: func(_ context.Context, params *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			gotInput = params
+			return &sqs.ReceiveMessageOutput{}, nil
+		},
+	}
+	client := NewSQSClientWithAPI(mock, "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue")
+
+	if _, err := client.ReceiveMessages(context.Background(), 10, 20); err != nil {
+		t.Fatalf("ReceiveMessages failed: %v", err)
+	}
+
+	found := false
+	for _, a := range gotInput.MessageSystemAttributeNames {
+		if a == types.MessageSystemAttributeNameSentTimestamp {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("MessageSystemAttributeNames = %v, want it to include SentTimestamp", gotInput.MessageSystemAttributeNames)
+	}
+}
+
+// TestReceiveMessages_ParsesSentTimestamp proves the epoch-millis SentTimestamp
+// system attribute is surfaced as Message.SentAt.
+func TestReceiveMessages_ParsesSentTimestamp(t *testing.T) {
+	t.Parallel()
+
+	const sentMillis = int64(1717200000000) // 2024-06-01T00:00:00Z
+	mock := &mockSQSClient{
+		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			return &sqs.ReceiveMessageOutput{
+				Messages: []types.Message{
+					{
+						Body:          aws.String(`{"run_id":1}`),
+						ReceiptHandle: aws.String("h1"),
+						Attributes: map[string]string{
+							string(types.MessageSystemAttributeNameSentTimestamp): "1717200000000",
+						},
+					},
+				},
+			}, nil
+		},
+	}
+	client := NewSQSClientWithAPI(mock, "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue")
+
+	msgs, err := client.ReceiveMessages(context.Background(), 10, 20)
+	if err != nil {
+		t.Fatalf("ReceiveMessages failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if got := msgs[0].SentAt.UnixMilli(); got != sentMillis {
+		t.Errorf("SentAt = %d ms, want %d ms", got, sentMillis)
+	}
+}
+
+// TestReceiveMessages_NoSentTimestampLeavesZero proves an absent or malformed
+// SentTimestamp leaves SentAt as the zero value so callers skip the wait metric.
+func TestReceiveMessages_NoSentTimestampLeavesZero(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSQSClient{
+		ReceiveMessageFunc: func(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+			return &sqs.ReceiveMessageOutput{
+				Messages: []types.Message{
+					{Body: aws.String(`{"run_id":1}`), ReceiptHandle: aws.String("h1")},
+					{Body: aws.String(`{"run_id":2}`), ReceiptHandle: aws.String("h2"), Attributes: map[string]string{
+						string(types.MessageSystemAttributeNameSentTimestamp): "not-a-number",
+					}},
+				},
+			}, nil
+		},
+	}
+	client := NewSQSClientWithAPI(mock, "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue")
+
+	msgs, err := client.ReceiveMessages(context.Background(), 10, 20)
+	if err != nil {
+		t.Fatalf("ReceiveMessages failed: %v", err)
+	}
+	for i, m := range msgs {
+		if !m.SentAt.IsZero() {
+			t.Errorf("message %d SentAt = %v, want zero", i, m.SentAt)
+		}
 	}
 }
