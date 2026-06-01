@@ -62,6 +62,36 @@ func TestTryAssignToWarmPool_NilManagers(t *testing.T) {
 	}
 }
 
+func TestTryAssignToWarmPool_DeadContext_Retryable(t *testing.T) {
+	claimCalled := false
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			claimCalled = true
+			return nil, pools.ErrNoAvailableInstance
+		},
+	}
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: &mockRunnerPreparer{},
+	}
+
+	job := &queue.JobMessage{JobID: 123, RunID: 456, Pool: "test-pool"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // budget already spent
+
+	result, err := assigner.TryAssignToWarmPool(ctx, job)
+	if err == nil {
+		t.Fatal("expected retryable error when context is already done")
+	}
+	if result != nil {
+		t.Errorf("expected nil result on dead context, got %v", result)
+	}
+	if claimCalled {
+		t.Error("ClaimAndStartPoolInstance should not be called when context is already done")
+	}
+}
+
 // mockEC2API implements pools.EC2API for testing
 type mockEC2API struct {
 	describeInstancesFunc          func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)

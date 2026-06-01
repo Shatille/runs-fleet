@@ -60,6 +60,13 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		return &WarmPoolResult{Assigned: false}, nil
 	}
 
+	// Dead-context guard: if the budget is already spent, return a retryable
+	// error so the job is redelivered via SQS instead of issuing AWS calls that
+	// would fail immediately and cascade.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("warm pool assignment aborted, context done: %w", err)
+	}
+
 	// Build FlexibleSpec from job message for multi-spec pool matching
 	// If no spec fields are set, spec is nil (legacy: any instance matches)
 	var spec *fleet.FlexibleSpec
