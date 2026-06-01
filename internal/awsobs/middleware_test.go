@@ -6,16 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/Shavakan/runs-fleet/pkg/logging"
+	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/smithy-go/middleware"
 )
 
 // testServiceID is the service name the bare-stack metadata seeder injects and
-// the slow/timeout assertions expect.
+// the metric assertions expect.
 const testServiceID = "DynamoDB"
 
 // timeoutErr is a net.Error whose Timeout reports true, used to exercise the
@@ -26,29 +27,66 @@ func (timeoutErr) Error() string   { return "i/o timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return false }
 
-// runStack builds an Initialize-step stack with the observability middleware
-// (at the given threshold) plus a terminal handler that registers service and
-// operation metadata, then sleeps and returns the supplied error. It returns
-// the captured log records as decoded JSON maps.
-func runStack(t *testing.T, threshold, sleep time.Duration, retErr error) []map[string]any {
-	t.Helper()
-	return runStackCtx(context.Background(), t, threshold, sleep, retErr)
+// durationCall records one PublishAWSCallDuration invocation.
+type durationCall struct {
+	service   string
+	operation string
+	seconds   float64
 }
 
-// runStackCtx is runStack with an explicit invocation context, used to assert
-// that task identity stashed on the context via logging.ContextWith reaches the
-// observability record. The logger is wrapped exactly as production wires it (a
-// contextHandler over the JSON handler) so context-stashed attrs are injected.
-func runStackCtx(
-	ctx context.Context, t *testing.T, threshold, sleep time.Duration, retErr error,
-) []map[string]any {
+// failureCall records one PublishAWSCallFailure invocation.
+type failureCall struct {
+	service   string
+	operation string
+	result    string
+}
+
+// fakePublisher is a metrics.Publisher that captures the AWS-call metrics the
+// observability middleware emits. All other methods inherit the no-op behavior.
+type fakePublisher struct {
+	metrics.NoopPublisher
+	mu        sync.Mutex
+	durations []durationCall
+	failures  []failureCall
+}
+
+func (f *fakePublisher) PublishAWSCallDuration(_ context.Context, service, operation string, seconds float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.durations = append(f.durations, durationCall{service, operation, seconds})
+	return nil
+}
+
+func (f *fakePublisher) PublishAWSCallFailure(_ context.Context, service, operation, result string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failures = append(f.failures, failureCall{service, operation, result})
+	return nil
+}
+
+func (f *fakePublisher) snapshotDurations() []durationCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]durationCall(nil), f.durations...)
+}
+
+func (f *fakePublisher) snapshotFailures() []failureCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]failureCall(nil), f.failures...)
+}
+
+// runStack builds an Initialize-step stack with the observability middleware
+// (emitting to fake) plus a terminal handler that registers service and
+// operation metadata, then sleeps and returns the supplied error.
+func runStack(t *testing.T, fake metrics.Publisher, serviceID string, sleep time.Duration, retErr error) {
 	t.Helper()
 
-	var buf bytes.Buffer
-	log := logging.NewWithHandler(newCtxJSONHandler(&buf))
+	rec := NewRecorder()
+	rec.SetPublisher(fake)
 
 	stack := middleware.NewStack("test", smithyRequestNew)
-	if err := register(log, threshold)(stack); err != nil {
+	if err := register(rec)(stack); err != nil {
 		t.Fatalf("register middleware: %v", err)
 	}
 	// On this bare stack RegisterServiceMetadata is not yet present when register
@@ -58,7 +96,7 @@ func runStackCtx(
 	// them. The real SDK ordering (metadata present first, anchored after) is
 	// covered in realstack_test.go.
 	if err := stack.Initialize.Add(&awsmiddleware.RegisterServiceMetadata{
-		ServiceID:     testServiceID,
+		ServiceID:     serviceID,
 		OperationName: "GetItem",
 	}, middleware.Before); err != nil {
 		t.Fatalf("register metadata middleware: %v", err)
@@ -71,23 +109,15 @@ func runStackCtx(
 		return nil, middleware.Metadata{}, retErr
 	})
 
-	_, _, err := stack.HandleMiddleware(ctx, nil, terminal)
+	_, _, err := stack.HandleMiddleware(context.Background(), nil, terminal)
 	if !errors.Is(err, retErr) {
 		t.Fatalf("HandleMiddleware error = %v, want %v", err, retErr)
 	}
-
-	return decodeRecords(t, buf.Bytes())
 }
 
 // smithyRequestNew is a no-op request factory; the observability middleware
 // never inspects the request value.
 func smithyRequestNew() any { return nil }
-
-// newCtxJSONHandler builds the production handler chain (contextHandler over a
-// JSON handler) so context-stashed task identity is emitted on *Context logs.
-func newCtxJSONHandler(buf *bytes.Buffer) slog.Handler {
-	return logging.NewContextHandler(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
 
 func decodeRecords(t *testing.T, b []byte) []map[string]any {
 	t.Helper()
@@ -103,146 +133,151 @@ func decodeRecords(t *testing.T, b []byte) []map[string]any {
 	return records
 }
 
-func TestMiddlewareFastSuccessNotLogged(t *testing.T) {
+func TestMiddlewareEmitsDurationOnEveryCall(t *testing.T) {
 	t.Parallel()
 
-	records := runStack(t, time.Second, 0, nil)
-	if len(records) != 0 {
-		t.Fatalf("expected no log records for a fast successful call, got %d: %v", len(records), records)
+	fake := &fakePublisher{}
+	// A fast successful call must still emit a duration metric so latency
+	// percentiles are observable, and it must not emit a failure counter.
+	runStack(t, fake, testServiceID, 0, nil)
+
+	durations := fake.snapshotDurations()
+	if len(durations) != 1 {
+		t.Fatalf("expected exactly one duration metric, got %d: %v", len(durations), durations)
+	}
+	d := durations[0]
+	if d.service != testServiceID {
+		t.Errorf("duration service = %q, want %q", d.service, testServiceID)
+	}
+	if d.operation != "GetItem" {
+		t.Errorf("duration operation = %q, want GetItem", d.operation)
+	}
+	if d.seconds < 0 {
+		t.Errorf("duration seconds = %v, want >= 0", d.seconds)
+	}
+	if failures := fake.snapshotFailures(); len(failures) != 0 {
+		t.Errorf("expected no failure metrics on success, got %v", failures)
 	}
 }
 
-func TestMiddlewareSlowCallLogged(t *testing.T) {
-	t.Parallel()
+func TestMiddlewareSlowCallEmitsNoWarnLog(t *testing.T) {
+	// Not parallel: swaps the global slog default to capture any stray log output.
+	//
+	// A slow call must emit only the duration metric: the per-call WARN that
+	// flooded the logs (SQS ReceiveMessage long-polls 20s) is gone. The middleware
+	// no longer holds a logger, so this guards against any reintroduced logging.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
 
-	records := runStack(t, 5*time.Millisecond, 20*time.Millisecond, nil)
-	if len(records) != 1 {
-		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
-	}
-	rec := records[0]
+	fake := &fakePublisher{}
+	runStack(t, fake, testServiceID, 20*time.Millisecond, nil)
 
-	if got := rec["level"]; got != "WARN" {
-		t.Errorf("level = %v, want WARN", got)
+	if got := len(fake.snapshotDurations()); got != 1 {
+		t.Fatalf("expected exactly one duration metric for a slow call, got %d", got)
 	}
-	if got := rec["service"]; got != testServiceID {
-		t.Errorf("service = %v, want DynamoDB", got)
-	}
-	if got := rec["operation"]; got != "GetItem" {
-		t.Errorf("operation = %v, want GetItem", got)
-	}
-	if got := rec["slow"]; got != true {
-		t.Errorf("slow = %v, want true", got)
-	}
-	if got := rec["timeout"]; got != false {
-		t.Errorf("timeout = %v, want false", got)
-	}
-	dur, ok := rec["duration_ms"].(float64)
-	if !ok {
-		t.Fatalf("duration_ms missing or not a number: %v", rec["duration_ms"])
-	}
-	if dur < 0 {
-		t.Errorf("duration_ms = %v, want >= 0", dur)
-	}
-	if _, present := rec["error"]; present {
-		t.Errorf("error field should be absent on a slow successful call, got %v", rec["error"])
+	if records := decodeRecords(t, buf.Bytes()); len(records) != 0 {
+		t.Fatalf("expected no log records for a slow call, got %d: %v", len(records), records)
 	}
 }
 
-func TestMiddlewareDeadlineExceededLogged(t *testing.T) {
+func TestMiddlewareTimeoutEmitsFailureCounter(t *testing.T) {
 	t.Parallel()
 
-	// Generous threshold so the call is flagged solely on the error path.
-	records := runStack(t, time.Hour, 0, context.DeadlineExceeded)
-	if len(records) != 1 {
-		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
-	}
-	rec := records[0]
+	fake := &fakePublisher{}
+	runStack(t, fake, testServiceID, 0, context.DeadlineExceeded)
 
-	if got := rec["level"]; got != "WARN" {
-		t.Errorf("level = %v, want WARN", got)
+	if got := len(fake.snapshotDurations()); got != 1 {
+		t.Fatalf("expected exactly one duration metric, got %d", got)
 	}
-	if got := rec["timeout"]; got != true {
-		t.Errorf("timeout = %v, want true", got)
+	failures := fake.snapshotFailures()
+	if len(failures) != 1 {
+		t.Fatalf("expected exactly one failure metric, got %d: %v", len(failures), failures)
 	}
-	if got := rec["slow"]; got != false {
-		t.Errorf("slow = %v, want false", got)
+	f := failures[0]
+	if f.service != testServiceID {
+		t.Errorf("failure service = %q, want %q", f.service, testServiceID)
 	}
-	if got := rec["error"]; got != context.DeadlineExceeded.Error() {
-		t.Errorf("error = %v, want %q", got, context.DeadlineExceeded.Error())
+	if f.operation != "GetItem" {
+		t.Errorf("failure operation = %q, want GetItem", f.operation)
 	}
-	if got := rec["service"]; got != testServiceID {
-		t.Errorf("service = %v, want DynamoDB", got)
-	}
-	if got := rec["operation"]; got != "GetItem" {
-		t.Errorf("operation = %v, want GetItem", got)
+	if f.result != resultTimeout {
+		t.Errorf("failure result = %q, want %q", f.result, resultTimeout)
 	}
 }
 
-func TestMiddlewareCarriesTaskIdentityFromContext(t *testing.T) {
+func TestMiddlewareNetTimeoutEmitsTimeoutResult(t *testing.T) {
 	t.Parallel()
 
-	// Identity stashed on the call context (as the worker/webhook entry points do)
-	// must appear on the AWS-call observability record so a wedged AWS call is
-	// attributable to the job that issued it. The middleware itself adds no
-	// job/run/repo fields.
-	ctx := logging.ContextWithJob(context.Background(), 4242, 9999, "octo/repo")
-	records := runStackCtx(ctx, t, time.Hour, 0, context.DeadlineExceeded)
-	if len(records) != 1 {
-		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
-	}
-	rec := records[0]
+	fake := &fakePublisher{}
+	runStack(t, fake, testServiceID, 0, timeoutErr{})
 
-	if got := rec[logging.KeyJobID]; got != float64(4242) {
-		t.Errorf("job_id = %v, want 4242 (must come from the call context)", got)
+	failures := fake.snapshotFailures()
+	if len(failures) != 1 {
+		t.Fatalf("expected exactly one failure metric, got %d: %v", len(failures), failures)
 	}
-	if got := rec[logging.KeyRunID]; got != float64(9999) {
-		t.Errorf("run_id = %v, want 9999", got)
-	}
-	if got := rec[logging.KeyRepo]; got != "octo/repo" {
-		t.Errorf("repo = %v, want octo/repo", got)
-	}
-	// The middleware's own fields must still be present alongside the identity.
-	if got := rec["timeout"]; got != true {
-		t.Errorf("timeout = %v, want true", got)
-	}
-	if got := rec["service"]; got != testServiceID {
-		t.Errorf("service = %v, want DynamoDB", got)
+	if failures[0].result != resultTimeout {
+		t.Errorf("failure result = %q, want %q for a net.Error timeout", failures[0].result, resultTimeout)
 	}
 }
 
-func TestMiddlewareNoTaskIdentityWhenContextEmpty(t *testing.T) {
+func TestMiddlewareNonTimeoutErrorEmitsErrorResult(t *testing.T) {
 	t.Parallel()
 
-	// A bare context carries no identity; the record must not invent job fields.
-	records := runStackCtx(context.Background(), t, time.Hour, 0, context.DeadlineExceeded)
-	if len(records) != 1 {
-		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
+	fake := &fakePublisher{}
+	runStack(t, fake, testServiceID, 0, errors.New("validation error"))
+
+	failures := fake.snapshotFailures()
+	if len(failures) != 1 {
+		t.Fatalf("expected exactly one failure metric, got %d: %v", len(failures), failures)
 	}
-	if _, present := records[0][logging.KeyJobID]; present {
-		t.Errorf("job_id must be absent when the context carries no identity, got %v", records[0][logging.KeyJobID])
+	if failures[0].result != resultError {
+		t.Errorf("failure result = %q, want %q for an ordinary error", failures[0].result, resultError)
+	}
+	// The duration is still recorded for failed calls.
+	if got := len(fake.snapshotDurations()); got != 1 {
+		t.Errorf("expected one duration metric for a failed call, got %d", got)
 	}
 }
 
-func TestMiddlewareNetTimeoutLogged(t *testing.T) {
+func TestMiddlewareSkipsCloudWatch(t *testing.T) {
 	t.Parallel()
 
-	records := runStack(t, time.Hour, 0, timeoutErr{})
-	if len(records) != 1 {
-		t.Fatalf("expected exactly one log record, got %d: %v", len(records), records)
+	// CloudWatch is the metrics backend itself; recording its calls would recurse
+	// through PutMetricData, so the middleware emits nothing for it.
+	fake := &fakePublisher{}
+	runStack(t, fake, cloudWatchServiceID, 0, context.DeadlineExceeded)
+
+	if got := fake.snapshotDurations(); len(got) != 0 {
+		t.Errorf("expected no duration metrics for CloudWatch, got %v", got)
 	}
-	if got := records[0]["timeout"]; got != true {
-		t.Errorf("timeout = %v, want true for net.Error timeout", got)
+	if got := fake.snapshotFailures(); len(got) != 0 {
+		t.Errorf("expected no failure metrics for CloudWatch, got %v", got)
 	}
 }
 
-func TestMiddlewareNonTimeoutErrorNotLogged(t *testing.T) {
+func TestFailureResult(t *testing.T) {
 	t.Parallel()
 
-	// A fast call that fails with an ordinary error is neither slow nor a
-	// timeout, so it must not be logged.
-	records := runStack(t, time.Hour, 0, errors.New("validation error"))
-	if len(records) != 0 {
-		t.Fatalf("expected no log records for a fast non-timeout error, got %d: %v", len(records), records)
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"plain", errors.New("boom"), resultError},
+		{"deadline", context.DeadlineExceeded, resultTimeout},
+		{"canceled", context.Canceled, resultTimeout},
+		{"net timeout", timeoutErr{}, resultTimeout},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := failureResult(tt.err); got != tt.want {
+				t.Errorf("failureResult(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -271,11 +306,32 @@ func TestIsTimeout(t *testing.T) {
 	}
 }
 
+func TestRecorderDefaultsToNoop(t *testing.T) {
+	t.Parallel()
+
+	// A fresh recorder must not panic when the middleware emits before any real
+	// publisher is installed (the wiring window before initMetrics runs).
+	rec := NewRecorder()
+	if err := rec.get().PublishAWSCallDuration(context.Background(), "S3", "GetObject", 0.1); err != nil {
+		t.Errorf("default recorder publish error = %v", err)
+	}
+	// SetPublisher(nil) must fall back to no-op rather than installing a nil that
+	// panics on use.
+	rec.SetPublisher(nil)
+	if err := rec.get().PublishAWSCallFailure(context.Background(), "S3", "GetObject", resultError); err != nil {
+		t.Errorf("nil-fallback recorder publish error = %v", err)
+	}
+}
+
 func TestMiddlewaresRegistersOnStack(t *testing.T) {
 	t.Parallel()
 
+	apps, rec := Middlewares()
+	if rec == nil {
+		t.Fatal("Middlewares() returned nil recorder")
+	}
 	stack := middleware.NewStack("test", smithyRequestNew)
-	for _, apply := range Middlewares(nil) {
+	for _, apply := range apps {
 		if err := apply(stack); err != nil {
 			t.Fatalf("apply middleware option: %v", err)
 		}

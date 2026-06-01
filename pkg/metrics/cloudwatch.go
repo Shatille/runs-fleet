@@ -247,6 +247,42 @@ func (p *CloudWatchPublisher) PublishEvent(_ context.Context, _, _, _ string, _ 
 	return nil
 }
 
+// PublishAWSCallDuration is intentionally a no-op on the CloudWatch backend. AWS
+// call latency is high-frequency (one sample per SDK call), and CloudWatch's
+// un-batched PutMetricData would issue a synchronous API request per call —
+// roughly doubling the orchestrator's AWS API volume and adding a round-trip to
+// every instrumented call. The latency histogram is carried by the Prometheus
+// and Datadog backends instead; CloudWatch retains only the low-frequency
+// failure counter.
+func (*CloudWatchPublisher) PublishAWSCallDuration(context.Context, string, string, float64) error {
+	return nil
+}
+
+// PublishAWSCallFailure publishes an AWS SDK call failure with service,
+// operation, and result dimensions.
+func (p *CloudWatchPublisher) PublishAWSCallFailure(ctx context.Context, service, operation, result string) error {
+	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
+		Namespace: aws.String(p.namespace),
+		MetricData: []types.MetricDatum{
+			{
+				MetricName: aws.String("AWSCallFailures"),
+				Value:      aws.Float64(1),
+				Unit:       types.StandardUnitCount,
+				Timestamp:  aws.Time(time.Now()),
+				Dimensions: []types.Dimension{
+					{Name: aws.String("Service"), Value: aws.String(service)},
+					{Name: aws.String("Operation"), Value: aws.String(operation)},
+					{Name: aws.String("Result"), Value: aws.String(result)},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish AWS call failure metric for %s.%s (%s): %w", service, operation, result, err)
+	}
+	return nil
+}
+
 func (p *CloudWatchPublisher) putMetric(ctx context.Context, name string, value float64, unit types.StandardUnit) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),

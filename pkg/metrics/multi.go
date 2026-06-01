@@ -235,3 +235,15 @@ func (m *MultiPublisher) PublishEvent(ctx context.Context, title, text, alertTyp
 		return p.PublishEvent(ctx, title, text, alertType, tags)
 	})
 }
+
+func (m *MultiPublisher) PublishAWSCallDuration(ctx context.Context, service, operation string, durationSeconds float64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishAWSCallDuration(ctx, service, operation, durationSeconds)
+	})
+}
+
+func (m *MultiPublisher) PublishAWSCallFailure(ctx context.Context, service, operation, result string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishAWSCallFailure(ctx, service, operation, result)
+	})
+}
