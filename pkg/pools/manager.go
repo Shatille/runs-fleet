@@ -104,33 +104,69 @@ func (p PoolInstance) matchesFlexibleSpec(spec *fleet.FlexibleSpec) bool {
 }
 
 // Manager orchestrates warm pool operations and instance assignment.
+//
+// Locking model (see pkg/pools for the contention rationale):
+//   - idleMu guards only the instanceIdle map. Its critical sections are tiny
+//     and never span an AWS or DynamoDB call.
+//   - poolLocks holds one *poolLock per pool, serializing local candidate
+//     selection for ClaimAndStartPoolInstance so two goroutines in this process
+//     never pick the same stopped instance. Different pools use different locks
+//     and therefore never block one another.
+//   - A poolLock also tracks instances this process has selected but not yet
+//     resolved against DynamoDB (inFlight), so concurrent local claims skip a
+//     candidate another goroutine is already attempting.
+//
+// The authoritative cross-process guard against double-claims is the DynamoDB
+// conditional write in ClaimInstanceForJob; the in-memory locks only prevent
+// redundant work and lost updates within a single process and are never held
+// across network calls.
 type Manager struct {
-	mu            sync.RWMutex
-	dbClient      DBClient
-	fleetManager  FleetAPI
-	ec2Client     EC2API
-	config        *config.Config
-	instanceID    string               // Unique identifier for this instance (for distributed locking)
-	instanceIdle  map[string]time.Time // Tracks when instances became idle
-	poolInstances map[string][]string  // Cache of instance IDs per pool
-	subnetIndex   uint64
-	randIntn      func(int) int
+	dbClient     DBClient
+	fleetManager FleetAPI
+	ec2Client    EC2API
+	config       *config.Config
+	instanceID   string // Unique identifier for this instance (for distributed locking)
+
+	idleMu       sync.Mutex           // Guards instanceIdle only
+	instanceIdle map[string]time.Time // Tracks when instances became idle
+
+	poolLocks sync.Map // poolName -> *poolLock
+
+	subnetIndex uint64
+	randIntn    func(int) int
 
 	demandCh chan string // Pool names requesting immediate reconciliation
+}
+
+// poolLock serializes per-pool candidate selection and records which stopped
+// instances a local goroutine is currently attempting to claim. It is never
+// held across an AWS or DynamoDB call.
+type poolLock struct {
+	mu       sync.Mutex
+	inFlight map[string]struct{} // instance IDs being claimed by a local goroutine
+}
+
+// poolLockFor returns the per-pool lock, creating it on first use.
+func (m *Manager) poolLockFor(poolName string) *poolLock {
+	if v, ok := m.poolLocks.Load(poolName); ok {
+		return v.(*poolLock)
+	}
+	pl := &poolLock{inFlight: make(map[string]struct{})}
+	actual, _ := m.poolLocks.LoadOrStore(poolName, pl)
+	return actual.(*poolLock)
 }
 
 // NewManager creates pool manager with DB and fleet clients.
 // Generates a unique instance ID for distributed locking.
 func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *Manager {
 	return &Manager{
-		dbClient:      dbClient,
-		fleetManager:  fleetManager,
-		config:        cfg,
-		instanceID:    uuid.New().String(),
-		instanceIdle:  make(map[string]time.Time),
-		poolInstances: make(map[string][]string),
-		randIntn:      rand.IntN,
-		demandCh:      make(chan string, 64),
+		dbClient:     dbClient,
+		fleetManager: fleetManager,
+		config:       cfg,
+		instanceID:   uuid.New().String(),
+		instanceIdle: make(map[string]time.Time),
+		randIntn:     rand.IntN,
+		demandCh:     make(chan string, 64),
 	}
 }
 
@@ -194,9 +230,6 @@ func (m *Manager) reconcileDemand(ctx context.Context, first string) {
 		}
 	}
 reconcile:
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.ec2Client == nil {
 		return
 	}
@@ -211,9 +244,6 @@ reconcile:
 }
 
 func (m *Manager) reconcile(ctx context.Context) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.ec2Client == nil {
 		return
 	}
@@ -364,7 +394,10 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 
 	if stopped > desiredStopped {
 		excess := stopped - desiredStopped
-		stoppedInstances := m.filterByState(instances, stateStopped)
+		// Exclude instances a local claim is mid-flight on: the claim has already
+		// issued (or is about to issue) StartInstances, but EC2 may still report
+		// the instance as stopped, and terminating it here would kill a job's runner.
+		stoppedInstances := m.poolLockFor(poolName).filterNotInFlight(m.filterByState(instances, stateStopped))
 		toTerminate := min(excess, len(stoppedInstances))
 		if toTerminate > 0 {
 			instanceIDs := make([]string, toTerminate)
@@ -555,13 +588,16 @@ func (m *Manager) getPoolInstances(ctx context.Context, poolName string) ([]Pool
 			}
 
 			// Check idle tracking
+			m.idleMu.Lock()
 			if idleSince, ok := m.instanceIdle[instance.InstanceID]; ok {
 				instance.IdleSince = idleSince
 			} else if instance.State == stateRunning {
 				// Initialize idle tracking for new running instances
-				m.instanceIdle[instance.InstanceID] = time.Now()
-				instance.IdleSince = time.Now()
+				now := time.Now()
+				m.instanceIdle[instance.InstanceID] = now
+				instance.IdleSince = now
 			}
+			m.idleMu.Unlock()
 
 			instances = append(instances, instance)
 		}
@@ -662,9 +698,11 @@ func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string) error
 	}
 
 	// Remove from idle tracking
+	m.idleMu.Lock()
 	for _, id := range instanceIDs {
 		delete(m.instanceIdle, id)
 	}
+	m.idleMu.Unlock()
 
 	poolLog.Info(ctx, "instances stopped",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
@@ -685,9 +723,11 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 	}
 
 	// Remove from idle tracking
+	m.idleMu.Lock()
 	for _, id := range instanceIDs {
 		delete(m.instanceIdle, id)
 	}
+	m.idleMu.Unlock()
 
 	poolLog.Info(ctx, "instances terminated",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
@@ -697,20 +737,26 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 
 // MarkInstanceBusy marks an instance as busy (has an assigned job).
 func (m *Manager) MarkInstanceBusy(instanceID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.idleMu.Lock()
+	defer m.idleMu.Unlock()
 	delete(m.instanceIdle, instanceID)
 }
 
 // MarkInstanceIdle marks an instance as idle (no assigned job).
 func (m *Manager) MarkInstanceIdle(instanceID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.idleMu.Lock()
+	defer m.idleMu.Unlock()
 	m.instanceIdle[instanceID] = time.Now()
 }
 
 // ErrNoAvailableInstance is returned when no instance is available in the pool.
 var ErrNoAvailableInstance = errors.New("no available instance in pool")
+
+// ErrClaimContextDone is returned when a claim is attempted with an already
+// expired or cancelled context. Callers should treat this as retryable (e.g.
+// leave the SQS message for redelivery) rather than proceeding to make AWS
+// calls that would immediately fail and trigger a DOA cascade.
+var ErrClaimContextDone = errors.New("claim aborted: context already done")
 
 // AvailableInstance represents an instance that can be assigned to a job.
 type AvailableInstance struct {
@@ -724,14 +770,6 @@ type AvailableInstance struct {
 // Running idle instances are not returned - they require agent changes for reuse.
 // Note: This method only finds an instance. Use ClaimAndStartPoolInstance for atomic claim+start.
 func (m *Manager) GetAvailableInstance(ctx context.Context, poolName string) (*AvailableInstance, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.getAvailableInstanceLocked(ctx, poolName)
-}
-
-// getAvailableInstanceLocked finds an available instance while already holding the lock.
-func (m *Manager) getAvailableInstanceLocked(ctx context.Context, poolName string) (*AvailableInstance, error) {
 	if m.ec2Client == nil {
 		return nil, fmt.Errorf("EC2 client not configured")
 	}
@@ -763,15 +801,6 @@ func (m *Manager) getAvailableInstanceLocked(ctx context.Context, poolName strin
 // Returns the instance ID on success.
 // Note: Prefer ClaimAndStartPoolInstance for atomic claim+start to avoid race conditions.
 func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID, repo string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.startInstanceForJobLocked(ctx, instanceID, repo)
-}
-
-// startInstanceForJobLocked starts an instance while already holding the lock.
-// If repo is non-empty, the instance is tagged with the Role tag for cost allocation.
-func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, repo string) error {
 	if m.ec2Client == nil {
 		return fmt.Errorf("EC2 client not configured")
 	}
@@ -805,7 +834,9 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, rep
 	}
 
 	// Mark as busy immediately to prevent reconciler from touching it
+	m.idleMu.Lock()
 	delete(m.instanceIdle, instanceID)
+	m.idleMu.Unlock()
 
 	poolLog.Info(ctx, "pool instance started for job")
 	return nil
@@ -816,7 +847,8 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, rep
 const instanceClaimTTL = 5 * time.Minute
 
 // ClaimAndStartPoolInstance atomically finds, claims, and starts a stopped pool instance.
-// Returns the claimed instance on success, ErrNoAvailableInstance if no instance available.
+// Returns the claimed instance on success, ErrNoAvailableInstance if no instance available,
+// or ErrClaimContextDone (retryable) if the caller's budget is already spent on entry.
 //
 // The jobID parameter is used for distributed locking via DynamoDB conditional writes.
 // This prevents race conditions in multi-orchestrator deployments where multiple
@@ -831,33 +863,48 @@ const instanceClaimTTL = 5 * time.Minute
 // by CPU ascending (best-fit: smallest instance that meets requirements).
 // If nil, any stopped instance is eligible (legacy behavior).
 //
+// Concurrency: this method never holds an in-memory lock across an AWS or DynamoDB
+// call. Candidate selection takes a short per-pool lock to mark the chosen instance
+// in-flight (so two local goroutines never attempt the same one), then releases it
+// before claiming in DynamoDB and starting the instance. The DynamoDB conditional
+// write in ClaimInstanceForJob remains the authoritative cross-process guard against
+// double-claims. Different pools use independent locks and do not serialize.
+//
 // The claim flow is:
-//  1. Find all stopped instances in the pool
-//  2. Filter by spec requirements (if spec is provided)
-//  3. Sort by CPU ascending (best-fit selection)
-//  4. For each instance, atomically claim it in DynamoDB (fails if another job claimed it)
-//  5. Start the EC2 instance and tag it with the repo
+//  1. Reject immediately if the context is already done (retryable; avoids DOA AWS calls)
+//  2. Find all stopped instances in the pool (DescribeInstances, unlocked)
+//  3. Filter by spec requirements (if spec is provided) and sort by CPU ascending
+//  4. For each candidate: reserve it locally under a short per-pool lock, then
+//     atomically claim it in DynamoDB (unlocked); on conflict, release the local
+//     reservation and try the next candidate
+//  5. Start the EC2 instance and tag it with the repo (unlocked)
 //  6. If start fails, release the DynamoDB claim and return error
 //
 // The caller is responsible for releasing the claim after job completion or failure
 // by calling the DB's ReleaseInstanceClaim method.
 func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string, jobID int64, repo string, spec *fleet.FlexibleSpec) (*AvailableInstance, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.dbClient == nil {
 		return nil, fmt.Errorf("DB client not configured for distributed locking")
 	}
 
+	// Dead-context guard: if the budget is already spent, fail fast and retryable
+	// instead of issuing AWS calls that would error at 0ms and cascade.
+	if err := ctx.Err(); err != nil {
+		poolLog.Warn(ctx, "claim aborted: context already done on entry",
+			slog.String(logging.KeyPoolName, poolName),
+			slog.String("error", err.Error()))
+		return nil, fmt.Errorf("%w: %w", ErrClaimContextDone, err)
+	}
+
 	ctx = logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
 
-	// Get all stopped instances in the pool
+	// Get all stopped instances in the pool (no lock held across this AWS call).
 	instances, err := m.getPoolInstances(ctx, poolName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pool instances: %w", err)
 	}
 
-	// Filter stopped instances matching the spec
+	// Filter stopped instances matching the spec.
 	var candidates []PoolInstance
 	for _, inst := range instances {
 		if inst.State != stateStopped {
@@ -869,7 +916,7 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		candidates = append(candidates, inst)
 	}
 
-	// Sort by CPU ascending (best-fit: smallest instance that meets requirements)
+	// Sort by CPU ascending (best-fit: smallest instance that meets requirements).
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].CPU != candidates[j].CPU {
 			return candidates[i].CPU < candidates[j].CPU
@@ -877,44 +924,95 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		return candidates[i].RAM < candidates[j].RAM
 	})
 
-	// Try to claim and start each candidate instance
+	pl := m.poolLockFor(poolName)
+
+	// Try to claim and start each candidate instance.
 	for _, inst := range candidates {
+		// Reserve the candidate locally under a short per-pool lock so two
+		// goroutines in this process never attempt the same instance. The lock
+		// is released before any AWS/DynamoDB call.
+		if !pl.reserve(inst.InstanceID) {
+			// Another local goroutine is already attempting this instance.
+			continue
+		}
+
 		instance := &AvailableInstance{
 			InstanceID:   inst.InstanceID,
 			InstanceType: inst.InstanceType,
 			State:        inst.State,
 		}
 
-		// Atomically claim this instance in DynamoDB before starting
+		// Atomically claim this instance in DynamoDB (authoritative guard).
 		if err := m.dbClient.ClaimInstanceForJob(ctx, instance.InstanceID, jobID, instanceClaimTTL); err != nil {
+			pl.release(instance.InstanceID)
 			if errors.Is(err, db.ErrInstanceAlreadyClaimed) {
 				continue
 			}
 			return nil, fmt.Errorf("failed to claim instance in DynamoDB: %w", err)
 		}
 
-		// Start the instance while holding both local mutex and DynamoDB claim
-		if err := m.startInstanceForJobLocked(ctx, instance.InstanceID, repo); err != nil {
-			// Release the DynamoDB claim since we failed to start
+		// Start the instance. The DynamoDB claim holds the cross-process lock;
+		// the local reservation can be dropped now that the claim is authoritative.
+		if err := m.StartInstanceForJob(ctx, instance.InstanceID, repo); err != nil {
+			// Release the DynamoDB claim since we failed to start.
 			if releaseErr := m.dbClient.ReleaseInstanceClaim(ctx, instance.InstanceID, jobID); releaseErr != nil {
 				poolLog.Error(ctx, "instance claim release failed after start failure",
 					slog.String(logging.KeyInstanceID, instance.InstanceID),
 					slog.String("error", releaseErr.Error()))
 			}
+			pl.release(instance.InstanceID)
 			return nil, fmt.Errorf("failed to start claimed instance: %w", err)
 		}
 
+		pl.release(instance.InstanceID)
 		return instance, nil
 	}
 
 	return nil, ErrNoAvailableInstance
 }
 
+// reserve marks an instance as being claimed by a local goroutine. It returns
+// false if another local goroutine has already reserved it. The critical section
+// is in-memory only and never spans an AWS or DynamoDB call.
+func (pl *poolLock) reserve(instanceID string) bool {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if _, ok := pl.inFlight[instanceID]; ok {
+		return false
+	}
+	pl.inFlight[instanceID] = struct{}{}
+	return true
+}
+
+// release clears a local reservation for an instance.
+func (pl *poolLock) release(instanceID string) {
+	pl.mu.Lock()
+	delete(pl.inFlight, instanceID)
+	pl.mu.Unlock()
+}
+
+// filterNotInFlight returns the subset of instances that are not currently
+// reserved by a local claim. Used by reconciliation to avoid terminating an
+// instance a concurrent claim has selected. The critical section is in-memory
+// only.
+func (pl *poolLock) filterNotInFlight(instances []PoolInstance) []PoolInstance {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if len(pl.inFlight) == 0 {
+		return instances
+	}
+	filtered := make([]PoolInstance, 0, len(instances))
+	for _, inst := range instances {
+		if _, ok := pl.inFlight[inst.InstanceID]; ok {
+			continue
+		}
+		filtered = append(filtered, inst)
+	}
+	return filtered
+}
+
 // StopPoolInstance stops a pool instance (e.g., after failed SSM config).
 func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.ec2Client == nil {
 		return fmt.Errorf("EC2 client not configured")
 	}
@@ -929,7 +1027,9 @@ func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error
 	}
 
 	// Remove from busy tracking
+	m.idleMu.Lock()
 	delete(m.instanceIdle, instanceID)
+	m.idleMu.Unlock()
 
 	poolLog.Info(ctx, "pool instance stopped")
 	return nil

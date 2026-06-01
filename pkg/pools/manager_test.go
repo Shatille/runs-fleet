@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -280,9 +281,6 @@ func TestNewManager(t *testing.T) {
 	}
 	if manager.instanceIdle == nil {
 		t.Error("instanceIdle map should be initialized")
-	}
-	if manager.poolInstances == nil {
-		t.Error("poolInstances map should be initialized")
 	}
 }
 
@@ -2387,9 +2385,9 @@ func TestStartInstanceForJob(t *testing.T) {
 	}
 
 	// Verify instance is no longer tracked as idle
-	manager.mu.RLock()
+	manager.idleMu.Lock()
 	_, isIdle := manager.instanceIdle["i-test123"]
-	manager.mu.RUnlock()
+	manager.idleMu.Unlock()
 	if isIdle {
 		t.Error("instance should not be in idle map after StartInstanceForJob")
 	}
@@ -2596,9 +2594,9 @@ func TestClaimAndStartPoolInstance_Success(t *testing.T) {
 	}
 
 	// Verify instance is marked as busy (not in idle map)
-	manager.mu.RLock()
+	manager.idleMu.Lock()
 	_, isIdle := manager.instanceIdle[testInstanceStoppedID]
-	manager.mu.RUnlock()
+	manager.idleMu.Unlock()
 	if isIdle {
 		t.Error("instance should not be in idle map after ClaimAndStartPoolInstance")
 	}
@@ -2807,9 +2805,9 @@ func TestStopPoolInstance_Success(t *testing.T) {
 	}
 
 	// Verify instance is removed from idle tracking
-	manager.mu.RLock()
+	manager.idleMu.Lock()
 	_, isIdle := manager.instanceIdle["i-test123"]
-	manager.mu.RUnlock()
+	manager.idleMu.Unlock()
 	if isIdle {
 		t.Error("instance should be removed from idle map after StopPoolInstance")
 	}
@@ -2848,18 +2846,21 @@ func TestStopPoolInstance_Error(t *testing.T) {
 func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 	t.Parallel()
 
-	// Test that when multiple goroutines attempt to claim the same instance,
-	// only one succeeds and the other either fails or gets a different instance
-	claimCount := 0
-	startCount := 0
+	// Test that when multiple goroutines attempt to claim the same single
+	// instance, exactly one succeeds and the other gets ErrNoAvailableInstance,
+	// with the instance started exactly once. The mock models the DynamoDB
+	// conditional write: a claim succeeds only if the instance is not already
+	// claimed by a different job. The thread-safe mocks let -race detect any
+	// data race in the manager itself.
+	claimed := newClaimTracker()
+	var startCount int64
 
 	mockDB := &MockDBClient{
-		ClaimInstanceForJobFunc: func(_ context.Context, _ string, _ int64, _ time.Duration) error {
-			claimCount++
-			// First claim succeeds, subsequent claims fail with conflict
-			if claimCount > 1 {
-				return db.ErrInstanceAlreadyClaimed
-			}
+		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, jobID int64, _ time.Duration) error {
+			return claimed.claim(instanceID, jobID)
+		},
+		ReleaseInstanceClaimFunc: func(_ context.Context, instanceID string, jobID int64) error {
+			claimed.release(instanceID, jobID)
 			return nil
 		},
 	}
@@ -2881,7 +2882,7 @@ func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 			}, nil
 		},
 		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
-			startCount++
+			atomic.AddInt64(&startCount, 1)
 			return &ec2.StartInstancesOutput{}, nil
 		},
 	}
@@ -2906,6 +2907,8 @@ func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 			successCount++
 		} else if errors.Is(err, ErrNoAvailableInstance) {
 			errorCount++
+		} else {
+			t.Errorf("unexpected error: %v", err)
 		}
 	}
 
@@ -2917,8 +2920,8 @@ func TestClaimAndStartPoolInstance_ConcurrentClaims(t *testing.T) {
 		t.Errorf("expected exactly 1 ErrNoAvailableInstance error, got %d", errorCount)
 	}
 	// Instance should only be started once
-	if startCount != 1 {
-		t.Errorf("expected instance to be started once, got %d starts", startCount)
+	if got := atomic.LoadInt64(&startCount); got != 1 {
+		t.Errorf("expected instance to be started once, got %d starts", got)
 	}
 }
 
