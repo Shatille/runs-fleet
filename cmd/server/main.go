@@ -56,17 +56,17 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	log.Info("server starting")
+	log.Info(ctx, "server starting")
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Error("config load failed", slog.String("error", err.Error()))
+		log.Error(ctx, "config load failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
 	tp, err := tracing.Setup(ctx, cfg.Tracing)
 	if err != nil {
-		log.Error("tracing setup failed", slog.String("error", err.Error()))
+		log.Error(ctx, "tracing setup failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	otel.SetTracerProvider(tp)
@@ -85,10 +85,10 @@ func main() {
 		// middleware and records the full operation duration, including a
 		// per-operation-timeout abort; the timeout middleware inserts itself just
 		// inside it.
-		awsconfig.WithAPIOptions(append(awsobs.Middlewares(awsObsLog.Logger), perOpTimeout)),
+		awsconfig.WithAPIOptions(append(awsobs.Middlewares(awsObsLog), perOpTimeout)),
 	)
 	if err != nil {
-		log.Error("aws config load failed", slog.String("error", err.Error()))
+		log.Error(ctx, "aws config load failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
@@ -197,22 +197,22 @@ func main() {
 	}
 
 	go func() {
-		log.Info("http server listening", slog.String("addr", server.Addr))
+		log.Info(ctx, "http server listening", slog.String("addr", server.Addr))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("http server failed", slog.String("error", err.Error()))
+			log.Error(ctx, "http server failed", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Info("shutdown signal received")
+	log.Info(ctx, "shutdown signal received")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
 
 	// Stop accepting new HTTP/webhook traffic before draining workers.
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Error("server shutdown failed", slog.String("error", err.Error()))
+		log.Error(ctx, "server shutdown failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
@@ -220,21 +220,21 @@ func main() {
 	// to return (bounded) before flushing telemetry so their final spans and
 	// metrics are captured, rather than abandoning them mid-iteration.
 	if waitForWorkers(&workers, workerDrainTimeout) {
-		log.Info("background workers stopped")
+		log.Info(ctx, "background workers stopped")
 	} else {
-		log.Warn("background workers did not stop within grace period",
+		log.Warn(ctx, "background workers did not stop within grace period",
 			slog.Duration("timeout", workerDrainTimeout))
 	}
 
 	if err := tracing.Shutdown(shutdownCtx, tp); err != nil {
-		log.Warn("tracing shutdown failed", slog.String("error", err.Error()))
+		log.Warn(ctx, "tracing shutdown failed", slog.String("error", err.Error()))
 	}
 
 	if err := metricsPublisher.Close(); err != nil {
-		log.Warn("metrics publisher close failed", slog.String("error", err.Error()))
+		log.Warn(ctx, "metrics publisher close failed", slog.String("error", err.Error()))
 	}
 
-	log.Info("server stopped")
+	log.Info(ctx, "server stopped")
 }
 
 // workerDrainTimeout bounds how long shutdown waits for background workers to
@@ -259,19 +259,19 @@ func waitForWorkers(wg *sync.WaitGroup, timeout time.Duration) bool {
 
 func initJobQueue(sqsCfg aws.Config, cfg *config.Config) queue.Queue {
 	log := logging.WithComponent(logging.LogTypeQueue, "init")
-	log.Info("queue initialized", slog.String("type", "sqs"), slog.String(logging.KeyQueueURL, cfg.QueueURL))
+	log.Info(context.Background(), "queue initialized", slog.String("type", "sqs"), slog.String(logging.KeyQueueURL, cfg.QueueURL))
 	return queue.NewSQSClient(sqsCfg, cfg.QueueURL)
 }
 
 func initRunnerManager(secretsStore secrets.Store, cfg *config.Config) *runner.Manager {
 	log := logging.WithComponent(logging.LogTypeServer, "runner")
 	if cfg.GitHubAppID == "" || cfg.GitHubAppPrivateKey == "" {
-		log.Warn("runner manager not initialized", slog.String(logging.KeyReason, "github app credentials not configured"))
+		log.Warn(context.Background(), "runner manager not initialized", slog.String(logging.KeyReason, "github app credentials not configured"))
 		return nil
 	}
 	githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 	if err != nil {
-		log.Error("github client creation failed", slog.String("error", err.Error()))
+		log.Error(context.Background(), "github client creation failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	return runner.NewManager(githubClient, secretsStore, runner.ManagerConfig{
@@ -315,10 +315,10 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	}
 	store, err := secrets.NewStore(ctx, secretsCfg, awsCfg)
 	if err != nil {
-		log.Error("secrets store creation failed", slog.String("error", err.Error()))
+		log.Error(ctx, "secrets store creation failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	log.Info("secrets store initialized", slog.String(logging.KeyBackend, cfg.SecretsBackend))
+	log.Info(ctx, "secrets store initialized", slog.String(logging.KeyBackend, cfg.SecretsBackend))
 	return store
 }
 
@@ -345,7 +345,7 @@ func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStor
 		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 		if err != nil {
 			hkLog := logging.WithComponent(logging.LogTypeServer, "housekeeping")
-			hkLog.Error("failed to initialize GitHub client for stale job detection", slog.String("error", err.Error()))
+			hkLog.Error(context.Background(), "failed to initialize GitHub client for stale job detection", slog.String("error", err.Error()))
 		} else {
 			tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})
 		}
@@ -406,7 +406,7 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 			MaxMessagesPerPayload: cfg.MetricsDatadogMaxMsgsPerPayload,
 		})
 		if err != nil {
-			log.Warn("datadog metrics init failed", slog.String("error", err.Error()))
+			log.Warn(context.Background(), "datadog metrics init failed", slog.String("error", err.Error()))
 		} else {
 			publishers = append(publishers, dd)
 			backends = append(backends, "datadog")
@@ -417,7 +417,7 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 		return metrics.NoopPublisher{}, nil
 	}
 
-	log.Info("metrics initialized", slog.Any("backends", backends))
+	log.Info(context.Background(), "metrics initialized", slog.Any("backends", backends))
 
 	if len(publishers) == 1 {
 		return publishers[0], prometheusHandler
@@ -512,7 +512,7 @@ func (ws *webhookServer) handleReadiness(w http.ResponseWriter, r *http.Request)
 		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := pinger.Ping(pingCtx); err != nil {
-			serverLog.Warn("readiness check failed", slog.String("error", err.Error()))
+			serverLog.Warn(pingCtx, "readiness check failed", slog.String("error", err.Error()))
 			http.Error(w, "Queue not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -530,7 +530,7 @@ func (ws *webhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := gh.ParseWebhook(r, ws.cfg.GitHubWebhookSecret)
 	if err != nil {
-		log.Warn("webhook parse failed", slog.String("error", err.Error()))
+		log.Warn(r.Context(), "webhook parse failed", slog.String("error", err.Error()))
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
@@ -569,8 +569,8 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		}
 		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient, ws.metricsPublisher)
 		if err != nil {
-			webhookLog.Error("job failure handling failed",
-				slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
+			failCtx := logging.ContextWithJob(ctx, event.GetWorkflowJob().GetID(), 0, event.GetRepo().GetFullName())
+			webhookLog.Error(failCtx, "job failure handling failed",
 				slog.String("error", err.Error()))
 		}
 		if requeued {

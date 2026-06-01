@@ -556,7 +556,7 @@ func TestCleanupExpiredCache(t *testing.T) {
 		CacheTTL: 5 * time.Minute,
 	}
 
-	b.cleanupExpiredCache()
+	b.cleanupExpiredCache(context.Background())
 
 	// Valid entry should remain
 	if _, exists := b.cache["valid"]; !exists {

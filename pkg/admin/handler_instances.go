@@ -109,7 +109,7 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 			NextToken: nextToken,
 		})
 		if err != nil {
-			h.log.Error("failed to describe instances", slog.String(logging.KeyError, err.Error()))
+			h.log.Error(ctx, "failed to describe instances", slog.String(logging.KeyError, err.Error()))
 			h.writeError(w, http.StatusInternalServerError, "Failed to list instances", err.Error())
 			return
 		}
@@ -135,7 +135,7 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 	for pool := range pools {
 		busyIDs, err := h.db.GetPoolBusyInstanceIDs(ctx, pool)
 		if err != nil {
-			h.log.Warn("failed to get busy instances for pool",
+			h.log.Warn(ctx, "failed to get busy instances for pool",
 				slog.String(logging.KeyPoolName, pool),
 				slog.String(logging.KeyError, err.Error()))
 			warnings = append(warnings, "busy status unavailable for pool: "+pool)
@@ -187,16 +187,18 @@ func getEC2Tag(tags []types.Tag, key string) string {
 }
 
 func (h *InstancesHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	// Response-writer helper with no request/context in scope.
+	ctx := context.Background()
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "json encode failed", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Internal error", "")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := buf.WriteTo(w); err != nil {
-		h.log.Error("write response failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "write response failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 

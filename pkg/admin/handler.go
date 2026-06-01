@@ -136,7 +136,7 @@ func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
 	for _, name := range poolNames {
 		config, err := h.db.GetPoolConfig(ctx, name)
 		if err != nil {
-			adminLog.Error("pool config fetch failed",
+			adminLog.Error(ctx, "pool config fetch failed",
 				slog.String(logging.KeyPoolName, name),
 				slog.String("error", err.Error()))
 			continue
@@ -147,7 +147,7 @@ func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
 
 		busyIDs, err := h.db.GetPoolBusyInstanceIDs(ctx, name)
 		if err != nil {
-			adminLog.Warn("failed to get busy instances",
+			adminLog.Warn(ctx, "failed to get busy instances",
 				slog.String(logging.KeyPoolName, name),
 				slog.String("error", err.Error()))
 		}
@@ -181,7 +181,7 @@ func (h *Handler) GetPool(w http.ResponseWriter, r *http.Request) {
 
 	busyIDs, err := h.db.GetPoolBusyInstanceIDs(ctx, name)
 	if err != nil {
-		adminLog.Warn("failed to get busy instances",
+		adminLog.Warn(ctx, "failed to get busy instances",
 			slog.String(logging.KeyPoolName, name),
 			slog.String("error", err.Error()))
 	}
@@ -457,16 +457,19 @@ func (h *Handler) requestToConfig(req *PoolRequest) *db.PoolConfig {
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	// Response-writer helper with no request/context in scope; the JSON-encode and
+	// write-failure logs carry no task identity.
+	ctx := context.Background()
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(data); err != nil {
-		adminLog.Error("json encode failed", slog.String("error", err.Error()))
+		adminLog.Error(ctx, "json encode failed", slog.String("error", err.Error()))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := buf.WriteTo(w); err != nil {
-		adminLog.Error("write response failed", slog.String("error", err.Error()))
+		adminLog.Error(ctx, "write response failed", slog.String("error", err.Error()))
 	}
 }
 
@@ -497,13 +500,14 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 	}
 	attrs = append(attrs, extra...)
 
+	ctx := r.Context()
 	switch result {
 	case "denied":
-		auditLog.Warn("admin action denied", attrs...)
+		auditLog.Warn(ctx, "admin action denied", attrs...)
 	case "error":
-		auditLog.Error("admin action failed", attrs...)
+		auditLog.Error(ctx, "admin action failed", attrs...)
 	default:
-		auditLog.Info("admin action", attrs...)
+		auditLog.Info(ctx, "admin action", attrs...)
 	}
 }
 

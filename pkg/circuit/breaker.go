@@ -95,7 +95,7 @@ func (b *Breaker) StartCacheCleanup(ctx context.Context) <-chan struct{} {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				b.cleanupExpiredCache()
+				b.cleanupExpiredCache(ctx)
 			}
 		}
 	}()
@@ -103,7 +103,7 @@ func (b *Breaker) StartCacheCleanup(ctx context.Context) <-chan struct{} {
 }
 
 // cleanupExpiredCache removes cache entries that have exceeded their TTL.
-func (b *Breaker) cleanupExpiredCache() {
+func (b *Breaker) cleanupExpiredCache(ctx context.Context) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -122,7 +122,7 @@ func (b *Breaker) cleanupExpiredCache() {
 	}
 
 	if len(expiredKeys) > 0 {
-		circuitLog.Debug("cache cleanup completed", slog.Int(logging.KeyCount, len(expiredKeys)))
+		circuitLog.Debug(ctx, "cache cleanup completed", slog.Int(logging.KeyCount, len(expiredKeys)))
 	}
 }
 
@@ -166,7 +166,7 @@ func (b *Breaker) RecordInterruption(ctx context.Context, instanceType string) e
 		record.State = string(StateOpen)
 		record.OpenedAt = now.Format(time.RFC3339)
 		record.AutoResetAt = now.Add(CooldownPeriod).Format(time.RFC3339)
-		circuitLog.WarnContext(ctx, "circuit breaker opened",
+		circuitLog.Warn(ctx, "circuit breaker opened",
 			slog.String(logging.KeyInstanceType, instanceType),
 			slog.Int(logging.KeyCount, record.InterruptionCount))
 	}
@@ -234,11 +234,11 @@ func (b *Breaker) CheckCircuit(ctx context.Context, instanceType string) (State,
 			record.AutoResetAt = ""
 
 			if err := b.putRecord(ctx, record); err != nil {
-				circuitLog.ErrorContext(ctx, "circuit reset failed",
+				circuitLog.Error(ctx, "circuit reset failed",
 					slog.String(logging.KeyInstanceType, instanceType),
 					slog.String("error", err.Error()))
 			} else {
-				circuitLog.InfoContext(ctx, "circuit breaker auto-reset",
+				circuitLog.Info(ctx, "circuit breaker auto-reset",
 					slog.String(logging.KeyInstanceType, instanceType))
 			}
 		}
@@ -275,7 +275,7 @@ func (b *Breaker) ResetCircuit(ctx context.Context, instanceType string) error {
 	delete(b.cache, instanceType)
 	b.mu.Unlock()
 
-	circuitLog.InfoContext(ctx, "circuit breaker manually reset",
+	circuitLog.Info(ctx, "circuit breaker manually reset",
 		slog.String(logging.KeyInstanceType, instanceType))
 	return nil
 }

@@ -109,23 +109,60 @@ const (
 	LogTypeAWS         = "aws"
 )
 
-// Logger wraps slog.Logger with convenience methods.
-// It uses a lazyHandler so that package-level loggers created before Init()
-// pick up the JSON handler configured later.
+// Logger wraps slog.Logger with a context-first logging API. The underlying
+// *slog.Logger is unexported on purpose: every log method requires a
+// context.Context so that task-identity attrs stashed via ContextWith are always
+// emitted. Embedding *slog.Logger would re-expose the non-context Error/Warn/
+// Info/Debug methods, which compile fine but silently drop the context attrs;
+// keeping the field private makes that footgun unrepresentable.
+//
+// It uses a lazyHandler so that package-level loggers created before Init() pick
+// up the JSON handler configured later.
 type Logger struct {
-	*slog.Logger
+	l *slog.Logger
 }
 
 // New creates a new Logger with the given attributes.
 // The returned logger resolves slog.Default() at log time, not at creation time.
 func New(attrs ...any) *Logger {
 	h := &lazyHandler{preAttrs: argsToAttrs(attrs)}
-	return &Logger{Logger: slog.New(h)}
+	return &Logger{l: slog.New(h)}
+}
+
+// NewWithHandler wraps an explicit slog.Handler in a context-first Logger,
+// bypassing the lazyHandler/slog.Default() resolution. It is intended for
+// callers that need a Logger bound to a specific handler (e.g. one writing into
+// a test buffer), independent of the process-wide default.
+func NewWithHandler(h slog.Handler) *Logger {
+	return &Logger{l: slog.New(h)}
 }
 
 // With returns a new Logger with additional attributes.
 func (l *Logger) With(attrs ...any) *Logger {
-	return &Logger{Logger: l.Logger.With(attrs...)}
+	return &Logger{l: l.l.With(attrs...)}
+}
+
+// Error logs at error level. The context is mandatory: it carries any
+// task-identity attrs stashed via ContextWith, which the contextHandler injects
+// into the record. It delegates to the underlying slog ErrorContext so that
+// propagation always fires.
+func (l *Logger) Error(ctx context.Context, msg string, args ...any) {
+	l.l.ErrorContext(ctx, msg, args...)
+}
+
+// Warn logs at warn level. See Error for why the context is mandatory.
+func (l *Logger) Warn(ctx context.Context, msg string, args ...any) {
+	l.l.WarnContext(ctx, msg, args...)
+}
+
+// Info logs at info level. See Error for why the context is mandatory.
+func (l *Logger) Info(ctx context.Context, msg string, args ...any) {
+	l.l.InfoContext(ctx, msg, args...)
+}
+
+// Debug logs at debug level. See Error for why the context is mandatory.
+func (l *Logger) Debug(ctx context.Context, msg string, args ...any) {
+	l.l.DebugContext(ctx, msg, args...)
 }
 
 // WithComponent returns a new Logger with the component and log_type attributes set.

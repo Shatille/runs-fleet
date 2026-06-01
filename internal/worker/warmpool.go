@@ -85,9 +85,9 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		return nil, fmt.Errorf("failed to claim pool instance: %w", err)
 	}
 
-	warmPoolLog.Info("instance claimed",
-		slog.String(logging.KeyInstanceID, instance.InstanceID),
-		slog.Int64(logging.KeyJobID, job.JobID))
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instance.InstanceID))
+
+	warmPoolLog.Info(ctx, "instance claimed")
 
 	// Prepare runner config for this instance (updates SSM)
 	// Instance is starting but agent won't read SSM until fully booted (~30s)
@@ -103,8 +103,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 	}
 
 	if err := w.Runner.PrepareRunner(ctx, prepareReq); err != nil {
-		warmPoolLog.Error("runner config preparation failed",
-			slog.String(logging.KeyInstanceID, instance.InstanceID),
+		warmPoolLog.Error(ctx, "runner config preparation failed",
 			slog.String("error", err.Error()))
 		// Instance already started - stop it since it has no valid config
 		// Retry stop to ensure instance doesn't run with stale SSM config
@@ -114,8 +113,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 				break
 			}
 			if stopErr := w.Pool.StopPoolInstance(ctx, instance.InstanceID); stopErr != nil {
-				warmPoolLog.Error("instance stop failed after SSM prep failure",
-					slog.String(logging.KeyInstanceID, instance.InstanceID),
+				warmPoolLog.Error(ctx, "instance stop failed after SSM prep failure",
 					slog.Int("attempt", attempt+1),
 					slog.String("error", stopErr.Error()))
 				continue
@@ -124,14 +122,12 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 			break
 		}
 		if !stopped {
-			warmPoolLog.Error("instance may have invalid config - manual cleanup required",
-				slog.String(logging.KeyInstanceID, instance.InstanceID))
+			warmPoolLog.Error(ctx, "instance may have invalid config - manual cleanup required")
 		}
 		// Release the distributed claim since assignment failed
 		if w.DB != nil {
 			if releaseErr := w.DB.ReleaseInstanceClaim(ctx, instance.InstanceID, job.JobID); releaseErr != nil {
-				warmPoolLog.Error("instance claim release failed",
-					slog.String(logging.KeyInstanceID, instance.InstanceID),
+				warmPoolLog.Error(ctx, "instance claim release failed",
 					slog.String("error", releaseErr.Error()))
 			}
 		}
@@ -153,13 +149,11 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 			Traceparent:  job.Traceparent,
 		}
 		if err := w.DB.SaveJob(ctx, jobRecord); err != nil {
-			warmPoolLog.Error("job record save failed",
-				slog.String(logging.KeyInstanceID, instance.InstanceID),
+			warmPoolLog.Error(ctx, "job record save failed",
 				slog.String("error", err.Error()))
 			// Release claim first to allow another orchestrator to retry with this instance
 			if releaseErr := w.DB.ReleaseInstanceClaim(ctx, instance.InstanceID, job.JobID); releaseErr != nil {
-				warmPoolLog.Error("instance claim release failed",
-					slog.String(logging.KeyInstanceID, instance.InstanceID),
+				warmPoolLog.Error(ctx, "instance claim release failed",
 					slog.String("error", releaseErr.Error()))
 			}
 			// Job record is required for tracking - stop instance and fall back to cold start
@@ -169,8 +163,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 					break
 				}
 				if stopErr := w.Pool.StopPoolInstance(ctx, instance.InstanceID); stopErr != nil {
-					warmPoolLog.Error("instance stop failed after DB save failure",
-						slog.String(logging.KeyInstanceID, instance.InstanceID),
+					warmPoolLog.Error(ctx, "instance stop failed after DB save failure",
 						slog.Int("attempt", attempt+1),
 						slog.String("error", stopErr.Error()))
 					continue
@@ -179,16 +172,13 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 				break
 			}
 			if !stopped {
-				warmPoolLog.Error("instance may be running without job record - manual cleanup required",
-					slog.String(logging.KeyInstanceID, instance.InstanceID))
+				warmPoolLog.Error(ctx, "instance may be running without job record - manual cleanup required")
 			}
 			return &WarmPoolResult{Assigned: false}, nil
 		}
 	}
 
-	warmPoolLog.Info("job assigned to warm pool",
-		slog.Int64(logging.KeyJobID, job.JobID),
-		slog.String(logging.KeyInstanceID, instance.InstanceID))
+	warmPoolLog.Info(ctx, "job assigned to warm pool")
 	return &WarmPoolResult{
 		Assigned:   true,
 		InstanceID: instance.InstanceID,

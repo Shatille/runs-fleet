@@ -86,7 +86,7 @@ func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 
 		status, err := h.getQueueStatus(ctx, q.name, q.url)
 		if err != nil {
-			h.log.Warn("failed to get queue status",
+			h.log.Warn(ctx, "failed to get queue status",
 				slog.String("queue", q.name),
 				slog.String(logging.KeyError, err.Error()))
 			continue
@@ -135,15 +135,17 @@ func atoi(s string) int {
 }
 
 func (h *QueuesHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	// Response-writer helper with no request/context in scope.
+	ctx := context.Background()
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "json encode failed", slog.String(logging.KeyError, err.Error()))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := buf.WriteTo(w); err != nil {
-		h.log.Error("write response failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "write response failed", slog.String(logging.KeyError, err.Error()))
 	}
 }

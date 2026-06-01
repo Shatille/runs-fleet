@@ -36,17 +36,17 @@ const registerServiceMetadataID = "RegisterServiceMetadata"
 // awsconfig.WithAPIOptions, attaching the observability middleware to every AWS
 // client built from that config. The provided logger should already carry the
 // component/log_type context; when nil, a default awsobs logger is used.
-func Middlewares(log *slog.Logger) []func(*middleware.Stack) error {
+func Middlewares(log *logging.Logger) []func(*middleware.Stack) error {
 	return []func(*middleware.Stack) error{register(log, config.AWSSlowCallThreshold)}
 }
 
 // register adds the observability middleware to a stack's Initialize step. It is
 // the single-function form of Middlewares and is also the unit-test seam for
 // injecting a custom threshold.
-func register(log *slog.Logger, threshold time.Duration) func(*middleware.Stack) error {
+func register(log *logging.Logger, threshold time.Duration) func(*middleware.Stack) error {
 	obsLog := log
 	if obsLog == nil {
-		obsLog = logging.WithComponent(logging.LogTypeAWS, "observability").Logger
+		obsLog = logging.WithComponent(logging.LogTypeAWS, "observability")
 	}
 	mw := &observe{log: obsLog, threshold: threshold}
 	return func(stack *middleware.Stack) error {
@@ -68,7 +68,7 @@ func register(log *slog.Logger, threshold time.Duration) func(*middleware.Stack)
 // observe is an Initialize-step middleware that times the downstream handler and
 // logs slow or timeout-like calls.
 type observe struct {
-	log       *slog.Logger
+	log       *logging.Logger
 	threshold time.Duration
 }
 
@@ -101,10 +101,11 @@ func (m *observe) HandleInitialize(
 	if err != nil {
 		attrs = append(attrs, slog.String(logging.KeyError, err.Error()))
 	}
-	// WarnContext (not Warn) so task identity stashed on the call ctx via
-	// logging.ContextWith flows into the AWS-call observability record, making a
-	// wedged AWS connection attributable to the job that issued the call.
-	m.log.WarnContext(ctx, "slow or failed AWS SDK call", attrs...)
+	// The context-first Warn (which delegates to slog's WarnContext) carries task
+	// identity stashed on the call ctx via logging.ContextWith into the AWS-call
+	// observability record, making a wedged AWS connection attributable to the job
+	// that issued the call.
+	m.log.Warn(ctx, "slow or failed AWS SDK call", attrs...)
 
 	return out, metadata, err
 }

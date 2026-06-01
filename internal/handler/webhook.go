@@ -47,7 +47,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 
 	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
 	if err != nil {
-		webhookLog.Debug("skipping job no labels",
+		webhookLog.Debug(ctx, "skipping job no labels",
 			slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
 			slog.String("error", err.Error()))
 		return nil, nil
@@ -55,7 +55,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 
 	runID, err := strconv.ParseInt(jobConfig.RunID, 10, 64)
 	if err != nil {
-		webhookLog.Warn("invalid run_id in label",
+		webhookLog.Warn(ctx, "invalid run_id in label",
 			slog.String("run_id", jobConfig.RunID),
 			slog.String("error", err.Error()))
 		return nil, nil
@@ -63,7 +63,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 
 	if jobConfig.Pool != "" && dbc != nil {
 		if err := EnsureEphemeralPool(ctx, dbc, jobConfig); err != nil {
-			webhookLog.Warn("ephemeral pool ensure failed",
+			webhookLog.Warn(ctx, "ephemeral pool ensure failed",
 				slog.String(logging.KeyPoolName, jobConfig.Pool),
 				slog.String("error", err.Error()))
 		}
@@ -97,19 +97,19 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 	if err := q.SendMessage(ctx, msg); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		webhookLog.ErrorContext(ctx, "job enqueue failed",
+		webhookLog.Error(ctx, "job enqueue failed",
 			slog.String("error", err.Error()))
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
 	if err := m.PublishJobQueued(ctx); err != nil {
-		webhookLog.ErrorContext(ctx, "job queued metric failed", slog.String("error", err.Error()))
+		webhookLog.Error(ctx, "job queued metric failed", slog.String("error", err.Error()))
 	}
 	if err := m.PublishQueueDepth(ctx, 1); err != nil {
-		webhookLog.ErrorContext(ctx, "queue depth metric failed", slog.String("error", err.Error()))
+		webhookLog.Error(ctx, "queue depth metric failed", slog.String("error", err.Error()))
 	}
 
-	webhookLog.InfoContext(ctx, "job enqueued",
+	webhookLog.Info(ctx, "job enqueued",
 		slog.String("arch", jobConfig.Arch),
 		slog.String(logging.KeyPoolName, jobConfig.Pool))
 	return msg, nil
@@ -153,7 +153,7 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 		return fmt.Errorf("failed to create ephemeral pool: %w", err)
 	}
 
-	webhookLog.Info("ephemeral pool created",
+	webhookLog.Info(ctx, "ephemeral pool created",
 		slog.String(logging.KeyPoolName, jobConfig.Pool),
 		slog.String("arch", jobConfig.Arch),
 		slog.Int("cpu_min", jobConfig.CPUMin),
@@ -190,11 +190,11 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 	}
 
 	if jobInfo == nil {
-		webhookLog.Warn("no job record for requeue", slog.Int64(logging.KeyJobID, ghJobID))
+		webhookLog.Warn(ctx, "no job record for requeue", slog.Int64(logging.KeyJobID, ghJobID))
 		return false, nil
 	}
 	if jobInfo.RetryCount >= maxJobRetries {
-		webhookLog.Warn("max retries exceeded",
+		webhookLog.Warn(ctx, "max retries exceeded",
 			slog.Int64(logging.KeyJobID, jobInfo.JobID),
 			slog.Int("max_retries", maxJobRetries))
 		return false, nil
@@ -223,16 +223,17 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		ForceOnDemand: true,
 	}
 
+	ctx = logging.ContextWithJob(ctx, jobInfo.JobID, jobInfo.RunID, jobInfo.Repo)
+
 	if err := q.SendMessage(ctx, requeueMsg); err != nil {
 		return false, fmt.Errorf("failed to re-queue job %d: %w", jobInfo.JobID, err)
 	}
 
-	webhookLog.Info("job requeued",
-		slog.Int64(logging.KeyJobID, jobInfo.JobID),
+	webhookLog.Info(ctx, "job requeued",
 		slog.Int("retry_count", requeueMsg.RetryCount))
 
 	if err := m.PublishJobQueued(ctx); err != nil {
-		webhookLog.Error("job queued metric failed", slog.String("error", err.Error()))
+		webhookLog.Error(ctx, "job queued metric failed", slog.String("error", err.Error()))
 	}
 
 	return true, nil

@@ -35,7 +35,7 @@ func TestContextWith_EmittedViaContextMethod(t *testing.T) {
 
 	ctx := ContextWithJob(context.Background(), 42, 99, "octo/repo")
 	logger := WithComponent(LogTypeQueue, "worker")
-	logger.ErrorContext(ctx, "boom", slog.String("error", "deadline"))
+	logger.Error(ctx, "boom", slog.String("error", "deadline"))
 
 	entry := decode(t, &buf)
 	if got := entry[KeyJobID]; got != float64(42) {
@@ -52,22 +52,36 @@ func TestContextWith_EmittedViaContextMethod(t *testing.T) {
 	}
 }
 
-func TestContextWith_NotEmittedViaNonContextMethod(t *testing.T) {
-	var buf bytes.Buffer
-	newCapturingDefault(t, &buf)
-
+// TestContextWith_InjectedOnEveryLevel proves every Logger level (Error/Warn/
+// Info/Debug) injects ctx-stashed identity, since each requires a context and
+// delegates to the underlying *Context slog method. There is no non-context
+// method that could bypass the handler.
+func TestContextWith_InjectedOnEveryLevel(t *testing.T) {
 	ctx := ContextWithJob(context.Background(), 42, 99, "octo/repo")
-	_ = ctx // intentionally not passed to the log call below
-
 	logger := WithComponent(LogTypeQueue, "worker")
-	logger.Error("boom", slog.String("error", "deadline"))
 
-	entry := decode(t, &buf)
-	if _, present := entry[KeyJobID]; present {
-		t.Errorf("job_id must be absent on a non-context log call, got %v", entry[KeyJobID])
+	cases := []struct {
+		name string
+		emit func()
+	}{
+		{"error", func() { logger.Error(ctx, "boom") }},
+		{"warn", func() { logger.Warn(ctx, "boom") }},
+		{"info", func() { logger.Info(ctx, "boom") }},
+		{"debug", func() { logger.Debug(ctx, "boom") }},
 	}
-	if _, present := entry[KeyRunID]; present {
-		t.Errorf("run_id must be absent on a non-context log call, got %v", entry[KeyRunID])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			newCapturingDefault(t, &buf)
+			tc.emit()
+			entry := decode(t, &buf)
+			if got := entry[KeyJobID]; got != float64(42) {
+				t.Errorf("job_id = %v, want 42 (ctx identity must inject on %s)", got, tc.name)
+			}
+			if got := entry[KeyRunID]; got != float64(99) {
+				t.Errorf("run_id = %v, want 99", got)
+			}
+		})
 	}
 }
 
@@ -79,7 +93,7 @@ func TestContextWith_Merges(t *testing.T) {
 	ctx = ContextWith(ctx, slog.String(KeyRepo, "octo/repo"))
 
 	logger := WithComponent(LogTypeFleet, "manager")
-	logger.WarnContext(ctx, "circuit breaker check failed")
+	logger.Warn(ctx, "circuit breaker check failed")
 
 	entry := decode(t, &buf)
 	if got := entry[KeyRunID]; got != float64(7) {
@@ -95,7 +109,7 @@ func TestContextWithJob_OmitsZeroValues(t *testing.T) {
 	newCapturingDefault(t, &buf)
 
 	ctx := ContextWithJob(context.Background(), 0, 99, "")
-	WithComponent(LogTypeQueue, "worker").InfoContext(ctx, "partial identity")
+	WithComponent(LogTypeQueue, "worker").Info(ctx, "partial identity")
 
 	entry := decode(t, &buf)
 	if _, present := entry[KeyJobID]; present {
@@ -118,7 +132,7 @@ func TestContextWith_DeepCallSite(t *testing.T) {
 	deepLog := WithComponent(LogTypeFleet, "manager")
 	deep := func(ctx context.Context) {
 		// No job_id/run_id/repo added here; they must come from the context.
-		deepLog.WarnContext(ctx, "circuit breaker check failed", slog.String("error", "deadline exceeded"))
+		deepLog.Warn(ctx, "circuit breaker check failed", slog.String("error", "deadline exceeded"))
 	}
 
 	ctx := ContextWithJob(context.Background(), 1234, 5678, "octo/deep")

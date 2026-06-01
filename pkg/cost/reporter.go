@@ -148,7 +148,7 @@ func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SN
 // It attempts to fetch current prices from AWS Pricing API and falls back to
 // hard-coded estimates if the API is unavailable.
 func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
-	costLog.Info("generating daily cost report")
+	costLog.Info(ctx, "generating daily cost report")
 
 	endTime := time.Now().Truncate(time.Hour)
 	startTime := endTime.Add(-24 * time.Hour)
@@ -175,9 +175,9 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 			ContentType: aws.String("text/markdown"),
 		})
 		if err != nil {
-			costLog.Warn("s3 report upload failed", slog.String("error", err.Error()))
+			costLog.Warn(ctx, "s3 report upload failed", slog.String("error", err.Error()))
 		} else {
-			costLog.Info("report stored in s3", slog.String("bucket", r.reportsBucket), slog.String("key", key))
+			costLog.Info(ctx, "report stored in s3", slog.String("bucket", r.reportsBucket), slog.String("key", key))
 		}
 	}
 
@@ -188,13 +188,13 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 			Message:  aws.String(report),
 		})
 		if err != nil {
-			costLog.Warn("sns notification failed", slog.String("error", err.Error()))
+			costLog.Warn(ctx, "sns notification failed", slog.String("error", err.Error()))
 		} else {
-			costLog.Info("report sent via sns")
+			costLog.Info(ctx, "report sent via sns")
 		}
 	}
 
-	costLog.Info("daily cost report generated", slog.Float64("total_cost", breakdown.TotalCost))
+	costLog.Info(ctx, "daily cost report generated", slog.Float64("total_cost", breakdown.TotalCost))
 	return nil
 }
 

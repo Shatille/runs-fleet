@@ -45,7 +45,7 @@ func runStackCtx(
 	t.Helper()
 
 	var buf bytes.Buffer
-	log := slog.New(newCtxJSONHandler(&buf))
+	log := logging.NewWithHandler(newCtxJSONHandler(&buf))
 
 	stack := middleware.NewStack("test", smithyRequestNew)
 	if err := register(log, threshold)(stack); err != nil {

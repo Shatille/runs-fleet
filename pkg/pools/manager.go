@@ -202,9 +202,9 @@ reconcile:
 	}
 
 	for poolName := range pools {
-		if err := m.reconcilePool(ctx, poolName); err != nil {
-			poolLog.Error("demand-driven reconciliation failed",
-				slog.String(logging.KeyPoolName, poolName),
+		pctx := logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
+		if err := m.reconcilePool(pctx, poolName); err != nil {
+			poolLog.Error(pctx, "demand-driven reconciliation failed",
 				slog.String("error", err.Error()))
 		}
 	}
@@ -220,14 +220,14 @@ func (m *Manager) reconcile(ctx context.Context) {
 
 	pools, err := m.dbClient.ListPools(ctx)
 	if err != nil {
-		poolLog.Error("list pools failed", slog.String("error", err.Error()))
+		poolLog.Error(ctx, "list pools failed", slog.String("error", err.Error()))
 		return
 	}
 
 	for _, poolName := range pools {
-		if err := m.reconcilePool(ctx, poolName); err != nil {
-			poolLog.Error("pool reconciliation failed",
-				slog.String(logging.KeyPoolName, poolName),
+		pctx := logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
+		if err := m.reconcilePool(pctx, poolName); err != nil {
+			poolLog.Error(pctx, "pool reconciliation failed",
 				slog.String("error", err.Error()))
 		}
 	}
@@ -245,8 +245,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	}
 	defer func() {
 		if err := m.dbClient.ReleasePoolReconcileLock(ctx, poolName, m.instanceID); err != nil {
-			poolLog.Error("pool lock release failed",
-				slog.String(logging.KeyPoolName, poolName),
+			poolLog.Error(ctx, "pool lock release failed",
 				slog.String("error", err.Error()))
 		}
 	}()
@@ -303,7 +302,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
 			if err := m.startInstances(ctx, instanceIDs); err != nil {
-				poolLog.Error("instances start failed", slog.String("error", err.Error()))
+				poolLog.Error(ctx, "instances start failed", slog.String("error", err.Error()))
 			} else {
 				started += toStart
 				deficit -= toStart
@@ -339,7 +338,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				instanceIDs[i] = candidateInstances[i].InstanceID
 			}
 			if err := m.stopInstances(ctx, instanceIDs); err != nil {
-				poolLog.Error("instances stop failed", slog.String("error", err.Error()))
+				poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
 			} else {
 				stoppedCount += canStop
 			}
@@ -355,7 +354,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 					instanceIDs[i] = candidateInstances[i].InstanceID
 				}
 				if err := m.terminateInstances(ctx, instanceIDs); err != nil {
-					poolLog.Error("instances terminate failed", slog.String("error", err.Error()))
+					poolLog.Error(ctx, "instances terminate failed", slog.String("error", err.Error()))
 				} else {
 					terminated += toTerminate
 				}
@@ -373,7 +372,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
 			if err := m.terminateInstances(ctx, instanceIDs); err != nil {
-				poolLog.Error("stopped instances terminate failed", slog.String("error", err.Error()))
+				poolLog.Error(ctx, "stopped instances terminate failed", slog.String("error", err.Error()))
 			} else {
 				terminated += toTerminate
 			}
@@ -386,8 +385,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 
 	// Log reconciliation only when changes occurred
 	if started+stoppedCount+created+terminated > 0 {
-		poolLog.Info("pool reconciled",
-			slog.String(logging.KeyPoolName, poolName),
+		poolLog.Info(ctx, "pool reconciled",
 			slog.Int("desired_running", desiredRunning),
 			slog.Int("desired_stopped", desiredStopped),
 			slog.Int("running", running),
@@ -401,7 +399,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	}
 
 	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {
-		poolLog.Error("pool state update failed", slog.String("error", err.Error()))
+		poolLog.Error(ctx, "pool state update failed", slog.String("error", err.Error()))
 	}
 
 	return nil
@@ -432,13 +430,11 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 
 	p90, err := m.dbClient.GetPoolP90Concurrency(ctx, poolName, 1) // 1 hour window
 	if err != nil {
-		poolLog.Error("p90 concurrency query failed",
-			slog.String(logging.KeyPoolName, poolName),
+		poolLog.Error(ctx, "p90 concurrency query failed",
 			slog.String("error", err.Error()))
 		// If recently active, keep minimum capacity despite query failure
 		if recentlyActive {
-			poolLog.Debug("ephemeral pool keeping minimum capacity (query failed)",
-				slog.String(logging.KeyPoolName, poolName),
+			poolLog.Debug(ctx, "ephemeral pool keeping minimum capacity (query failed)",
 				slog.Time("last_job_time", poolConfig.LastJobTime),
 				slog.Duration("since_last_job", sinceLastJob))
 			return 0, 1, true
@@ -448,8 +444,7 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 
 	if p90 > 0 {
 		desired := max(1, p90)
-		poolLog.Info("ephemeral pool auto-scaling",
-			slog.String(logging.KeyPoolName, poolName),
+		poolLog.Info(ctx, "ephemeral pool auto-scaling",
 			slog.Int("p90_concurrency", p90),
 			slog.Int("desired_stopped", desired))
 		return 0, desired, true
@@ -457,8 +452,7 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 
 	// P90 is 0, but check if pool was recently active
 	if recentlyActive {
-		poolLog.Debug("ephemeral pool keeping minimum capacity",
-			slog.String(logging.KeyPoolName, poolName),
+		poolLog.Debug(ctx, "ephemeral pool keeping minimum capacity",
 			slog.Time("last_job_time", poolConfig.LastJobTime),
 			slog.Duration("since_last_job", sinceLastJob))
 		return 0, 1, true
@@ -555,7 +549,7 @@ func (m *Manager) getPoolInstances(ctx context.Context, poolName string) ([]Pool
 				instance.Family = spec.Family
 				instance.Gen = spec.Gen
 			} else {
-				poolLog.Warn("instance type not in catalog, spec matching may fail",
+				poolLog.Warn(ctx, "instance type not in catalog, spec matching may fail",
 					slog.String(logging.KeyInstanceID, instance.InstanceID),
 					slog.String("instance_type", instanceType))
 			}
@@ -649,7 +643,7 @@ func (m *Manager) startInstances(ctx context.Context, instanceIDs []string) erro
 		return fmt.Errorf("failed to start instances: %w", err)
 	}
 
-	poolLog.Info("instances started",
+	poolLog.Info(ctx, "instances started",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
@@ -672,7 +666,7 @@ func (m *Manager) stopInstances(ctx context.Context, instanceIDs []string) error
 		delete(m.instanceIdle, id)
 	}
 
-	poolLog.Info("instances stopped",
+	poolLog.Info(ctx, "instances stopped",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
@@ -695,7 +689,7 @@ func (m *Manager) terminateInstances(ctx context.Context, instanceIDs []string) 
 		delete(m.instanceIdle, id)
 	}
 
-	poolLog.Info("instances terminated",
+	poolLog.Info(ctx, "instances terminated",
 		slog.Int(logging.KeyCount, len(instanceIDs)),
 		slog.Any("instance_ids", instanceIDs))
 	return nil
@@ -742,6 +736,8 @@ func (m *Manager) getAvailableInstanceLocked(ctx context.Context, poolName strin
 		return nil, fmt.Errorf("EC2 client not configured")
 	}
 
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
+
 	instances, err := m.getPoolInstances(ctx, poolName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pool instances: %w", err)
@@ -780,6 +776,8 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, rep
 		return fmt.Errorf("EC2 client not configured")
 	}
 
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instanceID))
+
 	_, err := m.ec2Client.StartInstances(ctx, &ec2.StartInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
@@ -801,9 +799,7 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, rep
 		})
 		if err != nil {
 			// Log but don't fail - tagging is for cost allocation, not critical path
-			poolLog.Warn("failed to tag instance with Role",
-				slog.String(logging.KeyInstanceID, instanceID),
-				slog.String("repo", repo),
+			poolLog.Warn(ctx, "failed to tag instance with Role",
 				slog.String("error", err.Error()))
 		}
 	}
@@ -811,8 +807,7 @@ func (m *Manager) startInstanceForJobLocked(ctx context.Context, instanceID, rep
 	// Mark as busy immediately to prevent reconciler from touching it
 	delete(m.instanceIdle, instanceID)
 
-	poolLog.Info("pool instance started for job",
-		slog.String(logging.KeyInstanceID, instanceID))
+	poolLog.Info(ctx, "pool instance started for job")
 	return nil
 }
 
@@ -853,6 +848,8 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 	if m.dbClient == nil {
 		return nil, fmt.Errorf("DB client not configured for distributed locking")
 	}
+
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
 
 	// Get all stopped instances in the pool
 	instances, err := m.getPoolInstances(ctx, poolName)
@@ -900,7 +897,7 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		if err := m.startInstanceForJobLocked(ctx, instance.InstanceID, repo); err != nil {
 			// Release the DynamoDB claim since we failed to start
 			if releaseErr := m.dbClient.ReleaseInstanceClaim(ctx, instance.InstanceID, jobID); releaseErr != nil {
-				poolLog.Error("instance claim release failed after start failure",
+				poolLog.Error(ctx, "instance claim release failed after start failure",
 					slog.String(logging.KeyInstanceID, instance.InstanceID),
 					slog.String("error", releaseErr.Error()))
 			}
@@ -922,6 +919,8 @@ func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error
 		return fmt.Errorf("EC2 client not configured")
 	}
 
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instanceID))
+
 	_, err := m.ec2Client.StopInstances(ctx, &ec2.StopInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
@@ -932,8 +931,7 @@ func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error
 	// Remove from busy tracking
 	delete(m.instanceIdle, instanceID)
 
-	poolLog.Info("pool instance stopped",
-		slog.String(logging.KeyInstanceID, instanceID))
+	poolLog.Info(ctx, "pool instance stopped")
 	return nil
 }
 
@@ -971,10 +969,9 @@ func countInstanceStates(instances []PoolInstance, busyIDs []string) (running, s
 // Uses on-demand instances for warm pools because stop/start reliability
 // matters more than spot savings on short-lived job execution.
 func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string, count int, poolConfig *db.PoolConfig) int {
-	instanceTypes, arch := resolvePoolInstanceTypes(poolConfig)
+	instanceTypes, arch := resolvePoolInstanceTypes(ctx, poolConfig)
 	if len(instanceTypes) == 0 {
-		poolLog.Warn("no instance types resolved",
-			slog.String(logging.KeyPoolName, poolName))
+		poolLog.Warn(ctx, "no instance types resolved")
 		return 0
 	}
 
@@ -984,8 +981,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 	for i := 0; i < count; i++ {
 		subnetID := m.selectSubnet()
 		if subnetID == "" {
-			poolLog.Error("no subnets configured for pool",
-				slog.String(logging.KeyPoolName, poolName))
+			poolLog.Error(ctx, "no subnets configured for pool")
 			break
 		}
 		spec := &fleet.LaunchSpec{
@@ -996,8 +992,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 			Arch:         arch,
 		}
 		if _, err := m.fleetManager.CreateOnDemandInstance(ctx, spec); err != nil {
-			poolLog.Error("on-demand instance creation failed",
-				slog.String(logging.KeyPoolName, poolName),
+			poolLog.Error(ctx, "on-demand instance creation failed",
 				slog.String("error", err.Error()))
 			continue
 		}
@@ -1009,7 +1004,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName string,
 // resolvePoolInstanceTypes resolves instance types for a pool configuration.
 // For ephemeral pools with flexible specs, uses GitHub's resolution logic.
 // For legacy pools with a single InstanceType, returns that type.
-func resolvePoolInstanceTypes(poolConfig *db.PoolConfig) ([]string, string) {
+func resolvePoolInstanceTypes(ctx context.Context, poolConfig *db.PoolConfig) ([]string, string) {
 	// If pool has flexible specs, resolve them
 	if poolConfig.CPUMin > 0 || poolConfig.CPUMax > 0 {
 		jobConfig := &github.JobConfig{
@@ -1021,7 +1016,7 @@ func resolvePoolInstanceTypes(poolConfig *db.PoolConfig) ([]string, string) {
 			Families: poolConfig.Families,
 		}
 		if err := github.ResolveFlexibleSpec(jobConfig); err != nil {
-			poolLog.Error("flexible spec resolution failed", slog.String("error", err.Error()))
+			poolLog.Error(ctx, "flexible spec resolution failed", slog.String("error", err.Error()))
 			// Fall back to pool's InstanceType if resolution fails
 			if poolConfig.InstanceType != "" {
 				return []string{poolConfig.InstanceType}, poolConfig.Arch

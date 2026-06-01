@@ -145,12 +145,12 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 		return tagErr
 	}
 	if len(orphanedIDs) == 0 {
-		t.logger().Debug("no orphaned instances found")
+		t.logger().Debug(ctx, "no orphaned instances found")
 		return nil
 	}
 
 	if len(untaggedOrphans) > 0 {
-		t.logger().Warn("found untagged orphaned instances (persistent spot tag propagation failure)",
+		t.logger().Warn(ctx, "found untagged orphaned instances (persistent spot tag propagation failure)",
 			slog.Int("untagged_count", len(untaggedOrphans)),
 			slog.Any("untagged_ids", untaggedOrphans))
 	}
@@ -158,7 +158,7 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	// Cancel persistent spot requests before termination to prevent zombie resurrection
 	t.cancelSpotRequestsForInstances(ctx, orphanedIDs)
 
-	t.logger().Info("terminating orphaned instances", slog.Int(logging.KeyCount, len(orphanedIDs)))
+	t.logger().Info(ctx, "terminating orphaned instances", slog.Int(logging.KeyCount, len(orphanedIDs)))
 
 	_, err := t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: orphanedIDs,
@@ -171,7 +171,7 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 		_ = t.metrics.PublishOrphanedInstancesTerminated(ctx, len(orphanedIDs))
 	}
 
-	t.logger().Info("orphaned instances terminated",
+	t.logger().Info(ctx, "orphaned instances terminated",
 		slog.Int(logging.KeyCount, len(orphanedIDs)),
 		slog.Any("instance_ids", orphanedIDs))
 	return nil
@@ -220,7 +220,7 @@ func (t *Tasks) findOrphansByProfile(ctx context.Context, cutoffTime time.Time) 
 	for {
 		output, err := t.ec2Client.DescribeInstances(ctx, input)
 		if err != nil {
-			t.logger().Error("failed to describe profile-based instances", slog.String("error", err.Error()))
+			t.logger().Error(ctx, "failed to describe profile-based instances", slog.String("error", err.Error()))
 			return orphanIDs
 		}
 
@@ -264,7 +264,7 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 
 		output, err := t.describeSpotRequestsWithRetry(ctx, batch)
 		if err != nil {
-			t.logger().Error("failed to describe spot requests for orphaned instances after retry",
+			t.logger().Error(ctx, "failed to describe spot requests for orphaned instances after retry",
 				slog.String("error", err.Error()),
 				slog.Int("batch_size", len(batch)))
 			continue
@@ -288,7 +288,7 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 		batch := spotRequestIDs[i:end]
 
 		if err := t.cancelSpotRequestsWithRetry(ctx, batch); err != nil {
-			t.logger().Error("failed to cancel spot requests for orphaned instances after retry",
+			t.logger().Error(ctx, "failed to cancel spot requests for orphaned instances after retry",
 				slog.String("error", err.Error()),
 				slog.Int("batch_size", len(batch)),
 				slog.Any("spot_request_ids", batch))
@@ -298,7 +298,7 @@ func (t *Tasks) cancelSpotRequestsForInstances(ctx context.Context, instanceIDs 
 	}
 
 	if cancelledCount > 0 {
-		t.logger().Info("cancelled spot requests for orphaned instances",
+		t.logger().Info(ctx, "cancelled spot requests for orphaned instances",
 			slog.Int("count", cancelledCount))
 	}
 }
@@ -314,7 +314,7 @@ func (t *Tasks) describeSpotRequestsWithRetry(ctx context.Context, instanceIDs [
 	if err == nil {
 		return output, nil
 	}
-	t.logger().Warn("describe spot requests failed, retrying",
+	t.logger().Warn(ctx, "describe spot requests failed, retrying",
 		slog.String("error", err.Error()),
 		slog.Int("batch_size", len(instanceIDs)))
 	time.Sleep(2 * time.Second)
@@ -329,7 +329,7 @@ func (t *Tasks) cancelSpotRequestsWithRetry(ctx context.Context, spotRequestIDs 
 	if err == nil {
 		return nil
 	}
-	t.logger().Warn("cancel spot requests failed, retrying",
+	t.logger().Warn(ctx, "cancel spot requests failed, retrying",
 		slog.String("error", err.Error()),
 		slog.Int("batch_size", len(spotRequestIDs)))
 	time.Sleep(2 * time.Second)
@@ -393,7 +393,7 @@ func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
 	}
 
 	if deletedCount > 0 {
-		t.logger().Info("stale secrets deleted", slog.Int(logging.KeyCount, deletedCount))
+		t.logger().Info(ctx, "stale secrets deleted", slog.Int(logging.KeyCount, deletedCount))
 	}
 	return nil
 }
@@ -515,7 +515,7 @@ func (t *Tasks) ExecuteOldJobs(ctx context.Context) error {
 	}
 
 	if deletedCount > 0 {
-		t.logger().Info("old job records deleted", slog.Int(logging.KeyCount, deletedCount))
+		t.logger().Info(ctx, "old job records deleted", slog.Int(logging.KeyCount, deletedCount))
 	}
 	return nil
 }
@@ -562,16 +562,16 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 
 	var orphanedCount int
 	for _, c := range orphanedCandidates {
+		jobCtx := logging.ContextWith(ctx,
+			slog.Int64(logging.KeyJobID, c.JobID),
+			slog.String(logging.KeyInstanceID, c.InstanceID))
 		if err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID); err != nil {
-			t.logger().Error("mark job orphaned failed",
-				slog.Int64("job_id", c.JobID),
+			t.logger().Error(jobCtx, "mark job orphaned failed",
 				slog.String("error", err.Error()))
 			continue
 		}
 		orphanedCount++
-		t.logger().Info("orphaned job cleaned up",
-			slog.Int64("job_id", c.JobID),
-			slog.String("instance_id", c.InstanceID))
+		t.logger().Info(jobCtx, "orphaned job cleaned up")
 	}
 
 	if t.metrics != nil && orphanedCount > 0 {
@@ -579,7 +579,7 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 	}
 
 	if orphanedCount > 0 {
-		t.logger().Info("orphaned jobs cleaned up", slog.Int(logging.KeyCount, orphanedCount))
+		t.logger().Info(ctx, "orphaned jobs cleaned up", slog.Int(logging.KeyCount, orphanedCount))
 	}
 	return nil
 }
@@ -693,7 +693,7 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		return fmt.Errorf("failed to list message move tasks: %w", err)
 	}
 	if running {
-		t.logger().Info("dlq redrive skipped; move task already running",
+		t.logger().Info(ctx, "dlq redrive skipped; move task already running",
 			slog.String("message_count", msgCount))
 		return nil
 	}
@@ -706,7 +706,7 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 		return fmt.Errorf("failed to start message move task: %w", err)
 	}
 
-	t.logger().Info("dlq redrive started",
+	t.logger().Info(ctx, "dlq redrive started",
 		slog.String("message_count", msgCount),
 		slog.String("task_handle", aws.ToString(output.TaskHandle)))
 	return nil
@@ -763,7 +763,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 		return nil
 	}
 	if t.gitHubChecker == nil {
-		t.logger().Warn("stale job detection disabled: GitHub job checker not configured")
+		t.logger().Warn(ctx, "stale job detection disabled: GitHub job checker not configured")
 		return nil
 	}
 
@@ -813,7 +813,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			}
 
 			if jobID == 0 || repo == "" {
-				t.logger().Debug("skipping stale job candidate with missing fields",
+				t.logger().Debug(ctx, "skipping stale job candidate with missing fields",
 					slog.Int64("job_id", jobID),
 					slog.String("repo", repo))
 				continue
@@ -840,25 +840,26 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 	reconciled := 0
 	for _, c := range candidates {
 		if checked >= maxStaleJobChecks {
-			t.logger().Info("stale jobs check limit reached",
+			t.logger().Info(ctx, "stale jobs check limit reached",
 				slog.Int("checked", checked),
 				slog.Int("remaining", len(candidates)-checked))
 			break
 		}
 
+		jobCtx := logging.ContextWith(ctx,
+			slog.Int64(logging.KeyJobID, c.JobID),
+			slog.String(logging.KeyRepo, c.Repo))
+
 		owner, _, ok := splitRepo(c.Repo)
 		if !ok {
-			t.logger().Debug("skipping stale job with invalid repo format",
-				slog.Int64("job_id", c.JobID),
-				slog.String("repo", c.Repo))
+			t.logger().Debug(jobCtx, "skipping stale job with invalid repo format")
 			continue
 		}
 
 		checked++
 		ghStatus, err := t.gitHubChecker.GetWorkflowJobStatus(ctx, owner, c.Repo, c.JobID)
 		if err != nil {
-			t.logger().Warn("github job status check failed",
-				slog.Int64("job_id", c.JobID),
+			t.logger().Warn(jobCtx, "github job status check failed",
 				slog.String("error", err.Error()))
 			continue
 		}
@@ -867,27 +868,25 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			continue
 		}
 
-		if err := t.markJobCompleted(ctx, c.JobID, ghStatus.Conclusion); err != nil {
-			t.logger().Error("mark stale job completed failed",
-				slog.Int64("job_id", c.JobID),
+		if err := t.markJobCompleted(jobCtx, c.JobID, ghStatus.Conclusion); err != nil {
+			t.logger().Error(jobCtx, "mark stale job completed failed",
 				slog.String("error", err.Error()))
 			continue
 		}
 
 		reconciled++
-		t.logger().Info("stale job reconciled",
-			slog.Int64("job_id", c.JobID),
+		t.logger().Info(jobCtx, "stale job reconciled",
 			slog.String("conclusion", ghStatus.Conclusion))
 	}
 
 	if t.metrics != nil && reconciled > 0 {
 		if err := t.metrics.PublishStaleJobsReconciled(ctx, reconciled); err != nil {
-			t.logger().Warn("failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
+			t.logger().Warn(ctx, "failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
 		}
 	}
 
 	if reconciled > 0 {
-		t.logger().Info("stale jobs reconciled", slog.Int(logging.KeyCount, reconciled))
+		t.logger().Info(ctx, "stale jobs reconciled", slog.Int(logging.KeyCount, reconciled))
 	}
 	return nil
 }
@@ -921,7 +920,7 @@ func (t *Tasks) markJobCompleted(ctx context.Context, jobID int64, conclusion st
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			t.logger().Debug("stale job already completed concurrently", slog.Int64("job_id", jobID))
+			t.logger().Debug(ctx, "stale job already completed concurrently")
 			return nil
 		}
 		return fmt.Errorf("failed to update job: %w", err)
@@ -972,21 +971,20 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 			continue
 		}
 
-		if err := t.terminatePoolInstances(ctx, poolName); err != nil {
-			t.logger().Error("pool instances terminate failed",
-				slog.String(logging.KeyPoolName, poolName),
+		poolCtx := logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
+
+		if err := t.terminatePoolInstances(poolCtx, poolName); err != nil {
+			t.logger().Error(poolCtx, "pool instances terminate failed",
 				slog.String("error", err.Error()))
 		}
 
 		if err := t.poolDB.DeletePoolConfig(ctx, poolName); err != nil {
-			t.logger().Error("ephemeral pool delete failed",
-				slog.String(logging.KeyPoolName, poolName),
+			t.logger().Error(poolCtx, "ephemeral pool delete failed",
 				slog.String("error", err.Error()))
 			continue
 		}
 
-		t.logger().Info("ephemeral pool deleted",
-			slog.String(logging.KeyPoolName, poolName),
+		t.logger().Info(poolCtx, "ephemeral pool deleted",
 			slog.Duration("inactive_duration", time.Since(poolCfg.LastJobTime).Round(time.Minute)))
 		cleaned++
 	}
@@ -1017,7 +1015,7 @@ func (t *Tasks) ExecuteOrphanedSpotRequests(ctx context.Context) error {
 	}
 
 	if len(output.SpotInstanceRequests) == 0 {
-		t.logger().Debug("no managed spot requests found")
+		t.logger().Debug(ctx, "no managed spot requests found")
 		return nil
 	}
 
@@ -1072,7 +1070,7 @@ func (t *Tasks) ExecuteOrphanedSpotRequests(ctx context.Context) error {
 			SpotInstanceRequestIds: batch,
 		})
 		if err != nil {
-			t.logger().Error("spot request cancellation failed",
+			t.logger().Error(ctx, "spot request cancellation failed",
 				slog.Int("count", len(batch)),
 				slog.String("error", err.Error()))
 			continue
@@ -1081,7 +1079,7 @@ func (t *Tasks) ExecuteOrphanedSpotRequests(ctx context.Context) error {
 	}
 
 	if cancelledCount > 0 {
-		t.logger().Info("orphaned spot requests cancelled",
+		t.logger().Info(ctx, "orphaned spot requests cancelled",
 			slog.Int(logging.KeyCount, cancelledCount))
 	}
 	return nil
@@ -1144,8 +1142,7 @@ func (t *Tasks) terminatePoolInstances(ctx context.Context, poolName string) err
 		return fmt.Errorf("failed to terminate instances: %w", err)
 	}
 
-	t.logger().Info("pool instances terminated",
-		slog.String(logging.KeyPoolName, poolName),
+	t.logger().Info(ctx, "pool instances terminated",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
 	return nil
 }

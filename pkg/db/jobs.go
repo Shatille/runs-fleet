@@ -332,7 +332,7 @@ func (c *Client) GetJobByInstance(ctx context.Context, instanceID string) (*even
 		if !isGSIValidationError(err) {
 			return nil, err
 		}
-		dbLog.WarnContext(ctx, "GSI query failed, falling back to scan",
+		dbLog.Warn(ctx, "GSI query failed, falling back to scan",
 			"gsi", c.jobsInstanceIDGSI,
 			"error", err,
 		)
@@ -442,7 +442,7 @@ func (c *Client) QueryPoolJobHistory(ctx context.Context, poolName string, since
 	if !isGSIValidationError(err) {
 		return nil, err
 	}
-	dbLog.WarnContext(ctx, "GSI query failed, falling back to scan",
+	dbLog.Warn(ctx, "GSI query failed, falling back to scan",
 		"gsi", poolCreatedAtIndexName,
 		"error", err,
 	)
@@ -643,7 +643,7 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 		if !isGSIValidationError(err) {
 			return nil, err
 		}
-		dbLog.WarnContext(ctx, "GSI query failed, falling back to scan",
+		dbLog.Warn(ctx, "GSI query failed, falling back to scan",
 			"gsi", c.jobsPoolStatusGSI,
 			"error", err,
 		)

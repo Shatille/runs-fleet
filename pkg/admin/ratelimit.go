@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -59,7 +60,7 @@ func (rl *RateLimiter) Stop() {
 func (rl *RateLimiter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := extractClientIP(r)
-		if !rl.allow(ip) {
+		if !rl.allow(r.Context(), ip) {
 			retryAfter := rl.retryAfterSeconds(ip)
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 			w.Header().Set("Content-Type", "application/json")
@@ -67,7 +68,7 @@ func (rl *RateLimiter) Wrap(next http.Handler) http.Handler {
 			_ = json.NewEncoder(w).Encode(ErrorResponse{
 				Error: "Rate limit exceeded",
 			})
-			rateLimitLog.Warn("rate limit exceeded",
+			rateLimitLog.Warn(r.Context(), "rate limit exceeded",
 				slog.String(logging.KeyRemoteAddr, ip),
 				slog.String("path", r.URL.Path))
 			return
@@ -76,13 +77,13 @@ func (rl *RateLimiter) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-func (rl *RateLimiter) allow(ip string) bool {
+func (rl *RateLimiter) allow(ctx context.Context, ip string) bool {
 	now := time.Now().UnixMilli()
 
 	val, loaded := rl.buckets.LoadOrStore(ip, &ipBucket{})
 	bucket, ok := val.(*ipBucket)
 	if !ok {
-		rateLimitLog.Error("unexpected type in rate limit bucket map", slog.Any("value", val))
+		rateLimitLog.Error(ctx, "unexpected type in rate limit bucket map", slog.Any("value", val))
 		rl.buckets.Delete(ip)
 		return true
 	}

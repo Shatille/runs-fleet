@@ -130,7 +130,7 @@ func (h *JobsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 
 	entries, total, err := h.db.ListJobsForAdmin(ctx, filter)
 	if err != nil {
-		h.log.Error("failed to list jobs", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "failed to list jobs", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to list jobs", err.Error())
 		return
 	}
@@ -164,7 +164,7 @@ func (h *JobsHandler) GetJob(w http.ResponseWriter, r *http.Request) {
 
 	entry, err := h.db.GetJobForAdmin(r.Context(), jobID)
 	if err != nil {
-		h.log.Error("failed to get job",
+		h.log.Error(r.Context(), "failed to get job",
 			slog.Int64(logging.KeyJobID, jobID),
 			slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get job", err.Error())
@@ -191,7 +191,7 @@ func (h *JobsHandler) GetJobStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.db.GetJobStatsForAdmin(r.Context(), since)
 	if err != nil {
-		h.log.Error("failed to get job stats", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(r.Context(), "failed to get job stats", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get job stats", err.Error())
 		return
 	}
@@ -248,16 +248,18 @@ func (h *JobsHandler) GetTraceURL(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *JobsHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	// Response-writer helper with no request/context in scope.
+	ctx := context.Background()
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "json encode failed", slog.String(logging.KeyError, err.Error()))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := buf.WriteTo(w); err != nil {
-		h.log.Error("write response failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "write response failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 

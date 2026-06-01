@@ -54,11 +54,11 @@ func (t *Tasks) ExecuteOrphanedPackerInstances(ctx context.Context) error {
 	}
 
 	if len(orphanedIDs) == 0 {
-		t.logger().Debug("no orphaned packer instances found")
+		t.logger().Debug(ctx, "no orphaned packer instances found")
 		return nil
 	}
 
-	t.logger().Info("terminating orphaned packer instances",
+	t.logger().Info(ctx, "terminating orphaned packer instances",
 		slog.Int(logging.KeyCount, len(orphanedIDs)),
 		slog.Any("instance_ids", orphanedIDs))
 
