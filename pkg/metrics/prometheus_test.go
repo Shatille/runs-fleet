@@ -11,20 +11,11 @@ func TestNewPrometheusPublisher(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		cfg       PrometheusConfig
-		wantNS    string
+		name string
+		cfg  PrometheusConfig
 	}{
-		{
-			name:   "default namespace",
-			cfg:    PrometheusConfig{},
-			wantNS: defaultPrometheusNamespace,
-		},
-		{
-			name:   "custom namespace",
-			cfg:    PrometheusConfig{Namespace: "custom"},
-			wantNS: "custom",
-		},
+		{name: "default namespace", cfg: PrometheusConfig{}},
+		{name: "custom namespace", cfg: PrometheusConfig{Namespace: "custom"}},
 	}
 
 	for _, tt := range tests {
@@ -46,17 +37,14 @@ func TestPrometheusPublisher_Handler(t *testing.T) {
 	t.Parallel()
 
 	pub := NewPrometheusPublisher(PrometheusConfig{})
-
 	handler := pub.Handler()
 	if handler == nil {
 		t.Fatal("Handler() returned nil")
 	}
 
-	// Test that the handler responds with metrics
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-
 	if w.Code != 200 {
 		t.Errorf("Handler status = %d, want 200", w.Code)
 	}
@@ -66,7 +54,6 @@ func TestPrometheusPublisher_Registry(t *testing.T) {
 	t.Parallel()
 
 	pub := NewPrometheusPublisher(PrometheusConfig{})
-
 	registry := pub.Registry()
 	if registry == nil {
 		t.Error("Registry() returned nil")
@@ -80,9 +67,7 @@ func TestPrometheusPublisher_Close(t *testing.T) {
 	t.Parallel()
 
 	pub := NewPrometheusPublisher(PrometheusConfig{})
-
-	err := pub.Close()
-	if err != nil {
+	if err := pub.Close(); err != nil {
 		t.Errorf("Close() error = %v", err)
 	}
 }
@@ -98,34 +83,42 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		name    string
 		publish func() error
 	}{
-		{"PublishQueueDepth", func() error { return pub.PublishQueueDepth(ctx, 10.0) }},
-		{"PublishFleetSizeIncrement", func() error { return pub.PublishFleetSizeIncrement(ctx) }},
-		{"PublishFleetSizeDecrement", func() error { return pub.PublishFleetSizeDecrement(ctx) }},
-		{"PublishJobDuration", func() error { return pub.PublishJobDuration(ctx, 120) }},
-		{"PublishJobSuccess", func() error { return pub.PublishJobSuccess(ctx) }},
-		{"PublishJobFailure", func() error { return pub.PublishJobFailure(ctx) }},
-		{"PublishJobQueued", func() error { return pub.PublishJobQueued(ctx) }},
-		{"PublishSpotInterruption", func() error { return pub.PublishSpotInterruption(ctx) }},
-		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx) }},
-		{"PublishCacheHit", func() error { return pub.PublishCacheHit(ctx) }},
-		{"PublishCacheMiss", func() error { return pub.PublishCacheMiss(ctx) }},
-		{"PublishOrphanedInstancesTerminated", func() error { return pub.PublishOrphanedInstancesTerminated(ctx, 5) }},
-		{"PublishSSMParametersDeleted", func() error { return pub.PublishSSMParametersDeleted(ctx, 3) }},
-		{"PublishJobRecordsArchived", func() error { return pub.PublishJobRecordsArchived(ctx, 10) }},
-		{"PublishPoolUtilization", func() error { return pub.PublishPoolUtilization(ctx, "default", 75.5) }},
-		{"PublishPoolRunningJobs", func() error { return pub.PublishPoolRunningJobs(ctx, "default", 5) }},
-		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "runner-provision") }},
-		{"PublishCircuitBreakerTriggered", func() error { return pub.PublishCircuitBreakerTriggered(ctx, "t4g.medium") }},
+		{"PublishJobEnqueued", func() error { return pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "o/r") }},
+		{"PublishJobAssigned", func() error { return pub.PublishJobAssigned(ctx, "default", "warm_pool", "o/r") }},
+		{"PublishJobCompleted", func() error { return pub.PublishJobCompleted(ctx, "default", "success", "o/r") }},
+		{"PublishJobRequeued", func() error { return pub.PublishJobRequeued(ctx, "spot_interruption") }},
+		{"PublishJobWaitSeconds", func() error { return pub.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},
+		{"PublishJobExecutionSeconds", func() error { return pub.PublishJobExecutionSeconds(ctx, "default", "success", 90) }},
+		{"PublishInstanceProvisionSeconds", func() error { return pub.PublishInstanceProvisionSeconds(ctx, "cold_start", "c7g", 30) }},
+		{"PublishFleetCreate", func() error { return pub.PublishFleetCreate(ctx, "1", "success") }},
+		{"PublishFleetCreateSeconds", func() error { return pub.PublishFleetCreateSeconds(ctx, "1", 5) }},
+		{"PublishInstances", func() error { return pub.PublishInstances(ctx, "running", "4", "default", 3) }},
+		{"PublishSpotInterruption", func() error { return pub.PublishSpotInterruption(ctx, "c7g") }},
+		{"PublishCircuitBreakerTrip", func() error { return pub.PublishCircuitBreakerTrip(ctx, "c7g.xlarge") }},
+		{"PublishCircuitBreakerOpen", func() error { return pub.PublishCircuitBreakerOpen(ctx, "c7g.xlarge", true) }},
+		{"PublishPoolInstances", func() error { return pub.PublishPoolInstances(ctx, "default", "ready", 5) }},
+		{"PublishPoolDesired", func() error { return pub.PublishPoolDesired(ctx, "default", "running", 2) }},
+		{"PublishPoolAction", func() error { return pub.PublishPoolAction(ctx, "default", "create", "ready_deficit") }},
+		{"PublishPoolReconcileSeconds", func() error { return pub.PublishPoolReconcileSeconds(ctx, 2) }},
+		{"PublishMessageProcessingSeconds", func() error { return pub.PublishMessageProcessingSeconds(ctx, "main", "success", 0.2) }},
+		{"PublishLockWaitSeconds", func() error { return pub.PublishLockWaitSeconds(ctx, "pool_reconcile", 0.05) }},
+		{"PublishWorkerInflight", func() error { return pub.PublishWorkerInflight(ctx, "main", 4) }},
+		{"PublishQueueDepth", func() error { return pub.PublishQueueDepth(ctx, "main", 10.0) }},
+		{"PublishQueueReceive", func() error { return pub.PublishQueueReceive(ctx, "main", "messages") }},
 		{"PublishAWSCallDuration", func() error { return pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5) }},
 		{"PublishAWSCallFailure", func() error { return pub.PublishAWSCallFailure(ctx, "SQS", "ReceiveMessage", "timeout") }},
+		{"PublishCacheRequest", func() error { return pub.PublishCacheRequest(ctx, "hit") }},
+		{"PublishHousekeepingAction", func() error { return pub.PublishHousekeepingAction(ctx, "ssm_params", 3) }},
+		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "job_claim") }},
+		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx, "events") }},
+		{"PublishInstanceHours", func() error { return pub.PublishInstanceHours(ctx, "4", "c7g", 1.5) }},
+		{"PublishEstimatedCost", func() error { return pub.PublishEstimatedCost(ctx, 12.5) }},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			err := tt.publish()
-			if err != nil {
+			if err := tt.publish(); err != nil {
 				t.Errorf("%s() error = %v", tt.name, err)
 			}
 		})
@@ -138,26 +131,24 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
 	ctx := context.Background()
 
-	// Publish some metrics
-	_ = pub.PublishQueueDepth(ctx, 5.0)
-	_ = pub.PublishJobSuccess(ctx)
-	_ = pub.PublishPoolUtilization(ctx, "mypool", 80.0)
+	_ = pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "octo/repo")
+	_ = pub.PublishJobCompleted(ctx, "default", "success", "octo/repo")
+	_ = pub.PublishQueueDepth(ctx, "main", 5.0)
+	_ = pub.PublishPoolInstances(ctx, "mypool", "ready", 2)
+	_ = pub.PublishFleetCreate(ctx, "1", "success")
 	_ = pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5)
 	_ = pub.PublishAWSCallFailure(ctx, "DynamoDB", "GetItem", "timeout")
 
-	// Check that metrics are exposed via handler
-	req := httptest.NewRequest("GET", "/metrics", nil)
-	w := httptest.NewRecorder()
-	pub.Handler().ServeHTTP(w, req)
-
-	body := w.Body.String()
+	body := scrape(t, pub)
 
 	expectedMetrics := []string{
-		"test_queue_depth 5",
-		"test_job_success_total 1",
-		"test_pool_utilization_percent{pool_name=\"mypool\"} 80",
-		"test_aws_call_duration_seconds_count{operation=\"ReceiveMessage\",service=\"SQS\"} 1",
-		"test_aws_call_failures_total{operation=\"GetItem\",result=\"timeout\",service=\"DynamoDB\"} 1",
+		`test_jobs_enqueued_total{arch="arm64",capacity="4",pool="default",repo="octo/repo"} 1`,
+		`test_jobs_completed_total{pool="default",repo="octo/repo",result="success"} 1`,
+		`test_queue_depth{queue="main"} 5`,
+		`test_pool_instances{pool="mypool",state="ready"} 2`,
+		`test_fleet_create_total{capacity="1",result="success"} 1`,
+		`test_aws_call_duration_seconds_count{operation="ReceiveMessage",service="SQS"} 1`,
+		`test_aws_call_failures_total{operation="GetItem",result="timeout",service="DynamoDB"} 1`,
 	}
 
 	for _, metric := range expectedMetrics {
@@ -165,6 +156,65 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 			t.Errorf("metrics output missing %q", metric)
 		}
 	}
+}
+
+// TestPrometheusPublisher_RepoCardinalityRule asserts the repo label appears only
+// on the three job-lifecycle counters and on no histogram or other metric.
+func TestPrometheusPublisher_RepoCardinalityRule(t *testing.T) {
+	t.Parallel()
+
+	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
+	ctx := context.Background()
+
+	_ = pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "octo/repo")
+	_ = pub.PublishJobAssigned(ctx, "default", "warm_pool", "octo/repo")
+	_ = pub.PublishJobCompleted(ctx, "default", "success", "octo/repo")
+	_ = pub.PublishJobWaitSeconds(ctx, "default", "cold_start", 12)
+	_ = pub.PublishJobExecutionSeconds(ctx, "default", "success", 90)
+	_ = pub.PublishInstanceProvisionSeconds(ctx, "cold_start", "c7g", 30)
+	_ = pub.PublishInstances(ctx, "running", "4", "default", 1)
+
+	body := scrape(t, pub)
+
+	// repo must appear on exactly the three lifecycle counters.
+	for _, name := range []string{"jobs_enqueued_total", "jobs_assigned_total", "jobs_completed_total"} {
+		if !labelOnMetric(body, "test_"+name, "repo") {
+			t.Errorf("expected repo label on %s", name)
+		}
+	}
+
+	// repo must NOT appear on any histogram or any other metric.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		if !strings.Contains(line, `repo=`) {
+			continue
+		}
+		if strings.HasPrefix(line, "test_jobs_enqueued_total") ||
+			strings.HasPrefix(line, "test_jobs_assigned_total") ||
+			strings.HasPrefix(line, "test_jobs_completed_total") {
+			continue
+		}
+		t.Errorf("unexpected repo label outside lifecycle counters: %q", line)
+	}
+}
+
+func scrape(t *testing.T, pub *PrometheusPublisher) string {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	pub.Handler().ServeHTTP(w, req)
+	return w.Body.String()
+}
+
+func labelOnMetric(body, metricPrefix, label string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, metricPrefix) && strings.Contains(line, label+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPrometheusPublisher_ImplementsInterface(_ *testing.T) {

@@ -16,8 +16,7 @@ var cacheLog = logging.WithComponent(logging.LogTypeCache, "handler")
 
 // Metrics defines the interface for publishing cache metrics.
 type Metrics interface {
-	PublishCacheHit(ctx context.Context) error
-	PublishCacheMiss(ctx context.Context) error
+	PublishCacheRequest(ctx context.Context, result string) error
 }
 
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
@@ -214,7 +213,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 			slog.String("version", version),
 			slog.String("scope", scope))
 		if h.metrics != nil {
-			if mErr := h.metrics.PublishCacheMiss(r.Context()); mErr != nil {
+			if mErr := h.metrics.PublishCacheRequest(r.Context(), "miss"); mErr != nil {
 				cacheLog.Error(r.Context(), "cache miss metric failed", slog.String("error", mErr.Error()))
 			}
 		}
@@ -237,7 +236,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		slog.String("version", version),
 		slog.String("scope", scope))
 	if h.metrics != nil {
-		if err := h.metrics.PublishCacheHit(r.Context()); err != nil {
+		if err := h.metrics.PublishCacheRequest(r.Context(), "hit"); err != nil {
 			cacheLog.Error(r.Context(), "cache hit metric failed", slog.String("error", err.Error()))
 		}
 	}

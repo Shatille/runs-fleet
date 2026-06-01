@@ -507,7 +507,7 @@ func TestStartInstances(t *testing.T) {
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 			manager.SetEC2Client(tt.mock)
 
-			err := manager.startInstances(context.Background(), tt.instanceIDs)
+			err := manager.startInstances(context.Background(), "default", tt.instanceIDs, "ready_deficit")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("startInstances() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -566,7 +566,7 @@ func TestStopInstances(t *testing.T) {
 			manager.instanceIdle["i-123"] = time.Now()
 			manager.instanceIdle["i-456"] = time.Now()
 
-			err := manager.stopInstances(context.Background(), tt.instanceIDs, "excess_ready")
+			err := manager.stopInstances(context.Background(), "default", tt.instanceIDs, "excess_ready")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("stopInstances() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -634,7 +634,7 @@ func TestTerminateInstances(t *testing.T) {
 			manager.instanceIdle["i-123"] = time.Now()
 			manager.instanceIdle["i-456"] = time.Now()
 
-			err := manager.terminateInstances(context.Background(), tt.instanceIDs, "excess_idle")
+			err := manager.terminateInstances(context.Background(), "default", tt.instanceIDs, "excess_idle")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("terminateInstances() error = %v, wantErr %v", err, tt.wantErr)
 			}

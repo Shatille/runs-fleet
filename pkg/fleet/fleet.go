@@ -44,6 +44,11 @@ type CircuitBreaker interface {
 	CheckCircuit(ctx context.Context, instanceType string) (circuit.State, error)
 }
 
+// MetricsAPI publishes fleet creation metrics.
+type MetricsAPI interface {
+	PublishFleetCreate(ctx context.Context, capacity, result string) error
+}
+
 // spotPriceCache caches spot prices with TTL.
 type spotPriceCache struct {
 	mu      sync.RWMutex
@@ -68,6 +73,7 @@ type Manager struct {
 	ec2Client         EC2API
 	config            *config.Config
 	circuitBreaker    CircuitBreaker
+	metrics           MetricsAPI
 	spotCache         spotPriceCache
 	availabilityCache availabilityCache
 }
@@ -84,6 +90,15 @@ func NewManager(cfg aws.Config, appConfig *config.Config) *Manager {
 func (m *Manager) SetCircuitBreaker(cb CircuitBreaker) {
 	m.circuitBreaker = cb
 }
+
+// SetMetrics sets the metrics publisher for the manager.
+func (m *Manager) SetMetrics(metrics MetricsAPI) {
+	m.metrics = metrics
+}
+
+// fleetTargetCapacity is the per-CreateFleet target capacity. Each call requests
+// a single instance, so the capacity label is a fixed low-cardinality value.
+const fleetTargetCapacity = "1"
 
 // LaunchSpec defines EC2 instance launch parameters for workflow job.
 type LaunchSpec struct {
@@ -132,6 +147,20 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		return nil, err
 	}
 
+	// Track the fleet-creation outcome for the fleet_create counter. The result
+	// is "success" only when instances are returned; every error exit below sets
+	// it to "failure" before returning.
+	result := "failure"
+	defer func() {
+		if m.metrics != nil {
+			if mErr := m.metrics.PublishFleetCreate(ctx, fleetTargetCapacity, result); mErr != nil {
+				fleetLog.Warn(ctx, "fleet create metric failed", slog.String("error", mErr.Error()))
+			}
+		}
+	}()
+	// TODO(metrics): emit CreateFleet latency via PublishFleetCreateSeconds(ctx,
+	// fleetTargetCapacity, elapsed) once timing instrumentation lands.
+
 	output, err := m.ec2Client.CreateFleet(ctx, req)
 	if err != nil {
 		span.RecordError(err)
@@ -151,6 +180,8 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		span.SetStatus(codes.Error, noInstancesErr.Error())
 		return nil, noInstancesErr
 	}
+
+	result = "success"
 
 	instanceIDs := make([]string, 0, len(output.Instances))
 	for _, inst := range output.Instances {

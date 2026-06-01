@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,11 +62,22 @@ type JobInfo struct {
 
 // MetricsAPI provides CloudWatch metrics publishing.
 type MetricsAPI interface {
-	PublishSpotInterruption(ctx context.Context) error
-	PublishFleetSizeIncrement(ctx context.Context) error
-	PublishFleetSizeDecrement(ctx context.Context) error
-	PublishMessageDeletionFailure(ctx context.Context) error
-	PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error
+	PublishSpotInterruption(ctx context.Context, family string) error
+	PublishMessageDeletionFailure(ctx context.Context, queue string) error
+	PublishCircuitBreakerTrip(ctx context.Context, instanceType string) error
+	PublishCircuitBreakerOpen(ctx context.Context, instanceType string, open bool) error
+	PublishJobRequeued(ctx context.Context, reason string) error
+	PublishQueueReceive(ctx context.Context, queue, result string) error
+}
+
+// instanceFamily returns the instance family (the segment before the dot, e.g.
+// "c7g" for "c7g.xlarge"). It returns "" for an empty or malformed type so the
+// family label is omitted rather than carrying a noisy value.
+func instanceFamily(instanceType string) string {
+	if i := strings.IndexByte(instanceType, '.'); i > 0 {
+		return instanceType[:i]
+	}
+	return ""
 }
 
 // CircuitBreakerAPI provides circuit breaker operations.
@@ -155,6 +167,9 @@ func (h *Handler) Run(ctx context.Context) {
 			messages, err := h.queueClient.ReceiveMessages(recvCtx, 10, 20)
 			cancel()
 			if err != nil {
+				if h.metrics != nil {
+					_ = h.metrics.PublishQueueReceive(ctx, "events", "error")
+				}
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					eventsLog.Warn(ctx, "receive messages failed", slog.String("error", err.Error()))
 				} else {
@@ -164,6 +179,9 @@ func (h *Handler) Run(ctx context.Context) {
 			}
 
 			if len(messages) == 0 {
+				if h.metrics != nil {
+					_ = h.metrics.PublishQueueReceive(ctx, "events", "empty")
+				}
 				jitter := time.Duration(160+rand.Int63n(80)) * time.Millisecond
 				select {
 				case <-time.After(jitter):
@@ -171,6 +189,10 @@ func (h *Handler) Run(ctx context.Context) {
 					return
 				}
 				continue
+			}
+
+			if h.metrics != nil {
+				_ = h.metrics.PublishQueueReceive(ctx, "events", "messages")
 			}
 
 			var wg sync.WaitGroup
@@ -219,7 +241,7 @@ func (h *Handler) processEvent(ctx context.Context, msg queue.Message) {
 			eventsLog.Error(ctx, "message delete failed", slog.String("error", err.Error()))
 			metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 			defer metricCancel()
-			if err := h.metrics.PublishMessageDeletionFailure(metricCtx); err != nil {
+			if err := h.metrics.PublishMessageDeletionFailure(metricCtx, "events"); err != nil {
 				eventsLog.Error(ctx, "message deletion metric failed", slog.String("error", err.Error()))
 			}
 		}
@@ -294,6 +316,11 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 
 	ctx = logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, detail.InstanceID))
 
+	// family is resolved once the interrupted job's instance type is known
+	// (below) and read by the deferred metric so the counter carries the family
+	// label. It stays empty when no job is found, which the backend omits.
+	var family string
+
 	// Publish the interruption count best-effort and after the critical work
 	// below: a throttled CloudWatch metric must never abort marking the instance
 	// terminating or re-queuing the in-flight job (the SQS message is deleted
@@ -305,7 +332,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		// spot reclaim itself tore down the handler's context.
 		mctx, mcancel := context.WithTimeout(context.WithoutCancel(ctx), config.ShortTimeout)
 		defer mcancel()
-		if err := h.metrics.PublishSpotInterruption(mctx); err != nil {
+		if err := h.metrics.PublishSpotInterruption(mctx, family); err != nil {
 			eventsLog.Warn(mctx, "spot interruption metric publish failed",
 				slog.String("error", err.Error()))
 		}
@@ -341,6 +368,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 	}
 
 	ctx = logging.ContextWithJob(ctx, job.JobID, job.RunID, job.Repo)
+	family = instanceFamily(job.InstanceType)
 
 	// Record interruption in circuit breaker
 	if h.circuitBreaker != nil && job.InstanceType != "" {
@@ -354,13 +382,20 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 				eventsLog.Warn(ctx, "circuit breaker state check failed",
 					slog.String("instance_type", job.InstanceType),
 					slog.String("error", err.Error()))
-			} else if open {
+			} else {
 				metricCtx, metricCancel := context.WithTimeout(ctx, config.ShortTimeout)
 				defer metricCancel()
-				if err := h.metrics.PublishCircuitBreakerTriggered(metricCtx, job.InstanceType); err != nil {
-					eventsLog.Warn(metricCtx, "circuit breaker metric failed",
+				if err := h.metrics.PublishCircuitBreakerOpen(metricCtx, job.InstanceType, open); err != nil {
+					eventsLog.Warn(metricCtx, "circuit breaker open metric failed",
 						slog.String("instance_type", job.InstanceType),
 						slog.String("error", err.Error()))
+				}
+				if open {
+					if err := h.metrics.PublishCircuitBreakerTrip(metricCtx, job.InstanceType); err != nil {
+						eventsLog.Warn(metricCtx, "circuit breaker trip metric failed",
+							slog.String("instance_type", job.InstanceType),
+							slog.String("error", err.Error()))
+					}
 				}
 			}
 		}
@@ -387,6 +422,10 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		return fmt.Errorf("failed to re-queue job %d: %w", job.JobID, err)
 	}
 
+	if err := h.metrics.PublishJobRequeued(ctx, "spot_interruption"); err != nil {
+		eventsLog.Warn(ctx, "job requeued metric failed", slog.String("error", err.Error()))
+	}
+
 	eventsLog.Info(ctx, "job requeued after spot interruption",
 		slog.Int("retry_count", requeueMsg.RetryCount))
 	return nil
@@ -403,17 +442,10 @@ func (h *Handler) handleStateChange(ctx context.Context, detailRaw json.RawMessa
 	eventsLog.Info(ctx, "instance state change",
 		slog.String("state", detail.State))
 
+	// TODO(metrics): emit a correct aggregate instances gauge from a periodic source (or derive from pool_instances) — per-event delta tracking drifts and loses state on restart.
 	switch detail.State {
-	case "running":
-		if err := h.retryWithBackoff(ctx, h.metrics.PublishFleetSizeIncrement); err != nil {
-			return fmt.Errorf("failed to publish fleet size increment metric: %w", err)
-		}
-	case "stopped", "terminated":
-		if err := h.retryWithBackoff(ctx, h.metrics.PublishFleetSizeDecrement); err != nil {
-			return fmt.Errorf("failed to publish fleet size decrement metric: %w", err)
-		}
-	case "pending", "stopping", "shutting-down":
-		// Intermediate states, no action needed
+	case "running", "stopped", "terminated", "pending", "stopping", "shutting-down":
+		// Known states, no action needed.
 	default:
 		eventsLog.Warn(ctx, "unknown instance state",
 			slog.String("state", detail.State))

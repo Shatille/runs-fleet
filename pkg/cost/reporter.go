@@ -194,6 +194,9 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 		}
 	}
 
+	// TODO(metrics): emit cost telemetry from this breakdown once the reporter is
+	// wired to a metrics publisher: PublishEstimatedCost(ctx, breakdown.TotalCost)
+	// and PublishInstanceHours(ctx, capacity, family, hours) per instance family.
 	costLog.Info(ctx, "daily cost report generated", slog.Float64("total_cost", breakdown.TotalCost))
 	return nil
 }

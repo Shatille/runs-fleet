@@ -21,505 +21,392 @@ func (m *MockCloudWatchAPI) PutMetricData(ctx context.Context, params *cloudwatc
 	return &cloudwatch.PutMetricDataOutput{}, nil
 }
 
-func TestPublishMetrics(t *testing.T) {
-	t.Parallel()
+const testNamespace = "RunsFleet"
 
-	tests := []struct {
-		name       string
-		metricName string
-		value      float64
-		unit       types.StandardUnit
-		useStats   bool
-		publish    func(p *CloudWatchPublisher) error
-	}{
-		{
-			name:       "QueueDepth",
-			metricName: "QueueDepth",
-			value:      10.0,
-			unit:       types.StandardUnitCount,
-			useStats:   true,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishQueueDepth(context.Background(), 10.0)
-			},
-		},
-		{
-			name:       "FleetSizeIncrement",
-			metricName: "FleetSizeIncrement",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishFleetSizeIncrement(context.Background())
-			},
-		},
-		{
-			name:       "FleetSizeDecrement",
-			metricName: "FleetSizeDecrement",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishFleetSizeDecrement(context.Background())
-			},
-		},
-		{
-			name:       "JobDuration",
-			metricName: "JobDuration",
-			value:      120.0,
-			unit:       types.StandardUnitSeconds,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishJobDuration(context.Background(), 120)
-			},
-		},
-		{
-			name:       "SpotInterruptions",
-			metricName: "SpotInterruptions",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishSpotInterruption(context.Background())
-			},
-		},
-		{
-			name:       "MessageDeletionFailures",
-			metricName: "MessageDeletionFailures",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishMessageDeletionFailure(context.Background())
-			},
-		},
-		{
-			name:       "JobSuccess",
-			metricName: "JobSuccess",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishJobSuccess(context.Background())
-			},
-		},
-		{
-			name:       "JobFailure",
-			metricName: "JobFailure",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishJobFailure(context.Background())
-			},
-		},
-		{
-			name:       "JobQueued",
-			metricName: "JobQueued",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishJobQueued(context.Background())
-			},
-		},
-		{
-			name:       "CacheHits",
-			metricName: "CacheHits",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishCacheHit(context.Background())
-			},
-		},
-		{
-			name:       "CacheMisses",
-			metricName: "CacheMisses",
-			value:      1.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishCacheMiss(context.Background())
-			},
-		},
-		{
-			name:       "OrphanedInstancesTerminated",
-			metricName: "OrphanedInstancesTerminated",
-			value:      5.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishOrphanedInstancesTerminated(context.Background(), 5)
-			},
-		},
-		{
-			name:       "SSMParametersDeleted",
-			metricName: "SSMParametersDeleted",
-			value:      3.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishSSMParametersDeleted(context.Background(), 3)
-			},
-		},
-		{
-			name:       "JobRecordsArchived",
-			metricName: "JobRecordsArchived",
-			value:      10.0,
-			unit:       types.StandardUnitCount,
-			useStats:   false,
-			publish: func(p *CloudWatchPublisher) error {
-				return p.PublishJobRecordsArchived(context.Background(), 10)
-			},
-		},
-	}
-
-	const testNamespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			mockClient := &MockCloudWatchAPI{
-				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
-					if *params.Namespace != testNamespace {
-						t.Errorf("Namespace = %s, want %s", *params.Namespace, testNamespace)
-					}
-					if len(params.MetricData) != 1 {
-						t.Errorf("MetricData length = %d, want 1", len(params.MetricData))
-					}
-					datum := params.MetricData[0]
-					if *datum.MetricName != tt.metricName {
-						t.Errorf("MetricName = %s, want %s", *datum.MetricName, tt.metricName)
-					}
-					if tt.useStats {
-						if datum.StatisticValues == nil {
-							t.Errorf("StatisticValues is nil, want non-nil")
-						} else {
-							if *datum.StatisticValues.Sum != tt.value {
-								t.Errorf("StatisticValues.Sum = %f, want %f", *datum.StatisticValues.Sum, tt.value)
-							}
-							if *datum.StatisticValues.SampleCount != 1 {
-								t.Errorf("StatisticValues.SampleCount = %f, want 1", *datum.StatisticValues.SampleCount)
-							}
-							if *datum.StatisticValues.Minimum != tt.value {
-								t.Errorf("StatisticValues.Minimum = %f, want %f", *datum.StatisticValues.Minimum, tt.value)
-							}
-							if *datum.StatisticValues.Maximum != tt.value {
-								t.Errorf("StatisticValues.Maximum = %f, want %f", *datum.StatisticValues.Maximum, tt.value)
-							}
-						}
-					} else {
-						if datum.Value == nil {
-							t.Errorf("Value is nil, want %f", tt.value)
-						} else if *datum.Value != tt.value {
-							t.Errorf("Value = %f, want %f", *datum.Value, tt.value)
-						}
-					}
-					if datum.Unit != tt.unit {
-						t.Errorf("Unit = %v, want %v", datum.Unit, tt.unit)
-					}
-					return &cloudwatch.PutMetricDataOutput{}, nil
-				},
-			}
-
-			publisher := &CloudWatchPublisher{
-				client:    mockClient,
-				namespace: testNamespace,
-			}
-
-			if err := tt.publish(publisher); err != nil {
-				t.Errorf("publish() error = %v", err)
-			}
-		})
-	}
+// capturedDatum records the single MetricDatum emitted by a publish call.
+type capturedDatum struct {
+	name       string
+	value      float64
+	hasValue   bool
+	hasStats   bool
+	statsSum   float64
+	unit       types.StandardUnit
+	dimensions map[string]string
 }
 
-func TestPublishPoolUtilization(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		poolName    string
-		utilization float64
-		mockErr     error
-		wantErr     bool
-	}{
-		{
-			name:        "success",
-			poolName:    "default-pool",
-			utilization: 75.5,
-			mockErr:     nil,
-			wantErr:     false,
-		},
-		{
-			name:        "cloudwatch error",
-			poolName:    "error-pool",
-			utilization: 50.0,
-			mockErr:     errors.New("cloudwatch error"),
-			wantErr:     true,
+func capturingPublisher(t *testing.T, out *capturedDatum) *CloudWatchPublisher {
+	t.Helper()
+	mockClient := &MockCloudWatchAPI{
+		PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+			if *params.Namespace != testNamespace {
+				t.Errorf("Namespace = %s, want %s", *params.Namespace, testNamespace)
+			}
+			if len(params.MetricData) != 1 {
+				t.Fatalf("MetricData length = %d, want 1", len(params.MetricData))
+			}
+			d := params.MetricData[0]
+			out.name = *d.MetricName
+			out.unit = d.Unit
+			if d.Value != nil {
+				out.value = *d.Value
+				out.hasValue = true
+			}
+			if d.StatisticValues != nil {
+				out.hasStats = true
+				out.statsSum = *d.StatisticValues.Sum
+			}
+			out.dimensions = map[string]string{}
+			for _, dim := range d.Dimensions {
+				out.dimensions[*dim.Name] = *dim.Value
+			}
+			return &cloudwatch.PutMetricDataOutput{}, nil
 		},
 	}
-
-	const namespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			mockClient := &MockCloudWatchAPI{
-				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					if *params.Namespace != namespace {
-						t.Errorf("Namespace = %s, want %s", *params.Namespace, namespace)
-					}
-					if len(params.MetricData) != 1 {
-						t.Errorf("MetricData length = %d, want 1", len(params.MetricData))
-					}
-					datum := params.MetricData[0]
-					if *datum.MetricName != "PoolUtilization" {
-						t.Errorf("MetricName = %s, want PoolUtilization", *datum.MetricName)
-					}
-					if *datum.Value != tt.utilization {
-						t.Errorf("Value = %f, want %f", *datum.Value, tt.utilization)
-					}
-					if datum.Unit != types.StandardUnitPercent {
-						t.Errorf("Unit = %v, want Percent", datum.Unit)
-					}
-					if len(datum.Dimensions) != 1 {
-						t.Errorf("Dimensions length = %d, want 1", len(datum.Dimensions))
-					}
-					if *datum.Dimensions[0].Name != "PoolName" {
-						t.Errorf("Dimension Name = %s, want PoolName", *datum.Dimensions[0].Name)
-					}
-					if *datum.Dimensions[0].Value != tt.poolName {
-						t.Errorf("Dimension Value = %s, want %s", *datum.Dimensions[0].Value, tt.poolName)
-					}
-					return &cloudwatch.PutMetricDataOutput{}, nil
-				},
-			}
-
-			publisher := &CloudWatchPublisher{
-				client:    mockClient,
-				namespace: namespace,
-			}
-
-			err := publisher.PublishPoolUtilization(context.Background(), tt.poolName, tt.utilization)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("PublishPoolUtilization() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
+	return &CloudWatchPublisher{client: mockClient, namespace: testNamespace}
 }
 
-//nolint:dupl // Test functions have similar structure but test different methods - intentional pattern
-func TestPublishSchedulingFailure(t *testing.T) {
+func TestCloudWatchPublisher_CounterMetrics(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		taskType string
-		mockErr  error
-		wantErr  bool
+		wantName string
+		wantDims map[string]string
+		publish  func(p *CloudWatchPublisher) error
 	}{
 		{
-			name:     "success",
-			taskType: "runner-provision",
-			mockErr:  nil,
-			wantErr:  false,
+			name: "JobEnqueued", wantName: "JobsEnqueued",
+			wantDims: map[string]string{"Pool": "default", "Arch": "arm64", "Capacity": "4", "Repo": "o/r"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobEnqueued(context.Background(), "default", "arm64", "4", "o/r")
+			},
 		},
 		{
-			name:     "cloudwatch error",
-			taskType: "cleanup",
-			mockErr:  errors.New("cloudwatch error"),
-			wantErr:  true,
+			name: "JobAssigned", wantName: "JobsAssigned",
+			wantDims: map[string]string{"Pool": "default", "Source": "warm_pool", "Repo": "o/r"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobAssigned(context.Background(), "default", "warm_pool", "o/r")
+			},
+		},
+		{
+			name: "JobCompleted", wantName: "JobsCompleted",
+			wantDims: map[string]string{"Pool": "default", "Result": "success", "Repo": "o/r"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobCompleted(context.Background(), "default", "success", "o/r")
+			},
+		},
+		{
+			name: "JobRequeued", wantName: "JobsRequeued",
+			wantDims: map[string]string{"Reason": "spot_interruption"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobRequeued(context.Background(), "spot_interruption")
+			},
+		},
+		{
+			name: "FleetCreate", wantName: "FleetCreate",
+			wantDims: map[string]string{"Capacity": "1", "Result": "success"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishFleetCreate(context.Background(), "1", "success")
+			},
+		},
+		{
+			name: "SpotInterruption", wantName: "SpotInterruptions",
+			wantDims: map[string]string{"Family": "c7g"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishSpotInterruption(context.Background(), "c7g")
+			},
+		},
+		{
+			name: "CircuitBreakerTrip", wantName: "CircuitBreakerTrip",
+			wantDims: map[string]string{"InstanceType": "c7g.xlarge"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishCircuitBreakerTrip(context.Background(), "c7g.xlarge")
+			},
+		},
+		{
+			name: "PoolAction", wantName: "PoolActions",
+			wantDims: map[string]string{"PoolName": "default", "Action": "create", "Reason": "ready_deficit"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishPoolAction(context.Background(), "default", "create", "ready_deficit")
+			},
+		},
+		{
+			name: "QueueReceive", wantName: "QueueReceive",
+			wantDims: map[string]string{"Queue": "main", "Result": "messages"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishQueueReceive(context.Background(), "main", "messages")
+			},
+		},
+		{
+			name: "CacheRequest", wantName: "CacheRequests",
+			wantDims: map[string]string{"Result": "hit"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishCacheRequest(context.Background(), "hit")
+			},
+		},
+		{
+			name: "SchedulingFailure", wantName: "SchedulingFailure",
+			wantDims: map[string]string{"TaskType": "job_claim"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishSchedulingFailure(context.Background(), "job_claim")
+			},
+		},
+		{
+			name: "MessageDeletionFailure", wantName: "MessageDeletionFailures",
+			wantDims: map[string]string{"Queue": "events"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishMessageDeletionFailure(context.Background(), "events")
+			},
+		},
+		{
+			name: "AWSCallFailure", wantName: "AWSCallFailures",
+			wantDims: map[string]string{"Service": "DynamoDB", "Operation": "GetItem", "Result": "timeout"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishAWSCallFailure(context.Background(), "DynamoDB", "GetItem", "timeout")
+			},
 		},
 	}
-
-	const testNamespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			mockClient := &MockCloudWatchAPI{
-				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					if *params.Namespace != testNamespace {
-						t.Errorf("Namespace = %s, want %s", *params.Namespace, testNamespace)
-					}
-					datum := params.MetricData[0]
-					if *datum.MetricName != "SchedulingFailure" {
-						t.Errorf("MetricName = %s, want SchedulingFailure", *datum.MetricName)
-					}
-					if *datum.Value != 1 {
-						t.Errorf("Value = %f, want 1", *datum.Value)
-					}
-					if len(datum.Dimensions) != 1 {
-						t.Errorf("Dimensions length = %d, want 1", len(datum.Dimensions))
-					}
-					if *datum.Dimensions[0].Name != "TaskType" {
-						t.Errorf("Dimension Name = %s, want TaskType", *datum.Dimensions[0].Name)
-					}
-					if *datum.Dimensions[0].Value != tt.taskType {
-						t.Errorf("Dimension Value = %s, want %s", *datum.Dimensions[0].Value, tt.taskType)
-					}
-					return &cloudwatch.PutMetricDataOutput{}, nil
-				},
+			var got capturedDatum
+			p := capturingPublisher(t, &got)
+			if err := tt.publish(p); err != nil {
+				t.Fatalf("publish error = %v", err)
 			}
-
-			publisher := &CloudWatchPublisher{
-				client:    mockClient,
-				namespace: testNamespace,
+			if got.name != tt.wantName {
+				t.Errorf("name = %s, want %s", got.name, tt.wantName)
 			}
-
-			err := publisher.PublishSchedulingFailure(context.Background(), tt.taskType)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("PublishSchedulingFailure() error = %v, wantErr %v", err, tt.wantErr)
+			if !got.hasValue || got.value != 1 {
+				t.Errorf("value = %v (hasValue=%v), want counter 1", got.value, got.hasValue)
 			}
+			if got.unit != types.StandardUnitCount {
+				t.Errorf("unit = %v, want Count", got.unit)
+			}
+			assertDimMap(t, got.dimensions, tt.wantDims)
 		})
 	}
 }
 
-//nolint:dupl // Test functions have similar structure but test different methods - intentional pattern
-func TestPublishCircuitBreakerTriggered(t *testing.T) {
+func TestCloudWatchPublisher_HousekeepingActionUsesCount(t *testing.T) {
+	t.Parallel()
+	var got capturedDatum
+	p := capturingPublisher(t, &got)
+	if err := p.PublishHousekeepingAction(context.Background(), "ssm_params", 7); err != nil {
+		t.Fatalf("publish error = %v", err)
+	}
+	if got.name != "HousekeepingActions" {
+		t.Errorf("name = %s, want HousekeepingActions", got.name)
+	}
+	if got.value != 7 {
+		t.Errorf("value = %v, want 7", got.value)
+	}
+	assertDimMap(t, got.dimensions, map[string]string{"Action": "ssm_params"})
+}
+
+func TestCloudWatchPublisher_GaugeMetrics(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		instanceType string
-		mockErr      error
-		wantErr      bool
+		name     string
+		wantName string
+		wantSum  float64
+		wantDims map[string]string
+		publish  func(p *CloudWatchPublisher) error
 	}{
 		{
-			name:         "success",
-			instanceType: "t4g.medium",
-			mockErr:      nil,
-			wantErr:      false,
+			name: "QueueDepth", wantName: "QueueDepth", wantSum: 1,
+			wantDims: map[string]string{"Queue": "main"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishQueueDepth(context.Background(), "main", 1)
+			},
 		},
 		{
-			name:         "cloudwatch error",
-			instanceType: "c7g.xlarge",
-			mockErr:      errors.New("cloudwatch error"),
-			wantErr:      true,
+			name: "Instances", wantName: "Instances", wantSum: 3,
+			wantDims: map[string]string{"State": "running", "Capacity": "4", "Pool": "default"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishInstances(context.Background(), "running", "4", "default", 3)
+			},
+		},
+		{
+			name: "PoolInstances", wantName: "PoolInstances", wantSum: 5,
+			wantDims: map[string]string{"PoolName": "default", "State": "ready"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishPoolInstances(context.Background(), "default", "ready", 5)
+			},
+		},
+		{
+			name: "PoolDesired", wantName: "PoolDesired", wantSum: 2,
+			wantDims: map[string]string{"PoolName": "default", "Kind": "running"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishPoolDesired(context.Background(), "default", "running", 2)
+			},
+		},
+		{
+			name: "WorkerInflight", wantName: "WorkerInflight", wantSum: 4,
+			wantDims: map[string]string{"Queue": "main"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishWorkerInflight(context.Background(), "main", 4)
+			},
+		},
+		{
+			name: "CircuitBreakerOpen", wantName: "CircuitBreakerOpen", wantSum: 1,
+			wantDims: map[string]string{"InstanceType": "c7g.xlarge"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishCircuitBreakerOpen(context.Background(), "c7g.xlarge", true)
+			},
+		},
+		{
+			name: "EstimatedCost", wantName: "EstimatedCost", wantSum: 12.5,
+			wantDims: map[string]string{},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishEstimatedCost(context.Background(), 12.5)
+			},
 		},
 	}
-
-	const testNamespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			var got capturedDatum
+			p := capturingPublisher(t, &got)
+			if err := tt.publish(p); err != nil {
+				t.Fatalf("publish error = %v", err)
+			}
+			if got.name != tt.wantName {
+				t.Errorf("name = %s, want %s", got.name, tt.wantName)
+			}
+			if !got.hasStats || got.statsSum != tt.wantSum {
+				t.Errorf("stats sum = %v (hasStats=%v), want %v", got.statsSum, got.hasStats, tt.wantSum)
+			}
+			assertDimMap(t, got.dimensions, tt.wantDims)
+		})
+	}
+}
 
+func TestCloudWatchPublisher_LowFrequencyLatencyAsStatistic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		wantName string
+		wantDims map[string]string
+		publish  func(p *CloudWatchPublisher) error
+	}{
+		{
+			name: "JobWaitSeconds", wantName: "JobWaitSeconds",
+			wantDims: map[string]string{"Pool": "default", "Source": "cold_start"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobWaitSeconds(context.Background(), "default", "cold_start", 12)
+			},
+		},
+		{
+			name: "JobExecutionSeconds", wantName: "JobExecutionSeconds",
+			wantDims: map[string]string{"Pool": "default", "Result": "success"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobExecutionSeconds(context.Background(), "default", "success", 90)
+			},
+		},
+		{
+			name: "InstanceProvisionSeconds", wantName: "InstanceProvisionSeconds",
+			wantDims: map[string]string{"Source": "cold_start", "Family": "c7g"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishInstanceProvisionSeconds(context.Background(), "cold_start", "c7g", 30)
+			},
+		},
+		{
+			name: "FleetCreateSeconds", wantName: "FleetCreateSeconds",
+			wantDims: map[string]string{"Capacity": "1"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishFleetCreateSeconds(context.Background(), "1", 5)
+			},
+		},
+		{
+			name: "PoolReconcileSeconds", wantName: "PoolReconcileSeconds",
+			wantDims: map[string]string{},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishPoolReconcileSeconds(context.Background(), 2)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got capturedDatum
+			p := capturingPublisher(t, &got)
+			if err := tt.publish(p); err != nil {
+				t.Fatalf("publish error = %v", err)
+			}
+			if got.name != tt.wantName {
+				t.Errorf("name = %s, want %s", got.name, tt.wantName)
+			}
+			if !got.hasStats {
+				t.Errorf("%s should emit a StatisticSet", tt.wantName)
+			}
+			if got.unit != types.StandardUnitSeconds {
+				t.Errorf("unit = %v, want Seconds", got.unit)
+			}
+			assertDimMap(t, got.dimensions, tt.wantDims)
+		})
+	}
+}
+
+func TestCloudWatchPublisher_HighFrequencyLatencyNoOps(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		publish func(p *CloudWatchPublisher) error
+	}{
+		{"AWSCallDuration", func(p *CloudWatchPublisher) error {
+			return p.PublishAWSCallDuration(context.Background(), "SQS", "ReceiveMessage", 1.5)
+		}},
+		{"MessageProcessingSeconds", func(p *CloudWatchPublisher) error {
+			return p.PublishMessageProcessingSeconds(context.Background(), "main", "success", 0.2)
+		}},
+		{"LockWaitSeconds", func(p *CloudWatchPublisher) error {
+			return p.PublishLockWaitSeconds(context.Background(), "pool_reconcile", 0.05)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			mockClient := &MockCloudWatchAPI{
-				PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
-					if tt.mockErr != nil {
-						return nil, tt.mockErr
-					}
-					if *params.Namespace != testNamespace {
-						t.Errorf("Namespace = %s, want %s", *params.Namespace, testNamespace)
-					}
-					datum := params.MetricData[0]
-					if *datum.MetricName != "CircuitBreakerTriggered" {
-						t.Errorf("MetricName = %s, want CircuitBreakerTriggered", *datum.MetricName)
-					}
-					if *datum.Value != 1 {
-						t.Errorf("Value = %f, want 1", *datum.Value)
-					}
-					if len(datum.Dimensions) != 1 {
-						t.Errorf("Dimensions length = %d, want 1", len(datum.Dimensions))
-					}
-					if *datum.Dimensions[0].Name != "InstanceType" {
-						t.Errorf("Dimension Name = %s, want InstanceType", *datum.Dimensions[0].Name)
-					}
-					if *datum.Dimensions[0].Value != tt.instanceType {
-						t.Errorf("Dimension Value = %s, want %s", *datum.Dimensions[0].Value, tt.instanceType)
-					}
+				PutMetricDataFunc: func(_ context.Context, _ *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+					t.Errorf("%s must not call PutMetricData on the CloudWatch backend", tt.name)
 					return &cloudwatch.PutMetricDataOutput{}, nil
 				},
 			}
-
-			publisher := &CloudWatchPublisher{
-				client:    mockClient,
-				namespace: testNamespace,
-			}
-
-			err := publisher.PublishCircuitBreakerTriggered(context.Background(), tt.instanceType)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("PublishCircuitBreakerTriggered() error = %v, wantErr %v", err, tt.wantErr)
+			p := &CloudWatchPublisher{client: mockClient, namespace: testNamespace}
+			if err := tt.publish(p); err != nil {
+				t.Errorf("%s() error = %v", tt.name, err)
 			}
 		})
 	}
 }
 
-func TestPublishAWSCallDuration(t *testing.T) {
+func TestCloudWatchPublisher_OmitsEmptyDimensions(t *testing.T) {
 	t.Parallel()
-
-	const namespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
-	// Duration is high-frequency; the CloudWatch backend deliberately drops it to
-	// avoid a synchronous PutMetricData per AWS call. Prometheus and Datadog carry
-	// the latency histogram. Assert no PutMetricData is issued.
-	mockClient := &MockCloudWatchAPI{
-		PutMetricDataFunc: func(_ context.Context, _ *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
-			t.Error("PublishAWSCallDuration must not call PutMetricData on the CloudWatch backend")
-			return &cloudwatch.PutMetricDataOutput{}, nil
-		},
+	var got capturedDatum
+	p := capturingPublisher(t, &got)
+	// Empty pool and repo must be dropped, leaving only source.
+	if err := p.PublishJobAssigned(context.Background(), "", "cold_start", ""); err != nil {
+		t.Fatalf("publish error = %v", err)
 	}
-	publisher := &CloudWatchPublisher{client: mockClient, namespace: namespace}
-
-	if err := publisher.PublishAWSCallDuration(context.Background(), "SQS", "ReceiveMessage", 1.5); err != nil {
-		t.Errorf("PublishAWSCallDuration() error = %v", err)
-	}
+	assertDimMap(t, got.dimensions, map[string]string{"Source": "cold_start"})
 }
 
-func TestPublishAWSCallFailure(t *testing.T) {
-	t.Parallel()
-
-	const namespace = "RunsFleet" //nolint:goconst // Test constant, clearer inline
-	mockClient := &MockCloudWatchAPI{
-		PutMetricDataFunc: func(_ context.Context, params *cloudwatch.PutMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
-			datum := params.MetricData[0]
-			if *datum.MetricName != "AWSCallFailures" {
-				t.Errorf("MetricName = %s, want AWSCallFailures", *datum.MetricName)
-			}
-			if datum.Unit != types.StandardUnitCount {
-				t.Errorf("Unit = %v, want Count", datum.Unit)
-			}
-			if *datum.Value != 1 {
-				t.Errorf("Value = %f, want 1", *datum.Value)
-			}
-			assertDimensions(t, datum.Dimensions, map[string]string{
-				"Service": "DynamoDB", "Operation": "GetItem", "Result": "timeout",
-			})
-			return &cloudwatch.PutMetricDataOutput{}, nil
-		},
-	}
-	publisher := &CloudWatchPublisher{client: mockClient, namespace: namespace}
-
-	if err := publisher.PublishAWSCallFailure(context.Background(), "DynamoDB", "GetItem", "timeout"); err != nil {
-		t.Errorf("PublishAWSCallFailure() error = %v", err)
-	}
-}
-
-// assertDimensions checks the datum carries exactly the wanted dimension
-// name/value pairs.
-func assertDimensions(t *testing.T, dims []types.Dimension, want map[string]string) {
+func assertDimMap(t *testing.T, got, want map[string]string) {
 	t.Helper()
-	if len(dims) != len(want) {
-		t.Fatalf("Dimensions length = %d, want %d: %v", len(dims), len(want), dims)
+	if len(got) != len(want) {
+		t.Fatalf("dimensions = %v, want %v", got, want)
 	}
-	for _, d := range dims {
-		v, ok := want[*d.Name]
-		if !ok {
-			t.Errorf("unexpected dimension %s", *d.Name)
-			continue
-		}
-		if *d.Value != v {
-			t.Errorf("dimension %s = %s, want %s", *d.Name, *d.Value, v)
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("dimension %s = %s, want %s", k, got[k], v)
 		}
 	}
 }
@@ -533,48 +420,22 @@ func TestPublishMetricsError(t *testing.T) {
 		},
 	}
 
-	publisher := &CloudWatchPublisher{
-		client:    mockClient,
-		namespace: "RunsFleet",
-	}
+	publisher := &CloudWatchPublisher{client: mockClient, namespace: testNamespace}
 
-	// Test that errors are properly propagated
-	if err := publisher.PublishQueueDepth(context.Background(), 10.0); err == nil {
+	if err := publisher.PublishQueueDepth(context.Background(), "main", 10.0); err == nil {
 		t.Error("PublishQueueDepth() should return error when CloudWatch fails")
 	}
-	if err := publisher.PublishJobSuccess(context.Background()); err == nil {
-		t.Error("PublishJobSuccess() should return error when CloudWatch fails")
+	if err := publisher.PublishJobCompleted(context.Background(), "default", "success", "o/r"); err == nil {
+		t.Error("PublishJobCompleted() should return error when CloudWatch fails")
 	}
 }
 
 func TestCloudWatchPublisher_Close(t *testing.T) {
 	t.Parallel()
 
-	publisher := &CloudWatchPublisher{
-		client:    &MockCloudWatchAPI{},
-		namespace: "RunsFleet",
-	}
-
-	err := publisher.Close()
-	if err != nil {
+	publisher := &CloudWatchPublisher{client: &MockCloudWatchAPI{}, namespace: testNamespace}
+	if err := publisher.Close(); err != nil {
 		t.Errorf("Close() error = %v, want nil", err)
-	}
-}
-
-func TestCloudWatchPublisher_FieldsWithMock(t *testing.T) {
-	t.Parallel()
-
-	mockClient := &MockCloudWatchAPI{}
-	publisher := &CloudWatchPublisher{
-		client:    mockClient,
-		namespace: "CustomNamespace",
-	}
-
-	if publisher.namespace != "CustomNamespace" {
-		t.Errorf("namespace = %s, want CustomNamespace", publisher.namespace)
-	}
-	if publisher.client == nil {
-		t.Error("client should not be nil")
 	}
 }
 

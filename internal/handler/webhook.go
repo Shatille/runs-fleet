@@ -123,13 +123,30 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 // PublishJobQueuedMetrics emits the best-effort enqueue metrics for a queued
 // job. These observability calls run after the webhook is acked so they never
 // count against GitHub's delivery budget; failures are logged, not returned.
-func PublishJobQueuedMetrics(ctx context.Context, m metrics.Publisher) {
-	if err := m.PublishJobQueued(ctx); err != nil {
-		webhookLog.Error(ctx, "job queued metric failed", slog.String("error", err.Error()))
+func PublishJobQueuedMetrics(ctx context.Context, m metrics.Publisher, job *queue.JobMessage) {
+	if m == nil {
+		return
 	}
-	if err := m.PublishQueueDepth(ctx, 1); err != nil {
+	pool, arch, capacity, repo := "", "", "", ""
+	if job != nil {
+		pool, arch, repo = job.Pool, job.Arch, job.Repo
+		capacity = CapacityLabel(job.CPUMin)
+	}
+	if err := m.PublishJobEnqueued(ctx, pool, arch, capacity, repo); err != nil {
+		webhookLog.Error(ctx, "job enqueued metric failed", slog.String("error", err.Error()))
+	}
+	if err := m.PublishQueueDepth(ctx, "main", 1); err != nil {
 		webhookLog.Error(ctx, "queue depth metric failed", slog.String("error", err.Error()))
 	}
+}
+
+// CapacityLabel maps a requested vCPU count to a low-cardinality capacity label.
+// An unset count (0) yields an empty label so it is omitted from the metric.
+func CapacityLabel(cpu int) string {
+	if cpu <= 0 {
+		return ""
+	}
+	return strconv.Itoa(cpu)
 }
 
 // EnsureEphemeralPool creates or updates an ephemeral pool for the given job config.

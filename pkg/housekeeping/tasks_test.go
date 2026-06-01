@@ -183,40 +183,40 @@ type mockTaskMetricsAPI struct {
 	jobCount          int
 	orphanedJobsCount int
 	staleJobsCount    int
-	poolUtilizations  map[string]float64
+	poolRunning       map[string]int
+	poolDesired       map[string]int
 	err               error
 }
 
-func (m *mockTaskMetricsAPI) PublishOrphanedInstancesTerminated(_ context.Context, count int) error {
-	m.orphanedCount = count
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishSSMParametersDeleted(_ context.Context, count int) error {
-	m.ssmCount = count
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishJobRecordsArchived(_ context.Context, count int) error {
-	m.jobCount = count
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishOrphanedJobsCleanedUp(_ context.Context, count int) error {
-	m.orphanedJobsCount = count
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishStaleJobsReconciled(_ context.Context, count int) error {
-	m.staleJobsCount = count
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishPoolUtilization(_ context.Context, poolName string, utilization float64) error {
-	if m.poolUtilizations == nil {
-		m.poolUtilizations = make(map[string]float64)
+func (m *mockTaskMetricsAPI) PublishHousekeepingAction(_ context.Context, action string, count int) error {
+	switch action {
+	case housekeepingActionOrphanedInstances:
+		m.orphanedCount = count
+	case housekeepingActionSSMParams:
+		m.ssmCount = count
+	case housekeepingActionJobRecords:
+		m.jobCount = count
+	case housekeepingActionOrphanedJobs:
+		m.orphanedJobsCount = count
+	case housekeepingActionStaleJobs:
+		m.staleJobsCount = count
 	}
-	m.poolUtilizations[poolName] = utilization
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishPoolInstances(_ context.Context, pool, _ string, n int) error {
+	if m.poolRunning == nil {
+		m.poolRunning = make(map[string]int)
+	}
+	m.poolRunning[pool] = n
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishPoolDesired(_ context.Context, pool, _ string, n int) error {
+	if m.poolDesired == nil {
+		m.poolDesired = make(map[string]int)
+	}
+	m.poolDesired[pool] = n
 	return m.err
 }
 
@@ -1015,9 +1015,13 @@ func TestExecutePoolAudit_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Expected utilization: 8/10 * 100 = 80%
-	if metrics.poolUtilizations["default-pool"] != 80.0 {
-		t.Errorf("expected pool utilization 80.0, got %v", metrics.poolUtilizations["default-pool"])
+	// Utilization is derivable from the running and desired gauges (8 running of
+	// 10 desired = 80%).
+	if metrics.poolRunning["default-pool"] != 8 {
+		t.Errorf("expected pool running 8, got %v", metrics.poolRunning["default-pool"])
+	}
+	if metrics.poolDesired["default-pool"] != 10 {
+		t.Errorf("expected pool desired 10, got %v", metrics.poolDesired["default-pool"])
 	}
 }
 

@@ -45,20 +45,26 @@ func (m *MockQueue) DeleteMessage(ctx context.Context, handle string) error {
 // MockMetrics implements metrics.Publisher for testing.
 type MockMetrics struct {
 	metrics.NoopPublisher
-	JobQueuedCalled      bool
-	QueueDepthCalled     bool
-	PublishJobQueuedFunc func(ctx context.Context) error
+	JobQueuedCalled        bool
+	QueueDepthCalled       bool
+	LastPool               string
+	LastRepo               string
+	LastCapacity           string
+	PublishJobEnqueuedFunc func(ctx context.Context) error
 }
 
-func (m *MockMetrics) PublishJobQueued(ctx context.Context) error {
+func (m *MockMetrics) PublishJobEnqueued(ctx context.Context, pool, _, capacity, repo string) error {
 	m.JobQueuedCalled = true
-	if m.PublishJobQueuedFunc != nil {
-		return m.PublishJobQueuedFunc(ctx)
+	m.LastPool = pool
+	m.LastCapacity = capacity
+	m.LastRepo = repo
+	if m.PublishJobEnqueuedFunc != nil {
+		return m.PublishJobEnqueuedFunc(ctx)
 	}
 	return nil
 }
 
-func (m *MockMetrics) PublishQueueDepth(_ context.Context, _ float64) error {
+func (m *MockMetrics) PublishQueueDepth(_ context.Context, _ string, _ float64) error {
 	m.QueueDepthCalled = true
 	return nil
 }
@@ -365,9 +371,12 @@ func TestHandleWorkflowJobQueued(t *testing.T) {
 				if msg.Repo != tt.event.GetRepo().GetFullName() {
 					t.Errorf("Message Repo = %s, want %s", msg.Repo, tt.event.GetRepo().GetFullName())
 				}
-				PublishJobQueuedMetrics(context.Background(), mockMetrics)
+				PublishJobQueuedMetrics(context.Background(), mockMetrics, msg)
 				if !mockMetrics.JobQueuedCalled {
-					t.Error("Expected PublishJobQueued to be called")
+					t.Error("Expected PublishJobEnqueued to be called")
+				}
+				if mockMetrics.LastRepo != msg.Repo {
+					t.Errorf("Enqueued repo = %s, want %s", mockMetrics.LastRepo, msg.Repo)
 				}
 			} else if msg != nil && !tt.wantErr {
 				t.Errorf("HandleWorkflowJobQueued() got message when not expected: %v", msg)
@@ -456,7 +465,7 @@ func TestHandleWorkflowJobQueued_MetricsPublishErrors(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 	mockMetrics := &MockMetrics{
-		PublishJobQueuedFunc: func(_ context.Context) error {
+		PublishJobEnqueuedFunc: func(_ context.Context) error {
 			return errors.New("metrics error")
 		},
 	}
@@ -469,9 +478,9 @@ func TestHandleWorkflowJobQueued_MetricsPublishErrors(t *testing.T) {
 		t.Error("HandleWorkflowJobQueued() should return message")
 	}
 
-	PublishJobQueuedMetrics(context.Background(), mockMetrics)
+	PublishJobQueuedMetrics(context.Background(), mockMetrics, msg)
 	if !mockMetrics.JobQueuedCalled {
-		t.Error("PublishJobQueuedMetrics should attempt PublishJobQueued despite errors")
+		t.Error("PublishJobQueuedMetrics should attempt PublishJobEnqueued despite errors")
 	}
 }
 

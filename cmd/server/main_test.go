@@ -222,14 +222,6 @@ func (m *mockQueue) DeleteMessage(ctx context.Context, handle string) error {
 	return nil
 }
 
-func TestHousekeepingMetricsAdapter(t *testing.T) {
-	adapter := &housekeepingMetricsAdapter{publisher: nil}
-
-	if adapter.publisher != nil {
-		t.Error("publisher should be nil in this test")
-	}
-}
-
 func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name string
@@ -342,14 +334,6 @@ func TestSelectSubnet_SingleSubnet(t *testing.T) {
 		if result != "only-subnet" {
 			t.Errorf("iteration %d: SelectSubnet() = %q, want %q", i, result, "only-subnet")
 		}
-	}
-}
-
-func TestHousekeepingMetricsAdapter_NilPublisher(_ *testing.T) {
-	adapter := &housekeepingMetricsAdapter{publisher: nil}
-
-	if adapter.publisher != nil {
-		panic("publisher should be nil")
 	}
 }
 
@@ -762,7 +746,7 @@ type recordingMetrics struct {
 	fail       bool
 }
 
-func (m *recordingMetrics) PublishJobQueued(context.Context) error {
+func (m *recordingMetrics) PublishJobEnqueued(context.Context, string, string, string, string) error {
 	m.jobQueued.Store(true)
 	if m.fail {
 		return errors.New("metrics error")
@@ -770,7 +754,7 @@ func (m *recordingMetrics) PublishJobQueued(context.Context) error {
 	return nil
 }
 
-func (m *recordingMetrics) PublishQueueDepth(context.Context, float64) error {
+func (m *recordingMetrics) PublishQueueDepth(context.Context, string, float64) error {
 	m.queueDepth.Store(true)
 	if m.fail {
 		return errors.New("metrics error")
