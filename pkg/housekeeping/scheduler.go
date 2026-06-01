@@ -196,6 +196,8 @@ var schedulerBaseRetryDelay = 1 * time.Second
 
 // scheduleTask sends a housekeeping task message to the queue with retry logic.
 func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyTask, string(taskType)))
+
 	msg := Message{
 		TaskType:  taskType,
 		Timestamp: time.Now(),
@@ -227,14 +229,13 @@ func (s *Scheduler) scheduleTask(ctx context.Context, taskType TaskType) {
 		lastErr = err
 	}
 
-	s.logger().Error("task scheduling failed",
-		slog.String(logging.KeyTask, string(taskType)),
+	s.logger().Error(ctx, "task scheduling failed",
 		slog.Int("attempts", maxScheduleRetries),
 		slog.String("error", lastErr.Error()))
 
 	if ctx.Err() == nil && s.metrics != nil {
 		if err := s.metrics.PublishSchedulingFailure(ctx, string(taskType)); err != nil {
-			s.logger().Error("scheduling failure metric failed", slog.String("error", err.Error()))
+			s.logger().Error(ctx, "scheduling failure metric failed", slog.String("error", err.Error()))
 		}
 	}
 }

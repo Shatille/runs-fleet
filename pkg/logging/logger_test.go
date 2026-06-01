@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -20,7 +21,7 @@ func TestLazyHandler_UsesCurrentDefault(t *testing.T) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	})
 
-	logger.Info("test message", slog.String("key", "value"))
+	logger.Info(context.Background(), "test message", slog.String("key", "value"))
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
@@ -50,7 +51,7 @@ func TestLazyHandler_WithAdditionalAttrs(t *testing.T) {
 	})
 
 	logger := WithComponent(LogTypeQueue, "worker").With(slog.String("pool", "default"))
-	logger.Info("processing")
+	logger.Info(context.Background(), "processing")
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
@@ -74,7 +75,7 @@ func TestLazyHandler_AttributeOrdering(t *testing.T) {
 	})
 
 	logger := WithComponent(LogTypeServer, "test")
-	logger.Info("msg", slog.String("inline", "val"))
+	logger.Info(context.Background(), "msg", slog.String("inline", "val"))
 
 	raw := buf.String()
 	logTypeIdx := strings.Index(raw, `"log_type"`)
@@ -98,13 +99,13 @@ func TestLazyHandler_RespectsLevel(t *testing.T) {
 	})
 
 	logger := WithComponent(LogTypeServer, "test")
-	logger.Info("should not appear")
+	logger.Info(context.Background(), "should not appear")
 
 	if buf.Len() > 0 {
 		t.Errorf("expected no output for info at warn level, got: %s", buf.String())
 	}
 
-	logger.Warn("should appear")
+	logger.Warn(context.Background(), "should appear")
 
 	if buf.Len() == 0 {
 		t.Error("expected output for warn at warn level")

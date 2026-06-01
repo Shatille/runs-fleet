@@ -163,7 +163,7 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 		Resources: instanceIDs,
 		Tags:      tags,
 	}); tagErr != nil {
-		fleetLog.WarnContext(ctx, "failed to apply tags to fleet instances",
+		fleetLog.Warn(ctx, "failed to apply tags to fleet instances",
 			slog.String("error", tagErr.Error()),
 			slog.Any("instance_ids", instanceIDs))
 	}
@@ -184,11 +184,11 @@ func (m *Manager) shouldUseSpot(ctx context.Context, spec *LaunchSpec) bool {
 	primaryType := m.getPrimaryInstanceType(spec)
 	state, err := m.circuitBreaker.CheckCircuit(ctx, primaryType)
 	if err != nil {
-		fleetLog.WarnContext(ctx, "circuit breaker check failed", slog.String("error", err.Error()))
+		fleetLog.Warn(ctx, "circuit breaker check failed", slog.String("error", err.Error()))
 		return true
 	}
 	if state == circuit.StateOpen {
-		fleetLog.InfoContext(ctx, "circuit breaker open, forcing on-demand",
+		fleetLog.Info(ctx, "circuit breaker open, forcing on-demand",
 			slog.String("instance_type", primaryType))
 		return false
 	}
@@ -218,16 +218,16 @@ func (m *Manager) buildFleetRequest(ctx context.Context, spec *LaunchSpec, useSp
 	}
 
 	if !useSpot {
-		return m.configureOnDemandRequest(req, spec)
+		return m.configureOnDemandRequest(ctx, req, spec)
 	}
-	return m.configureSpotRequest(req, spec, launchTemplateConfigs)
+	return m.configureSpotRequest(ctx, req, spec, launchTemplateConfigs)
 }
 
 // configureOnDemandRequest configures the fleet request for on-demand instances.
-func (m *Manager) configureOnDemandRequest(req *ec2.CreateFleetInput, spec *LaunchSpec) (*ec2.CreateFleetInput, error) {
+func (m *Manager) configureOnDemandRequest(ctx context.Context, req *ec2.CreateFleetInput, spec *LaunchSpec) (*ec2.CreateFleetInput, error) {
 	req.TargetCapacitySpecification.DefaultTargetCapacityType = types.DefaultTargetCapacityTypeOnDemand
 	if spec.ForceOnDemand && spec.RetryCount > 0 {
-		fleetLog.Info("using on-demand for retry",
+		fleetLog.Info(ctx, "using on-demand for retry",
 			slog.Int64(logging.KeyRunID, spec.RunID),
 			slog.Int("retry_count", spec.RetryCount))
 	}
@@ -271,7 +271,7 @@ func (m *Manager) configureOnDemandRequest(req *ec2.CreateFleetInput, spec *Laun
 }
 
 // configureSpotRequest configures the fleet request for spot instances with FleetTypeInstant.
-func (m *Manager) configureSpotRequest(req *ec2.CreateFleetInput, _ *LaunchSpec, launchTemplateConfigs []types.FleetLaunchTemplateConfigRequest) (*ec2.CreateFleetInput, error) {
+func (m *Manager) configureSpotRequest(ctx context.Context, req *ec2.CreateFleetInput, _ *LaunchSpec, launchTemplateConfigs []types.FleetLaunchTemplateConfigRequest) (*ec2.CreateFleetInput, error) {
 	req.SpotOptions = &types.SpotOptionsRequest{
 		AllocationStrategy: types.SpotAllocationStrategyPriceCapacityOptimized,
 	}
@@ -281,7 +281,7 @@ func (m *Manager) configureSpotRequest(req *ec2.CreateFleetInput, _ *LaunchSpec,
 		totalTypes += len(cfg.Overrides)
 	}
 	if totalTypes > 1 {
-		fleetLog.Debug("spot diversification enabled",
+		fleetLog.Debug(ctx, "spot diversification enabled",
 			slog.Int("instance_types", totalTypes),
 			slog.Int("launch_configs", len(launchTemplateConfigs)))
 	}
@@ -559,7 +559,7 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 	if len(archPrices) == 0 {
 		// Couldn't get prices, default to arm64 (generally cheaper)
 		if _, ok := groupedTypes[archARM64]; ok {
-			fleetLog.InfoContext(ctx, "spot prices unavailable, defaulting to arm64")
+			fleetLog.Info(ctx, "spot prices unavailable, defaulting to arm64")
 			return archARM64
 		}
 		for arch := range groupedTypes {
@@ -578,7 +578,7 @@ func (m *Manager) selectCheapestArch(ctx context.Context, groupedTypes map[strin
 		}
 	}
 
-	fleetLog.DebugContext(ctx, "architecture selected based on spot price",
+	fleetLog.Debug(ctx, "architecture selected based on spot price",
 		slog.String("arch", cheapestArch),
 		slog.Float64("avg_price", cheapestPrice))
 	return cheapestArch
@@ -633,7 +633,7 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 		MaxResults:          aws.Int32(100),
 	})
 	if err != nil {
-		fleetLog.WarnContext(ctx, "spot price query failed", slog.String("error", err.Error()))
+		fleetLog.Warn(ctx, "spot price query failed", slog.String("error", err.Error()))
 		return 0
 	}
 
@@ -779,7 +779,7 @@ func interleaveWeighted(items []weightedType) []string {
 // Uses cached availability data, loading from AWS API on first call.
 func (m *Manager) filterAvailableInstanceTypes(ctx context.Context, instanceTypes []string) []string {
 	if err := m.ensureAvailabilityLoaded(ctx); err != nil {
-		fleetLog.WarnContext(ctx, "failed to load instance type availability, using all types",
+		fleetLog.Warn(ctx, "failed to load instance type availability, using all types",
 			slog.String("error", err.Error()))
 		return instanceTypes
 	}
@@ -795,7 +795,7 @@ func (m *Manager) filterAvailableInstanceTypes(ctx context.Context, instanceType
 	}
 
 	if len(filtered) < len(instanceTypes) {
-		fleetLog.DebugContext(ctx, "filtered unavailable instance types",
+		fleetLog.Debug(ctx, "filtered unavailable instance types",
 			slog.Int("original", len(instanceTypes)),
 			slog.Int("available", len(filtered)))
 	}
@@ -846,7 +846,7 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 	m.availabilityCache.available = available
 	m.availabilityCache.loaded = true
 	m.availabilityCache.expires = time.Now().Add(availabilityCacheTTL)
-	fleetLog.InfoContext(ctx, "loaded instance type availability",
+	fleetLog.Info(ctx, "loaded instance type availability",
 		slog.Int("available_types", len(available)))
 
 	return nil
@@ -908,7 +908,7 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 
 	instanceID := aws.ToString(output.Instances[0].InstanceId)
 
-	fleetLog.InfoContext(ctx, "on-demand pool instance created",
+	fleetLog.Info(ctx, "on-demand pool instance created",
 		slog.String(logging.KeyInstanceID, instanceID),
 		slog.String("instance_type", spec.InstanceType),
 		slog.String("pool", spec.Pool))

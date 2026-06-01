@@ -43,14 +43,14 @@ func RunWorkerLoop(ctx context.Context, name string, q queue.Queue, processor Me
 // batches, so intake is bounded by processing throughput rather than capped at
 // one batch per tick. The ticker only paces re-polling once the queue is drained.
 func RunWorkerLoopWithTicker(ctx context.Context, name string, q queue.Queue, processor MessageProcessor, tick <-chan time.Time) {
-	workerLog.Info("worker starting", slog.String("worker", name))
+	workerLog.Info(ctx, "worker starting", slog.String("worker", name))
 
 	sem := make(chan struct{}, maxConcurrency)
 	var activeWork sync.WaitGroup
 
 	defer func() {
 		activeWork.Wait()
-		workerLog.Info("worker shutdown complete", slog.String("worker", name))
+		workerLog.Info(ctx, "worker shutdown complete", slog.String("worker", name))
 	}()
 
 	for {
@@ -84,11 +84,11 @@ func drainQueue(ctx context.Context, name string, q queue.Queue, processor Messa
 		cancel()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				workerLog.Warn("receive messages failed",
+				workerLog.Warn(ctx, "receive messages failed",
 					slog.String("worker", name),
 					slog.String("error", err.Error()))
 			} else {
-				workerLog.Error("receive messages failed",
+				workerLog.Error(ctx, "receive messages failed",
 					slog.String("worker", name),
 					slog.String("error", err.Error()))
 			}
@@ -109,7 +109,7 @@ func drainQueue(ctx context.Context, name string, q queue.Queue, processor Messa
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						workerLog.Error("panic in message processor",
+						workerLog.Error(ctx, "panic in message processor",
 							slog.String("worker", name),
 							slog.Any("panic", r))
 					}

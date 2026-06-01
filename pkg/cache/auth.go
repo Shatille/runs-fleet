@@ -140,13 +140,13 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		if token == "" {
-			authLog.Warn("cache auth failed: missing token", slog.String("remote_addr", r.RemoteAddr))
+			authLog.Warn(r.Context(), "cache auth failed: missing token", slog.String("remote_addr", r.RemoteAddr))
 			http.Error(w, "Unauthorized: missing cache token", http.StatusUnauthorized)
 			return
 		}
 
 		if !ValidateCacheToken(m.secret, token) {
-			authLog.Warn("cache auth failed: invalid token", slog.String("remote_addr", r.RemoteAddr))
+			authLog.Warn(r.Context(), "cache auth failed: invalid token", slog.String("remote_addr", r.RemoteAddr))
 			http.Error(w, "Unauthorized: invalid cache token", http.StatusUnauthorized)
 			return
 		}

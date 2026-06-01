@@ -11,10 +11,11 @@ type ctxKey struct{}
 
 // ContextWith returns a child context carrying attrs for later log enrichment.
 // Attrs accumulate: any attrs already stashed on ctx are preserved and the new
-// ones appended. The stashed attrs are emitted only when a log is produced via a
-// *Context slog method (ErrorContext, WarnContext, InfoContext, DebugContext),
-// because only those pass ctx to the handler. Non-context log calls (Error, Warn,
-// Info, Debug) do not carry these fields.
+// ones appended. The stashed attrs are emitted whenever a log is produced through
+// a *logging.Logger, because every Logger method (Error, Warn, Info, Debug)
+// requires a context and delegates to the underlying *Context slog method, which
+// passes ctx to the contextHandler. Stash a key at most once per context branch:
+// slog does not de-duplicate, so re-stashing a key already present emits it twice.
 func ContextWith(ctx context.Context, attrs ...slog.Attr) context.Context {
 	if len(attrs) == 0 {
 		return ctx

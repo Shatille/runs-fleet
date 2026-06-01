@@ -57,7 +57,7 @@ func (p *DirectProcessor) prepareRunners(ctx context.Context, job *queue.JobMess
 // Returns true if instance was assigned (warm pool or new fleet), false if job was already claimed or processing failed.
 func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMessage) bool {
 	if p.Fleet == nil {
-		directLog.ErrorContext(ctx, "fleet manager nil")
+		directLog.Error(ctx, "fleet manager nil")
 		return false
 	}
 
@@ -66,11 +66,11 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
 				return false
 			}
-			directLog.WarnContext(ctx, "job claim failed, deferring to queue",
+			directLog.Warn(ctx, "job claim failed, deferring to queue",
 				slog.String("error", err.Error()))
 			if p.Metrics != nil {
 				if err := p.Metrics.PublishJobClaimFailure(ctx); err != nil {
-					directLog.ErrorContext(ctx, "job claim failure metric failed", slog.String("error", err.Error()))
+					directLog.Error(ctx, "job claim failure metric failed", slog.String("error", err.Error()))
 				}
 			}
 			return false
@@ -85,13 +85,13 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, job)
 		if err != nil {
-			directLog.ErrorContext(ctx, "warm pool assignment failed",
+			directLog.Error(ctx, "warm pool assignment failed",
 				slog.String("error", err.Error()))
 		} else if result.Assigned {
 			if p.Metrics != nil {
 				_ = p.Metrics.PublishWarmPoolHit(ctx)
 			}
-			directLog.InfoContext(ctx, "job assigned to warm pool",
+			directLog.Info(ctx, "job assigned to warm pool",
 				slog.String(logging.KeyInstanceID, result.InstanceID))
 			return true
 		}
@@ -114,14 +114,14 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 
 	instanceIDs, err := p.createFleet(ctx, spec)
 	if err != nil {
-		directLog.ErrorContext(ctx, "fleet creation failed",
+		directLog.Error(ctx, "fleet creation failed",
 			slog.String("error", err.Error()))
 		if p.DB != nil && p.DB.HasJobsTable() {
 			// Release the claim on a fresh context; the job ctx may already be expired.
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
 			if err := p.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
-				directLog.ErrorContext(cleanupCtx, "job claim delete failed",
+				directLog.Error(cleanupCtx, "job claim delete failed",
 					slog.String("error", err.Error()))
 			}
 			cancel()
@@ -143,7 +143,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 				Traceparent:  job.Traceparent,
 			}
 			if err := p.DB.SaveJob(ctx, jobRecord); err != nil {
-				directLog.ErrorContext(ctx, "job record save failed",
+				directLog.Error(ctx, "job record save failed",
 					slog.String(logging.KeyInstanceID, instanceID),
 					slog.String("error", err.Error()))
 			}
@@ -159,12 +159,12 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
 			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
 			if err := p.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
-				directLog.ErrorContext(cleanupCtx, "job claim delete failed after prep failure",
+				directLog.Error(cleanupCtx, "job claim delete failed after prep failure",
 					slog.String("error", err.Error()))
 			}
 			cancel()
 		}
-		directLog.ErrorContext(ctx, "runner preparation failed; deferring job to queue",
+		directLog.Error(ctx, "runner preparation failed; deferring job to queue",
 			slog.Int("failed_instances", len(failed)))
 		return false
 	}
@@ -177,11 +177,11 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 
 	if p.Metrics != nil {
 		if err := p.Metrics.PublishFleetSizeIncrement(ctx); err != nil {
-			directLog.ErrorContext(ctx, "fleet size increment metric failed", slog.String("error", err.Error()))
+			directLog.Error(ctx, "fleet size increment metric failed", slog.String("error", err.Error()))
 		}
 	}
 
-	directLog.InfoContext(ctx, "instances launched",
+	directLog.Info(ctx, "instances launched",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
 	return true
 }
@@ -197,8 +197,11 @@ func TryDirectProcessing(_ context.Context, processor *DirectProcessor, sem chan
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					directLog.Error("panic in direct processing",
-						slog.Int64(logging.KeyJobID, jobMsg.JobID),
+					// Parent ctx is intentionally discarded here (it may be canceled
+					// when the HTTP handler returns), so stash job identity on a fresh
+					// context for the panic record.
+					panicCtx := logging.ContextWithJob(context.Background(), jobMsg.JobID, jobMsg.RunID, jobMsg.Repo)
+					directLog.Error(panicCtx, "panic in direct processing",
 						slog.Any("panic", r))
 				}
 			}()

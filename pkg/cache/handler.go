@@ -44,9 +44,9 @@ func NewHandlerWithAuth(server *Server, metrics Metrics, cacheSecret string) *Ha
 
 	if cacheSecret != "" {
 		auth = NewAuthMiddleware(cacheSecret)
-		cacheLog.Info("cache authentication enabled")
+		cacheLog.Info(context.Background(), "cache authentication enabled")
 	} else {
-		cacheLog.Warn("cache authentication disabled - RUNS_FLEET_CACHE_SECRET not set")
+		cacheLog.Warn(context.Background(), "cache authentication disabled - RUNS_FLEET_CACHE_SECRET not set")
 	}
 
 	return &Handler{
@@ -114,7 +114,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	uploadURL, err := server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodPut)
 	if err != nil {
-		cacheLog.Error("upload URL generation failed",
+		cacheLog.Error(r.Context(), "upload URL generation failed",
 			slog.String("cache_key", cacheKey),
 			slog.String("error", err.Error()))
 		http.Error(w, "Failed to generate upload URL", http.StatusInternalServerError)
@@ -127,7 +127,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scope := ScopeFromContext(r.Context())
-	cacheLog.Info("cache entry reserved",
+	cacheLog.Info(r.Context(), "cache entry reserved",
 		slog.String("key", req.Key),
 		slog.String("version", req.Version),
 		slog.Int("cache_id", resp.CacheID),
@@ -149,7 +149,7 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 
 	var req commitCacheRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		cacheLog.Error("commit request decode failed",
+		cacheLog.Error(r.Context(), "commit request decode failed",
 			slog.String("cache_id", cacheID),
 			slog.String("error", err.Error()))
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -158,7 +158,7 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 
 	server := h.scopedServer(r)
 	if err := server.CommitCacheEntry(r.Context(), cacheID); err != nil {
-		cacheLog.Error("cache entry commit failed",
+		cacheLog.Error(r.Context(), "cache entry commit failed",
 			slog.String("cache_id", cacheID),
 			slog.Int64("size", req.Size),
 			slog.String("error", err.Error()))
@@ -167,7 +167,7 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 	}
 
 	scope := ScopeFromContext(r.Context())
-	cacheLog.Info("cache entry committed",
+	cacheLog.Info(r.Context(), "cache entry committed",
 		slog.String("cache_id", cacheID),
 		slog.Int64("size", req.Size),
 		slog.String("scope", scope))
@@ -199,7 +199,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 	keys := strings.Split(keysParam, ",")
 	cacheKey, found, err := server.GetCacheEntry(r.Context(), keys, version)
 	if err != nil {
-		cacheLog.Error("cache entry check failed",
+		cacheLog.Error(r.Context(), "cache entry check failed",
 			slog.Any("keys", keys),
 			slog.String("version", version),
 			slog.String("scope", scope),
@@ -209,13 +209,13 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
-		cacheLog.Info("cache miss",
+		cacheLog.Info(r.Context(), "cache miss",
 			slog.Any("keys", keys),
 			slog.String("version", version),
 			slog.String("scope", scope))
 		if h.metrics != nil {
 			if mErr := h.metrics.PublishCacheMiss(r.Context()); mErr != nil {
-				cacheLog.Error("cache miss metric failed", slog.String("error", mErr.Error()))
+				cacheLog.Error(r.Context(), "cache miss metric failed", slog.String("error", mErr.Error()))
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -224,21 +224,21 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	downloadURL, err := server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodGet)
 	if err != nil {
-		cacheLog.Error("download URL generation failed",
+		cacheLog.Error(r.Context(), "download URL generation failed",
 			slog.String("cache_key", cacheKey),
 			slog.String("error", err.Error()))
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
 
-	cacheLog.Info("cache hit",
+	cacheLog.Info(r.Context(), "cache hit",
 		slog.String("cache_key", cacheKey),
 		slog.Any("keys", keys),
 		slog.String("version", version),
 		slog.String("scope", scope))
 	if h.metrics != nil {
 		if err := h.metrics.PublishCacheHit(r.Context()); err != nil {
-			cacheLog.Error("cache hit metric failed", slog.String("error", err.Error()))
+			cacheLog.Error(r.Context(), "cache hit metric failed", slog.String("error", err.Error()))
 		}
 	}
 
@@ -259,7 +259,7 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := validateKey(cacheID); err != nil {
-		cacheLog.Error("invalid cache ID",
+		cacheLog.Error(r.Context(), "invalid cache ID",
 			slog.String("cache_id", cacheID),
 			slog.String("error", err.Error()))
 		http.Error(w, "Invalid cache parameters", http.StatusBadRequest)
@@ -269,7 +269,7 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 	server := h.scopedServer(r)
 	downloadURL, err := server.GeneratePresignedURL(r.Context(), cacheID, http.MethodGet)
 	if err != nil {
-		cacheLog.Error("download URL generation failed",
+		cacheLog.Error(r.Context(), "download URL generation failed",
 			slog.String("cache_id", cacheID),
 			slog.String("error", err.Error()))
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
@@ -277,7 +277,7 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 	}
 
 	scope := ScopeFromContext(r.Context())
-	cacheLog.Info("redirecting to download URL",
+	cacheLog.Info(r.Context(), "redirecting to download URL",
 		slog.String("cache_id", cacheID),
 		slog.String("scope", scope))
 	http.Redirect(w, r, downloadURL, http.StatusTemporaryRedirect)

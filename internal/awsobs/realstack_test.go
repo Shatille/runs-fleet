@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -46,7 +47,7 @@ func realStackConfig(
 	httpClient aws.HTTPClient, threshold, perOp time.Duration, exempt map[string]bool,
 ) (aws.Config, *bytes.Buffer) {
 	var buf bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := logging.NewWithHandler(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	apiOptions := append(
 		[]func(*middleware.Stack) error{register(log, threshold)},

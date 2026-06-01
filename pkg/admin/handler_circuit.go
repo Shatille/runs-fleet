@@ -82,7 +82,7 @@ func (h *CircuitHandler) ListCircuitStates(w http.ResponseWriter, r *http.Reques
 			ExclusiveStartKey: lastEvaluatedKey,
 		})
 		if err != nil {
-			h.log.Error("failed to scan circuit table", slog.String(logging.KeyError, err.Error()))
+			h.log.Error(ctx, "failed to scan circuit table", slog.String(logging.KeyError, err.Error()))
 			h.writeError(w, http.StatusInternalServerError, "Failed to list circuit states", err.Error())
 			return
 		}
@@ -97,7 +97,7 @@ func (h *CircuitHandler) ListCircuitStates(w http.ResponseWriter, r *http.Reques
 	for _, item := range allItems {
 		var record circuitRecord
 		if err := attributevalue.UnmarshalMap(item, &record); err != nil {
-			h.log.Warn("failed to unmarshal circuit record", slog.String(logging.KeyError, err.Error()))
+			h.log.Warn(ctx, "failed to unmarshal circuit record", slog.String(logging.KeyError, err.Error()))
 			continue
 		}
 
@@ -117,16 +117,18 @@ func (h *CircuitHandler) ListCircuitStates(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *CircuitHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	// Response-writer helper with no request/context in scope.
+	ctx := context.Background()
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(data); err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "json encode failed", slog.String(logging.KeyError, err.Error()))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := buf.WriteTo(w); err != nil {
-		h.log.Error("write response failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "write response failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 

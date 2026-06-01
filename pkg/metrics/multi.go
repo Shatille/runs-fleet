@@ -50,7 +50,7 @@ func (m *MultiPublisher) Close() error {
 	return errors.Join(errs...)
 }
 
-func (m *MultiPublisher) publishAll(fn func(p Publisher) error) error {
+func (m *MultiPublisher) publishAll(ctx context.Context, fn func(p Publisher) error) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []error
@@ -66,13 +66,13 @@ func (m *MultiPublisher) publishAll(fn func(p Publisher) error) error {
 			select {
 			case err := <-done:
 				if err != nil {
-					metricsLog.Warn("metrics publish error", slog.String("error", err.Error()))
+					metricsLog.Warn(ctx, "metrics publish error", slog.String("error", err.Error()))
 					mu.Lock()
 					errs = append(errs, err)
 					mu.Unlock()
 				}
 			case <-time.After(publishTimeout):
-				metricsLog.Warn("metrics publish timeout", slog.Duration("timeout", publishTimeout))
+				metricsLog.Warn(ctx, "metrics publish timeout", slog.Duration("timeout", publishTimeout))
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("publish timeout after %v", publishTimeout))
 				mu.Unlock()
@@ -87,151 +87,151 @@ func (m *MultiPublisher) publishAll(fn func(p Publisher) error) error {
 // All methods are documented on the Publisher interface.
 
 func (m *MultiPublisher) PublishQueueDepth(ctx context.Context, depth float64) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishQueueDepth(ctx, depth)
 	})
 }
 
 func (m *MultiPublisher) PublishFleetSizeIncrement(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishFleetSizeIncrement(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishFleetSizeDecrement(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishFleetSizeDecrement(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishJobDuration(ctx context.Context, durationSeconds int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobDuration(ctx, durationSeconds)
 	})
 }
 
 func (m *MultiPublisher) PublishJobSuccess(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobSuccess(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishJobFailure(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobFailure(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishJobQueued(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobQueued(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishSpotInterruption(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishSpotInterruption(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishMessageDeletionFailure(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishMessageDeletionFailure(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishCacheHit(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishCacheHit(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishCacheMiss(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishCacheMiss(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishOrphanedInstancesTerminated(ctx context.Context, count int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishOrphanedInstancesTerminated(ctx, count)
 	})
 }
 
 func (m *MultiPublisher) PublishSSMParametersDeleted(ctx context.Context, count int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishSSMParametersDeleted(ctx, count)
 	})
 }
 
 func (m *MultiPublisher) PublishJobRecordsArchived(ctx context.Context, count int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobRecordsArchived(ctx, count)
 	})
 }
 
 func (m *MultiPublisher) PublishOrphanedJobsCleanedUp(ctx context.Context, count int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishOrphanedJobsCleanedUp(ctx, count)
 	})
 }
 
 func (m *MultiPublisher) PublishStaleJobsReconciled(ctx context.Context, count int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishStaleJobsReconciled(ctx, count)
 	})
 }
 
 func (m *MultiPublisher) PublishPoolUtilization(ctx context.Context, poolName string, utilization float64) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishPoolUtilization(ctx, poolName, utilization)
 	})
 }
 
 func (m *MultiPublisher) PublishPoolRunningJobs(ctx context.Context, poolName string, count int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishPoolRunningJobs(ctx, poolName, count)
 	})
 }
 
 func (m *MultiPublisher) PublishSchedulingFailure(ctx context.Context, taskType string) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishSchedulingFailure(ctx, taskType)
 	})
 }
 
 func (m *MultiPublisher) PublishCircuitBreakerTriggered(ctx context.Context, instanceType string) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishCircuitBreakerTriggered(ctx, instanceType)
 	})
 }
 
 func (m *MultiPublisher) PublishJobClaimFailure(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobClaimFailure(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishWarmPoolHit(ctx context.Context) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishWarmPoolHit(ctx)
 	})
 }
 
 func (m *MultiPublisher) PublishFleetSize(ctx context.Context, size int) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishFleetSize(ctx, size)
 	})
 }
 
 func (m *MultiPublisher) PublishServiceCheck(ctx context.Context, name string, status int, message string) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishServiceCheck(ctx, name, status, message)
 	})
 }
 
 func (m *MultiPublisher) PublishEvent(ctx context.Context, title, text, alertType string, tags []string) error { //nolint:revive
-	return m.publishAll(func(p Publisher) error {
+	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishEvent(ctx, title, text, alertType, tags)
 	})
 }

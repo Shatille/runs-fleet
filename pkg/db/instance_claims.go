@@ -110,7 +110,7 @@ func (c *Client) ReleaseInstanceClaim(ctx context.Context, instanceID string, jo
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			dbLog.DebugContext(ctx, "instance claim not held",
+			dbLog.Debug(ctx, "instance claim not held",
 				slog.String(logging.KeyInstanceID, instanceID))
 			return nil
 		}

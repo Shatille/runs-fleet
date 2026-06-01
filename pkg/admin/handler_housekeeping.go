@@ -77,7 +77,7 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 
 	candidates, err := housekeeping.FindOrphanedJobCandidates(ctx, h.dynamoClient, h.jobsTableName, threshold)
 	if err != nil {
-		h.log.Error("failed to find orphaned job candidates", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "failed to find orphaned job candidates", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to scan for orphaned jobs", err.Error())
 		return
 	}
@@ -128,17 +128,17 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 	var cleanedCount int
 	var cleanedJobIDs []int64
 	for _, j := range orphanedJobs {
+		jobCtx := logging.ContextWith(ctx,
+			slog.Int64(logging.KeyJobID, j.JobID),
+			slog.String(logging.KeyInstanceID, j.InstanceID))
 		if err := housekeeping.MarkJobOrphaned(ctx, h.dynamoClient, h.jobsTableName, j.JobID); err != nil {
-			h.log.Error("failed to mark job as orphaned",
-				slog.Int64(logging.KeyJobID, j.JobID),
+			h.log.Error(jobCtx, "failed to mark job as orphaned",
 				slog.String(logging.KeyError, err.Error()))
 			continue
 		}
 		cleanedCount++
 		cleanedJobIDs = append(cleanedJobIDs, j.JobID)
-		h.log.Info("marked job as orphaned",
-			slog.Int64(logging.KeyJobID, j.JobID),
-			slog.String("instance_id", j.InstanceID))
+		h.log.Info(jobCtx, "marked job as orphaned")
 	}
 
 	h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
@@ -160,7 +160,7 @@ func (h *HousekeepingHandler) instanceExists(ctx context.Context, instanceID str
 			return false
 		}
 		// For API errors (throttling, AWS outages), assume exists (safe default)
-		h.log.Warn("failed to describe instance, assuming exists",
+		h.log.Warn(ctx, "failed to describe instance, assuming exists",
 			slog.String("instance_id", instanceID),
 			slog.String(logging.KeyError, err.Error()))
 		return true
@@ -177,9 +177,11 @@ func (h *HousekeepingHandler) instanceExists(ctx context.Context, instanceID str
 }
 
 func (h *HousekeepingHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	// Response-writer helper with no request/context in scope.
+	ctx := context.Background()
 	buf, err := json.Marshal(data)
 	if err != nil {
-		h.log.Error("json encode failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "json encode failed", slog.String(logging.KeyError, err.Error()))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -187,7 +189,7 @@ func (h *HousekeepingHandler) writeJSON(w http.ResponseWriter, status int, data 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := w.Write(buf); err != nil {
-		h.log.Error("response write failed", slog.String(logging.KeyError, err.Error()))
+		h.log.Error(ctx, "response write failed", slog.String(logging.KeyError, err.Error()))
 	}
 }
 

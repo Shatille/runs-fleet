@@ -57,7 +57,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		user := m.extractUserInfo(r)
 
 		if m.requireAuth && user.Username == "" {
-			adminAuthLog.Warn("admin auth failed: missing user header",
+			adminAuthLog.Warn(r.Context(), "admin auth failed: missing user header",
 				slog.String("remote_addr", r.RemoteAddr),
 				slog.String("path", r.URL.Path))
 			http.Error(w, "Unauthorized: authentication required", http.StatusUnauthorized)

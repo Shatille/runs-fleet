@@ -125,16 +125,16 @@ func (h *Handler) Run(ctx context.Context) {
 			messages, err := h.queueClient.ReceiveMessages(ctx, 1, 20)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					h.logger().Warn("receive messages failed", slog.String("error", err.Error()))
+					h.logger().Warn(ctx, "receive messages failed", slog.String("error", err.Error()))
 				} else {
-					h.logger().Error("receive messages failed", slog.String("error", err.Error()))
+					h.logger().Error(ctx, "receive messages failed", slog.String("error", err.Error()))
 				}
 				continue
 			}
 
 			for _, msg := range messages {
 				if err := h.processMessage(ctx, msg); err != nil {
-					h.logger().Error("process message failed", slog.String("error", err.Error()))
+					h.logger().Error(ctx, "process message failed", slog.String("error", err.Error()))
 				}
 			}
 		}
@@ -155,6 +155,8 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
+	ctx = logging.ContextWith(ctx, slog.String(logging.KeyTask, string(hkMsg.TaskType)))
+
 	if h.taskLocker != nil {
 		if err := h.taskLocker.AcquireTaskLock(ctx, string(hkMsg.TaskType), h.instanceID, taskLockTTL); err != nil {
 			if errors.Is(err, db.ErrTaskLockHeld) {
@@ -163,9 +165,9 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 			return fmt.Errorf("failed to acquire task lock: %w", err)
 		}
 		defer func() {
-			if err := h.taskLocker.ReleaseTaskLock(context.Background(), string(hkMsg.TaskType), h.instanceID); err != nil {
-				h.logger().Error("task lock release failed",
-					slog.String(logging.KeyTask, string(hkMsg.TaskType)),
+			releaseCtx := logging.ContextWith(context.Background(), slog.String(logging.KeyTask, string(hkMsg.TaskType)))
+			if err := h.taskLocker.ReleaseTaskLock(releaseCtx, string(hkMsg.TaskType), h.instanceID); err != nil {
+				h.logger().Error(releaseCtx, "task lock release failed",
 					slog.String("error", err.Error()))
 			}
 		}()
@@ -197,12 +199,11 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	case TaskOrphanedPackerInstances:
 		err = h.taskExecutor.ExecuteOrphanedPackerInstances(taskCtx)
 	default:
-		h.logger().Warn("unknown task type", slog.String(logging.KeyTask, string(hkMsg.TaskType)))
+		h.logger().Warn(taskCtx, "unknown task type")
 	}
 
 	if err != nil {
-		h.logger().Error("task failed",
-			slog.String(logging.KeyTask, string(hkMsg.TaskType)),
+		h.logger().Error(taskCtx, "task failed",
 			slog.String("error", err.Error()))
 		return err
 	}
