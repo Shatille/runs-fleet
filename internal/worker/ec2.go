@@ -63,6 +63,10 @@ type EC2WorkerDeps struct {
 	// CreateFleetFn allows injection of a custom fleet creator for testing.
 	// If nil, defaults to CreateFleetWithRetry against the embedded Fleet manager.
 	CreateFleetFn func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+
+	// PrepareRunnersFn allows injection of a custom runner preparer for testing.
+	// If nil, defaults to PrepareRunners against the embedded Runner manager.
+	PrepareRunnersFn func(ctx context.Context, job *queue.JobMessage, instanceIDs []string) []string
 }
 
 func (d EC2WorkerDeps) createFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -70,6 +74,16 @@ func (d EC2WorkerDeps) createFleet(ctx context.Context, spec *fleet.LaunchSpec) 
 		return d.CreateFleetFn(ctx, spec)
 	}
 	return CreateFleetWithRetry(ctx, d.Fleet, spec)
+}
+
+func (d EC2WorkerDeps) prepareRunners(ctx context.Context, job *queue.JobMessage, instanceIDs []string) []string {
+	if d.PrepareRunnersFn != nil {
+		return d.PrepareRunnersFn(ctx, job, instanceIDs)
+	}
+	if d.Runner == nil {
+		return nil
+	}
+	return PrepareRunners(ctx, d.Runner, job, instanceIDs)
 }
 
 // RunEC2Worker starts the EC2 queue processing loop.
@@ -247,7 +261,29 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	fleetCreated = true
 
 	SaveJobRecords(ctx, deps.DB, &job, instanceIDs)
-	PrepareRunners(ctx, deps.Runner, &job, instanceIDs)
+
+	if failed := deps.prepareRunners(ctx, &job, instanceIDs); len(failed) > 0 {
+		// Runner config could not be written (e.g. SSM throttled). The launched
+		// instances would boot without config and never register, so do not mark
+		// the job done: release the claim and leave the SQS message for redelivery
+		// so the job is retried on a fresh instance. The config-less instances are
+		// reaped by housekeeping.
+		span.SetStatus(codes.Error, "runner preparation failed")
+		jobProcessed = false
+		fleetCreated = false
+		if deps.DB != nil && deps.DB.HasJobsTable() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+			if err := deps.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
+				ec2Log.ErrorContext(cleanupCtx, "job claim delete failed after prep failure",
+					slog.String("error", err.Error()))
+			}
+			cancel()
+		}
+		ec2Log.ErrorContext(ctx, "runner preparation failed; job left for redelivery",
+			slog.Int("failed_instances", len(failed)))
+		return
+	}
 
 	if deps.Pool != nil {
 		for _, instanceID := range instanceIDs {
@@ -321,11 +357,15 @@ func SaveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 	}
 }
 
-// PrepareRunners prepares runner configurations in SSM.
-func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessage, instanceIDs []string) {
-	if rm == nil {
-		return
+// PrepareRunners writes runner configurations (to SSM) for each instance and
+// returns the IDs of instances whose preparation failed. A non-empty result is
+// fatal for the job: a launched instance with no config never registers, so the
+// caller must fail the job rather than mark it done.
+func PrepareRunners(ctx context.Context, preparer RunnerPreparer, job *queue.JobMessage, instanceIDs []string) []string {
+	if preparer == nil {
+		return nil
 	}
+	var failed []string
 	for _, instanceID := range instanceIDs {
 		label := handler.BuildRunnerLabel(job)
 		prepareReq := runner.PrepareRunnerRequest{
@@ -337,12 +377,14 @@ func PrepareRunners(ctx context.Context, rm *runner.Manager, job *queue.JobMessa
 			Pool:       job.Pool,
 			Conditions: BuildRunnerConditions(job),
 		}
-		if err := rm.PrepareRunner(ctx, prepareReq); err != nil {
+		if err := preparer.PrepareRunner(ctx, prepareReq); err != nil {
 			ec2Log.ErrorContext(ctx, "runner config preparation failed",
 				slog.String(logging.KeyInstanceID, instanceID),
 				slog.String("error", err.Error()))
+			failed = append(failed, instanceID)
 		}
 	}
+	return failed
 }
 
 func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
