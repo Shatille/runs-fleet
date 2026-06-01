@@ -23,8 +23,11 @@ func runTimeoutStack(
 	if err := PerOperationTimeout(timeout, exempt)(stack); err != nil {
 		t.Fatalf("register per-op timeout middleware: %v", err)
 	}
-	// Seed the operation name into the context. Added last with Before, it sits
-	// at the head of the step and runs before the timeout middleware reads it.
+	// On this bare stack RegisterServiceMetadata is not present when
+	// PerOperationTimeout runs, so the timeout middleware takes its fallback
+	// head-of-step position. RegisterServiceMetadata, added last with Before, then
+	// sits ahead of it and seeds the operation name before the timeout middleware
+	// reads it. The real SDK ordering is covered in realstack_test.go.
 	if err := stack.Initialize.Add(&awsmiddleware.RegisterServiceMetadata{
 		ServiceID:     "SQS",
 		OperationName: operationName,
