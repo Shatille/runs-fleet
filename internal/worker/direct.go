@@ -3,10 +3,8 @@ package worker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 
-	"github.com/Shavakan/runs-fleet/internal/handler"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
@@ -32,6 +30,10 @@ type DirectProcessor struct {
 	// CreateFleetFn allows injection of a custom fleet creator for testing.
 	// If nil, defaults to CreateFleetWithRetry against the embedded Fleet manager.
 	CreateFleetFn func(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+
+	// PrepareRunnersFn allows injection of a custom runner preparer for testing.
+	// If nil, defaults to PrepareRunners against the embedded Runner manager.
+	PrepareRunnersFn func(ctx context.Context, job *queue.JobMessage, instanceIDs []string) []string
 }
 
 func (p *DirectProcessor) createFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error) {
@@ -39,6 +41,16 @@ func (p *DirectProcessor) createFleet(ctx context.Context, spec *fleet.LaunchSpe
 		return p.CreateFleetFn(ctx, spec)
 	}
 	return CreateFleetWithRetry(ctx, p.Fleet, spec)
+}
+
+func (p *DirectProcessor) prepareRunners(ctx context.Context, job *queue.JobMessage, instanceIDs []string) []string {
+	if p.PrepareRunnersFn != nil {
+		return p.PrepareRunnersFn(ctx, job, instanceIDs)
+	}
+	if p.Runner == nil {
+		return nil
+	}
+	return PrepareRunners(ctx, p.Runner, job, instanceIDs)
 }
 
 // ProcessJobDirect processes a job immediately without SQS.
@@ -138,28 +150,29 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 	}
 
-	if p.Runner != nil {
-		for _, instanceID := range instanceIDs {
-			label := handler.BuildRunnerLabel(job)
-			prepareReq := runner.PrepareRunnerRequest{
-				InstanceID: instanceID,
-				JobID:      fmt.Sprintf("%d", job.JobID),
-				RunID:      fmt.Sprintf("%d", job.RunID),
-				Repo:       job.Repo,
-				Labels:     []string{label},
-				Pool:       job.Pool,
-				Conditions: BuildRunnerConditions(job),
-			}
-			if err := p.Runner.PrepareRunner(ctx, prepareReq); err != nil {
-				directLog.ErrorContext(ctx, "runner config preparation failed",
-					slog.String(logging.KeyInstanceID, instanceID),
+	if failed := p.prepareRunners(ctx, job, instanceIDs); len(failed) > 0 {
+		// Config could not be written (e.g. SSM throttled); fail the direct path
+		// so the always-enqueued SQS copy of this job is retried by the worker.
+		// Release the claim so the worker can re-claim. The config-less instances
+		// are reaped by housekeeping.
+		if p.DB != nil && p.DB.HasJobsTable() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+			if err := p.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
+				directLog.ErrorContext(cleanupCtx, "job claim delete failed after prep failure",
 					slog.String("error", err.Error()))
 			}
+			cancel()
 		}
+		directLog.ErrorContext(ctx, "runner preparation failed; deferring job to queue",
+			slog.Int("failed_instances", len(failed)))
+		return false
 	}
 
-	for _, instanceID := range instanceIDs {
-		p.Pool.MarkInstanceBusy(instanceID)
+	if p.Pool != nil {
+		for _, instanceID := range instanceIDs {
+			p.Pool.MarkInstanceBusy(instanceID)
+		}
 	}
 
 	if p.Metrics != nil {
