@@ -241,6 +241,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		InstanceType:  job.InstanceType,
 		InstanceTypes: job.InstanceTypes,
 		SubnetID:      SelectSubnet(deps.Config, deps.SubnetIndex),
+		SubnetIDs:     deps.Config.SubnetIDs,
 		Spot:          job.Spot,
 		Pool:          job.Pool,
 		Repo:          job.Repo,

@@ -119,6 +119,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		InstanceType:  job.InstanceType,
 		InstanceTypes: job.InstanceTypes,
 		SubnetID:      SelectSubnet(p.Config, p.SubnetIndex),
+		SubnetIDs:     p.Config.SubnetIDs,
 		Spot:          job.Spot,
 		Pool:          job.Pool,
 		Repo:          job.Repo,

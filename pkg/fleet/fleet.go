@@ -69,6 +69,13 @@ const spotPriceCacheTTL = 5 * time.Minute
 const availabilityCacheTTL = 24 * time.Hour
 const archARM64 = "arm64"
 
+// maxFleetOverrides caps the total launch template overrides emitted across all
+// configs in a single CreateFleet request. The overrides are an
+// (instance type x subnet) matrix, so this bounds types x AZs. AWS allows up to
+// 300 overrides for instant fleets; this conservative cap keeps the request
+// small while leaving room to span several AZs with diversified types.
+const maxFleetOverrides = 60
+
 // Manager orchestrates EC2 fleet creation for runner instances.
 type Manager struct {
 	ec2Client         EC2API
@@ -118,7 +125,8 @@ type LaunchSpec struct {
 	RunID         int64
 	InstanceType  string   // Primary instance type (used if InstanceTypes is empty)
 	InstanceTypes []string // Multiple instance types for spot diversification (Phase 10)
-	SubnetID      string
+	SubnetID      string   // Single subnet; used as the fallback when SubnetIDs is empty
+	SubnetIDs     []string // All configured subnets; overrides span every AZ when non-empty
 	Spot          bool
 	Pool          string
 	Repo          string // Repository name for cost allocation (Role tag)
@@ -293,31 +301,10 @@ func (m *Manager) configureOnDemandRequest(ctx context.Context, req *ec2.CreateF
 		}
 	}
 
-	override := types.FleetLaunchTemplateOverridesRequest{
-		InstanceType: types.InstanceType(primaryType),
-		SubnetId:     aws.String(spec.SubnetID),
-	}
-	if spec.StorageGiB > 0 {
-		override.BlockDeviceMappings = []types.FleetBlockDeviceMappingRequest{
-			{
-				DeviceName: aws.String("/dev/xvda"),
-				Ebs: &types.FleetEbsBlockDeviceRequest{
-					VolumeSize:          aws.Int32(int32(spec.StorageGiB)),
-					VolumeType:          types.VolumeTypeGp3,
-					DeleteOnTermination: aws.Bool(true),
-					Encrypted:           aws.Bool(true),
-				},
-			},
-		}
-	}
+	// Span every configured AZ with the primary instance type so a single-AZ
+	// capacity shortfall does not fail the whole request.
 	req.LaunchTemplateConfigs = []types.FleetLaunchTemplateConfigRequest{
-		{
-			LaunchTemplateSpecification: &types.FleetLaunchTemplateSpecificationRequest{
-				LaunchTemplateName: aws.String(m.getLaunchTemplateForArch(arch)),
-				Version:            aws.String("$Latest"),
-			},
-			Overrides: []types.FleetLaunchTemplateOverridesRequest{override},
-		},
+		m.buildSingleArchConfig(arch, []string{primaryType}, m.resolveSubnets(spec), spec.StorageGiB),
 	}
 	return req, nil
 }
@@ -389,8 +376,7 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 		return nil, fmt.Errorf("no instance types available in region after filtering")
 	}
 
-	// Limit total instance types (EC2 Fleet maximum per launch template config is 20)
-	const maxOverridesPerConfig = 20
+	subnets := m.resolveSubnets(spec)
 
 	// If arch is specified, validate instance types match and create a single config
 	if spec.Arch != "" {
@@ -401,7 +387,7 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 			}
 		}
 		return []types.FleetLaunchTemplateConfigRequest{
-			m.buildSingleArchConfig(spec.Arch, instanceTypes, spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
+			m.buildSingleArchConfig(spec.Arch, instanceTypes, subnets, spec.StorageGiB),
 		}, nil
 	}
 
@@ -420,40 +406,82 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 	}
 
 	return []types.FleetLaunchTemplateConfigRequest{
-		m.buildSingleArchConfig(selectedArch, groupedTypes[selectedArch], spec.SubnetID, spec.StorageGiB, maxOverridesPerConfig),
+		m.buildSingleArchConfig(selectedArch, groupedTypes[selectedArch], subnets, spec.StorageGiB),
 	}, nil
 }
 
+// resolveSubnets returns the subnets a fleet request should span. When the spec
+// carries the full configured list it is used so overrides cover every AZ;
+// otherwise it falls back to the single SubnetID. A nil result (no subnet
+// information at all) lets EC2 pick a default subnet.
+func (m *Manager) resolveSubnets(spec *LaunchSpec) []string {
+	if len(spec.SubnetIDs) > 0 {
+		return spec.SubnetIDs
+	}
+	if spec.SubnetID != "" {
+		return []string{spec.SubnetID}
+	}
+	return nil
+}
+
+// typesPerSubnet returns how many instance types to place in each subnet so the
+// total override count stays within maxFleetOverrides while keeping every subnet
+// represented. AZ coverage is the priority: each subnet always gets at least one
+// type, trimming types-per-subnet rather than dropping a subnet.
+func typesPerSubnet(numTypes, numSubnets int) int {
+	if numSubnets <= 0 || numTypes <= 0 {
+		return 0
+	}
+	per := maxFleetOverrides / numSubnets
+	if per < 1 {
+		per = 1
+	}
+	if per > numTypes {
+		per = numTypes
+	}
+	return per
+}
+
 // buildSingleArchConfig creates a single launch template config for one architecture.
+// Overrides are the cross-product of (instance types) x (subnets) so a single
+// CreateFleet request spans every configured AZ. The total override count is
+// bounded by maxFleetOverrides; when (types x subnets) would exceed it, the
+// types-per-subnet count is trimmed so every subnet still appears at least once.
 // If storageGiB > 0, adds block device mappings to override root volume size.
-func (m *Manager) buildSingleArchConfig(arch string, instanceTypes []string, subnetID string, storageGiB, maxOverrides int) types.FleetLaunchTemplateConfigRequest {
-	if len(instanceTypes) > maxOverrides {
-		instanceTypes = instanceTypes[:maxOverrides]
+func (m *Manager) buildSingleArchConfig(arch string, instanceTypes, subnets []string, storageGiB int) types.FleetLaunchTemplateConfigRequest {
+	if len(subnets) == 0 {
+		subnets = []string{""}
 	}
 
-	overrides := make([]types.FleetLaunchTemplateOverridesRequest, len(instanceTypes))
-	for i, instType := range instanceTypes {
-		override := types.FleetLaunchTemplateOverridesRequest{
-			InstanceType: types.InstanceType(instType),
-			SubnetId:     aws.String(subnetID),
-		}
+	perSubnet := typesPerSubnet(len(instanceTypes), len(subnets))
 
-		// Add custom storage if specified (overrides launch template default)
-		if storageGiB > 0 {
-			override.BlockDeviceMappings = []types.FleetBlockDeviceMappingRequest{
-				{
-					DeviceName: aws.String("/dev/xvda"),
-					Ebs: &types.FleetEbsBlockDeviceRequest{
-						VolumeSize:          aws.Int32(int32(storageGiB)),
-						VolumeType:          types.VolumeTypeGp3,
-						DeleteOnTermination: aws.Bool(true),
-						Encrypted:           aws.Bool(true),
-					},
-				},
+	overrides := make([]types.FleetLaunchTemplateOverridesRequest, 0, len(subnets)*perSubnet)
+	for _, subnet := range subnets {
+		for i := 0; i < perSubnet; i++ {
+			override := types.FleetLaunchTemplateOverridesRequest{
+				InstanceType: types.InstanceType(instanceTypes[i]),
 			}
-		}
+			if subnet != "" {
+				override.SubnetId = aws.String(subnet)
+			}
 
-		overrides[i] = override
+			// Add custom storage if specified (overrides launch template default)
+			if storageGiB > 0 {
+				override.BlockDeviceMappings = []types.FleetBlockDeviceMappingRequest{
+					{
+						DeviceName: aws.String("/dev/xvda"),
+						Ebs: &types.FleetEbsBlockDeviceRequest{
+							VolumeSize:          aws.Int32(int32(storageGiB)),
+							VolumeType:          types.VolumeTypeGp3,
+							DeleteOnTermination: aws.Bool(true),
+							Encrypted:           aws.Bool(true),
+						},
+					},
+				}
+			}
+
+			overrides = append(overrides, override)
+		}
 	}
 
 	return types.FleetLaunchTemplateConfigRequest{

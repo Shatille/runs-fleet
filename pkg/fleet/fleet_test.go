@@ -1712,3 +1712,208 @@ func TestRankInstanceTypesByPrice(t *testing.T) {
 		})
 	}
 }
+
+// collectOverrideSubnets returns the set of subnet IDs referenced by the
+// overrides across all launch template configs in the request.
+func collectOverrideSubnets(req *ec2.CreateFleetInput) map[string]int {
+	seen := make(map[string]int)
+	for _, cfg := range req.LaunchTemplateConfigs {
+		for _, o := range cfg.Overrides {
+			seen[aws.ToString(o.SubnetId)]++
+		}
+	}
+	return seen
+}
+
+// collectOverrideTypesPerSubnet maps each subnet to the set of instance types
+// placed in it across all configs.
+func collectOverrideTypesPerSubnet(req *ec2.CreateFleetInput) map[string]map[string]bool {
+	m := make(map[string]map[string]bool)
+	for _, cfg := range req.LaunchTemplateConfigs {
+		for _, o := range cfg.Overrides {
+			subnet := aws.ToString(o.SubnetId)
+			if m[subnet] == nil {
+				m[subnet] = make(map[string]bool)
+			}
+			m[subnet][string(o.InstanceType)] = true
+		}
+	}
+	return m
+}
+
+func TestBuildLaunchTemplateConfigs_SpansAllSubnets(t *testing.T) {
+	m := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{}}
+
+	subnets := []string{"subnet-1a", "subnet-1c", "subnet-1d"}
+	spec := &LaunchSpec{
+		Arch:          "arm64",
+		InstanceTypes: []string{"c7g.xlarge", "c7g.2xlarge", "m7g.xlarge", "t4g.medium"},
+		SubnetIDs:     subnets,
+		SubnetID:      subnets[0],
+	}
+
+	req, err := m.buildFleetRequest(context.Background(), spec, true, nil)
+	if err != nil {
+		t.Fatalf("buildFleetRequest() error = %v", err)
+	}
+
+	gotSubnets := collectOverrideSubnets(req)
+	for _, s := range subnets {
+		if gotSubnets[s] == 0 {
+			t.Errorf("subnet %q has no overrides; want every configured subnet represented (got %v)", s, gotSubnets)
+		}
+	}
+}
+
+func TestBuildLaunchTemplateConfigs_PreservesTypeDiversityAcrossSubnets(t *testing.T) {
+	m := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{}}
+
+	subnets := []string{"subnet-1a", "subnet-1c"}
+	instTypes := []string{"c7g.xlarge", "c7g.2xlarge", "m7g.xlarge"}
+	spec := &LaunchSpec{
+		Arch:          "arm64",
+		InstanceTypes: instTypes,
+		SubnetIDs:     subnets,
+		SubnetID:      subnets[0],
+	}
+
+	req, err := m.buildFleetRequest(context.Background(), spec, true, nil)
+	if err != nil {
+		t.Fatalf("buildFleetRequest() error = %v", err)
+	}
+
+	perSubnet := collectOverrideTypesPerSubnet(req)
+	for _, s := range subnets {
+		if len(perSubnet[s]) < 2 {
+			t.Errorf("subnet %q has only %d instance types; want diversity preserved (got %v)", s, len(perSubnet[s]), perSubnet[s])
+		}
+	}
+}
+
+func TestBuildLaunchTemplateConfigs_MultiSubnetNotConfinedToOneAZ(t *testing.T) {
+	// Regression: pre-fix behavior pinned all overrides to a single subnet.
+	m := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{}}
+
+	subnets := []string{"subnet-1a", "subnet-1c", "subnet-1d"}
+	spec := &LaunchSpec{
+		Arch:          "arm64",
+		InstanceTypes: []string{"c7g.xlarge", "c7g.2xlarge"},
+		SubnetIDs:     subnets,
+		SubnetID:      subnets[0],
+	}
+
+	req, err := m.buildFleetRequest(context.Background(), spec, true, nil)
+	if err != nil {
+		t.Fatalf("buildFleetRequest() error = %v", err)
+	}
+
+	gotSubnets := collectOverrideSubnets(req)
+	if len(gotSubnets) < len(subnets) {
+		t.Fatalf("overrides confined to %d subnet(s) %v; want all %d configured AZs represented", len(gotSubnets), gotSubnets, len(subnets))
+	}
+}
+
+func TestBuildLaunchTemplateConfigs_RespectsOverrideCapAndCoversEveryAZ(t *testing.T) {
+	// Many types across many subnets: the total override count must stay within
+	// the cap, but AZ coverage takes priority over types-per-subnet.
+	m := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{}}
+
+	subnets := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		subnets = append(subnets, "subnet-"+string(rune('a'+i)))
+	}
+	instTypes := []string{
+		"c7g.large", "c7g.xlarge", "c7g.2xlarge", "c7g.4xlarge",
+		"m7g.large", "m7g.xlarge", "m7g.2xlarge",
+		"t4g.medium", "t4g.large", "t4g.xlarge",
+	}
+	spec := &LaunchSpec{
+		Arch:          "arm64",
+		InstanceTypes: instTypes,
+		SubnetIDs:     subnets,
+		SubnetID:      subnets[0],
+	}
+
+	// Use a manager whose availability filter passes all the listed types.
+	m.ec2Client = &mockEC2Client{
+		DescribeInstanceTypeOfferingsFunc: func(_ context.Context, _ *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+			offerings := make([]types.InstanceTypeOffering, 0, len(spec.InstanceTypes))
+			for _, it := range spec.InstanceTypes {
+				offerings = append(offerings, types.InstanceTypeOffering{InstanceType: types.InstanceType(it)})
+			}
+			return &ec2.DescribeInstanceTypeOfferingsOutput{InstanceTypeOfferings: offerings}, nil
+		},
+	}
+
+	configs, err := m.buildLaunchTemplateConfigs(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("buildLaunchTemplateConfigs() error = %v", err)
+	}
+
+	total := 0
+	gotSubnets := make(map[string]bool)
+	for _, cfg := range configs {
+		total += len(cfg.Overrides)
+		for _, o := range cfg.Overrides {
+			gotSubnets[aws.ToString(o.SubnetId)] = true
+		}
+	}
+
+	if total > maxFleetOverrides {
+		t.Errorf("total overrides = %d, want <= cap %d", total, maxFleetOverrides)
+	}
+	for _, s := range subnets {
+		if !gotSubnets[s] {
+			t.Errorf("subnet %q dropped; every AZ must be represented even under the cap (got %v)", s, gotSubnets)
+		}
+	}
+}
+
+func TestBuildLaunchTemplateConfigs_SingleSubnetFallbackUnchanged(t *testing.T) {
+	// When SubnetIDs is empty, the legacy single-SubnetID behavior must hold:
+	// every override pinned to spec.SubnetID.
+	m := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{}}
+
+	spec := &LaunchSpec{
+		Arch:          "arm64",
+		InstanceTypes: []string{"c7g.xlarge", "t4g.medium"},
+		SubnetID:      "subnet-only",
+	}
+
+	configs, err := m.buildLaunchTemplateConfigs(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("buildLaunchTemplateConfigs() error = %v", err)
+	}
+
+	for _, cfg := range configs {
+		for _, o := range cfg.Overrides {
+			if aws.ToString(o.SubnetId) != "subnet-only" {
+				t.Errorf("override subnet = %q, want %q (single-subnet fallback)", aws.ToString(o.SubnetId), "subnet-only")
+			}
+		}
+	}
+}
+
+func TestConfigureOnDemandRequest_MultiSubnet(t *testing.T) {
+	m := &Manager{ec2Client: &mockEC2Client{}, config: &config.Config{}}
+
+	subnets := []string{"subnet-1a", "subnet-1c", "subnet-1d"}
+	spec := &LaunchSpec{
+		Arch:         "arm64",
+		InstanceType: "c7g.xlarge",
+		SubnetIDs:    subnets,
+		SubnetID:     subnets[0],
+	}
+
+	req, err := m.buildFleetRequest(context.Background(), spec, false, nil)
+	if err != nil {
+		t.Fatalf("buildFleetRequest() error = %v", err)
+	}
+
+	gotSubnets := collectOverrideSubnets(req)
+	for _, s := range subnets {
+		if gotSubnets[s] == 0 {
+			t.Errorf("on-demand subnet %q has no override; want every configured subnet represented (got %v)", s, gotSubnets)
+		}
+	}
+}
