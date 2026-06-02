@@ -1221,6 +1221,7 @@ func (m *Manager) createPoolFleetInstances(ctx context.Context, poolName, reason
 			RunID:        time.Now().UnixNano(),
 			InstanceType: ranked[m.randIntn(len(ranked))],
 			SubnetID:     subnetID,
+			SubnetIDs:    m.config.SubnetIDs,
 			Pool:         poolName,
 			Arch:         arch,
 			Reason:       reason,

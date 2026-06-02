@@ -943,10 +943,14 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 	if startInstancesCalled {
 		t.Error("StartInstances should not be called when no stopped instances")
 	}
-	// Verify SubnetID is set on fleet specs
+	// Verify SubnetID is set on fleet specs, and the full configured subnet
+	// list is propagated so CreateOnDemandInstance can fall back across AZs.
 	for i, spec := range capturedSpecs {
 		if spec.SubnetID == "" {
 			t.Errorf("fleet create call %d: SubnetID should not be empty", i)
+		}
+		if len(spec.SubnetIDs) != 2 {
+			t.Errorf("fleet create call %d: SubnetIDs = %v, want full configured list of 2", i, spec.SubnetIDs)
 		}
 	}
 }

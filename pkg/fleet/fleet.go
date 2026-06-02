@@ -3,6 +3,7 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -932,8 +934,41 @@ func (m *Manager) ensureAvailabilityLoaded(ctx context.Context) error {
 	return nil
 }
 
+// capacityErrorCodes are the EC2 RunInstances error codes that signal the
+// requested instance type cannot be launched in the targeted AZ right now but
+// might succeed in another AZ. Rotating to the next configured subnet on these
+// is worthwhile; any other error is a hard failure (bad config, auth) where a
+// retry in a different AZ would only waste attempts.
+var capacityErrorCodes = map[string]bool{
+	"InsufficientInstanceCapacity":          true,
+	"InsufficientCapacity":                  true,
+	"InsufficientReservedInstancesCapacity": true,
+	"Unsupported":                           true, // instance type not offered in this AZ
+}
+
+// isCapacityError reports whether err is an AZ-local capacity/availability
+// failure that may be resolved by trying a different subnet. It checks the
+// smithy APIError code first and falls back to a message substring match for
+// errors that don't surface a typed code.
+func isCapacityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && capacityErrorCodes[apiErr.ErrorCode()] {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "insufficient capacity")
+}
+
 // CreateOnDemandInstance launches a single on-demand instance using RunInstances API.
 // Used for warm pool instances where stop/start reliability matters more than spot savings.
+//
+// RunInstances targets a single subnet, so when spec.SubnetIDs is populated the
+// call is retried across those subnets in order: a capacity-class failure in one
+// AZ rotates to the next, while any non-capacity error fails fast without burning
+// the remaining attempts. With an empty SubnetIDs it behaves as a single
+// RunInstances against spec.SubnetID.
 func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) (string, error) {
 	tags := m.buildTags(spec)
 
@@ -946,55 +981,78 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 	}
 	launchTemplateName := m.getLaunchTemplateForArch(arch)
 
-	input := &ec2.RunInstancesInput{
-		LaunchTemplate: &types.LaunchTemplateSpecification{
-			LaunchTemplateName: aws.String(launchTemplateName),
-			Version:            aws.String("$Latest"),
-		},
-		InstanceType: types.InstanceType(spec.InstanceType),
-		SubnetId:     aws.String(spec.SubnetID),
-		MinCount:     aws.Int32(1),
-		MaxCount:     aws.Int32(1),
-		TagSpecifications: []types.TagSpecification{
-			{
-				ResourceType: types.ResourceTypeInstance,
-				Tags:         tags,
-			},
-		},
+	subnets := spec.SubnetIDs
+	if len(subnets) == 0 {
+		subnets = []string{spec.SubnetID}
 	}
 
-	if spec.StorageGiB > 0 {
-		input.BlockDeviceMappings = []types.BlockDeviceMapping{
-			{
-				DeviceName: aws.String("/dev/xvda"),
-				Ebs: &types.EbsBlockDevice{
-					VolumeSize:          aws.Int32(int32(spec.StorageGiB)),
-					VolumeType:          types.VolumeTypeGp3,
-					DeleteOnTermination: aws.Bool(true),
-					Encrypted:           aws.Bool(true),
+	for i, subnet := range subnets {
+		input := &ec2.RunInstancesInput{
+			LaunchTemplate: &types.LaunchTemplateSpecification{
+				LaunchTemplateName: aws.String(launchTemplateName),
+				Version:            aws.String("$Latest"),
+			},
+			InstanceType: types.InstanceType(spec.InstanceType),
+			SubnetId:     aws.String(subnet),
+			MinCount:     aws.Int32(1),
+			MaxCount:     aws.Int32(1),
+			TagSpecifications: []types.TagSpecification{
+				{
+					ResourceType: types.ResourceTypeInstance,
+					Tags:         tags,
 				},
 			},
 		}
+
+		if spec.StorageGiB > 0 {
+			input.BlockDeviceMappings = []types.BlockDeviceMapping{
+				{
+					DeviceName: aws.String("/dev/xvda"),
+					Ebs: &types.EbsBlockDevice{
+						VolumeSize:          aws.Int32(int32(spec.StorageGiB)),
+						VolumeType:          types.VolumeTypeGp3,
+						DeleteOnTermination: aws.Bool(true),
+						Encrypted:           aws.Bool(true),
+					},
+				},
+			}
+		}
+
+		output, err := m.ec2Client.RunInstances(ctx, input)
+		if err != nil {
+			// Only a capacity-class failure with another AZ left is worth
+			// rotating; anything else (auth, bad config, capacity in the last
+			// subnet) is terminal and surfaced immediately.
+			if isCapacityError(err) && i < len(subnets)-1 {
+				fleetLog.Info(ctx, "on-demand pool instance capacity exhausted, trying next AZ",
+					slog.String("instance_type", spec.InstanceType),
+					slog.String("pool", spec.Pool),
+					slog.String("subnet", subnet),
+					slog.String("error", err.Error()))
+				continue
+			}
+			return "", fmt.Errorf("failed to run instance: %w", err)
+		}
+
+		if len(output.Instances) == 0 {
+			return "", fmt.Errorf("no instance created")
+		}
+
+		instanceID := aws.ToString(output.Instances[0].InstanceId)
+
+		fleetLog.Info(ctx, "on-demand pool instance created",
+			slog.String(logging.KeyInstanceID, instanceID),
+			slog.String("instance_type", spec.InstanceType),
+			slog.String("pool", spec.Pool),
+			slog.String("subnet", subnet),
+			slog.String("reason", spec.Reason))
+
+		return instanceID, nil
 	}
 
-	output, err := m.ec2Client.RunInstances(ctx, input)
-	if err != nil {
-		return "", fmt.Errorf("failed to run instance: %w", err)
-	}
-
-	if len(output.Instances) == 0 {
-		return "", fmt.Errorf("no instance created")
-	}
-
-	instanceID := aws.ToString(output.Instances[0].InstanceId)
-
-	fleetLog.Info(ctx, "on-demand pool instance created",
-		slog.String(logging.KeyInstanceID, instanceID),
-		slog.String("instance_type", spec.InstanceType),
-		slog.String("pool", spec.Pool),
-		slog.String("reason", spec.Reason))
-
-	return instanceID, nil
+	// Unreachable: the loop returns on the final subnet (its capacity error is
+	// not eligible for rotation), but the compiler needs a terminal return.
+	return "", fmt.Errorf("no instance created")
 }
 
 const instanceNameMaxLen = 64
