@@ -104,8 +104,8 @@ func TestSQSClient_SendMessage(t *testing.T) {
 			},
 			mock: &mockSQSClient{
 				SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
-					if params.MessageGroupId == nil || *params.MessageGroupId != "67890" {
-						t.Error("MessageGroupId not set correctly")
+					if params.MessageGroupId == nil || *params.MessageGroupId != "12345" {
+						t.Error("MessageGroupId should be the job_id")
 					}
 					if params.MessageDeduplicationId == nil || *params.MessageDeduplicationId == "" {
 						t.Error("MessageDeduplicationId not set")
@@ -133,13 +133,22 @@ func TestSQSClient_SendMessage(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "empty run ID",
+			// RunID is no longer the FIFO group key, so a zero RunID is valid
+			// as long as JobID (the new group key) is set.
+			name: "empty run ID is valid for FIFO grouping",
 			job: &JobMessage{
 				JobID:        12345,
 				InstanceType: "t4g.medium",
 			},
-			mock:    &mockSQSClient{},
-			wantErr: true,
+			mock: &mockSQSClient{
+				SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+					if params.MessageGroupId == nil || *params.MessageGroupId != "12345" {
+						t.Error("MessageGroupId should be the job_id")
+					}
+					return &sqs.SendMessageOutput{MessageId: aws.String("msg-123")}, nil
+				},
+			},
+			wantErr: false,
 		},
 		{
 			name: "sqs error",
@@ -171,6 +180,52 @@ func TestSQSClient_SendMessage(t *testing.T) {
 				t.Errorf("SendMessage() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestSQSClient_SendMessage_GroupsByJobID proves the FIFO message group key is
+// the job_id, not the run_id. Grouping by run_id would serialize every job of a
+// run (matrix legs, independent jobs) through a single FIFO lane and let one
+// stuck job head-of-line-block its siblings; grouping by job_id keeps them
+// independent.
+func TestSQSClient_SendMessage_GroupsByJobID(t *testing.T) {
+	t.Parallel()
+
+	var groupIDs []string
+	mock := &mockSQSClient{
+		SendMessageFunc: func(_ context.Context, params *sqs.SendMessageInput, _ ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+			if params.MessageGroupId == nil {
+				t.Fatal("MessageGroupId must be set on a FIFO queue")
+			}
+			groupIDs = append(groupIDs, *params.MessageGroupId)
+			return &sqs.SendMessageOutput{MessageId: aws.String("msg")}, nil
+		},
+	}
+	client := &SQSClient{
+		sqsClient: mock,
+		queueURL:  "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue.fifo",
+	}
+
+	// The group ID is exactly the job_id.
+	if err := client.SendMessage(context.Background(), &JobMessage{JobID: 12345, RunID: 67890}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if groupIDs[0] != "12345" {
+		t.Errorf("MessageGroupId = %q, want %q (the job_id)", groupIDs[0], "12345")
+	}
+
+	// Two jobs of the SAME run but different job_id land in DIFFERENT groups.
+	if err := client.SendMessage(context.Background(), &JobMessage{JobID: 111, RunID: 67890}); err != nil {
+		t.Fatalf("send sibling A: %v", err)
+	}
+	if err := client.SendMessage(context.Background(), &JobMessage{JobID: 222, RunID: 67890}); err != nil {
+		t.Fatalf("send sibling B: %v", err)
+	}
+	if groupIDs[1] == groupIDs[2] {
+		t.Errorf("jobs of the same run must not share a FIFO group: both got %q", groupIDs[1])
+	}
+	if groupIDs[1] != "111" || groupIDs[2] != "222" {
+		t.Errorf("sibling group IDs = %q, %q; want %q, %q", groupIDs[1], groupIDs[2], "111", "222")
 	}
 }
 
