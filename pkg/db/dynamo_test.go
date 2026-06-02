@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1315,56 +1316,257 @@ func TestMarkJobRequeuedByJobID_DynamoDBError(t *testing.T) {
 	}
 }
 
-func TestClaimJob_Success(t *testing.T) {
+const (
+	testClaimRunID = int64(99)
+	testClaimRepo  = "org/claim-repo"
+)
+
+// claimItem builds a marshaled job record for GetItem stubs in ClaimJob tests.
+func claimItem(t *testing.T, status JobStatus, createdAt time.Time, retryCount int) map[string]types.AttributeValue {
+	t.Helper()
+	item, err := attributevalue.MarshalMap(jobRecord{
+		JobID:      12345,
+		RunID:      testClaimRunID,
+		Repo:       testClaimRepo,
+		Status:     string(status),
+		CreatedAt:  createdAt.Format(time.RFC3339),
+		RetryCount: retryCount,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal claim item: %v", err)
+	}
+	return item
+}
+
+// TestClaimJob_NewJob covers a brand-new job: no record exists, so the claim
+// uses attribute_not_exists(job_id) and persists run_id/repo identity.
+func TestClaimJob_NewJob(t *testing.T) {
 	t.Parallel()
 
+	var captured map[string]types.AttributeValue
 	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{}, nil // no existing record
+		},
 		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			want := "attribute_not_exists(job_id) OR #status IN (:requeued, :terminating)"
+			captured = params.Item
+			want := "attribute_not_exists(job_id)"
 			if params.ConditionExpression == nil || *params.ConditionExpression != want {
 				t.Errorf("ClaimJob() condition = %v, want %q", params.ConditionExpression, want)
-			}
-			if params.ExpressionAttributeNames["#status"] != "status" {
-				t.Error("ClaimJob() should map #status -> status")
-			}
-			if _, ok := params.ExpressionAttributeValues[":requeued"]; !ok {
-				t.Error("ClaimJob() should permit re-claim of requeued jobs")
-			}
-			if _, ok := params.ExpressionAttributeValues[":terminating"]; !ok {
-				t.Error("ClaimJob() should permit re-claim of terminating jobs")
 			}
 			return &dynamodb.PutItemOutput{}, nil
 		},
 	}
 
-	client := &Client{
-		dynamoClient: mockDB,
-		jobsTable:    "jobs-table",
-	}
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
 
-	err := client.ClaimJob(context.Background(), 12345)
-	if err != nil {
-		t.Errorf("ClaimJob() unexpected error: %v", err)
+	if err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo); err != nil {
+		t.Fatalf("ClaimJob() unexpected error: %v", err)
+	}
+	if v, ok := captured["run_id"].(*types.AttributeValueMemberN); !ok || v.Value != "99" {
+		t.Errorf("ClaimJob() must persist run_id; got %#v", captured["run_id"])
+	}
+	if v, ok := captured["repo"].(*types.AttributeValueMemberS); !ok || v.Value != testClaimRepo {
+		t.Errorf("ClaimJob() must persist repo; got %#v", captured["repo"])
+	}
+	if v, ok := captured["retry_count"].(*types.AttributeValueMemberN); !ok || v.Value != "1" {
+		t.Errorf("ClaimJob() first claim must set retry_count=1; got %#v", captured["retry_count"])
 	}
 }
 
-func TestClaimJob_AlreadyClaimed(t *testing.T) {
+// TestClaimJob_StaleReclaim covers a leaked claiming stub older than the stale
+// threshold: it is re-claimable and the new record carries identity, increments
+// the attempt count, and compare-and-swaps on the observed created_at.
+func TestClaimJob_StaleReclaim(t *testing.T) {
 	t.Parallel()
 
+	staleCreatedAt := time.Now().Add(-claimStaleThreshold - time.Minute)
+	var captured map[string]types.AttributeValue
 	mockDB := &MockDynamoDBAPI{
-		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			return nil, &types.ConditionalCheckFailedException{Message: nil}
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: claimItem(t, JobStatusClaiming, staleCreatedAt, 1)}, nil
+		},
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			want := "attribute_not_exists(job_id) OR created_at = :observed_created_at"
+			if params.ConditionExpression == nil || *params.ConditionExpression != want {
+				t.Errorf("ClaimJob() stale re-claim condition = %v, want %q", params.ConditionExpression, want)
+			}
+			obs, ok := params.ExpressionAttributeValues[":observed_created_at"].(*types.AttributeValueMemberS)
+			if !ok || obs.Value != staleCreatedAt.Format(time.RFC3339) {
+				t.Errorf("ClaimJob() must pin observed created_at; got %#v", params.ExpressionAttributeValues[":observed_created_at"])
+			}
+			return &dynamodb.PutItemOutput{}, nil
 		},
 	}
 
-	client := &Client{
-		dynamoClient: mockDB,
-		jobsTable:    "jobs-table",
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	if err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo); err != nil {
+		t.Fatalf("ClaimJob() stale re-claim unexpected error: %v", err)
+	}
+	if v, ok := captured["repo"].(*types.AttributeValueMemberS); !ok || v.Value != testClaimRepo {
+		t.Errorf("ClaimJob() stale re-claim must persist repo; got %#v", captured["repo"])
+	}
+	if v, ok := captured["retry_count"].(*types.AttributeValueMemberN); !ok || v.Value != "2" {
+		t.Errorf("ClaimJob() stale re-claim must increment retry_count to 2; got %#v", captured["retry_count"])
+	}
+}
+
+// TestClaimJob_FreshClaimNotPreempted covers a recent claiming record: a live
+// worker holds the lease, so ClaimJob must not preempt it.
+func TestClaimJob_FreshClaimNotPreempted(t *testing.T) {
+	t.Parallel()
+
+	freshCreatedAt := time.Now().Add(-5 * time.Second)
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: claimItem(t, JobStatusClaiming, freshCreatedAt, 1)}, nil
+		},
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			t.Error("ClaimJob() must not write over a fresh claim")
+			return &dynamodb.PutItemOutput{}, nil
+		},
 	}
 
-	err := client.ClaimJob(context.Background(), 12345)
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo)
 	if !errors.Is(err, ErrJobAlreadyClaimed) {
-		t.Errorf("ClaimJob() expected ErrJobAlreadyClaimed, got: %v", err)
+		t.Errorf("ClaimJob() fresh claim expected ErrJobAlreadyClaimed, got: %v", err)
+	}
+}
+
+// TestClaimJob_ConcurrentStaleReclaim is the critical no-double-claim test: two
+// workers race to re-claim the same stale lease. They read the same created_at,
+// so DynamoDB's conditional write lets exactly one PutItem win; the loser's
+// compare-and-swap fails and surfaces as ErrJobAlreadyClaimed.
+func TestClaimJob_ConcurrentStaleReclaim(t *testing.T) {
+	t.Parallel()
+
+	staleCreatedAt := time.Now().Add(-claimStaleThreshold - time.Minute)
+	var mu sync.Mutex
+	putWon := false // simulates the single CAS winner
+
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			// Both racers observe the same stale record.
+			return &dynamodb.GetItemOutput{Item: claimItem(t, JobStatusClaiming, staleCreatedAt, 1)}, nil
+		},
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if putWon {
+				// created_at already advanced by the winner; CAS fails.
+				return nil, &types.ConditionalCheckFailedException{Message: nil}
+			}
+			putWon = true
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	for i := range results {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo)
+		}(i)
+	}
+	wg.Wait()
+
+	winners, losers := 0, 0
+	for _, err := range results {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, ErrJobAlreadyClaimed):
+			losers++
+		default:
+			t.Errorf("ClaimJob() concurrent re-claim unexpected error: %v", err)
+		}
+	}
+	if winners != 1 || losers != 1 {
+		t.Errorf("ClaimJob() concurrent stale re-claim: want exactly 1 winner and 1 loser, got %d winners %d losers", winners, losers)
+	}
+}
+
+// TestClaimJob_Exhausted covers the bounded-retry cap: a stale claim that has
+// already been re-claimed claimMaxAttempts times must not re-claim again; it
+// returns ErrJobClaimExhausted so the caller can fail the job terminally.
+func TestClaimJob_Exhausted(t *testing.T) {
+	t.Parallel()
+
+	staleCreatedAt := time.Now().Add(-claimStaleThreshold - time.Minute)
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: claimItem(t, JobStatusClaiming, staleCreatedAt, claimMaxAttempts)}, nil
+		},
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			t.Error("ClaimJob() must not re-claim an exhausted job")
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo)
+	if !errors.Is(err, ErrJobClaimExhausted) {
+		t.Errorf("ClaimJob() expected ErrJobClaimExhausted at attempt cap, got: %v", err)
+	}
+}
+
+// TestClaimJob_ReclaimsRequeued covers a job marked requeued (spot interruption
+// path): it stays re-claimable and preserves the existing attempt count, since
+// a requeue is not an unprovisionable retry.
+func TestClaimJob_ReclaimsRequeued(t *testing.T) {
+	t.Parallel()
+
+	createdAt := time.Now().Add(-time.Minute)
+	var captured map[string]types.AttributeValue
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: claimItem(t, JobStatusRequeued, createdAt, 1)}, nil
+		},
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	if err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo); err != nil {
+		t.Fatalf("ClaimJob() requeued re-claim unexpected error: %v", err)
+	}
+	if v, ok := captured["retry_count"].(*types.AttributeValueMemberN); !ok || v.Value != "1" {
+		t.Errorf("ClaimJob() requeued re-claim must preserve retry_count=1; got %#v", captured["retry_count"])
+	}
+}
+
+// TestClaimJob_RunningNotReclaimable covers an active running job: it must never
+// be re-claimed regardless of age.
+func TestClaimJob_RunningNotReclaimable(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: claimItem(t, JobStatusRunning, time.Now().Add(-time.Hour), 1)}, nil
+		},
+		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			t.Error("ClaimJob() must not re-claim a running job")
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo)
+	if !errors.Is(err, ErrJobAlreadyClaimed) {
+		t.Errorf("ClaimJob() running job expected ErrJobAlreadyClaimed, got: %v", err)
 	}
 }
 
@@ -1376,7 +1578,7 @@ func TestClaimJob_EmptyJobID(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.ClaimJob(context.Background(), 0)
+	err := client.ClaimJob(context.Background(), 0, testClaimRunID, testClaimRepo)
 	if err == nil {
 		t.Error("ClaimJob() should return error for empty job ID")
 	}
@@ -1390,7 +1592,7 @@ func TestClaimJob_NoJobsTable(t *testing.T) {
 		jobsTable:    "",
 	}
 
-	err := client.ClaimJob(context.Background(), 12345)
+	err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo)
 	if err == nil {
 		t.Error("ClaimJob() should return error when jobs table not configured")
 	}
@@ -1400,6 +1602,9 @@ func TestClaimJob_DynamoDBError(t *testing.T) {
 	t.Parallel()
 
 	mockDB := &MockDynamoDBAPI{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{}, nil
+		},
 		PutItemFunc: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 			return nil, errors.New("dynamodb error")
 		},
@@ -1410,7 +1615,7 @@ func TestClaimJob_DynamoDBError(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	err := client.ClaimJob(context.Background(), 12345)
+	err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo)
 	if err == nil {
 		t.Error("ClaimJob() should return error when DynamoDB fails")
 	}
@@ -1439,7 +1644,7 @@ func TestClaimJob_OmitsPoolAttribute(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	if err := client.ClaimJob(context.Background(), 12345); err != nil {
+	if err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo); err != nil {
 		t.Fatalf("ClaimJob() unexpected error: %v", err)
 	}
 	if _, present := captured["pool"]; present {
@@ -1466,11 +1671,62 @@ func TestClaimJob_OmitsInstanceIDAttribute(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	if err := client.ClaimJob(context.Background(), 12345); err != nil {
+	if err := client.ClaimJob(context.Background(), 12345, testClaimRunID, testClaimRepo); err != nil {
 		t.Fatalf("ClaimJob() unexpected error: %v", err)
 	}
 	if _, present := captured["instance_id"]; present {
 		t.Errorf("ClaimJob() wrote instance_id attribute, must omit when unset; got: %#v", captured["instance_id"])
+	}
+}
+
+// TestFailExhaustedClaim_GuardsRunningJob proves the terminal write is
+// conditioned on a still-claiming record, so a concurrent SaveJob (running) is
+// not clobbered when a stale claim is declared exhausted.
+func TestFailExhaustedClaim_GuardsRunningJob(t *testing.T) {
+	t.Parallel()
+
+	var gotStatus, gotCondition string
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			if params.ConditionExpression != nil {
+				gotCondition = *params.ConditionExpression
+			}
+			if v, ok := params.ExpressionAttributeValues[":error"].(*types.AttributeValueMemberS); ok {
+				gotStatus = v.Value
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	if err := client.FailExhaustedClaim(context.Background(), 12345); err != nil {
+		t.Fatalf("FailExhaustedClaim() unexpected error: %v", err)
+	}
+	if gotStatus != string(JobStatusError) {
+		t.Errorf("FailExhaustedClaim() must set status=error; got %q", gotStatus)
+	}
+	if gotCondition != "#status = :claiming" {
+		t.Errorf("FailExhaustedClaim() must guard on a claiming record; got condition %q", gotCondition)
+	}
+}
+
+// TestFailExhaustedClaim_RaceLost proves that when the record has already
+// advanced out of claiming (conditional check fails), FailExhaustedClaim treats
+// it as success and leaves the record untouched.
+func TestFailExhaustedClaim_RaceLost(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{Message: nil}
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	if err := client.FailExhaustedClaim(context.Background(), 12345); err != nil {
+		t.Errorf("FailExhaustedClaim() must treat a lost race as success; got %v", err)
 	}
 }
 

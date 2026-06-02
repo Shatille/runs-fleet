@@ -179,8 +179,17 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	defer span.End()
 
 	if deps.DB != nil && deps.DB.HasJobsTable() {
-		if err := deps.DB.ClaimJob(ctx, job.JobID); err != nil {
+		if err := deps.DB.ClaimJob(ctx, job.JobID, job.RunID, job.Repo); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
+				alreadyClaimed = true
+				return
+			}
+			if errors.Is(err, db.ErrJobClaimExhausted) {
+				// The lease has been re-claimed claimMaxAttempts times without ever
+				// provisioning. Mark the job terminal and drop the message so it
+				// surfaces as a hard failure instead of re-claiming forever. Reuse
+				// the alreadyClaimed delete path to remove the message.
+				failJobClaimExhausted(ctx, deps, &job)
 				alreadyClaimed = true
 				return
 			}
@@ -480,4 +489,27 @@ func sendMessageWithRetry(ctx context.Context, q queue.Queue, job *queue.JobMess
 		err = q.SendMessage(ctx, job)
 	}
 	return err
+}
+
+// failJobClaimExhausted marks a job terminal after its claim lease has been
+// re-claimed claimMaxAttempts times without ever provisioning. The job record
+// now carries identity (run_id, repo) from the lease, so the error status is
+// observable in the admin UI and stale-job recovery instead of looping. The
+// SQS message is dropped by the caller via the alreadyClaimed delete path.
+func failJobClaimExhausted(ctx context.Context, deps EC2WorkerDeps, job *queue.JobMessage) {
+	ec2Log.Error(ctx, "job claim attempts exhausted; marking terminal",
+		slog.Int64(logging.KeyJobID, job.JobID))
+	if deps.DB == nil || !deps.DB.HasJobsTable() {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+	defer cancel()
+	cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+	if err := deps.DB.FailExhaustedClaim(cleanupCtx, job.JobID); err != nil {
+		ec2Log.Error(cleanupCtx, "mark job terminal failed after claim exhaustion",
+			slog.String("error", err.Error()))
+	}
+	if deps.Metrics != nil {
+		_ = deps.Metrics.PublishSchedulingFailure(cleanupCtx, schedulingFailureJobClaim)
+	}
 }

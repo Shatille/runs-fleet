@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +15,28 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
+
+// staleClaimItem builds a DynamoDB item for a job stuck in the claiming state,
+// created far enough in the past to be a dead lease, with the given attempt
+// count. Used to exercise the recoverable-claim worker paths.
+func staleClaimItem(ageBeyondStale time.Duration, retryCount int) map[string]types.AttributeValue {
+	createdAt := time.Now().Add(-(110 * time.Second) - ageBeyondStale)
+	return map[string]types.AttributeValue{
+		"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+		"run_id":      &types.AttributeValueMemberN{Value: "67890"},
+		"repo":        &types.AttributeValueMemberS{Value: "owner/repo"},
+		"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
+		"created_at":  &types.AttributeValueMemberS{Value: createdAt.Format(time.RFC3339)},
+		"retry_count": &types.AttributeValueMemberN{Value: itoa(retryCount)},
+	}
+}
+
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
+}
 
 func TestSelectSubnet(t *testing.T) {
 	tests := []struct {
@@ -1203,6 +1225,125 @@ func TestProcessEC2Message_NoSentAt_SkipsJobWait(t *testing.T) {
 
 	if len(mockMetrics.jobWaits) != 0 {
 		t.Errorf("job_wait emissions = %d, want 0 when SentAt is zero", len(mockMetrics.jobWaits))
+	}
+}
+
+// TestProcessEC2Message_ClaimExhausted_MarksTerminalAndDeletes proves that when
+// the claim lease is exhausted (re-claimed claimMaxAttempts times without ever
+// provisioning), the worker marks the job terminal (UpdateItem -> error) and
+// deletes the SQS message rather than provisioning or looping forever.
+func TestProcessEC2Message_ClaimExhausted_MarksTerminalAndDeletes(t *testing.T) {
+	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
+	jobBytes, _ := json.Marshal(job)
+
+	var terminalStatus string
+	mockDynamo := &mockDynamoForClaim{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			// Already at the attempt cap: ClaimJob must return ErrJobClaimExhausted.
+			return &dynamodb.GetItemOutput{Item: staleClaimItem(time.Minute, 3)}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			// FailExhaustedClaim sets status to error, guarded on a still-claiming
+			// record so a concurrent running job is not clobbered.
+			if v, ok := params.ExpressionAttributeValues[":error"].(*types.AttributeValueMemberS); ok {
+				terminalStatus = v.Value
+			}
+			if params.ConditionExpression == nil || *params.ConditionExpression != "#status = :claiming" {
+				t.Errorf("FailExhaustedClaim must guard the terminal write on a claiming record; condition = %v", params.ConditionExpression)
+			}
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	deleteCount := 0
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+
+	fleetCreated := false
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Fleet:       &fleet.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreated = true
+			return []string{"i-should-not-launch"}, nil
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+	processEC2Message(context.Background(), deps, msg)
+
+	if fleetCreated {
+		t.Error("claim-exhausted job must not provision a fleet")
+	}
+	if terminalStatus != string(db.JobStatusError) {
+		t.Errorf("claim-exhausted job must be marked terminal error; got status %q", terminalStatus)
+	}
+	if deleteCount == 0 {
+		t.Error("claim-exhausted message must be deleted, not redelivered forever")
+	}
+}
+
+// TestProcessEC2Message_StaleReclaim_MessageNotLost is the regression guard for
+// the silent-loss bug: a redelivered message whose claim is a stale lease (not
+// yet at the attempt cap) must re-claim and proceed to provision, NOT be
+// dropped as already-claimed.
+func TestProcessEC2Message_StaleReclaim_MessageNotLost(t *testing.T) {
+	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
+	jobBytes, _ := json.Marshal(job)
+
+	mockDynamo := &mockDynamoForClaim{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			// Stale lease, below the cap: re-claimable.
+			return &dynamodb.GetItemOutput{Item: staleClaimItem(time.Minute, 1)}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	deleteCount := 0
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+
+	fleetCreated := false
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Fleet:       &fleet.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreated = true
+			return []string{"i-123"}, nil
+		},
+		PrepareRunnersFn: func(_ context.Context, _ *queue.JobMessage, _ []string) []string {
+			return nil // preparation succeeds
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+	processEC2Message(context.Background(), deps, msg)
+
+	if !fleetCreated {
+		t.Error("stale-claim redelivery must re-claim and provision, not be dropped as already-claimed")
+	}
+	// jobProcessed path deletes the message exactly once after a successful launch.
+	if deleteCount != 1 {
+		t.Errorf("stale-claim redelivery: message should be deleted once after processing; got %d deletes", deleteCount)
 	}
 }
 
