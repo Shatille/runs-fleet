@@ -81,6 +81,60 @@ func (m *mockLogger) Println(_ ...interface{}) {
 	m.messages = append(m.messages, "println")
 }
 
+// TestDetermineCompletionStatus locks in the operational semantics of the
+// agent's termination status: it reflects whether OUR runner did its job, not
+// whether the client's workflow passed. The ephemeral actions-runner exits 0
+// whenever it operated correctly (we do not set
+// ACTIONS_RUNNER_RETURN_JOB_RESULT_FOR_HOSTED), so exit 0 means we served the
+// job — even when the workflow steps failed — and a non-zero exit means the
+// runner itself failed operationally.
+func TestDetermineCompletionStatus(t *testing.T) {
+	tests := []struct {
+		name          string
+		interruptedBy string
+		exitCode      int
+		want          string
+	}{
+		{
+			name:     "clean exit is success (runner served the job)",
+			exitCode: 0,
+			want:     StatusSuccess,
+		},
+		{
+			name: "clean exit is success even when the workflow steps failed",
+			// run.sh still exits 0 on a red workflow because the listener only
+			// reports its own operational health, not the job conclusion.
+			exitCode: 0,
+			want:     StatusSuccess,
+		},
+		{
+			name:     "non-zero exit is an operational failure",
+			exitCode: 1,
+			want:     StatusFailure,
+		},
+		{
+			name:     "agent crash exit (-1) is an operational failure",
+			exitCode: -1,
+			want:     StatusFailure,
+		},
+		{
+			name:          "interruption takes precedence over exit code",
+			interruptedBy: "spot",
+			exitCode:      1,
+			want:          StatusInterrupted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DetermineCompletionStatus(tt.interruptedBy, tt.exitCode); got != tt.want {
+				t.Errorf("DetermineCompletionStatus(%q, %d) = %q, want %q",
+					tt.interruptedBy, tt.exitCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewTelemetry(t *testing.T) {
 	// Test structure - NewTelemetry creates real SQS client from aws.Config
 	// For unit testing, we create telemetry with mock directly

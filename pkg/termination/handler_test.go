@@ -26,9 +26,10 @@ const (
 	testReceiptTermination = "test-receipt"
 	testStatusSuccess      = string(db.JobStatusSuccess)
 	testRepo               = "octo/repo"
-	testResultSuccess      = "success"
+	testResultServed       = "served"
 	testResultTimeout      = "timeout"
 	testResultError        = "error"
+	testResultInterrupted  = "interrupted"
 )
 
 // mockQueueAPI implements QueueAPI for testing.
@@ -94,8 +95,8 @@ func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time)
 // mockMetricsAPI implements MetricsAPI for testing.
 type mockMetricsAPI struct {
 	completedCalls int
-	successCalls   int
-	failureCalls   int
+	servedCalls    int
+	nonServedCalls int
 	lastResult     string
 	lastPool       string
 	lastRepo       string
@@ -113,10 +114,10 @@ func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, re
 	m.lastResult = result
 	m.lastPool = pool
 	m.lastRepo = repo
-	if result == testResultSuccess {
-		m.successCalls++
+	if result == testResultServed {
+		m.servedCalls++
 	} else {
-		m.failureCalls++
+		m.nonServedCalls++
 	}
 	return m.completedErr
 }
@@ -231,14 +232,14 @@ func TestHandler_processMessage_Success(t *testing.T) {
 		t.Errorf("expected status '%s', got '%s'", testStatusSuccess, db.lastStatus)
 	}
 
-	if metrics.successCalls != 1 {
-		t.Errorf("expected 1 success metric call, got %d", metrics.successCalls)
+	if metrics.servedCalls != 1 {
+		t.Errorf("expected 1 served metric call, got %d", metrics.servedCalls)
 	}
 	if metrics.completedCalls != 1 {
 		t.Errorf("expected 1 completed metric call, got %d", metrics.completedCalls)
 	}
-	if metrics.lastResult != testResultSuccess {
-		t.Errorf("expected result 'success', got %q", metrics.lastResult)
+	if metrics.lastResult != testResultServed {
+		t.Errorf("expected result 'served', got %q", metrics.lastResult)
 	}
 
 	if q.deleteCalls != 1 {
@@ -246,7 +247,11 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	}
 }
 
-func TestHandler_processMessage_Failure(t *testing.T) {
+// A "failure" agent status means the runner/listener exited non-zero, i.e. the
+// runner failed operationally. Because we do not set
+// ACTIONS_RUNNER_RETURN_JOB_RESULT_FOR_HOSTED, the runner never exits non-zero
+// purely from failed workflow steps, so this maps to our operational "error".
+func TestHandler_processMessage_OperationalFailure(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{}
 	metrics := &mockMetricsAPI{}
@@ -276,8 +281,54 @@ func TestHandler_processMessage_Failure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if metrics.failureCalls != 1 {
-		t.Errorf("expected 1 failure metric call, got %d", metrics.failureCalls)
+	if metrics.nonServedCalls != 1 {
+		t.Errorf("expected 1 non-served metric call, got %d", metrics.nonServedCalls)
+	}
+	if metrics.lastResult != testResultError {
+		t.Errorf("expected result 'error' for operational failure, got %q", metrics.lastResult)
+	}
+}
+
+// The load-bearing assertion of the fulfillment principle: a job that the runner
+// ran to completion and that exited cleanly (StatusSuccess) is "served" even when
+// the client's workflow concluded failure. We never derive the result from the
+// workflow conclusion, and the agent's exit-0 status does not carry it. A red
+// workflow on a runner we delivered is still a success for us.
+func TestHandler_processMessage_ServedDespiteFailedWorkflow(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+
+	// Runner ran the job to completion and exited cleanly: the agent reports
+	// "success" regardless of the (failed) workflow steps.
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          "success",
+		ExitCode:        0,
+		DurationSeconds: 60,
+		StartedAt:       time.Now().Add(-1 * time.Minute),
+		CompletedAt:     time.Now(),
+	}
+	body, _ := json.Marshal(msg)
+
+	queueMsg := queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}
+
+	if err := handler.processMessage(context.Background(), queueMsg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.servedCalls != 1 {
+		t.Errorf("expected 1 served metric call, got %d", metrics.servedCalls)
+	}
+	if metrics.lastResult != testResultServed {
+		t.Errorf("expected result 'served', got %q", metrics.lastResult)
 	}
 }
 
@@ -310,8 +361,8 @@ func TestHandler_processMessage_Started(t *testing.T) {
 	if db.completeCalls != 0 {
 		t.Errorf("expected 0 complete calls for 'started' status, got %d", db.completeCalls)
 	}
-	if metrics.successCalls != 0 || metrics.failureCalls != 0 {
-		t.Error("expected no success/failure metrics for 'started' status")
+	if metrics.servedCalls != 0 || metrics.nonServedCalls != 0 {
+		t.Error("expected no completion metrics for 'started' status")
 	}
 }
 
@@ -1022,12 +1073,13 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Interrupted maps to the "error" result.
+	// A spot/infra interruption maps to the operational "interrupted" result,
+	// distinct from "error" (a genuine runner/agent operational failure).
 	if metrics.completedCalls != 1 {
 		t.Errorf("expected 1 completed call for interrupted, got %d", metrics.completedCalls)
 	}
-	if metrics.lastResult != testResultError {
-		t.Errorf("expected result 'error', got %q", metrics.lastResult)
+	if metrics.lastResult != testResultInterrupted {
+		t.Errorf("expected result 'interrupted', got %q", metrics.lastResult)
 	}
 }
 

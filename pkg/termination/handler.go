@@ -49,18 +49,52 @@ type MetricsAPI interface {
 // message-processing latency metric.
 const queueTermination = "termination"
 
-// jobResult maps an agent termination status to the small job-result enum used
-// by the metrics taxonomy (success, failure, error, timeout).
+// Job-result values for the jobs_completed metric. These describe OUR runner's
+// operational lifecycle, never the client workflow's pass/fail conclusion.
+//
+//   - served: the runner ran the job to completion and the runner process exited
+//     cleanly. This is reported even when the client's workflow steps failed: the
+//     ephemeral actions-runner exits 0 whenever it operated correctly, because we
+//     do not set ACTIONS_RUNNER_RETURN_JOB_RESULT_FOR_HOSTED, so a non-zero exit
+//     never reflects a failed workflow step (see jobResult).
+//   - interrupted: the runner was preempted by spot reclamation or other infra
+//     interruption before the job finished.
+//   - timeout: the runner hit the max-runtime ceiling and was terminated.
+//   - error: the runner/agent failed operationally (crash, panic, could not start
+//     or register, or the listener exited non-zero).
+//
+// Success/failure SLA is assignment-based and lives elsewhere: jobs_assigned
+// (we delivered a runner) versus scheduling_failure (we failed to). jobs_completed
+// is operational telemetry only and must never be derived from the workflow
+// conclusion.
+const (
+	resultServed      = "served"
+	resultInterrupted = "interrupted"
+	resultTimeout     = "timeout"
+	resultError       = "error"
+)
+
+// jobResult maps an agent termination status to OUR operational job-result enum
+// ({served, interrupted, error, timeout}). It deliberately does NOT encode the
+// client workflow's pass/fail outcome.
+//
+// The agent derives its termination status from the ephemeral actions-runner's
+// run.sh exit code (pkg/agent: exit 0 -> "success", non-zero -> "failure"). Because
+// we do not set ACTIONS_RUNNER_RETURN_JOB_RESULT_FOR_HOSTED, the runner's listener
+// returns success (exit 0) whenever it operated correctly, regardless of whether
+// the workflow's steps passed or failed. A non-zero exit therefore means the runner
+// itself failed operationally — which is genuinely our "error" — while a clean exit
+// means we served the job to completion ("served"), even on a red workflow.
 func jobResult(status string) string {
 	switch status {
 	case string(db.JobStatusSuccess):
-		return "success"
+		return resultServed
 	case "timeout":
-		return "timeout"
+		return resultTimeout
 	case "interrupted":
-		return "error"
+		return resultInterrupted
 	default:
-		return "failure"
+		return resultError
 	}
 }
 

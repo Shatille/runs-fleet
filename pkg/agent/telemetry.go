@@ -29,7 +29,19 @@ const (
 // Exposed as a variable to allow testing with shorter durations.
 var telemetryRetryBaseDelay = 1 * time.Second
 
-// DetermineCompletionStatus returns the appropriate status based on job result.
+// DetermineCompletionStatus maps a run.sh outcome to the agent's operational
+// termination status. The status describes whether OUR runner did its job, not
+// whether the client's workflow passed.
+//
+// The ephemeral actions-runner's run.sh (Runner.Listener) exits 0 whenever it
+// operated correctly, because we do not set ACTIONS_RUNNER_RETURN_JOB_RESULT_FOR_HOSTED;
+// its exit code never carries the workflow step result. So:
+//   - interruptedBy set: the runner was preempted (spot/infra) -> StatusInterrupted.
+//   - exit 0: the runner ran the job to completion and exited cleanly -> StatusSuccess.
+//     This holds even when the workflow's steps failed; that is the client's outcome,
+//     not ours, and the termination handler maps StatusSuccess to the "served" result.
+//   - non-zero exit: the runner/listener itself failed operationally -> StatusFailure,
+//     which the termination handler maps to the operational "error" result.
 func DetermineCompletionStatus(interruptedBy string, exitCode int) string {
 	if interruptedBy != "" {
 		return StatusInterrupted
