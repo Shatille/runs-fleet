@@ -1234,7 +1234,10 @@ func TestProcessEC2Message_NoSentAt_SkipsJobWait(t *testing.T) {
 // deletes the SQS message rather than provisioning or looping forever.
 func TestProcessEC2Message_ClaimExhausted_MarksTerminalAndDeletes(t *testing.T) {
 	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
-	jobBytes, _ := json.Marshal(job)
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("failed to marshal job: %v", err)
+	}
 
 	var terminalStatus string
 	mockDynamo := &mockDynamoForClaim{
@@ -1290,6 +1293,58 @@ func TestProcessEC2Message_ClaimExhausted_MarksTerminalAndDeletes(t *testing.T) 
 	}
 	if deleteCount == 0 {
 		t.Error("claim-exhausted message must be deleted, not redelivered forever")
+	}
+}
+
+// TestProcessEC2Message_ClaimExhausted_TerminalWriteFails_KeepsMessage proves
+// that when the terminal write fails on claim exhaustion, the SQS message is
+// NOT deleted: deleting it while the record is still claiming would strand the
+// job, so it must be left for redelivery to retry the transition.
+func TestProcessEC2Message_ClaimExhausted_TerminalWriteFails_KeepsMessage(t *testing.T) {
+	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("failed to marshal job: %v", err)
+	}
+
+	mockDynamo := &mockDynamoForClaim{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			// Already at the attempt cap: ClaimJob must return ErrJobClaimExhausted.
+			return &dynamodb.GetItemOutput{Item: staleClaimItem(time.Minute, 3)}, nil
+		},
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			// FailExhaustedClaim cannot persist the terminal status.
+			return nil, errors.New("dynamo unavailable")
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	deleteCount := 0
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Fleet:       &fleet.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return []string{"i-should-not-launch"}, nil
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+	processEC2Message(context.Background(), deps, msg)
+
+	if deleteCount != 0 {
+		t.Errorf("message must be kept for redelivery when terminal write fails; got %d delete(s)", deleteCount)
 	}
 }
 
