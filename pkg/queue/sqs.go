@@ -71,12 +71,20 @@ func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
 	}
 
 	if strings.HasSuffix(c.queueURL, ".fifo") {
-		if job.RunID == 0 {
-			return fmt.Errorf("run ID is required for FIFO message grouping")
+		if job.JobID == 0 {
+			return fmt.Errorf("job ID is required for FIFO message grouping")
 		}
+		// Group by job_id, not run_id. A run's jobs (matrix legs, otherwise
+		// independent jobs) are enqueued together but have no per-run ordering
+		// requirement: stepped jobs (needs:) are gated by GitHub and never
+		// enqueued concurrently. Grouping by run_id would serialize all of a
+		// run's jobs through one FIFO lane and let a single stuck/poison job
+		// head-of-line-block its siblings. Grouping by job_id keeps them
+		// parallel and isolated. run_id remains in the message body for other
+		// uses; the dedup id stays per (job_id, retry_count).
 		dedupKey := fmt.Sprintf("%d-%d", job.JobID, job.RetryCount)
 		hash := sha256.Sum256([]byte(dedupKey))
-		input.MessageGroupId = aws.String(fmt.Sprintf("%d", job.RunID))
+		input.MessageGroupId = aws.String(fmt.Sprintf("%d", job.JobID))
 		input.MessageDeduplicationId = aws.String(hex.EncodeToString(hash[:]))
 	}
 
