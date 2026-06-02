@@ -4136,3 +4136,133 @@ func TestNotifyPoolDemand_NonBlocking(t *testing.T) {
 		t.Error("NotifyPoolDemand blocked when channel was full")
 	}
 }
+
+// stoppedReplenishInstances builds a DescribeInstances snapshot with the given
+// number of running (ready, none busy) and stopped instances for a warm pool.
+func stoppedReplenishInstances(running, stopped int) *ec2.DescribeInstancesOutput {
+	instances := make([]ec2types.Instance, 0, running+stopped)
+	for i := 0; i < running; i++ {
+		instances = append(instances, ec2types.Instance{
+			InstanceId:   aws.String(fmt.Sprintf("i-running%d", i)),
+			InstanceType: ec2types.InstanceTypeT3Medium,
+			State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+		})
+	}
+	for i := 0; i < stopped; i++ {
+		instances = append(instances, ec2types.Instance{
+			InstanceId:   aws.String(fmt.Sprintf("i-stopped%d", i)),
+			InstanceType: ec2types.InstanceTypeT3Medium,
+			State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+		})
+	}
+	return &ec2.DescribeInstancesOutput{
+		Reservations: []ec2types.Reservation{{Instances: instances}},
+	}
+}
+
+// TestReconcilePoolStoppedReplenishCreditsSameCycleStops verifies that the
+// stopped-replenish deficit credits instances stopped into the reserve during
+// the same reconcile pass, instead of over-creating from the stale snapshot.
+func TestReconcilePoolStoppedReplenishCreditsSameCycleStops(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		running        int
+		stopped        int
+		desiredStopped int
+		wantStopped    int
+		wantCreated    int
+	}{
+		{
+			// Prod scenario: snapshot stopped=5, ready=8, desired_stopped=15.
+			// Stop 8 (reserve becomes 5+8=13), create only 15-13=2.
+			name:           "credits same-cycle stops against deficit",
+			running:        8,
+			stopped:        5,
+			desiredStopped: 15,
+			wantStopped:    8,
+			wantCreated:    2,
+		},
+		{
+			// Same-cycle stops alone meet/exceed the reserve target.
+			name:           "no create when stops already fill reserve",
+			running:        10,
+			stopped:        5,
+			desiredStopped: 15,
+			wantStopped:    10,
+			wantCreated:    0,
+		},
+		{
+			// Legitimate replenish path: nothing to stop, full deficit created.
+			name:           "creates full deficit when nothing to stop",
+			running:        0,
+			stopped:        5,
+			desiredStopped: 15,
+			wantStopped:    0,
+			wantCreated:    10,
+		},
+		{
+			// Clamp: same-cycle stops overshoot the target, deficit never negative.
+			name:           "deficit clamps to zero",
+			running:        20,
+			stopped:        5,
+			desiredStopped: 15,
+			wantStopped:    10, // stop capped at desiredStopped-stopped=10
+			wantCreated:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var created, stopped int
+
+			mockDB := &MockDBClient{
+				ListPoolsFunc: func(_ context.Context) ([]string, error) {
+					return []string{"test-pool"}, nil
+				},
+				GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+					return &db.PoolConfig{
+						DesiredRunning: 0,
+						DesiredStopped: tt.desiredStopped,
+						InstanceType:   "t3.medium",
+					}, nil
+				},
+			}
+
+			mockFleet := &MockFleetAPI{
+				CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+					created++
+					return testInstanceNewID, nil
+				},
+			}
+
+			mockEC2 := &MockEC2API{
+				DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+					return stoppedReplenishInstances(tt.running, tt.stopped), nil
+				},
+				StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+					stopped += len(params.InstanceIds)
+					return &ec2.StopInstancesOutput{}, nil
+				},
+			}
+
+			manager := NewManager(mockDB, mockFleet, &config.Config{
+				SubnetIDs: []string{"subnet-1"},
+			})
+			manager.SetEC2Client(mockEC2)
+
+			manager.reconcile(context.Background())
+
+			if stopped != tt.wantStopped {
+				t.Errorf("stopped = %d, want %d", stopped, tt.wantStopped)
+			}
+			if created != tt.wantCreated {
+				t.Errorf("created = %d, want %d", created, tt.wantCreated)
+			}
+		})
+	}
+}

@@ -492,9 +492,14 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			}
 		}
 	} else if stopped < desiredStopped && desiredRunning == 0 {
-		// Need more stopped instances for warm/ephemeral pools (desiredRunning=0, desiredStopped>0)
-		deficit := desiredStopped - stopped
-		created += m.createPoolFleetInstances(ctx, poolName, "stopped_replenish", deficit, poolConfig)
+		// Need more stopped instances for warm/ephemeral pools (desiredRunning=0, desiredStopped>0).
+		// Credit instances stopped into the reserve during this same pass: stoppedCount
+		// instances are joining the stopped reserve but EC2 still reports them as running
+		// in the snapshot, so creating against the stale stopped count over-provisions.
+		deficit := desiredStopped - stopped - stoppedCount
+		if deficit > 0 {
+			created += m.createPoolFleetInstances(ctx, poolName, "stopped_replenish", deficit, poolConfig)
+		}
 	}
 
 	// Log reconciliation only when changes occurred
