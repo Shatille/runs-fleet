@@ -52,6 +52,12 @@ type Config struct {
 	RunnerImage        string            // Container image for EC2 runners (ECR URL)
 	Tags               map[string]string // Custom tags for EC2 resources
 
+	// Cost-attribution tag keys. The values are fixed ("runs-fleet" / "runner");
+	// only the key names are configurable so a fork with a different tag policy can
+	// remap them (e.g. "cost:application").
+	TagKeyApplication string // Tag key for the fixed "runs-fleet" value (default: "Application")
+	TagKeyService     string // Tag key for the fixed "runner" value (default: "Service")
+
 	CacheSecret    string
 	CacheURL       string
 	AdminSecret    string
@@ -140,6 +146,8 @@ func Load() (*Config, error) {
 		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:               make(map[string]string),
+		TagKeyApplication:  getEnv("RUNS_FLEET_TAG_KEY_APPLICATION", "Application"),
+		TagKeyService:      getEnv("RUNS_FLEET_TAG_KEY_SERVICE", "Service"),
 
 		CacheSecret:    getEnv("RUNS_FLEET_CACHE_SECRET", ""),
 		CacheURL:       getEnv("RUNS_FLEET_CACHE_URL", ""),
@@ -452,12 +460,15 @@ func parseTags(s string) (map[string]string, error) {
 
 func validateTags(tags map[string]string) error {
 	const (
-		// AWS EC2 allows 50 tags max. System adds up to 9 tags:
+		// AWS EC2 allows 50 tags max. System adds these tags:
 		// - Name (always)
 		// - runs-fleet:run-id (always)
 		// - runs-fleet:managed (always)
+		// - Application (always; key configurable)
+		// - Service (always; key configurable)
 		// - runs-fleet:pool (conditional)
 		// - runs-fleet:arch (conditional)
+		// - Role (conditional)
 		// - runs-fleet:runner-image (conditional)
 		// - runs-fleet:termination-queue-url (conditional)
 		// - runs-fleet:cache-url (conditional)

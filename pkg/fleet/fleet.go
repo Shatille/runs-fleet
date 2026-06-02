@@ -659,6 +659,20 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		})
 	}
 
+	// Cost-attribution tags. Values are fixed; only the key names are
+	// configurable so a fork with a different tag policy can remap them. Empty
+	// config keys fall back to the defaults so runner instances are always tagged.
+	tags = append(tags,
+		types.Tag{
+			Key:   aws.String(m.applicationTagKey()),
+			Value: aws.String("runs-fleet"),
+		},
+		types.Tag{
+			Key:   aws.String(m.serviceTagKey()),
+			Value: aws.String("runner"),
+		},
+	)
+
 	// Add container config tags for bootstrap script
 	if m.config.RunnerImage != "" {
 		tags = append(tags, types.Tag{
@@ -731,6 +745,24 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 	}
 
 	return tags
+}
+
+// applicationTagKey returns the tag key for the fixed "runs-fleet" application
+// value, defaulting to "Application" when not configured.
+func (m *Manager) applicationTagKey() string {
+	if m.config.TagKeyApplication != "" {
+		return m.config.TagKeyApplication
+	}
+	return "Application"
+}
+
+// serviceTagKey returns the tag key for the fixed "runner" service value,
+// defaulting to "Service" when not configured.
+func (m *Manager) serviceTagKey() string {
+	if m.config.TagKeyService != "" {
+		return m.config.TagKeyService
+	}
+	return "Service"
 }
 
 // getPrimaryInstanceType returns the primary instance type to use.
