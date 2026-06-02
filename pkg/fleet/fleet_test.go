@@ -39,6 +39,7 @@ type mockEC2Client struct {
 	DescribeSpotPriceHistoryFunc      func(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferingsFunc func(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstancesFunc             func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	DescribeSubnetsFunc               func(ctx context.Context, params *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
 	RunInstancesFunc                  func(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 }
 
@@ -111,6 +112,22 @@ func (m *mockEC2Client) DescribeInstances(ctx context.Context, params *ec2.Descr
 		return m.DescribeInstancesFunc(ctx, params, optFns...)
 	}
 	return &ec2.DescribeInstancesOutput{}, nil
+}
+
+func (m *mockEC2Client) DescribeSubnets(ctx context.Context, params *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if m.DescribeSubnetsFunc != nil {
+		return m.DescribeSubnetsFunc(ctx, params, optFns...)
+	}
+	// Default: map each requested subnet to a distinct AZ (one subnet per AZ),
+	// so callers that supply 1:1 subnet/AZ topologies see no deduplication.
+	subnets := make([]types.Subnet, 0, len(params.SubnetIds))
+	for i, id := range params.SubnetIds {
+		subnets = append(subnets, types.Subnet{
+			SubnetId:         aws.String(id),
+			AvailabilityZone: aws.String(fmt.Sprintf("az-%d", i)),
+		})
+	}
+	return &ec2.DescribeSubnetsOutput{Subnets: subnets}, nil
 }
 
 func (m *mockEC2Client) RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
@@ -2111,5 +2128,210 @@ func TestConfigureOnDemandRequest_MultiSubnet(t *testing.T) {
 		if gotSubnets[s] == 0 {
 			t.Errorf("on-demand subnet %q has no override; want every configured subnet represented (got %v)", s, gotSubnets)
 		}
+	}
+}
+
+// prodSubnetAZTopology mirrors the deployment that triggered InvalidFleetConfig:
+// 6 subnets across only 3 AZs (2 subnets per AZ).
+var prodSubnetAZTopology = map[string]string{
+	"subnet-99ade5d0":          "ap-northeast-1a",
+	"subnet-05686e9cb53980a93": "ap-northeast-1a",
+	"subnet-ce901495":          "ap-northeast-1c",
+	"subnet-0c8bdeba7584c6c53": "ap-northeast-1c",
+	"subnet-fe0827d6":          "ap-northeast-1d",
+	"subnet-090998be165241ea9": "ap-northeast-1d",
+}
+
+func subnetAZMock(topology map[string]string, calls *int) *mockEC2Client {
+	return &mockEC2Client{
+		DescribeSubnetsFunc: func(_ context.Context, params *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+			if calls != nil {
+				*calls++
+			}
+			out := make([]types.Subnet, 0, len(params.SubnetIds))
+			for _, id := range params.SubnetIds {
+				az, ok := topology[id]
+				if !ok {
+					continue
+				}
+				out = append(out, types.Subnet{
+					SubnetId:         aws.String(id),
+					AvailabilityZone: aws.String(az),
+				})
+			}
+			return &ec2.DescribeSubnetsOutput{Subnets: out}, nil
+		},
+	}
+}
+
+func TestSubnetsOnePerAZ_DeduplicatesByAZ(t *testing.T) {
+	topology := map[string]string{
+		"s1": "az-a",
+		"s2": "az-a",
+		"s3": "az-c",
+		"s4": "az-d",
+	}
+	m := &Manager{ec2Client: subnetAZMock(topology, nil), config: &config.Config{}}
+
+	got := m.subnetsOnePerAZ(context.Background(), []string{"s1", "s2", "s3", "s4"})
+
+	// One subnet per AZ, first-seen wins, input order preserved.
+	want := []string{"s1", "s3", "s4"}
+	if len(got) != len(want) {
+		t.Fatalf("subnetsOnePerAZ() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("subnetsOnePerAZ() = %v, want %v (order/selection mismatch)", got, want)
+		}
+	}
+}
+
+func TestSubnetsOnePerAZ_DescribeFailsFallsBackToRawList(t *testing.T) {
+	m := &Manager{
+		ec2Client: &mockEC2Client{
+			DescribeSubnetsFunc: func(_ context.Context, _ *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+				return nil, errors.New("describe subnets boom")
+			},
+		},
+		config: &config.Config{},
+	}
+
+	in := []string{"s1", "s2", "s3"}
+	got := m.subnetsOnePerAZ(context.Background(), in)
+
+	if len(got) != len(in) {
+		t.Fatalf("on DescribeSubnets failure, subnetsOnePerAZ() = %v, want raw list %v", got, in)
+	}
+	for i := range in {
+		if got[i] != in[i] {
+			t.Fatalf("on DescribeSubnets failure, subnetsOnePerAZ() = %v, want raw list %v", got, in)
+		}
+	}
+}
+
+func TestSubnetsOnePerAZ_CachesAZResolution(t *testing.T) {
+	calls := 0
+	m := &Manager{ec2Client: subnetAZMock(prodSubnetAZTopology, &calls), config: &config.Config{}}
+
+	subnets := []string{
+		"subnet-99ade5d0", "subnet-05686e9cb53980a93",
+		"subnet-ce901495", "subnet-0c8bdeba7584c6c53",
+		"subnet-fe0827d6", "subnet-090998be165241ea9",
+	}
+	for i := 0; i < 5; i++ {
+		_ = m.subnetsOnePerAZ(context.Background(), subnets)
+	}
+
+	if calls != 1 {
+		t.Fatalf("DescribeSubnets called %d times across repeated resolution; want 1 (cached)", calls)
+	}
+}
+
+func TestSubnetsOnePerAZ_EdgeCases(t *testing.T) {
+	m := &Manager{ec2Client: subnetAZMock(prodSubnetAZTopology, nil), config: &config.Config{}}
+
+	if got := m.subnetsOnePerAZ(context.Background(), nil); got != nil {
+		t.Errorf("nil subnets: got %v, want nil", got)
+	}
+	if got := m.subnetsOnePerAZ(context.Background(), []string{}); len(got) != 0 {
+		t.Errorf("empty subnets: got %v, want empty", got)
+	}
+	single := []string{"subnet-99ade5d0"}
+	if got := m.subnetsOnePerAZ(context.Background(), single); len(got) != 1 || got[0] != single[0] {
+		t.Errorf("single subnet: got %v, want %v", got, single)
+	}
+}
+
+// TestBuildFleetRequest_NoDuplicateTypeAZPools is the regression test for the
+// production InvalidFleetConfig error: 6 subnets across 3 AZs must not yield two
+// overrides sharing the same (instanceType, AZ) pool.
+func TestBuildFleetRequest_NoDuplicateTypeAZPools(t *testing.T) {
+	subnets := []string{
+		"subnet-99ade5d0", "subnet-05686e9cb53980a93",
+		"subnet-ce901495", "subnet-0c8bdeba7584c6c53",
+		"subnet-fe0827d6", "subnet-090998be165241ea9",
+	}
+
+	for _, useSpot := range []bool{true, false} {
+		t.Run(map[bool]string{true: "spot", false: "on_demand"}[useSpot], func(t *testing.T) {
+			m := &Manager{ec2Client: subnetAZMock(prodSubnetAZTopology, nil), config: &config.Config{}}
+			spec := &LaunchSpec{
+				Arch:          "arm64",
+				InstanceType:  "c7g.xlarge",
+				InstanceTypes: []string{"c7g.xlarge", "c7g.2xlarge", "m7g.xlarge"},
+				SubnetIDs:     subnets,
+				SubnetID:      subnets[0],
+			}
+
+			req, err := m.buildFleetRequest(context.Background(), spec, useSpot, nil)
+			if err != nil {
+				t.Fatalf("buildFleetRequest() error = %v", err)
+			}
+
+			seen := make(map[string]string) // (type|AZ) -> subnet
+			for _, cfg := range req.LaunchTemplateConfigs {
+				for _, o := range cfg.Overrides {
+					subnet := aws.ToString(o.SubnetId)
+					az := prodSubnetAZTopology[subnet]
+					key := string(o.InstanceType) + "|" + az
+					if prev, dup := seen[key]; dup {
+						t.Fatalf("duplicate instance pool (type=%s, az=%s) from subnets %q and %q; CreateFleet rejects this",
+							o.InstanceType, az, prev, subnet)
+					}
+					seen[key] = subnet
+				}
+			}
+
+			// Sanity: every AZ is still represented (one subnet per AZ).
+			gotAZs := make(map[string]bool)
+			for _, cfg := range req.LaunchTemplateConfigs {
+				for _, o := range cfg.Overrides {
+					gotAZs[prodSubnetAZTopology[aws.ToString(o.SubnetId)]] = true
+				}
+			}
+			if len(gotAZs) != 3 {
+				t.Errorf("overrides span %d AZs %v, want all 3 AZs represented", len(gotAZs), gotAZs)
+			}
+		})
+	}
+}
+
+// TestCreateOnDemandInstance_DedupesSubnetsByAZ verifies the warm-pool RunInstances
+// path does not iterate redundant same-AZ subnets.
+func TestCreateOnDemandInstance_DedupesSubnetsByAZ(t *testing.T) {
+	var triedSubnets []string
+	mock := subnetAZMock(prodSubnetAZTopology, nil)
+	mock.RunInstancesFunc = func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+		triedSubnets = append(triedSubnets, aws.ToString(params.SubnetId))
+		return nil, &mockAPIError{code: "InsufficientInstanceCapacity", message: "no capacity"}
+	}
+	m := &Manager{ec2Client: mock, config: &config.Config{}}
+
+	spec := &LaunchSpec{
+		Arch:         "arm64",
+		InstanceType: "c7g.xlarge",
+		SubnetIDs: []string{
+			"subnet-99ade5d0", "subnet-05686e9cb53980a93",
+			"subnet-ce901495", "subnet-0c8bdeba7584c6c53",
+			"subnet-fe0827d6", "subnet-090998be165241ea9",
+		},
+	}
+
+	_, err := m.CreateOnDemandInstance(context.Background(), spec)
+	if err == nil {
+		t.Fatal("expected capacity error after exhausting all AZs")
+	}
+
+	if len(triedSubnets) != 3 {
+		t.Fatalf("RunInstances tried %d subnets %v; want one per AZ (3)", len(triedSubnets), triedSubnets)
+	}
+	azSeen := make(map[string]bool)
+	for _, s := range triedSubnets {
+		az := prodSubnetAZTopology[s]
+		if azSeen[az] {
+			t.Fatalf("AZ %s retried with a second same-AZ subnet; subnets tried: %v", az, triedSubnets)
+		}
+		azSeen[az] = true
 	}
 }
