@@ -1354,7 +1354,10 @@ func TestProcessEC2Message_ClaimExhausted_TerminalWriteFails_KeepsMessage(t *tes
 // dropped as already-claimed.
 func TestProcessEC2Message_StaleReclaim_MessageNotLost(t *testing.T) {
 	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
-	jobBytes, _ := json.Marshal(job)
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("failed to marshal job: %v", err)
+	}
 
 	mockDynamo := &mockDynamoForClaim{
 		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
