@@ -66,8 +66,15 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	}
 
 	if p.DB != nil && p.DB.HasJobsTable() {
-		if err := p.DB.ClaimJob(ctx, job.JobID); err != nil {
+		if err := p.DB.ClaimJob(ctx, job.JobID, job.RunID, job.Repo); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
+				return false
+			}
+			if errors.Is(err, db.ErrJobClaimExhausted) {
+				// Lease exhausted. Defer to the always-enqueued SQS copy, whose
+				// worker marks the job terminal and drops the message. Keeping the
+				// terminal transition on the queue path avoids duplicating it here.
+				directLog.Error(ctx, "job claim attempts exhausted; deferring terminal handling to queue")
 				return false
 			}
 			directLog.Warn(ctx, "job claim failed, deferring to queue",

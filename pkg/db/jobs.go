@@ -19,6 +19,29 @@ import (
 // ErrJobAlreadyClaimed is returned when attempting to claim a job that is already being processed.
 var ErrJobAlreadyClaimed = errors.New("job already claimed")
 
+// ErrJobClaimExhausted is returned when a job's claim has been re-claimed
+// claimMaxAttempts times without ever reaching the running state. The job is
+// almost certainly unprovisionable; the caller must mark it terminal and stop
+// redelivering rather than let the lease re-claim forever.
+var ErrJobClaimExhausted = errors.New("job claim attempts exhausted")
+
+// claimStaleThreshold is the age past which a record stuck in the claiming
+// state is treated as a dead lease and may be re-claimed. A worker that dies
+// between ClaimJob and SaveJob (SIGTERM, OOM, wedged AWS call) would otherwise
+// leak a permanent claiming stub that poisons every redelivery.
+//
+// It sits above MessageProcessTimeout (90s) so a live worker mid-provision is
+// never preempted, and below the main queue's SQS visibility timeout (120s) so
+// the first redelivery of the message finds the lease already expired and
+// re-claims it, instead of seeing a fresh claim and dropping the message.
+const claimStaleThreshold = 100 * time.Second
+
+// claimMaxAttempts caps how many times a single job may be (re-)claimed before
+// it is declared terminally unprovisionable. The first claim is attempt 1; each
+// stale re-claim increments the count. Kept in line with the worker's
+// maxJobRetries on-demand fallback budget so a job fails hard rather than loops.
+const claimMaxAttempts = 3
+
 // jobRecord represents a job stored in DynamoDB.
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
@@ -112,10 +135,28 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	return nil
 }
 
-// ClaimJob atomically claims a job for processing using conditional write.
-// Returns ErrJobAlreadyClaimed if the job is already being processed.
-// Uses job_id as primary key to track claims.
-func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
+// ClaimJob atomically claims a job for processing as a self-expiring lease.
+//
+// The claim persists the job's identity (runID, repo) so the record is never a
+// detail-less stub: ExecuteStaleJobs can query GitHub for it, and a requeue can
+// reconstruct the job. A claim is re-claimable when the prior record is in the
+// requeued/terminating states, or when it is a stale claiming lease (a worker
+// died between ClaimJob and SaveJob, leaving a claiming record older than
+// claimStaleThreshold).
+//
+// Concurrency is compare-and-swap on the observed created_at: the existing
+// record is read, then the write is conditioned on attribute_not_exists(job_id)
+// OR created_at = :observed. Two workers re-claiming the same stale lease pin
+// the same observed created_at, so exactly one PutItem succeeds and the loser
+// gets ErrJobAlreadyClaimed — no double-claim.
+//
+// Re-claim is bounded: each stale re-claim increments retry_count, and once it
+// reaches claimMaxAttempts the job is declared terminally unprovisionable and
+// ErrJobClaimExhausted is returned instead of re-claiming forever.
+//
+// Returns ErrJobAlreadyClaimed if the job is already claimed by a live worker
+// (fresh lease) or if a concurrent re-claim won the race.
+func (c *Client) ClaimJob(ctx context.Context, jobID, runID int64, repo string) error {
 	if jobID == 0 {
 		return fmt.Errorf("job ID cannot be zero")
 	}
@@ -124,10 +165,104 @@ func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("jobs table not configured")
 	}
 
+	existing, err := c.getClaimRecord(ctx, jobID)
+	if err != nil {
+		return err
+	}
+
+	attempts, reclaim, err := c.evaluateClaim(existing)
+	if err != nil {
+		return err
+	}
+
+	return c.writeClaim(ctx, jobID, runID, repo, attempts, reclaim)
+}
+
+// claimState holds the fields of an existing job record relevant to re-claiming.
+type claimState struct {
+	status     string
+	createdAt  string
+	retryCount int
+}
+
+func (c *Client) getClaimRecord(ctx context.Context, jobID int64) (*claimState, error) {
+	key, err := attributevalue.MarshalMap(map[string]int64{"job_id": jobID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	output, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.jobsTable),
+		Key:       key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read existing claim: %w", err)
+	}
+	if output.Item == nil {
+		return nil, nil
+	}
+
+	var record jobRecord
+	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal existing claim: %w", err)
+	}
+
+	return &claimState{
+		status:     record.Status,
+		createdAt:  record.CreatedAt,
+		retryCount: record.RetryCount,
+	}, nil
+}
+
+// evaluateClaim decides whether a (possibly nil) existing record may be claimed.
+// It returns the attempt count to persist on the new claim, the created_at to
+// pin in the conditional write ("" when no record was observed), or an error
+// (ErrJobAlreadyClaimed / ErrJobClaimExhausted) when the claim must be rejected.
+func (c *Client) evaluateClaim(existing *claimState) (attempts int, observedCreatedAt string, err error) {
+	if existing == nil {
+		// Brand-new job: first claim, no record to compare-and-swap against.
+		return 1, "", nil
+	}
+
+	switch JobStatus(existing.status) {
+	case JobStatusRequeued, JobStatusTerminating:
+		// Legitimate redelivery (spot interruption, requeue). Re-claim, preserving
+		// the existing attempt count: these are not unprovisionable retries.
+		return existing.retryCount, existing.createdAt, nil
+	case JobStatusClaiming:
+		if !c.claimIsStale(existing.createdAt) {
+			// A live worker holds a fresh lease; do not preempt it.
+			return 0, "", ErrJobAlreadyClaimed
+		}
+		if existing.retryCount >= claimMaxAttempts {
+			return 0, "", ErrJobClaimExhausted
+		}
+		return existing.retryCount + 1, existing.createdAt, nil
+	default:
+		// running, completed, failed, error, orphaned, etc.: not re-claimable.
+		return 0, "", ErrJobAlreadyClaimed
+	}
+}
+
+// claimIsStale reports whether a claiming record's created_at is older than the
+// lease threshold. An unparseable timestamp is treated as stale so a corrupt
+// lease can never strand a job permanently.
+func (c *Client) claimIsStale(createdAt string) bool {
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(t) >= claimStaleThreshold
+}
+
+func (c *Client) writeClaim(ctx context.Context, jobID, runID int64, repo string, attempts int, observedCreatedAt string) error {
 	record := jobRecord{
-		JobID:     jobID,
-		Status:    string(JobStatusClaiming),
-		CreatedAt: time.Now().Format(time.RFC3339),
+		JobID:      jobID,
+		RunID:      runID,
+		Repo:       repo,
+		RetryCount: attempts,
+		Status:     string(JobStatusClaiming),
+		CreatedAt:  time.Now().Format(time.RFC3339),
 	}
 
 	item, err := attributevalue.MarshalMap(record)
@@ -135,24 +270,76 @@ func (c *Client) ClaimJob(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("failed to marshal claim record: %w", err)
 	}
 
-	_, err = c.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName:           aws.String(c.jobsTable),
-		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(job_id) OR #status IN (:requeued, :terminating)"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":requeued":    &types.AttributeValueMemberS{Value: string(JobStatusRequeued)},
-			":terminating": &types.AttributeValueMemberS{Value: string(JobStatusTerminating)},
-		},
-	})
-	if err != nil {
+	input := &dynamodb.PutItemInput{
+		TableName: aws.String(c.jobsTable),
+		Item:      item,
+	}
+
+	if observedCreatedAt == "" {
+		// No record was observed: only claim if one still does not exist. Guards
+		// against a concurrent claimer that wrote between our read and this write.
+		input.ConditionExpression = aws.String("attribute_not_exists(job_id)")
+	} else {
+		// Compare-and-swap: claim only if the record still carries the created_at
+		// we read. A concurrent re-claimer that already overwrote it changes
+		// created_at, so its competitor's condition fails.
+		input.ConditionExpression = aws.String("attribute_not_exists(job_id) OR created_at = :observed_created_at")
+		input.ExpressionAttributeValues = map[string]types.AttributeValue{
+			":observed_created_at": &types.AttributeValueMemberS{Value: observedCreatedAt},
+		}
+	}
+
+	if _, err := c.dynamoClient.PutItem(ctx, input); err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
 			return ErrJobAlreadyClaimed
 		}
 		return fmt.Errorf("failed to claim job: %w", err)
+	}
+
+	return nil
+}
+
+// FailExhaustedClaim marks an exhausted claim terminal (status "error").
+//
+// The write is conditioned on the record still being in the claiming state, so
+// a slow prior worker whose SaveJob lands (status "running") concurrently is
+// not clobbered — matching the guarded transition used by stale-job recovery. A
+// ConditionalCheckFailedException means the job advanced under us and is left
+// untouched; it is treated as success.
+func (c *Client) FailExhaustedClaim(ctx context.Context, jobID int64) error {
+	if jobID == 0 {
+		return fmt.Errorf("job ID cannot be zero")
+	}
+	if c.jobsTable == "" {
+		return fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{"job_id": jobID})
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           aws.String(c.jobsTable),
+		Key:                 key,
+		UpdateExpression:    aws.String("SET #status = :error, completed_at = :completed_at"),
+		ConditionExpression: aws.String("#status = :claiming"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":error":        &types.AttributeValueMemberS{Value: string(JobStatusError)},
+			":claiming":     &types.AttributeValueMemberS{Value: string(JobStatusClaiming)},
+			":completed_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil
+		}
+		return fmt.Errorf("failed to mark claim exhausted: %w", err)
 	}
 
 	return nil

@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,10 +19,29 @@ import (
 
 // mockDynamoForClaim implements db.DynamoDBAPI, recording the context seen by
 // DeleteItem so tests can assert the claim cleanup runs on a live context.
+// GetItem/UpdateItem are stubbed because ClaimJob reads the existing record
+// before its compare-and-swap and the claim-exhausted path marks the job
+// terminal via UpdateItem; both default to empty results unless overridden.
 type mockDynamoForClaim struct {
 	db.DynamoDBAPI
-	deleteCalled  bool
-	deleteCtxDone bool
+	GetItemFunc    func(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	UpdateItemFunc func(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	deleteCalled   bool
+	deleteCtxDone  bool
+}
+
+func (m *mockDynamoForClaim) GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	if m.GetItemFunc != nil {
+		return m.GetItemFunc(ctx, params, optFns...)
+	}
+	return &dynamodb.GetItemOutput{}, nil
+}
+
+func (m *mockDynamoForClaim) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	if m.UpdateItemFunc != nil {
+		return m.UpdateItemFunc(ctx, params, optFns...)
+	}
+	return &dynamodb.UpdateItemOutput{}, nil
 }
 
 func (m *mockDynamoForClaim) PutItem(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
@@ -177,7 +195,7 @@ func TestDirectProcessor_ZeroValues(t *testing.T) {
 }
 
 func TestProcessJobDirect_WarmPoolFailureLogCarriesPoolName(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	captureCtxLogs(t, &buf)
 
 	mockDynamo := &mockDynamoForClaim{}
