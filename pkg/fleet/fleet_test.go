@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +13,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 const testInstanceID = "i-123456789"
+
+// mockAPIError implements smithy.APIError so tests can exercise the
+// capacity-error classification path.
+type mockAPIError struct {
+	code    string
+	message string
+}
+
+func (e *mockAPIError) Error() string                 { return e.message }
+func (e *mockAPIError) ErrorCode() string             { return e.code }
+func (e *mockAPIError) ErrorMessage() string          { return e.message }
+func (e *mockAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultUnknown }
 
 //nolint:dupl // Intentionally mirrors EC2API interface for testing
 type mockEC2Client struct {
@@ -1442,6 +1456,188 @@ func TestCreateOnDemandInstance(t *testing.T) {
 			t.Errorf("error = %q, want error containing 'no instance created'", err)
 		}
 	})
+}
+
+func TestCreateOnDemandInstance_AZFallback(t *testing.T) {
+	t.Run("Advances to next subnet on capacity exhaustion", func(t *testing.T) {
+		spec := &LaunchSpec{
+			RunID:        12345,
+			InstanceType: "c8g.xlarge",
+			SubnetID:     "subnet-1",
+			SubnetIDs:    []string{"subnet-1", "subnet-2"},
+			Pool:         "default",
+			Arch:         "arm64",
+		}
+		var attemptedSubnets []string
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				subnet := aws.ToString(params.SubnetId)
+				attemptedSubnets = append(attemptedSubnets, subnet)
+				if subnet == "subnet-1" {
+					return nil, &mockAPIError{code: "InsufficientInstanceCapacity", message: "insufficient capacity"}
+				}
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
+				}, nil
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		instanceID, err := manager.CreateOnDemandInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if instanceID != testInstanceID {
+			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
+		}
+		if len(attemptedSubnets) != 2 {
+			t.Fatalf("expected 2 RunInstances attempts, got %d (%v)", len(attemptedSubnets), attemptedSubnets)
+		}
+		if attemptedSubnets[0] != "subnet-1" || attemptedSubnets[1] != "subnet-2" {
+			t.Errorf("attempted subnets = %v, want [subnet-1 subnet-2]", attemptedSubnets)
+		}
+	})
+
+	t.Run("Returns last error when all subnets exhausted", func(t *testing.T) {
+		spec := &LaunchSpec{
+			RunID:        12345,
+			InstanceType: "c8g.xlarge",
+			SubnetID:     "subnet-1",
+			SubnetIDs:    []string{"subnet-1", "subnet-2", "subnet-3"},
+			Pool:         "default",
+			Arch:         "arm64",
+		}
+		var attemptedSubnets []string
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				subnet := aws.ToString(params.SubnetId)
+				attemptedSubnets = append(attemptedSubnets, subnet)
+				return nil, &mockAPIError{code: "InsufficientInstanceCapacity", message: "no capacity in " + subnet}
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
+		if err == nil {
+			t.Fatal("expected error when all subnets exhausted, got nil")
+		}
+		if len(attemptedSubnets) != 3 {
+			t.Errorf("expected all 3 subnets attempted, got %d (%v)", len(attemptedSubnets), attemptedSubnets)
+		}
+		if !strings.Contains(err.Error(), "subnet-3") {
+			t.Errorf("error = %q, want last subnet (subnet-3) error surfaced", err)
+		}
+	})
+
+	t.Run("Fails fast on non-capacity error without rotating", func(t *testing.T) {
+		spec := &LaunchSpec{
+			RunID:        12345,
+			InstanceType: "c8g.xlarge",
+			SubnetID:     "subnet-1",
+			SubnetIDs:    []string{"subnet-1", "subnet-2"},
+			Pool:         "default",
+			Arch:         "arm64",
+		}
+		var attemptedSubnets []string
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				attemptedSubnets = append(attemptedSubnets, aws.ToString(params.SubnetId))
+				return nil, &mockAPIError{code: "UnauthorizedOperation", message: "not authorized"}
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		_, err := manager.CreateOnDemandInstance(context.Background(), spec)
+		if err == nil {
+			t.Fatal("expected error on non-capacity failure, got nil")
+		}
+		if len(attemptedSubnets) != 1 {
+			t.Errorf("expected exactly 1 attempt (no rotation), got %d (%v)", len(attemptedSubnets), attemptedSubnets)
+		}
+	})
+
+	t.Run("Empty SubnetIDs falls back to single SubnetID", func(t *testing.T) {
+		spec := &LaunchSpec{
+			RunID:        12345,
+			InstanceType: "t4g.medium",
+			SubnetID:     "subnet-only",
+			Pool:         "default",
+			Arch:         "arm64",
+		}
+		var attemptedSubnets []string
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				attemptedSubnets = append(attemptedSubnets, aws.ToString(params.SubnetId))
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
+				}, nil
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+
+		instanceID, err := manager.CreateOnDemandInstance(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if instanceID != testInstanceID {
+			t.Errorf("instanceID = %q, want %q", instanceID, testInstanceID)
+		}
+		if len(attemptedSubnets) != 1 || attemptedSubnets[0] != "subnet-only" {
+			t.Errorf("attempted subnets = %v, want [subnet-only]", attemptedSubnets)
+		}
+	})
+}
+
+func TestIsCapacityError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{
+			name: "InsufficientInstanceCapacity APIError",
+			err:  &mockAPIError{code: "InsufficientInstanceCapacity", message: "We currently do not have sufficient capacity"},
+			want: true,
+		},
+		{
+			name: "Unsupported APIError (type not available in AZ)",
+			err:  &mockAPIError{code: "Unsupported", message: "instance type not supported in this AZ"},
+			want: true,
+		},
+		{
+			name: "InsufficientCapacity APIError",
+			err:  &mockAPIError{code: "InsufficientCapacity", message: "no capacity"},
+			want: true,
+		},
+		{
+			name: "substring fallback on plain error",
+			err:  errors.New("RunInstances failed: insufficient capacity in az-1"),
+			want: true,
+		},
+		{
+			name: "wrapped APIError",
+			err:  fmt.Errorf("run instance: %w", &mockAPIError{code: "InsufficientInstanceCapacity", message: "x"}),
+			want: true,
+		},
+		{
+			name: "unrelated APIError",
+			err:  &mockAPIError{code: "UnauthorizedOperation", message: "not authorized"},
+			want: false,
+		},
+		{
+			name: "unrelated plain error",
+			err:  errors.New("bad config"),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCapacityError(tt.err); got != tt.want {
+				t.Errorf("isCapacityError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestCreateOnDemandInstance_ArchAutoDetection(t *testing.T) {
