@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
@@ -15,7 +16,29 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/runner"
 )
 
-func captureCtxLogs(t *testing.T, buf *bytes.Buffer) {
+// syncBuffer is a goroutine-safe log sink. These tests swap the global slog
+// default to a captured buffer; a worker-loop goroutine that outlives its test
+// (the tests start the loop with `go` and only cancel on return) can still emit
+// a shutdown log through that swapped-in default, so the buffer must tolerate a
+// concurrent late write while the reader scans it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureCtxLogs(t *testing.T, buf *syncBuffer) {
 	t.Helper()
 	inner := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	slog.SetDefault(slog.New(logging.NewContextHandler(inner)))
@@ -24,7 +47,7 @@ func captureCtxLogs(t *testing.T, buf *bytes.Buffer) {
 	})
 }
 
-func recordsWithMsg(t *testing.T, buf *bytes.Buffer, msg string) []string {
+func recordsWithMsg(t *testing.T, buf *syncBuffer, msg string) []string {
 	t.Helper()
 	var lines []string
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
@@ -48,7 +71,7 @@ func recordsWithMsg(t *testing.T, buf *bytes.Buffer, msg string) []string {
 // (PrepareRunner no longer re-stashes it). job_id is supplied by the upstream
 // consumer's ContextWithJob.
 func TestWarmPoolAssignLogsCarryIdentityNoDuplicate(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	captureCtxLogs(t, &buf)
 
 	const instanceID = "i-ctxlog789"
@@ -113,7 +136,7 @@ func TestWarmPoolAssignLogsCarryIdentityNoDuplicate(t *testing.T) {
 // runner manager's config logs (fetching token / storing config / config
 // stored) carry instance_id on every path, not just the warm-pool path.
 func TestPrepareRunnersLogsCarryInstanceID(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	captureCtxLogs(t, &buf)
 
 	const instanceID = "i-coldstart42"

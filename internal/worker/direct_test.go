@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -196,7 +195,7 @@ func TestDirectProcessor_ZeroValues(t *testing.T) {
 }
 
 func TestProcessJobDirect_WarmPoolFailureLogCarriesPoolName(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	captureCtxLogs(t, &buf)
 
 	mockDynamo := &mockDynamoForClaim{}
