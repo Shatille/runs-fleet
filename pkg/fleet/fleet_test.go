@@ -992,6 +992,40 @@ func TestBuildTags(t *testing.T) {
 				"runs-fleet:cache-url",
 			},
 		},
+		{
+			name:   "Cost-attribution tags default with empty config keys",
+			config: &config.Config{},
+			spec: &LaunchSpec{
+				RunID: 12345,
+				Repo:  "org/myapp",
+			},
+			wantTags: map[string]string{
+				"Name":               "runs-fleet-runner-myapp",
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+				"Role":               "org/myapp",
+				"Application":        "runs-fleet",
+				"Service":            "runner",
+			},
+		},
+		{
+			name: "Cost-attribution tags use configured custom keys with fixed values",
+			config: &config.Config{
+				TagKeyApplication: "cost:application",
+				TagKeyService:     "cost:service",
+			},
+			spec: &LaunchSpec{
+				RunID: 12345,
+			},
+			wantTags: map[string]string{
+				"Name":               "runs-fleet-runner",
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+				"cost:application":   "runs-fleet",
+				"cost:service":       "runner",
+			},
+			wantAbsent: []string{"Application", "Service"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1022,6 +1056,124 @@ func TestBuildTags(t *testing.T) {
 			}
 		})
 	}
+}
+
+// tagSpecMap flattens the instance TagSpecifications into a key->value map.
+func tagSpecMap(t *testing.T, specs []types.TagSpecification) map[string]string {
+	t.Helper()
+	out := make(map[string]string)
+	for _, ts := range specs {
+		if ts.ResourceType != types.ResourceTypeInstance {
+			continue
+		}
+		for _, tag := range ts.Tags {
+			out[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+		}
+	}
+	return out
+}
+
+// TestCostAttributionTagsCoverBothPaths asserts the Application/Service cost
+// tags reach the AWS request layer for both runner-creation paths: cold-start
+// CreateFleet (TagSpecifications + the CreateTags fallback) and warm-pool
+// CreateOnDemandInstance (RunInstances TagSpecifications).
+func TestCostAttributionTagsCoverBothPaths(t *testing.T) {
+	assertCostTags := func(t *testing.T, tags map[string]string) {
+		t.Helper()
+		if got := tags["Application"]; got != "runs-fleet" {
+			t.Errorf("Application tag = %q, want %q", got, "runs-fleet")
+		}
+		if got := tags["Service"]; got != "runner" {
+			t.Errorf("Service tag = %q, want %q", got, "runner")
+		}
+	}
+
+	t.Run("cold-start CreateFleet", func(t *testing.T) {
+		var fleetTagSpecs []types.TagSpecification
+		var createTagsTags []types.Tag
+		mock := &mockEC2Client{
+			CreateFleetFunc: func(_ context.Context, params *ec2.CreateFleetInput, _ ...func(*ec2.Options)) (*ec2.CreateFleetOutput, error) {
+				fleetTagSpecs = params.TagSpecifications
+				return &ec2.CreateFleetOutput{
+					Instances: []types.CreateFleetInstance{{InstanceIds: []string{testInstanceID}}},
+				}, nil
+			},
+			CreateTagsFunc: func(_ context.Context, params *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+				createTagsTags = params.Tags
+				return &ec2.CreateTagsOutput{}, nil
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{SpotEnabled: true}}
+		spec := &LaunchSpec{RunID: 1, InstanceType: "t4g.medium", SubnetID: "subnet-1", Spot: true, Pool: "test"}
+
+		if _, err := manager.CreateFleet(context.Background(), spec); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		assertCostTags(t, tagSpecMap(t, fleetTagSpecs))
+
+		createTagsMap := make(map[string]string)
+		for _, tag := range createTagsTags {
+			createTagsMap[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+		}
+		assertCostTags(t, createTagsMap)
+	})
+
+	t.Run("warm-pool CreateOnDemandInstance", func(t *testing.T) {
+		var runTagSpecs []types.TagSpecification
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				runTagSpecs = params.TagSpecifications
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
+				}, nil
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{LaunchTemplateName: "runs-fleet-runner"}}
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+
+		if _, err := manager.CreateOnDemandInstance(context.Background(), spec); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		assertCostTags(t, tagSpecMap(t, runTagSpecs))
+	})
+
+	t.Run("custom configured keys reach RunInstances", func(t *testing.T) {
+		var runTagSpecs []types.TagSpecification
+		mock := &mockEC2Client{
+			RunInstancesFunc: func(_ context.Context, params *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+				runTagSpecs = params.TagSpecifications
+				return &ec2.RunInstancesOutput{
+					Instances: []types.Instance{{InstanceId: aws.String(testInstanceID)}},
+				}, nil
+			},
+		}
+		manager := &Manager{ec2Client: mock, config: &config.Config{
+			LaunchTemplateName: "runs-fleet-runner",
+			TagKeyApplication:  "cost:application",
+			TagKeyService:      "cost:service",
+		}}
+		spec := &LaunchSpec{RunID: 12345, InstanceType: "t4g.medium", SubnetID: "subnet-1", Pool: "default", Arch: "arm64"}
+
+		if _, err := manager.CreateOnDemandInstance(context.Background(), spec); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		tags := tagSpecMap(t, runTagSpecs)
+		if got := tags["cost:application"]; got != "runs-fleet" {
+			t.Errorf("cost:application tag = %q, want %q", got, "runs-fleet")
+		}
+		if got := tags["cost:service"]; got != "runner" {
+			t.Errorf("cost:service tag = %q, want %q", got, "runner")
+		}
+		if _, exists := tags["Application"]; exists {
+			t.Error("default Application tag should not exist when custom key configured")
+		}
+		if _, exists := tags["Service"]; exists {
+			t.Error("default Service tag should not exist when custom key configured")
+		}
+	})
 }
 
 func TestGetPrimaryInstanceType(t *testing.T) {

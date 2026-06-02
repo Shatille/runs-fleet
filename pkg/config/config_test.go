@@ -119,6 +119,75 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadCostAttributionTagKeys(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	baseEnv := map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+	}
+
+	tests := []struct {
+		name               string
+		extraEnv           map[string]string
+		wantApplicationKey string
+		wantServiceKey     string
+	}{
+		{
+			name:               "defaults when unset",
+			extraEnv:           nil,
+			wantApplicationKey: "Application",
+			wantServiceKey:     "Service",
+		},
+		{
+			name: "custom keys override defaults",
+			extraEnv: map[string]string{
+				"RUNS_FLEET_TAG_KEY_APPLICATION": "cost:application",
+				"RUNS_FLEET_TAG_KEY_SERVICE":     "cost:service",
+			},
+			wantApplicationKey: "cost:application",
+			wantServiceKey:     "cost:service",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			for k, v := range baseEnv {
+				_ = os.Setenv(k, v)
+			}
+			for k, v := range tt.extraEnv {
+				_ = os.Setenv(k, v)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.TagKeyApplication != tt.wantApplicationKey {
+				t.Errorf("TagKeyApplication = %q, want %q", cfg.TagKeyApplication, tt.wantApplicationKey)
+			}
+			if cfg.TagKeyService != tt.wantServiceKey {
+				t.Errorf("TagKeyService = %q, want %q", cfg.TagKeyService, tt.wantServiceKey)
+			}
+		})
+	}
+}
+
 // TestLoadIgnoresMetricsNamespaceEnv asserts the removed RUNS_FLEET_METRICS_NAMESPACE
 // knob is no longer read: setting it must not affect config loading, and the
 // fixed metric prefixes are owned by the metrics package, not config.

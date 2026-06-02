@@ -52,6 +52,8 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |
+| `RUNS_FLEET_TAG_KEY_APPLICATION` | `Application` | Tag key for the fixed `runs-fleet` cost-attribution value |
+| `RUNS_FLEET_TAG_KEY_SERVICE` | `Service` | Tag key for the fixed `runner` cost-attribution value |
 
 ## Cache
 
