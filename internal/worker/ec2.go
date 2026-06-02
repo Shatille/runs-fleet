@@ -39,6 +39,11 @@ const (
 	sourceWarmPool            = "warm_pool"
 	sourceColdStart           = "cold_start"
 	schedulingFailureJobClaim = "job_claim"
+	// schedulingFailureFleetCreate is emitted when fleet creation fails and the
+	// job is not eligible for an on-demand fallback requeue (already on-demand, or
+	// the retry cap is reached): we have given up on assigning a runner, so the
+	// failure side of the fulfillment SLA must record it.
+	schedulingFailureFleetCreate = "fleet_create"
 
 	// requeueReasonOnDemandFallback is emitted when the ec2-worker re-enqueues a
 	// spot job as on-demand after fleet creation fails.
@@ -294,6 +299,20 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 
 		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {
 			handleOnDemandFallback(ctx, deps, &job, msg.Handle)
+			return
+		}
+
+		// Not eligible for an on-demand fallback (already on-demand, or the retry
+		// cap is reached): we are giving up on assigning a runner for this request.
+		// Record the failure side of the fulfillment SLA. The SQS message is left
+		// for redelivery / DLQ as before; this only makes the give-up observable.
+		if deps.Metrics != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+			if err := deps.Metrics.PublishSchedulingFailure(cleanupCtx, schedulingFailureFleetCreate); err != nil {
+				ec2Log.Error(cleanupCtx, "scheduling failure metric failed", slog.String("error", err.Error()))
+			}
+			cancel()
 		}
 		return
 	}

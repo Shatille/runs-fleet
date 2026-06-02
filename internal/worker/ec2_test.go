@@ -1127,6 +1127,111 @@ func TestProcessEC2Message_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T
 	}
 }
 
+// TestProcessEC2Message_FleetCreateGiveUp_EmitsSchedulingFailure proves that when
+// fleet creation fails and the job is NOT eligible for an on-demand fallback
+// (here: already on-demand), the worker records the failure side of the
+// fulfillment SLA. This give-up path was previously silent: the job was dropped
+// for redelivery/DLQ with no scheduling_failure emission.
+func TestProcessEC2Message_FleetCreateGiveUp_EmitsSchedulingFailure(t *testing.T) {
+	origFleetDelay := FleetRetryBaseDelay
+	defer func() { FleetRetryBaseDelay = origFleetDelay }()
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	// On-demand job (Spot=false): not eligible for the on-demand fallback requeue,
+	// so a fleet-create failure is a terminal give-up.
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Spot:         false,
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	mockDynamo := &mockDynamoForClaim{}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       &fleet.Manager{},
+		Metrics:     mockMetrics,
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("fleet creation failed")
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+	processEC2Message(context.Background(), deps, msg)
+
+	if mockMetrics.schedulingFailures != 1 {
+		t.Fatalf("scheduling_failure emissions = %d, want 1", mockMetrics.schedulingFailures)
+	}
+	if got := mockMetrics.schedulingFailureTypes[0]; got != schedulingFailureFleetCreate {
+		t.Errorf("scheduling_failure type = %q, want %q", got, schedulingFailureFleetCreate)
+	}
+	if mockMetrics.requeuedReason != "" {
+		t.Errorf("an ineligible job must not be requeued; got requeue reason %q", mockMetrics.requeuedReason)
+	}
+}
+
+// TestProcessEC2Message_FleetCreateFallback_NoSchedulingFailure proves the
+// complement: when fleet creation fails on a spot job under the retry cap, the
+// job is requeued as on-demand (a recovery, not a give-up) and no
+// scheduling_failure is emitted.
+func TestProcessEC2Message_FleetCreateFallback_NoSchedulingFailure(t *testing.T) {
+	origRetryDelay := RetryDelay
+	origFleetDelay := FleetRetryBaseDelay
+	defer func() {
+		RetryDelay = origRetryDelay
+		FleetRetryBaseDelay = origFleetDelay
+	}()
+	RetryDelay = 1 * time.Millisecond
+	FleetRetryBaseDelay = 1 * time.Millisecond
+
+	// Spot job under the retry cap: eligible for the on-demand fallback requeue.
+	job := queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Spot:         true,
+		RetryCount:   0,
+	}
+	jobBytes, _ := json.Marshal(job)
+
+	mockDynamo := &mockDynamoForClaim{}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       &fleet.Manager{},
+		Metrics:     mockMetrics,
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("spot capacity unavailable")
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+	processEC2Message(context.Background(), deps, msg)
+
+	if mockMetrics.schedulingFailures != 0 {
+		t.Errorf("a requeued (recoverable) fleet failure must not emit scheduling_failure; got %d", mockMetrics.schedulingFailures)
+	}
+	if mockMetrics.requeuedReason != requeueReasonOnDemandFallback {
+		t.Errorf("requeue reason = %q, want %q", mockMetrics.requeuedReason, requeueReasonOnDemandFallback)
+	}
+}
+
 // TestProcessEC2Message_WarmPoolHit_EmitsJobWait proves a warm-pool assignment
 // emits the enqueue->assignment latency tagged with the pool and warm_pool
 // source, computed from the message SentAt.

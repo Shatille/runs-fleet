@@ -21,11 +21,19 @@ type Publisher interface {
 	PublishJobEnqueued(ctx context.Context, pool, arch, capacity, repo string) error
 
 	// PublishJobAssigned increments jobs_assigned_total when a job is assigned to
-	// compute. source is warm_pool or cold_start.
+	// compute. source is warm_pool or cold_start. This is the success side of the
+	// fulfillment SLA: it counts every request for which we delivered a runner. Its
+	// failure counterpart is PublishSchedulingFailure.
 	PublishJobAssigned(ctx context.Context, pool, source, repo string) error
 
 	// PublishJobCompleted increments jobs_completed_total when a job finishes.
-	// result is success, failure, error, or timeout.
+	// result is OUR runner's operational lifecycle: served, interrupted, error, or
+	// timeout. served means the runner ran the job to completion and exited cleanly,
+	// regardless of whether the client's workflow steps passed or failed. result is
+	// never derived from the GitHub workflow conclusion — whether the workflow
+	// succeeds or fails is the client's concern, not ours. The fulfillment SLA is
+	// assignment-based (PublishJobAssigned vs PublishSchedulingFailure), not this
+	// counter.
 	PublishJobCompleted(ctx context.Context, pool, result, repo string) error
 
 	// PublishJobRequeued increments jobs_requeued_total when a job is re-queued.
@@ -124,7 +132,11 @@ type Publisher interface {
 	PublishHousekeepingAction(ctx context.Context, action string, count int) error
 
 	// PublishSchedulingFailure increments a scheduling failure counter with a task
-	// type dimension.
+	// type dimension. This is the failure side of the fulfillment SLA: it counts
+	// every request for which we gave up on assigning a runner for any reason
+	// (capacity exhaustion with no fallback, claim exhaustion, an already-claimed
+	// discard, a housekeeping task that could not schedule). Its success counterpart
+	// is PublishJobAssigned. It must never reflect a client workflow's pass/fail.
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
 
 	// PublishMessageDeletionFailure increments a message deletion failure counter

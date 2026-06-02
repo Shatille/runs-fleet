@@ -286,7 +286,10 @@ func (p *DirectProcessor) failTerminal(ctx context.Context, job *queue.JobMessag
 			slog.String("error", err.Error()))
 	}
 	if p.Metrics != nil {
-		if err := p.Metrics.PublishSchedulingFailure(cleanupCtx, schedulingFailureJobClaim); err != nil {
+		// failTerminal is reached only from recoverFleetFailure, i.e. a fleet-create
+		// give-up with no eligible fallback. Tag it accordingly so the failure SLA
+		// reason matches the ec2-worker's equivalent give-up.
+		if err := p.Metrics.PublishSchedulingFailure(cleanupCtx, schedulingFailureFleetCreate); err != nil {
 			directLog.Error(cleanupCtx, "scheduling failure metric failed", slog.String("error", err.Error()))
 		}
 	}

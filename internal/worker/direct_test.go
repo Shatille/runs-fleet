@@ -239,6 +239,9 @@ func TestProcessJobDirect_FleetFailure_AtRetryCap_MarksTerminal(t *testing.T) {
 	if mockMetrics.schedulingFailures == 0 {
 		t.Error("terminal give-up must emit a scheduling-failure metric so the drop is visible")
 	}
+	if got := mockMetrics.schedulingFailureTypes[0]; got != schedulingFailureFleetCreate {
+		t.Errorf("fleet-create give-up scheduling_failure type = %q, want %q", got, schedulingFailureFleetCreate)
+	}
 }
 
 // TestProcessJobDirect_FleetFailure_ForceOnDemand_MarksTerminal proves a job that

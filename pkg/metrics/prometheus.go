@@ -90,11 +90,11 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		}, []string{"pool", "arch", "capacity", "repo"}),
 		jobsAssigned: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "jobs_assigned_total",
-			Help: "Total number of jobs assigned to compute",
+			Help: "Jobs for which we delivered a runner (success side of the fulfillment SLA; failure side is scheduling_failure_total)",
 		}, []string{"pool", "source", "repo"}),
 		jobsCompleted: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "jobs_completed_total",
-			Help: "Total number of jobs completed",
+			Help: "Jobs finished, by our runner's operational result (served, interrupted, error, timeout); never the client workflow's pass/fail",
 		}, []string{"pool", "result", "repo"}),
 		jobsRequeued: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "jobs_requeued_total",
@@ -195,7 +195,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		}, []string{"action"}),
 		schedulingFailure: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "scheduling_failure_total",
-			Help: "Total number of scheduling failures",
+			Help: "Requests for which we gave up assigning a runner (failure side of the fulfillment SLA; success side is jobs_assigned_total)",
 		}, []string{"task_type"}),
 		messageDeletionFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "message_deletion_failures_total",
