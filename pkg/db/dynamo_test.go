@@ -2167,18 +2167,21 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(1),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-30 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-20 * time.Minute).Format(time.RFC3339),
 					})
 					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(2),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-25 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
 					})
 					item3, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(3),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-22 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-12 * time.Minute).Format(time.RFC3339),
 					})
@@ -2197,12 +2200,14 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(1),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-55 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-5 * time.Minute).Format(time.RFC3339),
 					})
 					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(2),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-50 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-10 * time.Minute).Format(time.RFC3339),
 					})
@@ -2231,12 +2236,14 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 					item1, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(1),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-30 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-25 * time.Minute).Format(time.RFC3339),
 					})
 					item2, _ := attributevalue.MarshalMap(map[string]interface{}{
 						"job_id":       int64(2),
 						"pool":         "test-pool",
+						"status":       string(JobStatusSuccess),
 						"created_at":   now.Add(-20 * time.Minute).Format(time.RFC3339),
 						"completed_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
 					})
@@ -2263,6 +2270,122 @@ func TestGetPoolP90Concurrency(t *testing.T) {
 				return
 			}
 			if !tt.wantErr && p90 != tt.wantP90 {
+				t.Errorf("GetPoolP90Concurrency() = %d, want %d", p90, tt.wantP90)
+			}
+		})
+	}
+}
+
+// p90JobItem builds a marshaled jobs-table item for P90 concurrency tests.
+func p90JobItem(id int64, status JobStatus, createdAgo, completedAgo time.Duration, now time.Time) map[string]types.AttributeValue {
+	fields := map[string]interface{}{
+		"job_id":     id,
+		"pool":       "test-pool",
+		"status":     string(status),
+		"created_at": now.Add(-createdAgo).Format(time.RFC3339),
+	}
+	// completedAgo == 0 means the job has no completed_at (still in-flight or abandoned).
+	if completedAgo != 0 {
+		fields["completed_at"] = now.Add(-completedAgo).Format(time.RFC3339)
+	}
+	item, _ := attributevalue.MarshalMap(fields)
+	return item
+}
+
+// TestGetPoolP90Concurrency_IncompleteRecords verifies that only jobs that
+// actually occupied an instance contribute to the concurrency estimate. Records
+// that never ran (claiming) or are terminal-without-completion (failed, error,
+// requeued) must not inflate p90, and an abandoned running record older than the
+// runtime cap must not count for the whole window.
+func TestGetPoolP90Concurrency_IncompleteRecords(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	tests := []struct {
+		name    string
+		items   []map[string]types.AttributeValue
+		wantP90 int
+	}{
+		{
+			name: "claiming record without completed_at is excluded",
+			items: []map[string]types.AttributeValue{
+				// Never started a runner: would otherwise count from -55m to now.
+				p90JobItem(1, JobStatusClaiming, 55*time.Minute, 0, now),
+			},
+			wantP90: 0,
+		},
+		{
+			name: "terminal-without-completion records are excluded",
+			items: []map[string]types.AttributeValue{
+				p90JobItem(1, JobStatusError, 55*time.Minute, 0, now),
+				p90JobItem(2, JobStatusFailed, 50*time.Minute, 0, now),
+				p90JobItem(3, JobStatusRequeued, 45*time.Minute, 0, now),
+				p90JobItem(4, JobStatusSuccess, 40*time.Minute, 0, now),
+			},
+			wantP90: 0,
+		},
+		{
+			name: "recent running record without completed_at counts to now",
+			items: []map[string]types.AttributeValue{
+				// In-flight for the whole window: sustained concurrency of 1.
+				p90JobItem(1, JobStatusRunning, 55*time.Minute, 0, now),
+			},
+			wantP90: 1,
+		},
+		{
+			name: "running record older than runtime cap is excluded",
+			items: []map[string]types.AttributeValue{
+				// Created well beyond maxConcurrencyRuntime ago: abandoned, not occupying capacity.
+				p90JobItem(1, JobStatusRunning, maxConcurrencyRuntime+time.Hour, 0, now),
+			},
+			wantP90: 0,
+		},
+		{
+			name: "completed record counts over its real interval",
+			items: []map[string]types.AttributeValue{
+				p90JobItem(1, JobStatusSuccess, 55*time.Minute, 5*time.Minute, now),
+			},
+			wantP90: 1,
+		},
+		{
+			name: "mixed real running jobs and stale stubs reflects only real jobs",
+			items: func() []map[string]types.AttributeValue {
+				var items []map[string]types.AttributeValue
+				// Two genuinely in-flight jobs spanning the window: real concurrency 2.
+				items = append(items, p90JobItem(100, JobStatusRunning, 58*time.Minute, 0, now))
+				items = append(items, p90JobItem(101, JobStatusRunning, 57*time.Minute, 0, now))
+				// Many stale claim/error/requeued stubs with no completed_at: must not inflate.
+				for i := int64(0); i < 16; i++ {
+					items = append(items, p90JobItem(200+i, JobStatusClaiming, 50*time.Minute, 0, now))
+					items = append(items, p90JobItem(400+i, JobStatusError, 45*time.Minute, 0, now))
+					items = append(items, p90JobItem(600+i, JobStatusRequeued, 40*time.Minute, 0, now))
+				}
+				return items
+			}(),
+			wantP90: 2, // Only the two real running jobs count, not the ~48 stubs.
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mock := &MockDynamoDBAPI{
+				QueryFunc: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+					return &dynamodb.QueryOutput{Items: tt.items}, nil
+				},
+			}
+			client := &Client{
+				dynamoClient: mock,
+				jobsTable:    "jobs-table",
+			}
+
+			p90, err := client.GetPoolP90Concurrency(context.Background(), "test-pool", 1)
+			if err != nil {
+				t.Fatalf("GetPoolP90Concurrency() error = %v", err)
+			}
+			if p90 != tt.wantP90 {
 				t.Errorf("GetPoolP90Concurrency() = %d, want %d", p90, tt.wantP90)
 			}
 		})

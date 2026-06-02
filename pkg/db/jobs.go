@@ -81,6 +81,7 @@ type JobRecord struct {
 type JobHistoryEntry struct {
 	JobID       int64
 	Pool        string
+	Status      JobStatus
 	CreatedAt   time.Time
 	CompletedAt time.Time // Zero value if still running
 }
@@ -719,6 +720,7 @@ func parseJobHistoryItems(items []map[string]types.AttributeValue) []JobHistoryE
 		var record struct {
 			JobID       int64  `dynamodbav:"job_id"`
 			Pool        string `dynamodbav:"pool"`
+			Status      string `dynamodbav:"status"`
 			CreatedAt   string `dynamodbav:"created_at"`
 			CompletedAt string `dynamodbav:"completed_at"`
 		}
@@ -727,8 +729,9 @@ func parseJobHistoryItems(items []map[string]types.AttributeValue) []JobHistoryE
 		}
 
 		entry := JobHistoryEntry{
-			JobID: record.JobID,
-			Pool:  record.Pool,
+			JobID:  record.JobID,
+			Pool:   record.Pool,
+			Status: JobStatus(record.Status),
 		}
 
 		if record.CreatedAt != "" {
@@ -748,10 +751,41 @@ func parseJobHistoryItems(items []map[string]types.AttributeValue) []JobHistoryE
 	return entries
 }
 
+// maxConcurrencyRuntime bounds how long a job without a recorded completion may
+// be counted as occupying an instance. It mirrors housekeeping's orphanedJobThreshold
+// (2h): the configured job ceiling is RUNS_FLEET_MAX_RUNTIME_MINUTES (default 360, but
+// realistic jobs run minutes), plus headroom for spot-interruption re-queue delays.
+// An active record older than this is treated as abandoned (its completion message was
+// lost or its instance is gone) rather than in-flight, so it cannot inflate concurrency
+// across the whole window.
+const maxConcurrencyRuntime = 2 * time.Hour
+
+// occupiesInstance reports whether a job that has not recorded a completion is still
+// genuinely running on an instance. Only active statuses (running, terminating) created
+// within maxConcurrencyRuntime count; claim stubs, terminal-without-completion records,
+// and abandoned active records do not occupy capacity.
+func occupiesInstance(status JobStatus, createdAt, now time.Time) bool {
+	switch status {
+	case JobStatusRunning, JobStatusTerminating:
+		return now.Sub(createdAt) < maxConcurrencyRuntime
+	default:
+		return false
+	}
+}
+
 // GetPoolP90Concurrency calculates the 90th percentile of concurrent jobs
 // for a pool within the specified time window (in hours).
 // This is more cost-effective than peak for scaling stopped instances,
 // as it tolerates occasional bursts falling back to cold-start.
+//
+// Only jobs that actually occupied an instance contribute an interval:
+//   - completed_at set: counted over [created_at, completed_at] (it ran and finished).
+//   - completed_at empty + active status (running/terminating) created within
+//     maxConcurrencyRuntime: counted over [created_at, now] (genuinely in-flight).
+//   - everything else (claiming stubs, terminal-without-completion, abandoned active
+//     records): excluded. Counting these inflated p90 and over-provisioned stopped
+//     instances.
+//
 // Returns 0 if no jobs found or on error.
 func (c *Client) GetPoolP90Concurrency(ctx context.Context, poolName string, windowHours int) (int, error) {
 	if windowHours <= 0 {
@@ -780,12 +814,16 @@ func (c *Client) GetPoolP90Concurrency(ctx context.Context, poolName string, win
 		if job.CreatedAt.IsZero() {
 			continue
 		}
-		events = append(events, event{time: job.CreatedAt, delta: 1})
 
 		endTime := job.CompletedAt
 		if endTime.IsZero() {
+			if !occupiesInstance(job.Status, job.CreatedAt, now) {
+				continue
+			}
 			endTime = now
 		}
+
+		events = append(events, event{time: job.CreatedAt, delta: 1})
 		events = append(events, event{time: endTime, delta: -1})
 	}
 
