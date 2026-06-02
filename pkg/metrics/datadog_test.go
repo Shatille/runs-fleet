@@ -25,14 +25,6 @@ func TestNewDatadogPublisher(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "custom namespace",
-			cfg: DatadogConfig{
-				Address:   addr,
-				Namespace: "custom_namespace",
-			},
-			wantErr: false,
-		},
-		{
 			name: "with tags",
 			cfg: DatadogConfig{
 				Address: addr,
@@ -89,10 +81,7 @@ func TestDatadogPublisher_PublishMethods(t *testing.T) {
 	addr, cleanup := startUDPServer(t)
 	defer cleanup()
 
-	pub, err := NewDatadogPublisher(DatadogConfig{
-		Address:   addr,
-		Namespace: "test",
-	})
+	pub, err := NewDatadogPublisher(DatadogConfig{Address: addr})
 	if err != nil {
 		t.Fatalf("NewDatadogPublisher() error = %v", err)
 	}
@@ -154,21 +143,21 @@ func TestDatadogPublisher_PublishMethods(t *testing.T) {
 	}
 }
 
-func TestDatadogPublisher_DefaultNamespace(t *testing.T) {
+// TestDatadogPublisher_FixedNamespace asserts the namespace is fixed at
+// datadogNamespace and is not influenced by DatadogConfig (the override knob is
+// gone), guarding against metric-name collisions across deployments.
+func TestDatadogPublisher_FixedNamespace(t *testing.T) {
 	addr, cleanup := startUDPServer(t)
 	defer cleanup()
 
-	pub, err := NewDatadogPublisher(DatadogConfig{
-		Address:   addr,
-		Namespace: "",
-	})
+	pub, err := NewDatadogPublisher(DatadogConfig{Address: addr})
 	if err != nil {
 		t.Fatalf("NewDatadogPublisher() error = %v", err)
 	}
 	defer func() { _ = pub.Close() }()
 
-	if pub.namespace != defaultDatadogNamespace {
-		t.Errorf("namespace = %s, want %s", pub.namespace, defaultDatadogNamespace)
+	if pub.namespace != datadogNamespace {
+		t.Errorf("namespace = %s, want %s", pub.namespace, datadogNamespace)
 	}
 }
 

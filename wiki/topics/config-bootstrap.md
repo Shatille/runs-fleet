@@ -48,7 +48,7 @@ Note: the file header says the package "manages application configuration from e
   - **K8s:** `KubeConfig`, `KubeNamespace`, `KubeServiceAccount`, `KubeNodeSelector`, `KubeTolerations`, `KubeRunnerImage`, `KubeIdleTimeoutMinutes`, `KubeReleaseName`, `KubeStorageClass`, `KubeResourceLabels`.
   - **K8s DinD:** `KubeDindImage`, `KubeDaemonJSONConfigMap`, `KubeDockerWaitSeconds`, `KubeDockerGroupGID`, `KubeRegistryMirror`.
   - **Valkey:** `ValkeyAddr`, `ValkeyPassword`, `ValkeyDB`.
-  - **Metrics:** `MetricsNamespace`, `MetricsCloudWatchEnabled`, `MetricsPrometheusEnabled`, `MetricsPrometheusPath`, `MetricsDatadogEnabled`, `MetricsDatadogAddr`, `MetricsDatadogTags`, `MetricsDatadogSampleRate`, `MetricsDatadogBufferPoolSize`, `MetricsDatadogWorkersCount`, `MetricsDatadogMaxMsgsPerPayload`.
+  - **Metrics:** `MetricsCloudWatchEnabled`, `MetricsPrometheusEnabled`, `MetricsPrometheusPath`, `MetricsDatadogEnabled`, `MetricsDatadogAddr`, `MetricsDatadogTags`, `MetricsDatadogSampleRate`, `MetricsDatadogBufferPoolSize`, `MetricsDatadogWorkersCount`, `MetricsDatadogMaxMsgsPerPayload`. The metric name prefix is fixed in `pkg/metrics` (`RunsFleet` / `runs_fleet`) and is not configurable.
   - **Secrets / Vault:** `SecretsBackend`, `SecretsPathPrefix`, `VaultAddr`, `VaultKVMount`, `VaultKVVersion`, `VaultBasePath`, `VaultAuthMethod`, `VaultAWSRole`, `VaultK8sAuthMount`, `VaultK8sRole`, `VaultK8sJWTPath`.
 
 ### Functions / methods

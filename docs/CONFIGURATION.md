@@ -62,9 +62,12 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 
 ## Metrics
 
+The metric name prefix is fixed and cannot be configured: `RunsFleet` on
+CloudWatch, `runs_fleet` on Prometheus and Datadog. A fixed prefix prevents
+metric-name collisions across deployments that share a metrics backend.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUNS_FLEET_METRICS_NAMESPACE` | `RunsFleet` | Metric namespace/prefix |
 | `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` | `true` | Enable CloudWatch metrics |
 | `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` | `false` | Enable Prometheus `/metrics` endpoint |
 | `RUNS_FLEET_METRICS_PROMETHEUS_PATH` | `/metrics` | Prometheus endpoint path |

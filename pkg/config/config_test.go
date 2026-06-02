@@ -119,6 +119,40 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// TestLoadIgnoresMetricsNamespaceEnv asserts the removed RUNS_FLEET_METRICS_NAMESPACE
+// knob is no longer read: setting it must not affect config loading, and the
+// fixed metric prefixes are owned by the metrics package, not config.
+func TestLoadIgnoresMetricsNamespaceEnv(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	os.Clearenv()
+	for k, v := range map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_METRICS_NAMESPACE":      "teamx",
+	} {
+		_ = os.Setenv(k, v)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
 func TestGetEnvInt(t *testing.T) {
 	_ = os.Setenv("TEST_INT", "123")
 	_ = os.Setenv("TEST_BAD_INT", "abc")

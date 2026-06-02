@@ -8,7 +8,10 @@ import (
 	"github.com/DataDog/datadog-go/v5/statsd"
 )
 
-const defaultDatadogNamespace = "runs_fleet"
+// datadogNamespace is the fixed metric name prefix for the Datadog backend. It
+// is intentionally not configurable: a stable prefix prevents metric-name
+// collisions across deployments that report to the same Datadog account.
+const datadogNamespace = "runs_fleet"
 
 // ServiceCheckStatus represents Datadog service check status values.
 const (
@@ -34,8 +37,6 @@ var _ Publisher = (*DatadogPublisher)(nil)
 type DatadogConfig struct {
 	// Address is the DogStatsD address (default: "127.0.0.1:8125")
 	Address string
-	// Namespace is the metric namespace prefix (default: "runs_fleet")
-	Namespace string
 	// Tags are global tags applied to all metrics
 	Tags []string
 	// SampleRate for high-frequency metrics (default: 1.0 = 100%)
@@ -58,15 +59,12 @@ func NewDatadogPublisher(cfg DatadogConfig) (*DatadogPublisher, error) {
 	if cfg.Address == "" {
 		cfg.Address = "127.0.0.1:8125"
 	}
-	if cfg.Namespace == "" {
-		cfg.Namespace = defaultDatadogNamespace
-	}
 	if cfg.SampleRate <= 0 || cfg.SampleRate > 1 {
 		cfg.SampleRate = 1.0
 	}
 
 	opts := []statsd.Option{
-		statsd.WithNamespace(cfg.Namespace + "."),
+		statsd.WithNamespace(datadogNamespace + "."),
 		statsd.WithTags(cfg.Tags),
 	}
 
@@ -90,7 +88,7 @@ func NewDatadogPublisher(cfg DatadogConfig) (*DatadogPublisher, error) {
 
 	return &DatadogPublisher{
 		client:     client,
-		namespace:  cfg.Namespace,
+		namespace:  datadogNamespace,
 		tags:       cfg.Tags,
 		sampleRate: cfg.SampleRate,
 	}, nil
