@@ -38,6 +38,7 @@ type EC2API interface {
 	DescribeSpotPriceHistory(ctx context.Context, params *ec2.DescribeSpotPriceHistoryInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error)
 	DescribeInstanceTypeOfferings(ctx context.Context, params *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	DescribeSubnets(ctx context.Context, params *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
 	RunInstances(ctx context.Context, params *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 }
 
@@ -67,6 +68,13 @@ type availabilityCache struct {
 	loaded    bool
 }
 
+// subnetAZCache caches the AZ each subnet lives in. Subnet-to-AZ is static
+// configuration, so a successfully resolved subnet is never re-queried.
+type subnetAZCache struct {
+	mu sync.Mutex
+	az map[string]string // subnet ID -> availability zone
+}
+
 const spotPriceCacheTTL = 5 * time.Minute
 const availabilityCacheTTL = 24 * time.Hour
 const archARM64 = "arm64"
@@ -86,6 +94,7 @@ type Manager struct {
 	metrics           MetricsAPI
 	spotCache         spotPriceCache
 	availabilityCache availabilityCache
+	subnetAZCache     subnetAZCache
 }
 
 // NewManager creates fleet manager with EC2 client and configuration.
@@ -306,7 +315,7 @@ func (m *Manager) configureOnDemandRequest(ctx context.Context, req *ec2.CreateF
 	// Span every configured AZ with the primary instance type so a single-AZ
 	// capacity shortfall does not fail the whole request.
 	req.LaunchTemplateConfigs = []types.FleetLaunchTemplateConfigRequest{
-		m.buildSingleArchConfig(arch, []string{primaryType}, m.resolveSubnets(spec), spec.StorageGiB),
+		m.buildSingleArchConfig(arch, []string{primaryType}, m.resolveSubnets(ctx, spec), spec.StorageGiB),
 	}
 	return req, nil
 }
@@ -378,7 +387,7 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 		return nil, fmt.Errorf("no instance types available in region after filtering")
 	}
 
-	subnets := m.resolveSubnets(spec)
+	subnets := m.resolveSubnets(ctx, spec)
 
 	// If arch is specified, validate instance types match and create a single config
 	if spec.Arch != "" {
@@ -413,17 +422,130 @@ func (m *Manager) buildLaunchTemplateConfigs(ctx context.Context, spec *LaunchSp
 }
 
 // resolveSubnets returns the subnets a fleet request should span. When the spec
-// carries the full configured list it is used so overrides cover every AZ;
-// otherwise it falls back to the single SubnetID. A nil result (no subnet
+// carries the full configured list it is collapsed to one subnet per AZ so the
+// CreateFleet (instance type x subnet) override matrix never produces duplicate
+// (type, AZ) instance pools, which EC2 rejects with InvalidFleetConfig. With
+// only a single SubnetID it falls back to that subnet. A nil result (no subnet
 // information at all) lets EC2 pick a default subnet.
-func (m *Manager) resolveSubnets(spec *LaunchSpec) []string {
+func (m *Manager) resolveSubnets(ctx context.Context, spec *LaunchSpec) []string {
 	if len(spec.SubnetIDs) > 0 {
-		return spec.SubnetIDs
+		return m.subnetsOnePerAZ(ctx, spec.SubnetIDs)
 	}
 	if spec.SubnetID != "" {
 		return []string{spec.SubnetID}
 	}
 	return nil
+}
+
+// subnetsOnePerAZ collapses subnets to at most one per Availability Zone,
+// preserving input order and keeping the first subnet seen for each AZ. EC2
+// keys an instance pool by (instance type, AZ) rather than by subnet, so two
+// subnets in the same AZ would produce duplicate pools in a CreateFleet
+// override matrix. If AZ resolution fails the raw list is returned unchanged so
+// fleet creation still proceeds (CreateFleet's own retry handles transient
+// faults); correctness is preferred whenever AZ data is available.
+func (m *Manager) subnetsOnePerAZ(ctx context.Context, subnets []string) []string {
+	if len(subnets) <= 1 {
+		return subnets
+	}
+
+	azBySubnet, err := m.resolveSubnetAZs(ctx, subnets)
+	if err != nil {
+		fleetLog.Warn(ctx, "failed to resolve subnet availability zones, using all subnets",
+			slog.Int("subnets", len(subnets)),
+			slog.String("error", err.Error()))
+		return subnets
+	}
+
+	seenAZ := make(map[string]bool, len(subnets))
+	deduped := make([]string, 0, len(subnets))
+	for _, subnet := range subnets {
+		az, ok := azBySubnet[subnet]
+		if !ok {
+			// AZ unknown for this subnet: keep it rather than silently drop it.
+			deduped = append(deduped, subnet)
+			continue
+		}
+		if seenAZ[az] {
+			continue
+		}
+		seenAZ[az] = true
+		deduped = append(deduped, subnet)
+	}
+
+	if len(deduped) < len(subnets) {
+		fleetLog.Debug(ctx, "collapsed subnets to one per AZ",
+			slog.Int("configured", len(subnets)),
+			slog.Int("per_az", len(deduped)))
+	}
+	return deduped
+}
+
+// resolveSubnetAZs returns the AZ for each requested subnet, querying
+// DescribeSubnets only for subnets not already cached. Subnet-to-AZ is static,
+// so resolved entries are cached for the lifetime of the manager. The cache
+// lock is never held across the DescribeSubnets call: it is taken briefly to
+// read the missing set and again to merge the result, so concurrent fleet
+// requests do not serialize on a network round-trip.
+func (m *Manager) resolveSubnetAZs(ctx context.Context, subnets []string) (map[string]string, error) {
+	missing := m.uncachedSubnets(subnets)
+
+	if len(missing) > 0 {
+		output, err := m.ec2Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+			SubnetIds: missing,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("describe subnets: %w", err)
+		}
+		m.cacheSubnetAZs(output.Subnets)
+	}
+
+	return m.cachedSubnetAZs(subnets), nil
+}
+
+// uncachedSubnets returns the subset of subnets whose AZ is not yet cached.
+func (m *Manager) uncachedSubnets(subnets []string) []string {
+	m.subnetAZCache.mu.Lock()
+	defer m.subnetAZCache.mu.Unlock()
+
+	var missing []string
+	for _, subnet := range subnets {
+		if _, ok := m.subnetAZCache.az[subnet]; !ok {
+			missing = append(missing, subnet)
+		}
+	}
+	return missing
+}
+
+// cacheSubnetAZs records the AZ of each described subnet in the cache.
+func (m *Manager) cacheSubnetAZs(described []types.Subnet) {
+	m.subnetAZCache.mu.Lock()
+	defer m.subnetAZCache.mu.Unlock()
+
+	if m.subnetAZCache.az == nil {
+		m.subnetAZCache.az = make(map[string]string)
+	}
+	for _, s := range described {
+		id := aws.ToString(s.SubnetId)
+		az := aws.ToString(s.AvailabilityZone)
+		if id != "" && az != "" {
+			m.subnetAZCache.az[id] = az
+		}
+	}
+}
+
+// cachedSubnetAZs returns the cached AZ for each subnet that has one.
+func (m *Manager) cachedSubnetAZs(subnets []string) map[string]string {
+	m.subnetAZCache.mu.Lock()
+	defer m.subnetAZCache.mu.Unlock()
+
+	result := make(map[string]string, len(subnets))
+	for _, subnet := range subnets {
+		if az, ok := m.subnetAZCache.az[subnet]; ok {
+			result[subnet] = az
+		}
+	}
+	return result
 }
 
 // typesPerSubnet returns how many instance types to place in each subnet so the
@@ -967,8 +1089,9 @@ func isCapacityError(err error) bool {
 // RunInstances targets a single subnet, so when spec.SubnetIDs is populated the
 // call is retried across those subnets in order: a capacity-class failure in one
 // AZ rotates to the next, while any non-capacity error fails fast without burning
-// the remaining attempts. With an empty SubnetIDs it behaves as a single
-// RunInstances against spec.SubnetID.
+// the remaining attempts. The subnet list is first collapsed to one per AZ so a
+// retry always lands in a distinct AZ. With an empty SubnetIDs it behaves as a
+// single RunInstances against spec.SubnetID.
 func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) (string, error) {
 	tags := m.buildTags(spec)
 
@@ -984,6 +1107,11 @@ func (m *Manager) CreateOnDemandInstance(ctx context.Context, spec *LaunchSpec) 
 	subnets := spec.SubnetIDs
 	if len(subnets) == 0 {
 		subnets = []string{spec.SubnetID}
+	} else {
+		// RunInstances targets one subnet per call and rotates AZs on capacity
+		// errors; collapsing to one subnet per AZ avoids burning a retry on a
+		// second same-AZ subnet that shares the same capacity pool.
+		subnets = m.subnetsOnePerAZ(ctx, subnets)
 	}
 
 	for i, subnet := range subnets {
