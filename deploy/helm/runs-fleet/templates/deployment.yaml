@@ -193,10 +193,6 @@ spec:
             - name: RUNS_FLEET_LOG_FORMAT
               value: {{ .Values.logging.format }}
             # Metrics configuration
-            {{- if .Values.metrics.namespace }}
-            - name: RUNS_FLEET_METRICS_NAMESPACE
-              value: {{ .Values.metrics.namespace | quote }}
-            {{- end }}
             - name: RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED
               value: {{ .Values.metrics.cloudwatch.enabled | quote }}
             - name: RUNS_FLEET_METRICS_PROMETHEUS_ENABLED

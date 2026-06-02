@@ -8,7 +8,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-const defaultPrometheusNamespace = "runs_fleet"
+// prometheusNamespace is the fixed metric name prefix for the Prometheus
+// backend. It is intentionally not configurable: a stable prefix prevents
+// metric-name collisions across deployments that share a Prometheus instance.
+const prometheusNamespace = "runs_fleet"
 
 // Histogram bucket sets. Job/provision/fleet latencies range up to ~120s;
 // lock-wait and message-processing latencies are sub-second to ~30s.
@@ -69,16 +72,12 @@ type PrometheusPublisher struct {
 var _ Publisher = (*PrometheusPublisher)(nil)
 
 // PrometheusConfig holds configuration for the Prometheus publisher.
-type PrometheusConfig struct {
-	Namespace string
-}
+type PrometheusConfig struct{}
 
-// NewPrometheusPublisher creates a Prometheus metrics publisher.
-func NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher {
-	if cfg.Namespace == "" {
-		cfg.Namespace = defaultPrometheusNamespace
-	}
-	ns := cfg.Namespace
+// NewPrometheusPublisher creates a Prometheus metrics publisher. The metric
+// name prefix is fixed at prometheusNamespace and cannot be overridden.
+func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
+	ns := prometheusNamespace
 
 	registry := prometheus.NewRegistry()
 

@@ -24,16 +24,17 @@ type CloudWatchPublisher struct {
 // Ensure CloudWatchPublisher implements Publisher.
 var _ Publisher = (*CloudWatchPublisher)(nil)
 
-// NewCloudWatchPublisher creates a CloudWatch metrics publisher.
-func NewCloudWatchPublisher(cfg aws.Config) *CloudWatchPublisher {
-	return NewCloudWatchPublisherWithNamespace(cfg, "RunsFleet")
-}
+// cloudWatchNamespace is the fixed CloudWatch namespace. It is intentionally
+// not configurable: a stable namespace prevents metric collisions across
+// deployments that publish to the same AWS account and region.
+const cloudWatchNamespace = "RunsFleet"
 
-// NewCloudWatchPublisherWithNamespace creates a CloudWatch metrics publisher with custom namespace.
-func NewCloudWatchPublisherWithNamespace(cfg aws.Config, namespace string) *CloudWatchPublisher {
+// NewCloudWatchPublisher creates a CloudWatch metrics publisher. The namespace
+// is fixed at cloudWatchNamespace and cannot be overridden.
+func NewCloudWatchPublisher(cfg aws.Config) *CloudWatchPublisher {
 	return &CloudWatchPublisher{
 		client:    cloudwatch.NewFromConfig(cfg),
-		namespace: namespace,
+		namespace: cloudWatchNamespace,
 	}
 }
 

@@ -379,33 +379,20 @@ func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http
 	var backends []string
 
 	if cfg.MetricsCloudWatchEnabled {
-		namespace := cfg.MetricsNamespace
-		if namespace == "" {
-			namespace = "RunsFleet"
-		}
-		publishers = append(publishers, metrics.NewCloudWatchPublisherWithNamespace(awsCfg, namespace))
+		publishers = append(publishers, metrics.NewCloudWatchPublisher(awsCfg))
 		backends = append(backends, "cloudwatch")
 	}
 
 	if cfg.MetricsPrometheusEnabled {
-		namespace := cfg.MetricsNamespace
-		if namespace == "" {
-			namespace = "runs_fleet"
-		}
-		prom := metrics.NewPrometheusPublisher(metrics.PrometheusConfig{Namespace: namespace})
+		prom := metrics.NewPrometheusPublisher(metrics.PrometheusConfig{})
 		publishers = append(publishers, prom)
 		prometheusHandler = prom.Handler()
 		backends = append(backends, "prometheus")
 	}
 
 	if cfg.MetricsDatadogEnabled {
-		namespace := cfg.MetricsNamespace
-		if namespace == "" {
-			namespace = "runs_fleet"
-		}
 		dd, err := metrics.NewDatadogPublisher(metrics.DatadogConfig{
 			Address:               cfg.MetricsDatadogAddr,
-			Namespace:             namespace,
 			Tags:                  cfg.MetricsDatadogTags,
 			SampleRate:            cfg.MetricsDatadogSampleRate,
 			BufferPoolSize:        cfg.MetricsDatadogBufferPoolSize,

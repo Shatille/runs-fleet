@@ -170,11 +170,10 @@ logging:
   format: json
 
 # Metrics configuration
+# The metric name prefix is fixed and not configurable: CloudWatch="RunsFleet",
+# Prometheus/Datadog="runs_fleet". A fixed prefix prevents metric-name
+# collisions across deployments sharing a metrics backend.
 metrics:
-  # Namespace for all metrics backends (empty = use backend defaults)
-  # Defaults: CloudWatch="RunsFleet", Prometheus/Datadog="runs_fleet"
-  namespace: ""
-
   # CloudWatch metrics (enabled by default)
   cloudwatch:
     enabled: true

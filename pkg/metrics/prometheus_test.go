@@ -10,26 +10,29 @@ import (
 func TestNewPrometheusPublisher(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		cfg  PrometheusConfig
-	}{
-		{name: "default namespace", cfg: PrometheusConfig{}},
-		{name: "custom namespace", cfg: PrometheusConfig{Namespace: "custom"}},
+	pub := NewPrometheusPublisher(PrometheusConfig{})
+	if pub == nil {
+		t.Fatal("NewPrometheusPublisher() returned nil")
 	}
+	if pub.registry == nil {
+		t.Error("NewPrometheusPublisher() registry is nil")
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+// TestPrometheusPublisher_FixedNamespace asserts the metric name prefix is fixed
+// at runs_fleet and is not influenced by PrometheusConfig (the override knob is
+// gone), guarding against metric-name collisions across deployments.
+func TestPrometheusPublisher_FixedNamespace(t *testing.T) {
+	t.Parallel()
 
-			pub := NewPrometheusPublisher(tt.cfg)
-			if pub == nil {
-				t.Fatal("NewPrometheusPublisher() returned nil")
-			}
-			if pub.registry == nil {
-				t.Error("NewPrometheusPublisher() registry is nil")
-			}
-		})
+	pub := NewPrometheusPublisher(PrometheusConfig{})
+	ctx := context.Background()
+
+	_ = pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "octo/repo")
+
+	body := scrape(t, pub)
+	if !strings.Contains(body, "runs_fleet_jobs_enqueued_total") {
+		t.Errorf("metrics output missing runs_fleet_ prefixed name; got:\n%s", body)
 	}
 }
 
@@ -76,7 +79,7 @@ func TestPrometheusPublisher_Close(t *testing.T) {
 func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 	t.Parallel()
 
-	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
+	pub := NewPrometheusPublisher(PrometheusConfig{})
 	ctx := context.Background()
 
 	tests := []struct {
@@ -128,7 +131,7 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	t.Parallel()
 
-	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
+	pub := NewPrometheusPublisher(PrometheusConfig{})
 	ctx := context.Background()
 
 	_ = pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "octo/repo")
@@ -142,13 +145,13 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	body := scrape(t, pub)
 
 	expectedMetrics := []string{
-		`test_jobs_enqueued_total{arch="arm64",capacity="4",pool="default",repo="octo/repo"} 1`,
-		`test_jobs_completed_total{pool="default",repo="octo/repo",result="success"} 1`,
-		`test_queue_depth{queue="main"} 5`,
-		`test_pool_instances{pool="mypool",state="ready"} 2`,
-		`test_fleet_create_total{capacity="1",result="success"} 1`,
-		`test_aws_call_duration_seconds_count{operation="ReceiveMessage",service="SQS"} 1`,
-		`test_aws_call_failures_total{operation="GetItem",result="timeout",service="DynamoDB"} 1`,
+		`runs_fleet_jobs_enqueued_total{arch="arm64",capacity="4",pool="default",repo="octo/repo"} 1`,
+		`runs_fleet_jobs_completed_total{pool="default",repo="octo/repo",result="success"} 1`,
+		`runs_fleet_queue_depth{queue="main"} 5`,
+		`runs_fleet_pool_instances{pool="mypool",state="ready"} 2`,
+		`runs_fleet_fleet_create_total{capacity="1",result="success"} 1`,
+		`runs_fleet_aws_call_duration_seconds_count{operation="ReceiveMessage",service="SQS"} 1`,
+		`runs_fleet_aws_call_failures_total{operation="GetItem",result="timeout",service="DynamoDB"} 1`,
 	}
 
 	for _, metric := range expectedMetrics {
@@ -163,7 +166,7 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 func TestPrometheusPublisher_RepoCardinalityRule(t *testing.T) {
 	t.Parallel()
 
-	pub := NewPrometheusPublisher(PrometheusConfig{Namespace: "test"})
+	pub := NewPrometheusPublisher(PrometheusConfig{})
 	ctx := context.Background()
 
 	_ = pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "octo/repo")
@@ -178,7 +181,7 @@ func TestPrometheusPublisher_RepoCardinalityRule(t *testing.T) {
 
 	// repo must appear on exactly the three lifecycle counters.
 	for _, name := range []string{"jobs_enqueued_total", "jobs_assigned_total", "jobs_completed_total"} {
-		if !labelOnMetric(body, "test_"+name, "repo") {
+		if !labelOnMetric(body, "runs_fleet_"+name, "repo") {
 			t.Errorf("expected repo label on %s", name)
 		}
 	}
@@ -191,9 +194,9 @@ func TestPrometheusPublisher_RepoCardinalityRule(t *testing.T) {
 		if !strings.Contains(line, `repo=`) {
 			continue
 		}
-		if strings.HasPrefix(line, "test_jobs_enqueued_total") ||
-			strings.HasPrefix(line, "test_jobs_assigned_total") ||
-			strings.HasPrefix(line, "test_jobs_completed_total") {
+		if strings.HasPrefix(line, "runs_fleet_jobs_enqueued_total") ||
+			strings.HasPrefix(line, "runs_fleet_jobs_assigned_total") ||
+			strings.HasPrefix(line, "runs_fleet_jobs_completed_total") {
 			continue
 		}
 		t.Errorf("unexpected repo label outside lifecycle counters: %q", line)

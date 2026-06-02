@@ -59,7 +59,6 @@ type Config struct {
 	TraceUIURL     string
 
 	// Metrics configuration
-	MetricsNamespace                string   // Metric namespace/prefix (default: "RunsFleet" for CloudWatch, "runs_fleet" for others)
 	MetricsCloudWatchEnabled        bool     // Enable CloudWatch metrics (default: true)
 	MetricsPrometheusEnabled        bool     // Enable Prometheus /metrics endpoint
 	MetricsPrometheusPath           string   // HTTP path for Prometheus /metrics endpoint (default: "/metrics")
@@ -149,7 +148,6 @@ func Load() (*Config, error) {
 		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
 
 		// Metrics
-		MetricsNamespace:                getEnv("RUNS_FLEET_METRICS_NAMESPACE", ""),
 		MetricsCloudWatchEnabled:        getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
 		MetricsPrometheusEnabled:        getEnvBool("RUNS_FLEET_METRICS_PROMETHEUS_ENABLED", false),
 		MetricsPrometheusPath:           getEnv("RUNS_FLEET_METRICS_PROMETHEUS_PATH", "/metrics"),

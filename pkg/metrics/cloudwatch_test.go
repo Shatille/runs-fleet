@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 )
@@ -21,7 +22,7 @@ func (m *MockCloudWatchAPI) PutMetricData(ctx context.Context, params *cloudwatc
 	return &cloudwatch.PutMetricDataOutput{}, nil
 }
 
-const testNamespace = "RunsFleet"
+const testNamespace = cloudWatchNamespace
 
 // capturedDatum records the single MetricDatum emitted by a publish call.
 type capturedDatum struct {
@@ -441,4 +442,16 @@ func TestCloudWatchPublisher_Close(t *testing.T) {
 
 func TestCloudWatchPublisher_ImplementsInterface(_ *testing.T) {
 	var _ Publisher = (*CloudWatchPublisher)(nil)
+}
+
+// TestNewCloudWatchPublisher_FixedNamespace asserts the namespace is fixed at
+// cloudWatchNamespace and cannot be overridden, guarding against metric
+// collisions across deployments sharing an AWS account and region.
+func TestNewCloudWatchPublisher_FixedNamespace(t *testing.T) {
+	t.Parallel()
+
+	pub := NewCloudWatchPublisher(aws.Config{})
+	if pub.namespace != cloudWatchNamespace {
+		t.Errorf("namespace = %q, want %q", pub.namespace, cloudWatchNamespace)
+	}
 }
