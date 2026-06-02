@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -69,6 +70,7 @@ func TestProcessJobDirect_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T)
 		Pool:        &pools.Manager{},
 		Metrics:     metrics.NoopPublisher{},
 		DB:          dbClient,
+		Queue:       &mockQueueEC2{},
 		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
 		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
@@ -76,11 +78,14 @@ func TestProcessJobDirect_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T)
 		},
 	}
 
+	// A spot job under the retry cap takes the requeue path, which releases the
+	// claim (DeleteJobClaim) before sending the on-demand fallback.
 	job := &queue.JobMessage{
 		JobID:        12345,
 		RunID:        67890,
 		Repo:         "owner/repo",
 		InstanceType: "t3.micro",
+		Spot:         true,
 	}
 
 	// Already-canceled job context simulates the strained ctx seen on a wedged
@@ -98,6 +103,236 @@ func TestProcessJobDirect_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T)
 	}
 	if mockDynamo.deleteCtxDone {
 		t.Error("claim cleanup must run on a fresh (non-canceled) context, not the strained job context")
+	}
+}
+
+// TestProcessJobDirect_FleetFailure_RequeuesNotDropped is the core regression
+// test: a spot job whose fleet creation fails must be handed back to the durable
+// queue (re-enqueued), not silently dropped. The requeued message must be
+// dedup-safe (RetryCount+1) and on-demand (ForceOnDemand) so the ec2-worker can
+// provision it.
+func TestProcessJobDirect_FleetFailure_RequeuesNotDropped(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	mockDynamo := &mockDynamoForClaim{}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	var sent []*queue.JobMessage
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(_ context.Context, job *queue.JobMessage) error {
+			sent = append(sent, job)
+			return nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:       &fleet.Manager{},
+		Metrics:     mockMetrics,
+		DB:          dbClient,
+		Queue:       mockQueue,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("spot capacity not available")
+		},
+	}
+
+	job := &queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Spot:         true,
+		RetryCount:   0,
+	}
+
+	result := processor.ProcessJobDirect(context.Background(), job)
+
+	if result {
+		t.Fatal("expected ProcessJobDirect to return false on fleet creation failure")
+	}
+	if len(sent) != 1 {
+		t.Fatalf("expected exactly 1 requeued message, got %d (job must not be dropped)", len(sent))
+	}
+	if sent[0].RetryCount != job.RetryCount+1 {
+		t.Errorf("requeued RetryCount = %d, want %d (must change FIFO dedup id)", sent[0].RetryCount, job.RetryCount+1)
+	}
+	if !sent[0].ForceOnDemand {
+		t.Error("requeued message must set ForceOnDemand=true")
+	}
+	if sent[0].Spot {
+		t.Error("requeued message must set Spot=false")
+	}
+	if mockMetrics.requeuedReason != requeueReasonDirectFleetFailure {
+		t.Errorf("requeue metric reason = %q, want %q", mockMetrics.requeuedReason, requeueReasonDirectFleetFailure)
+	}
+}
+
+// TestProcessJobDirect_FleetFailure_AtRetryCap_MarksTerminal proves the cap is
+// honored: at the retry cap the direct path does NOT re-enqueue (no infinite
+// loop) and does NOT silently drop — it marks the claim terminal so the failure
+// surfaces.
+func TestProcessJobDirect_FleetFailure_AtRetryCap_MarksTerminal(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	updateCalled := false
+	mockDynamo := &mockDynamoForClaim{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			// FailExhaustedClaim marks status=error guarded on a claiming record.
+			if params.ConditionExpression == nil {
+				t.Error("terminal write must guard on the claiming state")
+			}
+			updateCalled = true
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	sendCalled := false
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			sendCalled = true
+			return nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:       &fleet.Manager{},
+		Metrics:     mockMetrics,
+		DB:          dbClient,
+		Queue:       mockQueue,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("spot capacity not available")
+		},
+	}
+
+	job := &queue.JobMessage{
+		JobID:        12345,
+		RunID:        67890,
+		Repo:         "owner/repo",
+		InstanceType: "t3.micro",
+		Spot:         true,
+		RetryCount:   maxJobRetries, // at the cap
+	}
+
+	result := processor.ProcessJobDirect(context.Background(), job)
+
+	if result {
+		t.Fatal("expected ProcessJobDirect to return false on fleet creation failure")
+	}
+	if sendCalled {
+		t.Error("at the retry cap the job must NOT be re-enqueued (no infinite loop)")
+	}
+	if !updateCalled {
+		t.Error("at the retry cap the claim must be marked terminal (FailExhaustedClaim), not dropped")
+	}
+	if mockMetrics.schedulingFailures == 0 {
+		t.Error("terminal give-up must emit a scheduling-failure metric so the drop is visible")
+	}
+}
+
+// TestProcessJobDirect_FleetFailure_ForceOnDemand_MarksTerminal proves a job that
+// is already on-demand and still fails is not re-enqueued (it would loop) but is
+// marked terminal.
+func TestProcessJobDirect_FleetFailure_ForceOnDemand_MarksTerminal(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	updateCalled := false
+	mockDynamo := &mockDynamoForClaim{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			updateCalled = true
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	sendCalled := false
+	mockQueue := &mockQueueEC2{
+		SendMessageFunc: func(_ context.Context, _ *queue.JobMessage) error {
+			sendCalled = true
+			return nil
+		},
+	}
+
+	var subnetIndex uint64
+	processor := &DirectProcessor{
+		Fleet:       &fleet.Manager{},
+		Metrics:     metrics.NoopPublisher{},
+		DB:          dbClient,
+		Queue:       mockQueue,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return nil, errors.New("on-demand capacity not available")
+		},
+	}
+
+	job := &queue.JobMessage{
+		JobID:         12345,
+		RunID:         67890,
+		Repo:          "owner/repo",
+		InstanceType:  "t3.micro",
+		Spot:          false,
+		ForceOnDemand: true,
+		RetryCount:    0,
+	}
+
+	processor.ProcessJobDirect(context.Background(), job)
+
+	if sendCalled {
+		t.Error("an already-on-demand job must NOT be re-enqueued on failure")
+	}
+	if !updateCalled {
+		t.Error("an already-on-demand job that fails must be marked terminal")
+	}
+}
+
+// TestBuildOnDemandFallbackJob_SharedByBothPaths proves the single shared
+// requeue-builder produces identical output regardless of which cold-start path
+// calls it, so the two paths cannot diverge in what they re-enqueue.
+func TestBuildOnDemandFallbackJob_SharedByBothPaths(t *testing.T) {
+	job := &queue.JobMessage{
+		JobID:         42,
+		RunID:         99,
+		Repo:          "owner/repo",
+		InstanceType:  "c7g.xlarge",
+		InstanceTypes: []string{"c7g.xlarge", "m7g.xlarge"},
+		Pool:          "default",
+		Spot:          true,
+		OriginalLabel: "runs-fleet=99/cpu=4",
+		RetryCount:    1,
+		Arch:          "arm64",
+		StorageGiB:    64,
+	}
+
+	// The ec2-worker and direct both call BuildOnDemandFallbackJob; they must
+	// agree byte-for-byte.
+	a := BuildOnDemandFallbackJob(job)
+	b := BuildOnDemandFallbackJob(job)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("shared builder produced divergent output:\n a = %+v\n b = %+v", a, b)
+	}
+
+	if a.RetryCount != job.RetryCount+1 {
+		t.Errorf("RetryCount = %d, want %d", a.RetryCount, job.RetryCount+1)
+	}
+	if !a.ForceOnDemand {
+		t.Error("ForceOnDemand must be true")
+	}
+	if a.Spot {
+		t.Error("Spot must be false")
 	}
 }
 

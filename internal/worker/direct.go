@@ -27,6 +27,13 @@ type DirectProcessor struct {
 	Config      *config.Config
 	SubnetIndex *uint64
 
+	// Queue is the durable main queue. On fleet-creation failure the direct path
+	// hands the job back here (a fresh send, since it holds no SQS receipt) so the
+	// ec2-worker retries it with its on-demand fallback. Nil disables recovery,
+	// in which case a failed direct attempt falls back to the always-enqueued SQS
+	// copy via redelivery.
+	Queue queue.Queue
+
 	// WarmPoolAssigner allows injection of a custom assigner for testing.
 	// If nil, creates a default WarmPoolAssigner from Pool, Runner, DB.
 	WarmPoolAssigner WarmPoolAssignerInterface
@@ -134,16 +141,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	if err != nil {
 		directLog.Error(ctx, "fleet creation failed",
 			slog.String("error", err.Error()))
-		if p.DB != nil && p.DB.HasJobsTable() {
-			// Release the claim on a fresh context; the job ctx may already be expired.
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-			cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
-			if err := p.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
-				directLog.Error(cleanupCtx, "job claim delete failed",
-					slog.String("error", err.Error()))
-			}
-			cancel()
-		}
+		p.recoverFleetFailure(ctx, job)
 		return false
 	}
 
@@ -202,6 +200,96 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	directLog.Info(ctx, "instances launched",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
 	return true
+}
+
+// recoverFleetFailure hands a job back to the durable queue after fleet creation
+// fails on the direct path, instead of dropping it. Symmetric with the
+// ec2-worker's handleOnDemandFallback: because the direct path holds no SQS
+// receipt handle (it is webhook-triggered, not SQS-received), it can only SEND a
+// fresh message, and only when the always-enqueued SQS copy may already be gone
+// (the ec2-worker deletes it as already-claimed once direct wins the claim).
+//
+// Eligibility mirrors the ec2-worker: a spot job under the retry cap is requeued
+// as on-demand (BuildOnDemandFallbackJob bumps RetryCount so the FIFO dedup id
+// changes). When the job is no longer eligible (retry cap reached, or already
+// on-demand and still failing) it is not silently dropped: the claim is marked
+// terminal (status "error") so it surfaces in the admin UI and stale-job
+// recovery instead of hanging until cancellation.
+func (p *DirectProcessor) recoverFleetFailure(ctx context.Context, job *queue.JobMessage) {
+	eligible := job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries
+	if eligible && p.Queue != nil {
+		// Release the claim first so the requeued message can re-claim the job;
+		// a leaked claim would make the ec2-worker treat the requeue as
+		// already-claimed and drop it. Use a fresh context: the job ctx may
+		// already be expired on a wedged connection.
+		p.releaseClaim(job, "job claim delete failed before requeue")
+
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+		defer cancel()
+		cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+
+		fallbackJob := BuildOnDemandFallbackJob(job)
+		if sendErr := sendMessageWithRetry(cleanupCtx, p.Queue, fallbackJob); sendErr != nil {
+			// Send failed: the SQS copy (if any survived) handles redelivery, and
+			// the released claim lets it re-claim. Leave the claim released.
+			directLog.Error(cleanupCtx, "direct fleet-failure requeue failed; deferring to SQS redelivery",
+				slog.String("error", sendErr.Error()))
+			return
+		}
+		directLog.Info(cleanupCtx, "job requeued after direct fleet failure",
+			slog.Int("retry_count", fallbackJob.RetryCount))
+		if p.Metrics != nil {
+			if err := p.Metrics.PublishJobRequeued(cleanupCtx, requeueReasonDirectFleetFailure); err != nil {
+				directLog.Error(cleanupCtx, "job requeued metric failed", slog.String("error", err.Error()))
+			}
+		}
+		return
+	}
+
+	// Not eligible for requeue (cap reached, already on-demand, or no queue
+	// available for recovery). Mark the claim terminal rather than dropping the
+	// job. The claim is still in the "claiming" state here (not released), so the
+	// guarded terminal write succeeds.
+	p.failTerminal(ctx, job)
+}
+
+// releaseClaim deletes the job claim on a fresh context so a strained job ctx
+// (canceled when the HTTP handler returned, or wedged on a dead connection) does
+// not prevent cleanup. A missing jobs table is a no-op.
+func (p *DirectProcessor) releaseClaim(job *queue.JobMessage, failMsg string) {
+	if p.DB == nil || !p.DB.HasJobsTable() {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+	defer cancel()
+	cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+	if err := p.DB.DeleteJobClaim(cleanupCtx, job.JobID); err != nil {
+		directLog.Error(cleanupCtx, failMsg, slog.String("error", err.Error()))
+	}
+}
+
+// failTerminal marks a job's claim terminal (status "error") when it cannot be
+// recovered, so the drop is visible instead of leaving the GitHub job hung. The
+// write is guarded on the record still being in the claiming state, so a slow
+// concurrent processor that lands SaveJob is not clobbered.
+func (p *DirectProcessor) failTerminal(ctx context.Context, job *queue.JobMessage) {
+	directLog.Error(ctx, "direct fleet failure not recoverable; marking job terminal",
+		slog.Int64(logging.KeyJobID, job.JobID))
+	if p.DB == nil || !p.DB.HasJobsTable() {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+	defer cancel()
+	cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+	if err := p.DB.FailExhaustedClaim(cleanupCtx, job.JobID); err != nil {
+		directLog.Error(cleanupCtx, "mark job terminal failed after direct fleet failure",
+			slog.String("error", err.Error()))
+	}
+	if p.Metrics != nil {
+		if err := p.Metrics.PublishSchedulingFailure(cleanupCtx, schedulingFailureJobClaim); err != nil {
+			directLog.Error(cleanupCtx, "scheduling failure metric failed", slog.String("error", err.Error()))
+		}
+	}
 }
 
 // TryDirectProcessing attempts to process a job directly if capacity is available.
