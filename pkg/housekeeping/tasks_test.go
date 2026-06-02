@@ -2066,19 +2066,40 @@ func TestExecuteStaleJobs_NoJobsTable(t *testing.T) {
 	}
 }
 
-func TestExecuteStaleJobs_NoGitHubChecker(t *testing.T) {
+func TestExecuteStaleJobs_NoGitHubChecker_StillFinalizesGoneInstances(t *testing.T) {
 	t.Parallel()
 
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"repo":        &types.AttributeValueMemberS{Value: "org/repo"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-gone"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+	}
+	ec2Client := &mockEC2API{
+		describeErr: errors.New("InvalidInstanceID.NotFound"),
+	}
+
 	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: dynamoClient,
 		config: &config.Config{
 			JobsTableName: "jobs-table",
 		},
 		gitHubChecker: nil,
 	}
 
-	err := tasks.ExecuteStaleJobs(context.Background())
-	if err != nil {
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The instance-existence path does not need GitHub: a gone instance is finalized
+	// regardless of whether a GitHub checker is wired up.
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 DDB update finalizing gone-instance record, got %d", dynamoClient.updateCalls)
 	}
 }
 
@@ -2476,6 +2497,205 @@ func TestExecuteStaleJobs_UpdateError(t *testing.T) {
 
 	if dynamoClient.updateCalls != 1 {
 		t.Errorf("expected 1 update attempt, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteStaleJobs_FinalizesRunningJobWhenInstanceGone(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"repo":        &types.AttributeValueMemberS{Value: "org/repo"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-gone"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+	}
+	ec2Client := &mockEC2API{
+		describeErr: errors.New("InvalidInstanceID.NotFound"),
+	}
+	checker := &mockGitHubJobChecker{}
+	metricsClient := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		ec2Client:     ec2Client,
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		metrics:       metricsClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 DDB update finalizing the running record, got %d", dynamoClient.updateCalls)
+	}
+	// The instance is gone; we must not waste a GitHub API call verifying it.
+	if checker.calls != 0 {
+		t.Errorf("expected 0 GitHub API calls when instance is gone, got %d", checker.calls)
+	}
+	if metricsClient.staleJobsCount != 1 {
+		t.Errorf("expected stale jobs metric 1, got %d", metricsClient.staleJobsCount)
+	}
+}
+
+func TestExecuteStaleJobs_FinalizesEmptyRepoJobWhenInstanceGone(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"repo":        &types.AttributeValueMemberS{Value: ""},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-gone"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+	}
+	ec2Client := &mockEC2API{
+		describeErr: errors.New("InvalidInstanceID.NotFound"),
+	}
+	checker := &mockGitHubJobChecker{}
+
+	tasks := &Tasks{
+		ec2Client:     ec2Client,
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Empty repo can't be verified against GitHub, but a gone instance is reason
+	// enough to finalize: the record would otherwise linger as "running" for 2h.
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 DDB update finalizing empty-repo record, got %d", dynamoClient.updateCalls)
+	}
+	if checker.calls != 0 {
+		t.Errorf("expected 0 GitHub API calls for empty repo, got %d", checker.calls)
+	}
+}
+
+func TestExecuteStaleJobs_DoesNotFinalizeRunningJobWhenInstanceAlive(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"repo":        &types.AttributeValueMemberS{Value: "org/repo"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-alive"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+	}
+	ec2Client := &mockEC2API{
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: aws.String("i-alive"),
+						LaunchTime: aws.Time(time.Now()),
+						State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+					},
+				},
+			},
+		},
+	}
+	// GitHub reports the job is still in progress, so it must not be completed either.
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: false},
+		},
+	}
+
+	tasks := &Tasks{
+		ec2Client:     ec2Client,
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 DDB updates for a genuinely running instance, got %d", dynamoClient.updateCalls)
+	}
+	// Instance is alive, so GitHub is still consulted for an authoritative verdict.
+	if checker.calls != 1 {
+		t.Errorf("expected 1 GitHub API call for a live instance, got %d", checker.calls)
+	}
+}
+
+func TestExecuteStaleJobs_LiveInstanceStillReconciledViaGitHub(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"repo":        &types.AttributeValueMemberS{Value: "org/repo"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-alive"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+	}
+	ec2Client := &mockEC2API{
+		instances: []ec2types.Reservation{
+			{
+				Instances: []ec2types.Instance{
+					{
+						InstanceId: aws.String("i-alive"),
+						LaunchTime: aws.Time(time.Now()),
+						State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+					},
+				},
+			},
+		},
+	}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Completed: true, Conclusion: "success"},
+		},
+	}
+	metricsClient := &mockTaskMetricsAPI{}
+
+	tasks := &Tasks{
+		ec2Client:     ec2Client,
+		dynamoClient:  dynamoClient,
+		gitHubChecker: checker,
+		metrics:       metricsClient,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.calls != 1 {
+		t.Errorf("expected 1 GitHub API call, got %d", checker.calls)
+	}
+	if dynamoClient.updateCalls != 1 {
+		t.Errorf("expected 1 DDB update, got %d", dynamoClient.updateCalls)
+	}
+	if metricsClient.staleJobsCount != 1 {
+		t.Errorf("expected stale jobs metric 1, got %d", metricsClient.staleJobsCount)
 	}
 }
 

@@ -758,20 +758,29 @@ const maxStaleJobChecks = 30
 
 // staleJobCandidate holds job info for stale job detection.
 type staleJobCandidate struct {
-	JobID  int64
-	RunID  int64
-	Repo   string
-	Status string
+	JobID      int64
+	RunID      int64
+	Repo       string
+	InstanceID string
+	Status     string
 }
 
-// ExecuteStaleJobs detects jobs stuck in running/claiming by querying GitHub API for actual status.
-// Resolves stale jobs in ~10 minutes instead of waiting for the 6h orphan detection window.
+// ExecuteStaleJobs finalizes jobs stuck in running/claiming so their records stop
+// occupying pool capacity in the p90 concurrency calculation.
+//
+// It uses two signals, in order of authority:
+//
+//  1. Instance existence (write-side root cause). A record whose instance no longer
+//     exists cannot still be running a job, so it is finalized immediately via
+//     MarkJobOrphaned (terminal status + completed_at). This closes records the
+//     agent's termination message never reached — including records with no repo —
+//     in ~10 minutes instead of waiting for the 2h orphan reaper. These are the
+//     lingering "running" records that inflate GetPoolP90Concurrency.
+//  2. GitHub status. For records whose instance still exists (genuinely could be
+//     running), the GitHub workflow-job status is the authoritative completion
+//     signal; completed jobs are marked completed with the real conclusion.
 func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 	if t.config.JobsTableName == "" {
-		return nil
-	}
-	if t.gitHubChecker == nil {
-		t.logger().Warn(ctx, "stale job detection disabled: GitHub job checker not configured")
 		return nil
 	}
 
@@ -788,7 +797,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
-		ProjectionExpression: aws.String("job_id, run_id, repo, #status"),
+		ProjectionExpression: aws.String("job_id, run_id, repo, instance_id, #status"),
 	}
 
 	var candidates []staleJobCandidate
@@ -804,7 +813,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 
 		for _, item := range output.Items {
 			var jobID, runID int64
-			var repo, status string
+			var repo, instanceID, status string
 
 			if v, ok := item["job_id"].(*types.AttributeValueMemberN); ok {
 				parsed, err := strconv.ParseInt(v.Value, 10, 64)
@@ -821,11 +830,17 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			if v, ok := item["repo"].(*types.AttributeValueMemberS); ok {
 				repo = v.Value
 			}
+			if v, ok := item["instance_id"].(*types.AttributeValueMemberS); ok {
+				instanceID = v.Value
+			}
 			if v, ok := item["status"].(*types.AttributeValueMemberS); ok {
 				status = v.Value
 			}
 
-			if jobID == 0 || repo == "" {
+			// A record we can neither verify against an instance nor against GitHub
+			// (no instance_id and no repo) is unreachable by either signal; leave it
+			// for the orphan reaper rather than guess.
+			if jobID == 0 || (repo == "" && instanceID == "") {
 				t.logger().Debug(ctx, "skipping stale job candidate with missing fields",
 					slog.Int64("job_id", jobID),
 					slog.String("repo", repo))
@@ -833,10 +848,11 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 			}
 
 			candidates = append(candidates, staleJobCandidate{
-				JobID:  jobID,
-				RunID:  runID,
-				Repo:   repo,
-				Status: status,
+				JobID:      jobID,
+				RunID:      runID,
+				Repo:       repo,
+				InstanceID: instanceID,
+				Status:     status,
 			})
 		}
 
@@ -850,13 +866,109 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 		return nil
 	}
 
+	gone, alive := t.partitionStaleByInstance(ctx, candidates)
+
+	finalized := t.finalizeStaleJobsWithGoneInstance(ctx, gone)
+	reconciled := t.reconcileStaleJobsViaGitHub(ctx, alive)
+	total := finalized + reconciled
+
+	if t.metrics != nil && total > 0 {
+		if err := t.metrics.PublishHousekeepingAction(ctx, housekeepingActionStaleJobs, total); err != nil {
+			t.logger().Warn(ctx, "failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
+		}
+	}
+
+	if total > 0 {
+		t.logger().Info(ctx, "stale jobs reconciled",
+			slog.Int("finalized", finalized),
+			slog.Int("github_reconciled", reconciled),
+			slog.Int(logging.KeyCount, total))
+	}
+	return nil
+}
+
+// partitionStaleByInstance splits candidates into those whose instance is gone
+// (terminated/non-existent) and those whose instance still exists. Candidates
+// without an instance_id are treated as still-existing so the GitHub path can
+// verify them. A failed existence check leaves a candidate in the "alive" set so
+// we never finalize a job on the strength of a transient EC2 error.
+func (t *Tasks) partitionStaleByInstance(ctx context.Context, candidates []staleJobCandidate) (gone, alive []staleJobCandidate) {
+	var withInstance []OrphanedJobCandidate
+	for _, c := range candidates {
+		if c.InstanceID == "" {
+			alive = append(alive, c)
+			continue
+		}
+		withInstance = append(withInstance, OrphanedJobCandidate{JobID: c.JobID, InstanceID: c.InstanceID})
+	}
+
+	if len(withInstance) == 0 {
+		return gone, alive
+	}
+
+	fallback := func(ctx context.Context, instanceID string) bool {
+		exists, _ := t.instanceExists(ctx, instanceID)
+		return exists
+	}
+	existing := BatchCheckInstanceExistence(ctx, t.ec2Client, withInstance, fallback)
+
+	for _, c := range candidates {
+		if c.InstanceID == "" {
+			continue
+		}
+		if existing[c.InstanceID] {
+			alive = append(alive, c)
+		} else {
+			gone = append(gone, c)
+		}
+	}
+	return gone, alive
+}
+
+// finalizeStaleJobsWithGoneInstance marks each candidate orphaned (terminal status +
+// completed_at) via a conditional write that only fires while the record is still
+// running/claiming, so a concurrent normal completion or spot-interruption requeue is
+// never clobbered. Returns the number of records finalized.
+func (t *Tasks) finalizeStaleJobsWithGoneInstance(ctx context.Context, gone []staleJobCandidate) int {
+	finalized := 0
+	for _, c := range gone {
+		jobCtx := logging.ContextWith(ctx,
+			slog.Int64(logging.KeyJobID, c.JobID),
+			slog.Int64(logging.KeyRunID, c.RunID),
+			slog.String(logging.KeyRepo, c.Repo),
+			slog.String(logging.KeyInstanceID, c.InstanceID))
+
+		if err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID); err != nil {
+			t.logger().Error(jobCtx, "finalize stale job with gone instance failed",
+				slog.String("error", err.Error()))
+			continue
+		}
+
+		finalized++
+		t.logger().Info(jobCtx, "stale job finalized; instance no longer exists")
+	}
+	return finalized
+}
+
+// reconcileStaleJobsViaGitHub finalizes candidates whose instance still exists by
+// consulting the GitHub workflow-job status, bounded by maxStaleJobChecks to stay
+// within API rate limits. Returns the number of records reconciled.
+func (t *Tasks) reconcileStaleJobsViaGitHub(ctx context.Context, alive []staleJobCandidate) int {
+	if len(alive) == 0 {
+		return 0
+	}
+	if t.gitHubChecker == nil {
+		t.logger().Warn(ctx, "stale job github reconcile skipped: GitHub job checker not configured")
+		return 0
+	}
+
 	checked := 0
 	reconciled := 0
-	for _, c := range candidates {
+	for _, c := range alive {
 		if checked >= maxStaleJobChecks {
 			t.logger().Info(ctx, "stale jobs check limit reached",
 				slog.Int("checked", checked),
-				slog.Int("remaining", len(candidates)-checked))
+				slog.Int("remaining", len(alive)-checked))
 			break
 		}
 
@@ -893,17 +1005,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 		t.logger().Info(jobCtx, "stale job reconciled",
 			slog.String("conclusion", ghStatus.Conclusion))
 	}
-
-	if t.metrics != nil && reconciled > 0 {
-		if err := t.metrics.PublishHousekeepingAction(ctx, housekeepingActionStaleJobs, reconciled); err != nil {
-			t.logger().Warn(ctx, "failed to publish stale jobs reconciled metric", slog.String("error", err.Error()))
-		}
-	}
-
-	if reconciled > 0 {
-		t.logger().Info(ctx, "stale jobs reconciled", slog.Int(logging.KeyCount, reconciled))
-	}
-	return nil
+	return reconciled
 }
 
 // markJobCompleted updates a job's status to "completed" with the real GitHub conclusion.
