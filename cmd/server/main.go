@@ -146,6 +146,7 @@ func main() {
 		DB:          dbClient,
 		Config:      cfg,
 		SubnetIndex: &subnetIndex,
+		Queue:       jobQueue,
 	}
 	directProcessorSem := make(chan struct{}, 10)
 

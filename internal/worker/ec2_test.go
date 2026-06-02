@@ -648,8 +648,9 @@ type mockMetricsPublisher struct {
 	coldStartCalled    bool
 	queueDepthDelta    float64
 	queueReceiveResult string
-	requeuedReason     string
-	schedulingFailures int
+	requeuedReason         string
+	schedulingFailures     int
+	schedulingFailureTypes []string
 	jobWaits           []jobWaitCall
 	processingCalls    []processingCall
 }
@@ -687,8 +688,11 @@ func (m *mockMetricsPublisher) PublishQueueReceive(_ context.Context, _, result 
 	m.queueReceiveResult = result
 	return nil
 }
-func (m *mockMetricsPublisher) PublishSchedulingFailure(_ context.Context, _ string) error {
+func (m *mockMetricsPublisher) PublishSchedulingFailure(_ context.Context, taskType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.schedulingFailures++
+	m.schedulingFailureTypes = append(m.schedulingFailureTypes, taskType)
 	return nil
 }
 func (m *mockMetricsPublisher) PublishJobWaitSeconds(_ context.Context, pool, source string, seconds float64) error {
@@ -1402,6 +1406,82 @@ func TestProcessEC2Message_StaleReclaim_MessageNotLost(t *testing.T) {
 	// jobProcessed path deletes the message exactly once after a successful launch.
 	if deleteCount != 1 {
 		t.Errorf("stale-claim redelivery: message should be deleted once after processing; got %d deletes", deleteCount)
+	}
+}
+
+// TestProcessEC2Message_AlreadyClaimed_EmitsDiscardObservability proves that
+// when the ec2-worker drops an SQS copy of a job another processor already
+// claimed (the load-bearing half of the dual-path race), the discard is now
+// observable: the message is deleted, and a bounded-cardinality scheduling
+// failure metric is emitted with the already_claimed reason.
+func TestProcessEC2Message_AlreadyClaimed_EmitsDiscardObservability(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("failed to marshal job: %v", err)
+	}
+
+	mockDynamo := &mockDynamoForClaim{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			// A record already in the running state: ClaimJob returns
+			// ErrJobAlreadyClaimed, simulating the direct path having won the claim.
+			return &dynamodb.GetItemOutput{Item: map[string]types.AttributeValue{
+				"job_id":     &types.AttributeValueMemberN{Value: "12345"},
+				"run_id":     &types.AttributeValueMemberN{Value: "67890"},
+				"repo":       &types.AttributeValueMemberS{Value: "owner/repo"},
+				"status":     &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+				"created_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+			}}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	deleteCount := 0
+	fleetCreated := false
+	mockQueue := &mockQueueEC2{
+		DeleteMessageFunc: func(_ context.Context, _ string) error {
+			deleteCount++
+			return nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       mockQueue,
+		Fleet:       &fleet.Manager{},
+		Metrics:     mockMetrics,
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			fleetCreated = true
+			return []string{"i-should-not-launch"}, nil
+		},
+	}
+
+	msg := queue.Message{ID: "msg-1", Body: string(jobBytes), Handle: "handle-1"}
+	processEC2Message(context.Background(), deps, msg)
+
+	if fleetCreated {
+		t.Error("an already-claimed message must not provision a fleet")
+	}
+	if deleteCount != 1 {
+		t.Errorf("already-claimed message should be deleted once; got %d", deleteCount)
+	}
+	found := false
+	for _, ty := range mockMetrics.schedulingFailureTypes {
+		if ty == discardReasonAlreadyClaimed {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("already-claimed discard must emit a scheduling failure with reason %q; got %v",
+			discardReasonAlreadyClaimed, mockMetrics.schedulingFailureTypes)
 	}
 }
 

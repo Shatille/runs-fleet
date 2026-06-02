@@ -39,6 +39,18 @@ const (
 	sourceWarmPool            = "warm_pool"
 	sourceColdStart           = "cold_start"
 	schedulingFailureJobClaim = "job_claim"
+
+	// requeueReasonOnDemandFallback is emitted when the ec2-worker re-enqueues a
+	// spot job as on-demand after fleet creation fails.
+	requeueReasonOnDemandFallback = "on_demand_fallback"
+	// requeueReasonDirectFleetFailure is emitted when the direct (webhook) path
+	// hands a job back to the durable queue after fleet creation fails, so the
+	// ec2-worker can retry it with its on-demand fallback.
+	requeueReasonDirectFleetFailure = "direct_fleet_failure"
+	// discardReasonAlreadyClaimed is emitted when the ec2-worker drops an SQS
+	// message whose job was already claimed by a concurrent processor (typically
+	// the direct path). The metric makes this otherwise-silent dedup observable.
+	discardReasonAlreadyClaimed = "already_claimed"
 )
 
 var (
@@ -133,10 +145,19 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 
 		if alreadyClaimed {
+			// The SQS copy of a job that a concurrent processor (typically the
+			// direct/webhook path) already claimed. Dropping it is correct dedup,
+			// but log + count it: this discard is the load-bearing half of the
+			// dual-path race, and was previously invisible.
+			ec2Log.Debug(cleanupCtx, "discarding already-claimed message",
+				slog.String("reason", discardReasonAlreadyClaimed))
 			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
 				ec2Log.Error(cleanupCtx, "already claimed message delete failed", slog.String("error", err.Error()))
 			}
 			if deps.Metrics != nil {
+				if err := deps.Metrics.PublishSchedulingFailure(cleanupCtx, discardReasonAlreadyClaimed); err != nil {
+					ec2Log.Error(cleanupCtx, "already-claimed discard metric failed", slog.String("error", err.Error()))
+				}
 				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, queueMain, -1); err != nil {
 					ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
 				}
@@ -418,12 +439,14 @@ func PrepareRunners(ctx context.Context, preparer RunnerPreparer, job *queue.Job
 	return failed
 }
 
-func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
-	defer cleanupCancel()
-	cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
-
-	fallbackJob := &queue.JobMessage{
+// BuildOnDemandFallbackJob constructs the requeue message used by both cold-start
+// paths when fleet creation fails on spot capacity: it forces on-demand and bumps
+// RetryCount so the FIFO dedup id (job_id-retry_count) changes and SQS does not
+// drop the requeue as a duplicate of the original. It is the single source of
+// truth for the fallback message so the ec2-worker and the direct path cannot
+// diverge in what they re-enqueue.
+func BuildOnDemandFallbackJob(job *queue.JobMessage) *queue.JobMessage {
+	return &queue.JobMessage{
 		JobID:         job.JobID,
 		RunID:         job.RunID,
 		Repo:          job.Repo,
@@ -437,6 +460,14 @@ func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.Jo
 		Arch:          job.Arch,
 		StorageGiB:    job.StorageGiB,
 	}
+}
+
+func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
+	defer cleanupCancel()
+	cleanupCtx = logging.ContextWithJob(cleanupCtx, job.JobID, job.RunID, job.Repo)
+
+	fallbackJob := BuildOnDemandFallbackJob(job)
 
 	// Send before delete so a failed requeue leaves the original for redelivery.
 	if sendErr := sendMessageWithRetry(cleanupCtx, deps.Queue, fallbackJob); sendErr != nil {
@@ -448,7 +479,7 @@ func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.Jo
 	ec2Log.Info(cleanupCtx, "job requeued with on-demand fallback",
 		slog.Int("retry_count", fallbackJob.RetryCount))
 	if deps.Metrics != nil {
-		if err := deps.Metrics.PublishJobRequeued(cleanupCtx, "on_demand_fallback"); err != nil {
+		if err := deps.Metrics.PublishJobRequeued(cleanupCtx, requeueReasonOnDemandFallback); err != nil {
 			ec2Log.Error(cleanupCtx, "job requeued metric failed", slog.String("error", err.Error()))
 		}
 	}
