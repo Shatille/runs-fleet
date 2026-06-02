@@ -42,7 +42,12 @@ type DBAPI interface {
 type MetricsAPI interface {
 	PublishJobCompleted(ctx context.Context, pool, result, repo string) error
 	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
+	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
 }
+
+// queueTermination is the queue label for the termination worker's
+// message-processing latency metric.
+const queueTermination = "termination"
 
 // jobResult maps an agent termination status to the small job-result enum used
 // by the metrics taxonomy (success, failure, error, timeout).
@@ -137,7 +142,16 @@ func (h *Handler) Run(ctx context.Context) {
 					msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
 
-					if err := h.processMessage(msgCtx, m); err != nil {
+					start := time.Now()
+					err := h.processMessage(msgCtx, m)
+					if h.metrics != nil {
+						result := "ok"
+						if err != nil {
+							result = "error"
+						}
+						_ = h.metrics.PublishMessageProcessingSeconds(msgCtx, queueTermination, result, time.Since(start).Seconds())
+					}
+					if err != nil {
 						termLog.Error(msgCtx, "message processing failed", slog.String("error", err.Error()))
 					}
 				}(msg)
@@ -265,7 +279,8 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		}
 	}
 	// TODO(metrics): emit job execution latency via PublishJobExecutionSeconds(ctx,
-	// pool, result, msg.DurationSeconds) once timing instrumentation lands.
+	// pool, result, msg.DurationSeconds). Data is in hand (msg.DurationSeconds);
+	// out of scope for this latency-histogram pass, wire in a follow-up.
 
 	// Clean up runner config from secrets store
 	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {

@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/tracing"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -100,12 +102,16 @@ func (c *SQSClient) SendMessage(ctx context.Context, job *JobMessage) error {
 // VisibilityTimeout set to 120s to exceed MessageProcessTimeout (90s).
 func (c *SQSClient) ReceiveMessages(ctx context.Context, maxMessages int32, waitTimeSeconds int32) ([]Message, error) {
 	input := &sqs.ReceiveMessageInput{
-		QueueUrl:              aws.String(c.queueURL),
-		MaxNumberOfMessages:   maxMessages,
-		WaitTimeSeconds:       waitTimeSeconds,
-		VisibilityTimeout:     int32(120),
-		AttributeNames:        []types.QueueAttributeName{types.QueueAttributeNameAll},
-		MessageAttributeNames: []string{"All"},
+		QueueUrl:            aws.String(c.queueURL),
+		MaxNumberOfMessages: maxMessages,
+		WaitTimeSeconds:     waitTimeSeconds,
+		VisibilityTimeout:   int32(120),
+		// SentTimestamp is the enqueue time used to derive job-wait latency.
+		// JobMessage carries no enqueue timestamp of its own, so this system
+		// attribute is the authoritative source (requeued jobs get a fresh one,
+		// which correctly measures the wait for the current assignment).
+		MessageSystemAttributeNames: []types.MessageSystemAttributeName{types.MessageSystemAttributeNameSentTimestamp},
+		MessageAttributeNames:       []string{"All"},
 	}
 
 	output, err := c.sqsClient.ReceiveMessage(ctx, input)
@@ -126,6 +132,11 @@ func (c *SQSClient) ReceiveMessages(ctx context.Context, maxMessages int32, wait
 		for k, v := range sqsMsg.MessageAttributes {
 			if v.StringValue != nil {
 				msg.Attributes[k] = *v.StringValue
+			}
+		}
+		if ts, ok := sqsMsg.Attributes[string(types.MessageSystemAttributeNameSentTimestamp)]; ok {
+			if ms, err := strconv.ParseInt(ts, 10, 64); err == nil {
+				msg.SentAt = time.UnixMilli(ms)
 			}
 		}
 		messages = append(messages, msg)

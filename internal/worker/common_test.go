@@ -57,7 +57,7 @@ func TestRunWorkerLoop_ContextCancellation(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, tick)
+		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, nil, tick)
 		close(done)
 	}()
 
@@ -88,7 +88,7 @@ func TestRunWorkerLoop_ProcessesMessages(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	}, nil, tick)
+	}, nil, nil, tick)
 
 	for atomic.LoadInt32(&processed) < processedCount {
 		tick <- time.Now()
@@ -97,6 +97,105 @@ func TestRunWorkerLoop_ProcessesMessages(t *testing.T) {
 
 	if atomic.LoadInt32(&processed) < processedCount {
 		t.Errorf("Expected at least %d messages processed, got %d", processedCount, atomic.LoadInt32(&processed))
+	}
+}
+
+func TestRunWorkerLoop_ProcessObserverReportsResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tick := make(chan time.Time)
+	mockQueue := &MockQueue{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			return []queue.Message{{ID: "m1", Body: `{"run_id":1}`, Handle: "h1"}}, nil
+		},
+	}
+
+	type obs struct {
+		result  string
+		seconds float64
+	}
+	var mu sync.Mutex
+	var calls []obs
+	observeProcess := func(_ context.Context, result string, seconds float64) {
+		mu.Lock()
+		calls = append(calls, obs{result: result, seconds: seconds})
+		mu.Unlock()
+	}
+
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, observeProcess, tick)
+
+	tick <- time.Now()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(calls)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("process observer was never invoked")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls[0].result != "ok" {
+		t.Errorf("clean return result = %q, want ok", calls[0].result)
+	}
+	if calls[0].seconds < 0 {
+		t.Errorf("seconds = %v, want >= 0", calls[0].seconds)
+	}
+}
+
+func TestRunWorkerLoop_ProcessObserverReportsErrorOnPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tick := make(chan time.Time)
+	mockQueue := &MockQueue{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			return []queue.Message{{ID: "m1", Body: `{"run_id":1}`, Handle: "h1"}}, nil
+		},
+	}
+
+	var mu sync.Mutex
+	var results []string
+	observeProcess := func(_ context.Context, result string, _ float64) {
+		mu.Lock()
+		results = append(results, result)
+		mu.Unlock()
+	}
+
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+		panic("boom")
+	}, nil, observeProcess, tick)
+
+	tick <- time.Now()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(results)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("process observer was never invoked")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if results[0] != "error" {
+		t.Errorf("panicking processor result = %q, want error", results[0])
 	}
 }
 
@@ -118,7 +217,7 @@ func TestRunWorkerLoop_PanicRecovery(t *testing.T) {
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&panicCount, 1)
 		panic("test panic")
-	}, nil, tick)
+	}, nil, nil, tick)
 
 	// A single tick drives continuous draining; the loop must recover from each
 	// panicking processor and keep going, so panics accumulate without a stall.
@@ -175,7 +274,7 @@ func TestRunWorkerLoop_ConcurrencyLimit(t *testing.T) {
 
 		<-allowProcessing
 		atomic.AddInt32(&concurrent, -1)
-	}, nil, tick)
+	}, nil, nil, tick)
 
 	tick <- time.Now()
 
@@ -226,7 +325,7 @@ func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 				time.Sleep(50 * time.Millisecond)
 				close(processingCompleted)
 			}
-		}, nil, tick)
+		}, nil, nil, tick)
 		close(workerDone)
 	}()
 
@@ -268,7 +367,7 @@ func TestRunWorkerLoop_EmptyMessages(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processorCalled, 1)
-	}, nil, tick)
+	}, nil, nil, tick)
 
 	for i := 0; i < 5; i++ {
 		tick <- time.Now()
@@ -294,7 +393,7 @@ func TestRunWorkerLoop_ReceiveError(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, tick)
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, nil, tick)
 
 	tick <- time.Now()
 	tick <- time.Now()
@@ -335,7 +434,7 @@ func TestRunWorkerLoop_DrainsBacklogOnSingleTick(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	}, nil, tick)
+	}, nil, nil, tick)
 
 	// A single tick must drain the entire backlog, not just one batch: the loop
 	// keeps receiving until an empty batch instead of idling until the next tick.
@@ -368,7 +467,7 @@ func TestRunWorkerLoop_ContextDeadline(t *testing.T) {
 		},
 	}
 
-	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, tick)
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {}, nil, nil, tick)
 
 	tick <- time.Now()
 	time.Sleep(50 * time.Millisecond)

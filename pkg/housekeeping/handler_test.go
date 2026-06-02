@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -634,12 +635,12 @@ func TestMessage_JSONSerialization(t *testing.T) {
 
 // mockTaskLocker implements TaskLocker for testing.
 type mockTaskLocker struct {
-	acquireErr    error
-	releaseErr    error
-	acquireCalls  int
-	releaseCalls  int
-	lastTaskType  string
-	lastOwner     string
+	acquireErr   error
+	releaseErr   error
+	acquireCalls int
+	releaseCalls int
+	lastTaskType string
+	lastOwner    string
 }
 
 func (m *mockTaskLocker) AcquireTaskLock(_ context.Context, taskType, owner string, _ time.Duration) error {
@@ -862,4 +863,73 @@ func TestHandler_ProcessMessage_WithoutLocking(t *testing.T) {
 	if executor.orphanedCall != 1 {
 		t.Errorf("expected 1 orphaned call, got %d", executor.orphanedCall)
 	}
+}
+
+// mockHandlerMetrics records the housekeeping worker's message-processing
+// emissions. Safe for concurrent use so the Run loop can be raced.
+type mockHandlerMetrics struct {
+	mu      sync.Mutex
+	calls   int
+	queue   string
+	result  string
+	seconds float64
+}
+
+func (m *mockHandlerMetrics) PublishMessageProcessingSeconds(_ context.Context, queue, result string, seconds float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	m.queue = queue
+	m.result = result
+	m.seconds = seconds
+	return nil
+}
+
+func (m *mockHandlerMetrics) snapshot() (int, string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls, m.queue, m.result
+}
+
+// TestHandler_Run_EmitsMessageProcessingSeconds proves the housekeeping worker
+// emits the message-processing latency tagged with the housekeeping queue.
+func TestHandler_Run_EmitsMessageProcessingSeconds(t *testing.T) {
+	msg := Message{TaskType: TaskOrphanedInstances, Timestamp: time.Now()}
+	body, _ := json.Marshal(msg)
+
+	q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: testReceipt}}}
+	executor := &mockTaskExecutor{}
+	m := &mockHandlerMetrics{}
+	handler := NewHandler(q, executor, &config.Config{})
+	handler.SetMetrics(m)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		n, queueLabel, result := m.snapshot()
+		if n > 0 {
+			if queueLabel != queueHousekeeping {
+				t.Errorf("queue label = %q, want housekeeping", queueLabel)
+			}
+			if result != "ok" {
+				t.Errorf("result = %q, want ok", result)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatal("message-processing metric was never emitted")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
 }

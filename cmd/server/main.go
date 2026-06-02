@@ -357,6 +357,7 @@ func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStor
 	}
 
 	h := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
+	h.SetMetrics(metricsPublisher)
 
 	if dbClient != nil {
 		instanceID := uuid.NewString()

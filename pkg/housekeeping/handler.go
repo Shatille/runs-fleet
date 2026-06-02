@@ -61,6 +61,16 @@ type Message struct {
 	Params    json.RawMessage `json:"params,omitempty"`
 }
 
+// HandlerMetricsAPI publishes the housekeeping worker's message-processing
+// latency. It is satisfied by the concrete metrics.Publisher.
+type HandlerMetricsAPI interface {
+	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
+}
+
+// queueHousekeeping is the queue label for the housekeeping worker's
+// message-processing latency metric.
+const queueHousekeeping = "housekeeping"
+
 // TaskExecutor executes housekeeping tasks.
 type TaskExecutor interface {
 	ExecuteOrphanedInstances(ctx context.Context) error
@@ -80,6 +90,7 @@ type Handler struct {
 	queueClient  QueueAPI
 	taskExecutor TaskExecutor
 	taskLocker   TaskLocker
+	metrics      HandlerMetricsAPI
 	instanceID   string
 	config       *config.Config
 	log          *logging.Logger
@@ -111,6 +122,11 @@ func (h *Handler) SetTaskLocker(locker TaskLocker, instanceID string) {
 	h.instanceID = instanceID
 }
 
+// SetMetrics sets the metrics publisher for the handler.
+func (h *Handler) SetMetrics(m HandlerMetricsAPI) {
+	h.metrics = m
+}
+
 // Run starts the housekeeping handler loop.
 func (h *Handler) Run(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
@@ -133,7 +149,16 @@ func (h *Handler) Run(ctx context.Context) {
 			}
 
 			for _, msg := range messages {
-				if err := h.processMessage(ctx, msg); err != nil {
+				start := time.Now()
+				err := h.processMessage(ctx, msg)
+				if h.metrics != nil {
+					result := "ok"
+					if err != nil {
+						result = "error"
+					}
+					_ = h.metrics.PublishMessageProcessingSeconds(ctx, queueHousekeeping, result, time.Since(start).Seconds())
+				}
+				if err != nil {
 					h.logger().Error(ctx, "process message failed", slog.String("error", err.Error()))
 				}
 			}

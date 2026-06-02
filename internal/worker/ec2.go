@@ -97,14 +97,18 @@ func (d EC2WorkerDeps) prepareRunners(ctx context.Context, job *queue.JobMessage
 // RunEC2Worker starts the EC2 queue processing loop.
 func RunEC2Worker(ctx context.Context, deps EC2WorkerDeps) {
 	var observe ReceiveObserver
+	var observeProcess ProcessObserver
 	if deps.Metrics != nil {
 		observe = func(c context.Context, result string) {
 			_ = deps.Metrics.PublishQueueReceive(c, queueMain, result)
 		}
+		observeProcess = func(c context.Context, result string, seconds float64) {
+			_ = deps.Metrics.PublishMessageProcessingSeconds(c, queueMain, result, seconds)
+		}
 	}
-	RunWorkerLoopWithObserver(ctx, "EC2", deps.Queue, func(ctx context.Context, msg queue.Message) {
+	RunWorkerLoopWithObservers(ctx, "EC2", deps.Queue, func(ctx context.Context, msg queue.Message) {
 		processEC2Message(ctx, deps, msg)
-	}, observe)
+	}, observe, observeProcess)
 }
 
 //nolint:gocyclo // Core message processing with warm pool + cold start paths
@@ -144,10 +148,6 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
 			}
 		}
-
-		// TODO(metrics): capture processing start at function entry and emit
-		// message processing latency via PublishMessageProcessingSeconds(cleanupCtx,
-		// queueMain, result, elapsed) once timing instrumentation lands.
 	}()
 
 	var job queue.JobMessage
@@ -212,6 +212,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			jobProcessed = true
 			if deps.Metrics != nil {
 				_ = deps.Metrics.PublishJobAssigned(ctx, job.Pool, sourceWarmPool, job.Repo)
+				publishJobWait(ctx, deps.Metrics, job.Pool, sourceWarmPool, msg.SentAt)
 			}
 			ec2Log.Info(ctx, "job assigned to warm pool",
 				slog.String(logging.KeyInstanceID, result.InstanceID))
@@ -298,11 +299,13 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 
 	if deps.Metrics != nil {
 		_ = deps.Metrics.PublishJobAssigned(ctx, job.Pool, sourceColdStart, job.Repo)
+		publishJobWait(ctx, deps.Metrics, job.Pool, sourceColdStart, msg.SentAt)
 	}
-	// TODO(metrics): emit wait and provision latency via
-	// PublishJobWaitSeconds(ctx, job.Pool, sourceColdStart, waited) and
-	// PublishInstanceProvisionSeconds(ctx, sourceColdStart, family, provisioned)
-	// once timing instrumentation lands.
+	// TODO(metrics): emit instance provision latency (launch -> runner-ready) via
+	// PublishInstanceProvisionSeconds(ctx, sourceColdStart, family, provisioned).
+	// Deferred: the runner-ready timestamp is recorded on a different instance
+	// (the agent) than the launch timestamp here, and no cross-instance
+	// launch+ready pair is readily available at this point.
 
 	ec2Log.Info(ctx, "instances launched",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
@@ -444,6 +447,21 @@ func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.Jo
 		ec2Log.Error(cleanupCtx, "original message delete failed after fallback requeue (duplicate possible, deduped by claim)",
 			slog.String("error", delErr.Error()))
 	}
+}
+
+// publishJobWait emits the enqueue->assignment latency for the current
+// assignment. sentAt is the SQS SentTimestamp surfaced on the message; it is the
+// zero value when unavailable (non-SQS backend or missing attribute), in which
+// case the metric is skipped. A negative elapsed (clock skew) is clamped to 0.
+func publishJobWait(ctx context.Context, m metrics.Publisher, pool, source string, sentAt time.Time) {
+	if m == nil || sentAt.IsZero() {
+		return
+	}
+	waited := time.Since(sentAt).Seconds()
+	if waited < 0 {
+		waited = 0
+	}
+	_ = m.PublishJobWaitSeconds(ctx, pool, source, waited)
 }
 
 func deleteMessageWithRetry(ctx context.Context, q queue.Queue, receiptHandle string) error {

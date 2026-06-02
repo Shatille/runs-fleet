@@ -514,7 +514,7 @@ func TestRunEC2Worker_ContextCancellation(t *testing.T) {
 	go func() {
 		RunWorkerLoopWithTicker(ctx, "EC2", deps.Queue, func(_ context.Context, _ queue.Message) {
 			processEC2Message(ctx, deps, queue.Message{})
-		}, nil, tick)
+		}, nil, nil, tick)
 		close(done)
 	}()
 
@@ -560,7 +560,7 @@ func TestRunEC2Worker_ProcessesMessages(t *testing.T) {
 
 	go RunWorkerLoopWithTicker(ctx, "EC2", deps.Queue, func(_ context.Context, _ queue.Message) {
 		atomic.AddInt32(&processed, 1)
-	}, nil, tick)
+	}, nil, nil, tick)
 
 	// Send ticks to trigger message processing with timeout
 	timeout := time.After(1 * time.Second)
@@ -621,12 +621,27 @@ func (m *mockWarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *que
 // Embeds NoopPublisher to satisfy the full Publisher interface.
 type mockMetricsPublisher struct {
 	metrics.NoopPublisher
+	mu                 sync.Mutex
 	warmPoolHitCalled  bool
 	coldStartCalled    bool
 	queueDepthDelta    float64
 	queueReceiveResult string
 	requeuedReason     string
 	schedulingFailures int
+	jobWaits           []jobWaitCall
+	processingCalls    []processingCall
+}
+
+type jobWaitCall struct {
+	pool    string
+	source  string
+	seconds float64
+}
+
+type processingCall struct {
+	queue   string
+	result  string
+	seconds float64
 }
 
 func (m *mockMetricsPublisher) PublishQueueDepth(_ context.Context, _ string, delta float64) error {
@@ -652,6 +667,18 @@ func (m *mockMetricsPublisher) PublishQueueReceive(_ context.Context, _, result 
 }
 func (m *mockMetricsPublisher) PublishSchedulingFailure(_ context.Context, _ string) error {
 	m.schedulingFailures++
+	return nil
+}
+func (m *mockMetricsPublisher) PublishJobWaitSeconds(_ context.Context, pool, source string, seconds float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobWaits = append(m.jobWaits, jobWaitCall{pool: pool, source: source, seconds: seconds})
+	return nil
+}
+func (m *mockMetricsPublisher) PublishMessageProcessingSeconds(_ context.Context, queue, result string, seconds float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.processingCalls = append(m.processingCalls, processingCall{queue: queue, result: result, seconds: seconds})
 	return nil
 }
 
@@ -1071,6 +1098,111 @@ func TestProcessEC2Message_FleetFailure_ReleasesClaimOnFreshContext(t *testing.T
 	}
 	if mockDynamo.deleteCtxDone {
 		t.Error("claim cleanup must run on a fresh (non-canceled) context, not the strained job context")
+	}
+}
+
+// TestProcessEC2Message_WarmPoolHit_EmitsJobWait proves a warm-pool assignment
+// emits the enqueue->assignment latency tagged with the pool and warm_pool
+// source, computed from the message SentAt.
+func TestProcessEC2Message_WarmPoolHit_EmitsJobWait(t *testing.T) {
+	job := queue.JobMessage{JobID: 1, RunID: 2, Repo: "owner/repo", InstanceType: "t3.micro", Pool: "my-pool"}
+	jobBytes, _ := json.Marshal(job)
+
+	mockAssigner := &mockWarmPoolAssigner{
+		tryAssignFunc: func(_ context.Context, _ *queue.JobMessage) (*WarmPoolResult, error) {
+			return &WarmPoolResult{Assigned: true, InstanceID: "i-w"}, nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:            &mockQueueEC2{},
+		Metrics:          mockMetrics,
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex:      &subnetIndex,
+		WarmPoolAssigner: mockAssigner,
+	}
+
+	sentAt := time.Now().Add(-5 * time.Second)
+	msg := queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1", SentAt: sentAt}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	if len(mockMetrics.jobWaits) != 1 {
+		t.Fatalf("job_wait emissions = %d, want 1", len(mockMetrics.jobWaits))
+	}
+	got := mockMetrics.jobWaits[0]
+	if got.pool != "my-pool" || got.source != sourceWarmPool {
+		t.Errorf("job_wait labels = %+v, want pool=my-pool source=warm_pool", got)
+	}
+	if got.seconds < 4 {
+		t.Errorf("job_wait seconds = %v, want >= ~5", got.seconds)
+	}
+}
+
+// TestProcessEC2Message_ColdStart_EmitsJobWait proves a cold-start launch emits
+// the enqueue->assignment latency tagged with the cold_start source.
+func TestProcessEC2Message_ColdStart_EmitsJobWait(t *testing.T) {
+	job := queue.JobMessage{JobID: 1, RunID: 2, Repo: "owner/repo", InstanceType: "t3.micro", Spot: false}
+	jobBytes, _ := json.Marshal(job)
+
+	mockMetrics := &mockMetricsPublisher{}
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       &fleet.Manager{},
+		Metrics:     mockMetrics,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+		CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+			return []string{"i-cold"}, nil
+		},
+		PrepareRunnersFn: func(_ context.Context, _ *queue.JobMessage, _ []string) []string {
+			return nil
+		},
+	}
+
+	sentAt := time.Now().Add(-3 * time.Second)
+	msg := queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1", SentAt: sentAt}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	if len(mockMetrics.jobWaits) != 1 {
+		t.Fatalf("job_wait emissions = %d, want 1", len(mockMetrics.jobWaits))
+	}
+	if got := mockMetrics.jobWaits[0]; got.source != sourceColdStart {
+		t.Errorf("job_wait source = %q, want cold_start", got.source)
+	}
+}
+
+// TestProcessEC2Message_NoSentAt_SkipsJobWait proves that when no SentTimestamp
+// is available the job_wait metric is not emitted (no bogus duration).
+func TestProcessEC2Message_NoSentAt_SkipsJobWait(t *testing.T) {
+	job := queue.JobMessage{JobID: 1, RunID: 2, Repo: "owner/repo", InstanceType: "t3.micro", Pool: "p"}
+	jobBytes, _ := json.Marshal(job)
+
+	mockAssigner := &mockWarmPoolAssigner{
+		tryAssignFunc: func(_ context.Context, _ *queue.JobMessage) (*WarmPoolResult, error) {
+			return &WarmPoolResult{Assigned: true, InstanceID: "i-w"}, nil
+		},
+	}
+	mockMetrics := &mockMetricsPublisher{}
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:            &mockQueueEC2{},
+		Metrics:          mockMetrics,
+		Config:           &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex:      &subnetIndex,
+		WarmPoolAssigner: mockAssigner,
+	}
+
+	// No SentAt set (zero value).
+	msg := queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1"}
+
+	processEC2Message(context.Background(), deps, msg)
+
+	if len(mockMetrics.jobWaits) != 0 {
+		t.Errorf("job_wait emissions = %d, want 0 when SentAt is zero", len(mockMetrics.jobWaits))
 	}
 }
 
