@@ -27,7 +27,6 @@ aws:
   poolQueueUrl: ""
   eventsQueueUrl: ""
   terminationQueueUrl: ""
-  housekeepingQueueUrl: ""
 
   # DynamoDB tables
   jobsTable: "runs-fleet-jobs"

@@ -103,10 +103,6 @@ spec:
             - name: RUNS_FLEET_TERMINATION_QUEUE_URL
               value: {{ .Values.aws.terminationQueueUrl | quote }}
             {{- end }}
-            {{- if .Values.aws.housekeepingQueueUrl }}
-            - name: RUNS_FLEET_HOUSEKEEPING_QUEUE_URL
-              value: {{ .Values.aws.housekeepingQueueUrl | quote }}
-            {{- end }}
             # DynamoDB tables
             - name: RUNS_FLEET_JOBS_TABLE
               value: {{ .Values.aws.jobsTable | quote }}

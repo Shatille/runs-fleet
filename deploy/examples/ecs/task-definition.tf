@@ -61,7 +61,6 @@ resource "aws_ecs_task_definition" "orchestrator" {
       { name = "RUNS_FLEET_POOL_QUEUE_URL", value = "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-pool" },
       { name = "RUNS_FLEET_EVENTS_QUEUE_URL", value = "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-events" },
       { name = "RUNS_FLEET_TERMINATION_QUEUE_URL", value = "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-termination" },
-      { name = "RUNS_FLEET_HOUSEKEEPING_QUEUE_URL", value = "https://sqs.ap-northeast-1.amazonaws.com/123456789012/runs-fleet-housekeeping" },
 
       # DynamoDB — names come from deploy/terraform/dynamodb.tf.
       { name = "RUNS_FLEET_JOBS_TABLE", value = "runs-fleet-jobs" },
@@ -78,7 +77,12 @@ resource "aws_ecs_task_definition" "orchestrator" {
       { name = "RUNS_FLEET_INSTANCE_PROFILE_ARN", value = "arn:aws:iam::123456789012:instance-profile/runs-fleet-runner" },
       { name = "RUNS_FLEET_RUNNER_IMAGE", value = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/runs-fleet/runner:latest" },
 
-      # Optional: S3 GitHub Actions cache. Omit both to disable.
+      # Orchestrator's own externally-reachable HTTPS endpoint, served to runners
+      # as ACTIONS_CACHE_URL for the S3 Actions cache. Required.
+      { name = "RUNS_FLEET_BASE_URL", value = "https://runs-fleet.example.com" },
+
+      # S3 GitHub Actions cache bucket (served via RUNS_FLEET_BASE_URL; pair with
+      # RUNS_FLEET_CACHE_SECRET below). Omit the bucket to disable the cache.
       { name = "RUNS_FLEET_CACHE_BUCKET", value = "runs-fleet-cache" },
     ]
 

@@ -58,27 +58,6 @@ resource "aws_sqs_queue" "pool" {
   })
 }
 
-# ─── housekeeping (standard, scheduled cleanup tasks) ────────────────────────
-# Each orchestrator replica schedules the same task types, and the consumer
-# drops duplicates that lose the per-task lock. The DLQ caps any message that
-# still fails its task at maxReceiveCount redeliveries instead of recycling it
-# on the visibility timeout for the whole retention window.
-resource "aws_sqs_queue" "housekeeping_dlq" {
-  name                      = "runs-fleet-housekeeping-dlq"
-  message_retention_seconds = local.dlq_retention_seconds
-}
-
-resource "aws_sqs_queue" "housekeeping" {
-  name                       = "runs-fleet-housekeeping"
-  visibility_timeout_seconds = 300
-  message_retention_seconds  = local.work_retention_seconds
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.housekeeping_dlq.arn
-    maxReceiveCount     = local.dlq_max_receive_count
-  })
-}
-
 # ─── termination (standard, instance shutdown notifications) ─────────────────
 resource "aws_sqs_queue" "termination" {
   name                       = "runs-fleet-termination"
