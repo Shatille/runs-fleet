@@ -71,8 +71,13 @@ func main() {
 		log.Fatal("RUNS_FLEET_RUN_ID not set and not found in runner config")
 	}
 
-	logger.Printf("Agent configuration: run_id=%s, instance_id=%s, max_runtime=%dm",
-		runID, instanceID, maxRuntimeMinutes)
+	// Resolve job ID: env var takes precedence, then secrets store config.
+	// In SSM mode the bootstrap does not export RUNS_FLEET_JOB_ID, so the
+	// value comes from the config fetched by initAgent.
+	jobID := resolveJobID(ac)
+
+	logger.Printf("Agent configuration: run_id=%s, job_id=%s, instance_id=%s, max_runtime=%dm",
+		runID, jobID, instanceID, maxRuntimeMinutes)
 
 	downloader := agent.NewDownloader()
 	safetyMonitor := agent.NewSafetyMonitor(time.Duration(maxRuntimeMinutes)*time.Minute, logger)
@@ -83,7 +88,17 @@ func main() {
 		executor.SetCloudWatchLogger(ac.cwLogger)
 	}
 
-	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, runID, logger)
+	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger)
+}
+
+// resolveJobID resolves the GitHub job_id used to key the job record, returning
+// an empty string when no source is available.
+func resolveJobID(ac *agentConfig) string {
+	jobID := os.Getenv("RUNS_FLEET_JOB_ID")
+	if jobID == "" && ac.runnerConfig != nil {
+		jobID = ac.runnerConfig.JobID
+	}
+	return jobID
 }
 
 // initAgent initializes the agent components (AWS config, secrets, telemetry, terminator).
@@ -142,7 +157,7 @@ func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agen
 // runAgent executes the agent phases.
 func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader,
 	executor *agent.Executor, cleanup *agent.Cleanup,
-	instanceID, runID string, logger *stdLogger) {
+	instanceID, jobID string, logger *stdLogger) {
 
 	if ac.cwLogger != nil {
 		defer ac.cwLogger.Stop()
@@ -152,7 +167,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	runnerPath, err := downloader.DownloadRunner(ctx)
 	if err != nil {
 		logger.Printf("Failed to download runner: %v", err)
-		terminateWithError(ctx, ac.terminator, instanceID, runID, "download_failed", err)
+		terminateWithError(ctx, ac.terminator, instanceID, jobID, "download_failed", err)
 		return
 	}
 	logger.Printf("Runner downloaded successfully to %s", runnerPath)
@@ -162,7 +177,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 
 	if regErr := registrar.RegisterRunner(ctx, ac.runnerConfig, runnerPath); regErr != nil {
 		logger.Printf("Failed to register runner: %v", regErr)
-		terminateWithError(ctx, ac.terminator, instanceID, runID, "registration_failed", regErr)
+		terminateWithError(ctx, ac.terminator, instanceID, jobID, "registration_failed", regErr)
 		return
 	}
 	logger.Println("Runner registered successfully")
@@ -177,7 +192,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	if ac.telemetry != nil {
 		jobStatus := agent.JobStatus{
 			InstanceID: instanceID,
-			JobID:      runID,
+			JobID:      jobID,
 			StartedAt:  jobStartedAt,
 		}
 		if sendErr := ac.telemetry.SendJobStarted(ctx, jobStatus); sendErr != nil {
@@ -217,7 +232,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 
 	jobStatus := agent.JobStatus{
 		InstanceID:      instanceID,
-		JobID:           runID,
+		JobID:           jobID,
 		ExitCode:        result.ExitCode,
 		StartedAt:       result.StartedAt,
 		CompletedAt:     result.CompletedAt,
@@ -237,10 +252,10 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 }
 
 // terminateWithError terminates the instance after an error.
-func terminateWithError(ctx context.Context, terminator agent.InstanceTerminator, instanceID, runID, errorType string, err error) {
+func terminateWithError(ctx context.Context, terminator agent.InstanceTerminator, instanceID, jobID, errorType string, err error) {
 	jobStatus := agent.JobStatus{
 		InstanceID:  instanceID,
-		JobID:       runID,
+		JobID:       jobID,
 		Status:      "failure",
 		ExitCode:    -1,
 		StartedAt:   time.Now(),
