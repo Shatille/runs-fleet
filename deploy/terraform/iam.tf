@@ -292,6 +292,7 @@ resource "aws_iam_role_policy" "orchestrator" {
           "sqs:SendMessage",
           "sqs:GetQueueAttributes",
           "sqs:StartMessageMoveTask",
+          "sqs:ListMessageMoveTasks",
         ]
         Resource = "${local.sqs_arn_prefix}*"
       },

@@ -78,7 +78,7 @@ In `Settings → Secrets and variables → Actions` on the fork:
 The orchestrator and Packer workflows expect these resources to already exist in the target AWS account:
 
 - ECR repositories matching `secrets.ECR_REPOSITORY_RUNNER` and the orchestrator image path.
-- SQS FIFO + standard queues: main (FIFO), DLQ (FIFO), pool, events, termination, housekeeping.
+- SQS FIFO + standard queues: main (FIFO), pool, events, termination, housekeeping — each work queue paired with a dead-letter queue (main-dlq is FIFO; pool-dlq and housekeeping-dlq are standard). See `deploy/terraform/queues.tf`.
 - DynamoDB tables: `runs-fleet-jobs`, `runs-fleet-pools`, `runs-fleet-circuit-state`.
 - S3 bucket for the GitHub Actions cache.
 - Security group named `runs-fleet-runner` (discovered by Packer via filter) and a matching instance profile.
