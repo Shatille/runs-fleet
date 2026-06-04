@@ -57,6 +57,15 @@ orchestrator:
 
   replicas: 2
 
+  # Grace period for draining on SIGTERM. The orchestrator stops accepting new
+  # work immediately but lets in-flight message processing run to completion
+  # (bounded by the ~90s MessageProcessTimeout); this must exceed the internal
+  # worker drain timeout (MessageProcessTimeout + 10s) plus the HTTP/telemetry
+  # shutdown steps, or k8s SIGKILLs the pod mid-drain and reintroduces the
+  # rollout error burst. Tradeoff: each old pod can take up to this long to
+  # leave during a rollout, though typical drains finish in seconds.
+  terminationGracePeriodSeconds: 120
+
   # Deployment annotations (ArgoCD, Flux, etc.)
   annotations: {}
 

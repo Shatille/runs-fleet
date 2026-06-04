@@ -172,8 +172,14 @@ func (h *Handler) Run(ctx context.Context) {
 					defer wg.Done()
 					defer func() { <-sem }()
 
-					// Add timeout to prevent message processing from hanging
-					msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					// Detach from the handler's parent (SIGTERM) context while keeping
+					// its log/trace values, so an in-flight termination message runs
+					// to completion on shutdown instead of aborting with "context
+					// canceled". The receive path above still stops on ctx.Done(), so
+					// no new work is accepted, and the deferred wg.Wait() drains these
+					// processors before Run returns. The timeout still bounds a hung
+					// processor.
+					msgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 					defer cancel()
 
 					start := time.Now()

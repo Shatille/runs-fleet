@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
+
+func init() {
+	// Use a short tick interval in tests to avoid slow test execution.
+	handlerTickInterval = 10 * time.Millisecond
+}
 
 // Test constants to satisfy goconst
 const testReceipt = "test-receipt"
@@ -131,6 +137,90 @@ func TestNewHandler(t *testing.T) {
 	}
 	if handler.config != cfg {
 		t.Error("expected config to be set")
+	}
+}
+
+// onceQueueAPI returns its messages on the first receive and empty thereafter,
+// so the loop does not redeliver the same message across ticks.
+type onceQueueAPI struct {
+	messages   []queue.Message
+	dispatched int32
+}
+
+func (o *onceQueueAPI) ReceiveMessages(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+	if atomic.CompareAndSwapInt32(&o.dispatched, 0, 1) {
+		return o.messages, nil
+	}
+	return nil, nil
+}
+
+func (o *onceQueueAPI) DeleteMessage(_ context.Context, _ string) error { return nil }
+
+// blockingTaskExecutor pauses one task mid-execution so a test can cancel the
+// handler's parent context while the task is in flight, then inspect whether the
+// task's context observed that cancellation.
+type blockingTaskExecutor struct {
+	mockTaskExecutor
+	started     chan struct{}
+	release     chan struct{}
+	ctxErr      error
+	startedOnce sync.Once
+}
+
+func (b *blockingTaskExecutor) ExecuteOrphanedInstances(ctx context.Context) error {
+	b.startedOnce.Do(func() { close(b.started) })
+	<-b.release
+	b.ctxErr = ctx.Err()
+	return nil
+}
+
+// TestHandler_Run_InflightTaskRunsToCompletionAfterCancel simulates a SIGTERM
+// arriving while a housekeeping task is executing: the parent context is
+// cancelled mid-task. The in-flight task must run to completion observing a
+// context that is NOT cancelled, and Run must return only after it finishes.
+func TestHandler_Run_InflightTaskRunsToCompletionAfterCancel(t *testing.T) {
+	body, err := json.Marshal(Message{TaskType: TaskOrphanedInstances, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	q := &onceQueueAPI{messages: []queue.Message{{Body: string(body), Handle: testReceipt}}}
+	executor := &blockingTaskExecutor{started: make(chan struct{}), release: make(chan struct{})}
+	handler := NewHandler(q, executor, &config.Config{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not start")
+	}
+
+	// Simulate SIGTERM mid-task.
+	cancel()
+
+	// Run must not return while the task is still in flight.
+	select {
+	case <-done:
+		t.Fatal("handler returned before in-flight task completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(executor.release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after in-flight task completed")
+	}
+
+	if executor.ctxErr != nil {
+		t.Errorf("task context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", executor.ctxErr)
 	}
 }
 
