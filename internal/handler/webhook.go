@@ -56,13 +56,9 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		return nil, nil
 	}
 
-	runID, err := strconv.ParseInt(jobConfig.RunID, 10, 64)
-	if err != nil {
-		webhookLog.Warn(ctx, "invalid run_id in label",
-			slog.String("run_id", jobConfig.RunID),
-			slog.String("error", err.Error()))
-		return nil, nil
-	}
+	// run_id is sourced from the webhook payload, not the label. The label's
+	// run_id (legacy runs-fleet=<run-id> form) is optional and ignored here.
+	runID := event.GetWorkflowJob().GetRunID()
 
 	if jobConfig.Pool != "" && dbc != nil {
 		if err := EnsureEphemeralPool(ctx, dbc, jobConfig); err != nil {

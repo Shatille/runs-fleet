@@ -86,11 +86,17 @@ GitHub Webhook → API Gateway → SQS FIFO
 GitHub workflows request runners via labels:
 
 ```yaml
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/ram=8+32/family=c7g+m7g"
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
+runs-on: "runs-fleet"
+runs-on: "runs-fleet/cpu=4"
+runs-on: "runs-fleet/cpu=4/arch=arm64/pool=default"
+runs-on: "runs-fleet/cpu=4+16/ram=8+32/family=c7g+m7g"
+runs-on: "runs-fleet/cpu=4/arch=arm64/gen=8"
+runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"  # legacy form, still supported
 ```
+
+The bare `runs-fleet` marker is the only required token; run_id is sourced from
+the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
+(its run_id segment is optional and ignored — the webhook is authoritative).
 
 ### Resource labels
 
@@ -105,7 +111,7 @@ runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
 
 ### Routing labels
 
-- `runs-fleet=<run-id>` - Workflow run identifier (required)
+- `runs-fleet` - Runner marker (required). Legacy `runs-fleet=<run-id>/...` still works; run_id is sourced from the webhook
 - `pool=<name>` - Warm pool name (routes to pool queue)
 - `spot=false` - Force on-demand (skip spot)
 

@@ -385,6 +385,69 @@ func TestHandleWorkflowJobQueued(t *testing.T) {
 	}
 }
 
+func TestHandleWorkflowJobQueued_RunIDFromWebhook(t *testing.T) {
+	tests := []struct {
+		name      string
+		labels    []string
+		runID     int64
+		wantRunID int64
+	}{
+		{
+			name:      "run-id-less new form sources run_id from webhook",
+			labels:    []string{"runs-fleet/cpu=4/arch=arm64/pool=default"},
+			runID:     987654,
+			wantRunID: 987654,
+		},
+		{
+			name:      "marker-only form sources run_id from webhook",
+			labels:    []string{"self-hosted", "runs-fleet"},
+			runID:     555,
+			wantRunID: 555,
+		},
+		{
+			name:      "legacy form prefers webhook run_id over label",
+			labels:    []string{"runs-fleet=12345/cpu=4/arch=arm64"},
+			runID:     67890,
+			wantRunID: 67890,
+		},
+		{
+			name:      "legacy form with non-numeric label run_id is not dropped",
+			labels:    []string{"runs-fleet=abc/cpu=4/arch=arm64"},
+			runID:     42,
+			wantRunID: 42,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := &github.WorkflowJobEvent{
+				WorkflowJob: &github.WorkflowJob{
+					ID:     github.Int64(111),
+					RunID:  github.Int64(tt.runID),
+					Name:   github.String("test-job"),
+					Labels: tt.labels,
+				},
+				Repo: &github.Repository{
+					FullName: github.String("owner/repo"),
+				},
+			}
+
+			mockQueue := &MockQueue{}
+
+			msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+			if err != nil {
+				t.Fatalf("HandleWorkflowJobQueued() unexpected error: %v", err)
+			}
+			if msg == nil {
+				t.Fatal("HandleWorkflowJobQueued() should not drop run-id-less job")
+			}
+			if msg.RunID != tt.wantRunID {
+				t.Errorf("Message RunID = %d, want %d", msg.RunID, tt.wantRunID)
+			}
+		})
+	}
+}
+
 func TestBuildRunnerLabel(t *testing.T) {
 	tests := []struct {
 		name string

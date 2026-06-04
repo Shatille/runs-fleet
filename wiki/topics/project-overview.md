@@ -124,12 +124,12 @@ Source dependency footprint visible in
 **Workflow `runs-on` label syntax:**
 
 ```yaml
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
+runs-on: "runs-fleet/cpu=4/arch=arm64/pool=default"
 ```
 
 | Label | Meaning |
 |-------|---------|
-| `runs-fleet=<run-id>` | Workflow run identifier (required) |
+| `runs-fleet` | Runner marker (required); run_id read from webhook. Legacy `runs-fleet=<run-id>/...` still works |
 | `cpu=<n>` | vCPU count; defaults to 2x range (e.g. `cpu=4` → 4-8) |
 | `cpu=<min>+<max>` | Explicit vCPU range (`cpu=4+4` for exact) |
 | `ram=<n>` / `ram=<min>+<max>` | RAM in GB |

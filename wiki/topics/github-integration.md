@@ -112,12 +112,21 @@ business logic invoked by the route handler once an event is received.
 `&io.LimitedReader{R: r.Body, N: config.MaxBodySize + 1}` and rejected with
 "request body exceeds 1MB limit" when over `config.MaxBodySize`.
 
-**Label format** parsed by `ParseLabels`:
+**Label format** parsed by `ParseLabels`. The marker is recognized in three
+forms — `findMarkerLabel` matches the bare `runs-fleet`, the new
+`runs-fleet/...` form, and the legacy `runs-fleet=<run-id>/...` form (while
+rejecting unrelated labels that merely share the prefix, e.g. `runs-fleet-foo`).
+The spec is parsed identically for all three; run_id is **optional** in the
+label (only the legacy form populates `JobConfig.RunID`):
 
 ```
-runs-fleet=<run-id>/cpu=4/arch=arm64/pool=default/spot=true
-runs-fleet=<run-id>/cpu=4+16/ram=8+32/family=c7g+m7g/arch=arm64
+runs-fleet                                            (marker only, all defaults)
+runs-fleet/cpu=4/arch=arm64/pool=default/spot=false   (marker + spec, no run-id)
+runs-fleet=<run-id>/cpu=4+16/ram=8+32/family=c7g+m7g  (legacy, run-id carried)
 ```
+
+run_id is sourced from the webhook payload (`event.GetWorkflowJob().GetRunID()`)
+in `HandleWorkflowJobQueued`, not the label — the legacy label run-id is ignored.
 
 Recognized keys: `cpu`, `ram` (both accept `min+max` ranges via
 `parseRange`/`parseRangeFloat`), `family` (split on `+`), `gen`
@@ -149,8 +158,10 @@ are silently ignored. Defaults: `Spot=true`, `OS="linux"`,
 - **1MB body cap.** Defends against memory exhaustion from oversized
   payloads via `io.LimitedReader`.
 - **Silent skip on missing label.** `HandleWorkflowJobQueued` returns
-  `(nil, nil)` when `ParseLabels` finds no `runs-fleet=` label, so jobs
-  not destined for the fleet are ignored without producing errors.
+  `(nil, nil)` when `ParseLabels` finds no `runs-fleet` marker, so jobs
+  not destined for the fleet are ignored without producing errors. A
+  mistyped run_id no longer drops the job: run_id comes from the webhook,
+  so the label run_id is never re-parsed.
 - **Ephemeral pool bootstrap.** When a job carries a `pool=` label and
   no pool config exists, `EnsureEphemeralPool` creates one with
   `DesiredRunning=0`, `DesiredStopped=1`, `IdleTimeoutMinutes=30` so
