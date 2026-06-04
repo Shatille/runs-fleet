@@ -48,7 +48,7 @@ type SchedulerConfig struct {
 	CostReportInterval time.Duration
 
 	// DLQRedriveInterval is how often to redrive messages from DLQ.
-	// Default: 1 minute
+	// Default: 5 minutes
 	DLQRedriveInterval time.Duration
 
 	// EphemeralPoolCleanupInterval is how often to cleanup stale ephemeral pools.
@@ -74,7 +74,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		OrphanedJobsInterval:         15 * time.Minute,
 		PoolAuditInterval:            10 * time.Minute,
 		CostReportInterval:           24 * time.Hour,
-		DLQRedriveInterval:           1 * time.Minute,
+		DLQRedriveInterval:           5 * time.Minute,
 		EphemeralPoolCleanupInterval:    1 * time.Hour,
 		StaleJobsInterval:               5 * time.Minute,
 		OrphanedPackerInstancesInterval: 15 * time.Minute,
