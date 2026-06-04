@@ -252,6 +252,27 @@ terraform apply
 - Stopped pool: instances stopped, batch-started on-demand (max 50)
 - Idle timeout: 60 minutes (configurable per pool)
 
+**Testing time-dependent code:**
+- Default: tests of goroutines + timers/tickers + channels use Go 1.25
+  `testing/synctest`. Wrap the body in `synctest.Test(t, func(t *testing.T){ ... })`;
+  advance the per-bubble fake clock with `time.Sleep`; settle with `synctest.Wait()`.
+  Replace `time.After(...)` safety deadlines and "give it a moment" sleeps with
+  `synctest.Wait()` + a non-blocking `select { case <-done: ...; default: ... }`.
+  No production clock abstraction needed — stdlib `time.NewTicker`/`time.Now` run
+  against the fake clock unchanged. See `pkg/housekeeping/runner_test.go`.
+- Constraints: a bubbled test is **not** `t.Parallel()`; every goroutine started
+  in the bubble must exit before the bubble returns (drive cancellation to
+  completion: `cancel()` → `synctest.Wait()`); bubble goroutines may only block on
+  in-memory primitives — not real network/disk. `synctest.Wait()` establishes
+  happens-before (it returns only once the other goroutines are durably blocked),
+  so reading state they wrote before blocking is race-clean — channels/atomics are
+  fine but not required for that.
+- When NOT synctest: tests that hit real I/O (`httptest`, real `client.Do`) keep the
+  existing seams — overridable interval/delay vars (`FleetRetryBaseDelay`,
+  `baseRetryDelay`, `eventsTickInterval`, `checkInterval`) and tick-channel injection
+  (`internal/worker`'s `RunWorkerLoopWithTicker`). Pure timestamp fabrication
+  (`time.Now().Add(-d)`) needs nothing.
+
 ## Code Writing Workflow
 
 **Mandatory process for all code changes:**

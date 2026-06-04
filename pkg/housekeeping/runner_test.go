@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
@@ -414,44 +416,48 @@ func (e *signalingExecutor) ExecuteDLQRedrive(ctx context.Context) error {
 // (orphaned instances, dlq redrive) fire once on start while the rest wait for
 // their interval.
 func TestRunner_Run_RunsInitialTasksOnStart(t *testing.T) {
-	executor := &signalingExecutor{ran: make(chan TaskType, 10)}
-	r := NewRunner(executor, longIntervals())
+	synctest.Test(t, func(t *testing.T) {
+		executor := &signalingExecutor{ran: make(chan TaskType, 10)}
+		r := NewRunner(executor, longIntervals())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		r.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			r.Run(ctx)
+			close(done)
+		}()
 
-	got := map[TaskType]bool{}
-	deadline := time.After(2 * time.Second)
-	for len(got) < 2 {
-		select {
-		case tt := <-executor.ran:
-			got[tt] = true
-		case <-deadline:
-			t.Fatalf("initial tasks did not run; got %v", got)
+		// Let the initial-tick tasks run and every task loop settle into its
+		// ticker select. After Wait returns no bubble goroutine is runnable, so
+		// the signals buffered on executor.ran are exactly the initial set.
+		synctest.Wait()
+
+		got := map[TaskType]bool{}
+		for len(executor.ran) > 0 {
+			got[<-executor.ran] = true
 		}
-	}
+		if !got[TaskOrphanedInstances] {
+			t.Error("orphaned instances (initial) did not run on start")
+		}
+		if !got[TaskDLQRedrive] {
+			t.Error("dlq redrive (initial) did not run on start")
+		}
 
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after cancel")
-	}
+		// Non-initial tasks must not have fired: their 1h tickers have not
+		// elapsed, so these counters were never written.
+		if executor.ssmCall != 0 || executor.jobsCall != 0 || executor.poolCall != 0 {
+			t.Errorf("non-initial tasks ran before their interval: ssm=%d jobs=%d pool=%d",
+				executor.ssmCall, executor.jobsCall, executor.poolCall)
+		}
 
-	if !got[TaskOrphanedInstances] {
-		t.Error("orphaned instances (initial) did not run on start")
-	}
-	if !got[TaskDLQRedrive] {
-		t.Error("dlq redrive (initial) did not run on start")
-	}
-	if executor.ssmCall != 0 || executor.jobsCall != 0 || executor.poolCall != 0 {
-		t.Errorf("non-initial tasks ran before their interval: ssm=%d jobs=%d pool=%d",
-			executor.ssmCall, executor.jobsCall, executor.poolCall)
-	}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancel")
+		}
+	})
 }
 
 // blockingTaskExecutor pauses orphaned-instances mid-execution so a test can
@@ -477,62 +483,134 @@ func (b *blockingTaskExecutor) ExecuteOrphanedInstances(ctx context.Context) err
 // The in-flight task must run to completion observing a context that is NOT
 // cancelled, and Run must return only after it finishes.
 func TestRunner_Run_InflightTaskRunsToCompletionAfterCancel(t *testing.T) {
-	executor := &blockingTaskExecutor{started: make(chan struct{}), release: make(chan struct{})}
-	r := NewRunner(executor, longIntervals())
+	synctest.Test(t, func(t *testing.T) {
+		executor := &blockingTaskExecutor{started: make(chan struct{}), release: make(chan struct{})}
+		r := NewRunner(executor, longIntervals())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		r.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			r.Run(ctx)
+			close(done)
+		}()
 
-	select {
-	case <-executor.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("task did not start")
-	}
+		// Wait until the orphaned-instances task is in flight (parked on
+		// <-release) and every other loop is blocked in its ticker select.
+		<-executor.started
+		synctest.Wait()
 
-	cancel()
+		// SIGTERM arrives mid-task.
+		cancel()
+		synctest.Wait()
 
-	select {
-	case <-done:
-		t.Fatal("Run returned before in-flight task completed")
-	case <-time.After(50 * time.Millisecond):
-	}
+		// Run must NOT have returned: the in-flight task is detached from the
+		// signal and still blocked on release. This replaces a 50ms sleep that
+		// guessed at "long enough to prove Run is still running".
+		select {
+		case <-done:
+			t.Fatal("Run returned before in-flight task completed")
+		default:
+		}
 
-	close(executor.release)
+		// Let the in-flight task finish.
+		close(executor.release)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after in-flight task completed")
+		}
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after in-flight task completed")
-	}
-
-	if executor.ctxErr != nil {
-		t.Errorf("task context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", executor.ctxErr)
-	}
+		// done is closed, so this read happens-after the task goroutine wrote
+		// ctxErr (ordered through the WaitGroup and the close).
+		if executor.ctxErr != nil {
+			t.Errorf("task context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", executor.ctxErr)
+		}
+	})
 }
 
 func TestRunner_Run_StopsOnCancel(t *testing.T) {
-	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		r := NewRunner(&mockTaskExecutor{}, longIntervals())
+		ctx, cancel := context.WithCancel(context.Background())
 
-	r := NewRunner(&mockTaskExecutor{}, longIntervals())
-	ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			r.Run(ctx)
+			close(done)
+		}()
 
-	done := make(chan struct{})
-	go func() {
-		r.Run(ctx)
-		close(done)
-	}()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
 
-	cancel()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not stop after cancellation")
+		}
+	})
+}
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not stop after cancellation")
-	}
+// countingExecutor records how many times the stale-secrets task ran via an
+// atomic, so a test goroutine can read the count while the task loop is still
+// alive (merely blocked on its ticker) without a data race.
+type countingExecutor struct {
+	mockTaskExecutor
+	staleSecrets atomic.Int64
+}
+
+func (c *countingExecutor) ExecuteStaleSecrets(ctx context.Context) error {
+	err := c.mockTaskExecutor.ExecuteStaleSecrets(ctx)
+	c.staleSecrets.Add(1)
+	return err
+}
+
+// TestRunner_Run_FiresTasksOnInterval proves a non-initial task fires once per
+// elapsed interval. It advances the synctest fake clock instead of waiting on
+// real time, so the scheduler's core periodic behavior is exercised in zero
+// wall-clock time.
+func TestRunner_Run_FiresTasksOnInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = time.Minute
+		const n = 3
+
+		// Only stale-secrets gets a short interval; the rest stay at 1h so the
+		// count reflects exactly the stale-secrets ticker.
+		cfg := longIntervals()
+		cfg.StaleSSMInterval = interval
+
+		exec := &countingExecutor{}
+		r := NewRunner(exec, cfg)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			r.Run(ctx)
+			close(done)
+		}()
+
+		// Settle so every ticker is armed from a common fake-time baseline.
+		synctest.Wait()
+
+		// Advance fake time across n intervals (+half to avoid landing exactly
+		// on a tick boundary). time.NewTicker fires at d, 2d, 3d, ..., so a
+		// non-initial task fires exactly n times over n intervals.
+		time.Sleep(n*interval + interval/2)
+		synctest.Wait()
+
+		if got := exec.staleSecrets.Load(); got != int64(n) {
+			t.Errorf("StaleSecrets fired %d times over %d intervals, want %d", got, n, n)
+		}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancel")
+		}
+	})
 }
 
 func TestTaskTypeConstants(t *testing.T) {
