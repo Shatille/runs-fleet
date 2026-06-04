@@ -407,6 +407,77 @@ func TestHandlerRunContextCancellation(t *testing.T) {
 	}
 }
 
+// TestHandlerRun_InflightProcessorRunsToCompletionAfterCancel simulates a
+// SIGTERM landing while a spot-interruption event is being processed: the
+// parent context is cancelled mid-flight. The in-flight processor must run to
+// completion observing a context that is NOT cancelled (so the interrupted
+// job's requeue is not abandoned), and Run must return only after the
+// in-flight processing drains.
+func TestHandlerRun_InflightProcessorRunsToCompletionAfterCancel(t *testing.T) {
+	const body = `{"detail-type":"EC2 Spot Instance Interruption Warning","detail":{"instance-id":"i-abc123"}}`
+
+	dispatched := int32(0)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var ctxErr error
+
+	handler := &Handler{
+		queueClient: &MockQueueAPI{
+			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+				if atomic.CompareAndSwapInt32(&dispatched, 0, 1) {
+					return []queue.Message{{Body: body, Handle: "h1"}}, nil
+				}
+				return nil, nil
+			},
+		},
+		dbClient: &MockDBAPI{
+			MarkInstanceTerminatingFunc: func(ctx context.Context, _ string) error {
+				close(started)
+				<-release
+				ctxErr = ctx.Err()
+				return nil
+			},
+		},
+		metrics: &MockMetricsAPI{},
+		config:  &config.Config{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processor did not start")
+	}
+
+	// Simulate SIGTERM mid-processing.
+	cancel()
+
+	// Run must not return while the processor is still in flight.
+	select {
+	case <-done:
+		t.Fatal("handler returned before in-flight processor completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after in-flight processor completed")
+	}
+
+	if ctxErr != nil {
+		t.Errorf("processing context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", ctxErr)
+	}
+}
+
 func TestHandlerReceiveMessagesTimeout(t *testing.T) {
 	receiveCallCount := 0
 	receiveCalled := make(chan struct{}, 1)

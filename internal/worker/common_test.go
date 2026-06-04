@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
@@ -349,6 +350,182 @@ func TestRunWorkerLoop_GracefulShutdown(t *testing.T) {
 	case <-workerDone:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Worker did not shut down gracefully")
+	}
+}
+
+// TestRunWorkerLoop_InflightProcessorRunsToCompletionAfterCancel simulates a
+// SIGTERM landing mid-processing: the loop's parent context is cancelled while a
+// processor is in-flight. The processor must observe a context that is NOT Done
+// (its work is detached from the shutdown signal) and run to completion, and the
+// loop's deferred activeWork.Wait() must block the worker's return until it does.
+func TestRunWorkerLoop_InflightProcessorRunsToCompletionAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+
+	processingStarted := make(chan struct{})
+	releaseProcessor := make(chan struct{})
+	workerDone := make(chan struct{})
+
+	var ctxDoneDuringWork int32
+	var completed int32
+
+	dispatched := int32(0)
+	mockQueue := &MockQueue{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			// Dispatch exactly one message; subsequent receives return empty so the
+			// drain stops cleanly and we can observe whether new work is taken after
+			// the cancel.
+			if atomic.CompareAndSwapInt32(&dispatched, 0, 1) {
+				return []queue.Message{{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"}}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	go func() {
+		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(procCtx context.Context, _ queue.Message) {
+			close(processingStarted)
+			// Wait until the parent ctx has been cancelled by the test, then check
+			// whether the processing context observed that cancellation.
+			<-releaseProcessor
+			if procCtx.Err() != nil {
+				atomic.StoreInt32(&ctxDoneDuringWork, 1)
+			}
+			atomic.StoreInt32(&completed, 1)
+		}, nil, nil, tick)
+		close(workerDone)
+	}()
+
+	tick <- time.Now()
+
+	select {
+	case <-processingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+
+	// Simulate SIGTERM: cancel the loop's parent context while work is in flight.
+	cancel()
+
+	// The worker must NOT return yet: activeWork.Wait() should block on the
+	// still-running processor.
+	select {
+	case <-workerDone:
+		t.Fatal("worker returned before in-flight processor completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Let the processor finish.
+	close(releaseProcessor)
+
+	select {
+	case <-workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return after in-flight processor completed")
+	}
+
+	if atomic.LoadInt32(&completed) != 1 {
+		t.Error("in-flight processor did not run to completion after parent ctx cancel")
+	}
+	if atomic.LoadInt32(&ctxDoneDuringWork) != 0 {
+		t.Error("processing context was cancelled by SIGTERM; in-flight work must be detached from the signal")
+	}
+}
+
+// TestRunWorkerLoop_StopsReceivingAfterCancel verifies that once the parent
+// context is cancelled, the loop dispatches no further ReceiveMessages calls
+// (it stops accepting NEW work) even though in-flight work continues to drain.
+func TestRunWorkerLoop_StopsReceivingAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+
+	processingStarted := make(chan struct{})
+	releaseProcessor := make(chan struct{})
+	workerDone := make(chan struct{})
+
+	dispatched := int32(0)
+	mockQueue := &MockQueue{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			if atomic.CompareAndSwapInt32(&dispatched, 0, 1) {
+				return []queue.Message{{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"}}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	go func() {
+		RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(_ context.Context, _ queue.Message) {
+			close(processingStarted)
+			<-releaseProcessor
+		}, nil, nil, tick)
+		close(workerDone)
+	}()
+
+	tick <- time.Now()
+
+	select {
+	case <-processingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+
+	receivesBeforeCancel := mockQueue.GetReceiveCalls()
+
+	cancel()
+
+	// Ticks after cancel must not trigger new receives.
+	select {
+	case tick <- time.Now():
+	default:
+	}
+
+	close(releaseProcessor)
+
+	select {
+	case <-workerDone:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return")
+	}
+
+	if got := mockQueue.GetReceiveCalls(); got > receivesBeforeCancel {
+		t.Errorf("loop received new messages after cancel: %d receives, want <= %d", got, receivesBeforeCancel)
+	}
+}
+
+// TestRunWorkerLoop_ProcessorRetainsDeadline verifies that detaching the
+// processing context from the shutdown signal (WithoutCancel) does not drop the
+// MessageProcessTimeout deadline: the processor must still see a bounded
+// deadline no later than MessageProcessTimeout from now.
+func TestRunWorkerLoop_ProcessorRetainsDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tick := make(chan time.Time)
+
+	deadlineOK := make(chan bool, 1)
+	dispatched := int32(0)
+	mockQueue := &MockQueue{
+		ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+			if atomic.CompareAndSwapInt32(&dispatched, 0, 1) {
+				return []queue.Message{{ID: "msg-1", Body: `{"run_id": 123}`, Handle: "handle-1"}}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	go RunWorkerLoopWithTicker(ctx, "test", mockQueue, func(procCtx context.Context, _ queue.Message) {
+		dl, ok := procCtx.Deadline()
+		deadlineOK <- ok && !dl.After(time.Now().Add(config.MessageProcessTimeout))
+	}, nil, nil, tick)
+
+	tick <- time.Now()
+
+	select {
+	case ok := <-deadlineOK:
+		if !ok {
+			t.Error("processing context lost its deadline (or it exceeded MessageProcessTimeout) after WithoutCancel")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("processor was not invoked")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -603,6 +604,105 @@ func TestHandler_Run_Cancellation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not stop after cancellation")
 	}
+}
+
+// blockingDBAPI lets a test pause MarkJobComplete mid-processing so it can
+// cancel the handler's parent context while a message is in flight, then inspect
+// whether the processing context observed that cancellation.
+type blockingDBAPI struct {
+	started     chan struct{}
+	release     chan struct{}
+	ctxErr      error
+	startedOnce sync.Once
+}
+
+func (m *blockingDBAPI) MarkJobComplete(ctx context.Context, jobID int64, _ string, _, _ int) (*events.JobInfo, error) {
+	m.startedOnce.Do(func() { close(m.started) })
+	<-m.release
+	m.ctxErr = ctx.Err()
+	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo}, nil
+}
+
+func (m *blockingDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time) error {
+	return nil
+}
+
+// TestHandler_Run_InflightProcessorRunsToCompletionAfterCancel simulates a
+// SIGTERM landing while a termination message is being processed: the parent
+// context is cancelled mid-flight. The in-flight processor must run to
+// completion observing a context that is NOT cancelled, and Run must block on
+// its WaitGroup until the processor finishes.
+func TestHandler_Run_InflightProcessorRunsToCompletionAfterCancel(t *testing.T) {
+	body, err := json.Marshal(Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          testStatusSuccess,
+		ExitCode:        0,
+		DurationSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	dispatched := int32(0)
+	// Return the message only on the first receive so the drain does not
+	// re-dispatch it.
+	q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: testReceiptTermination}}}
+	db := &blockingDBAPI{started: make(chan struct{}), release: make(chan struct{})}
+	handler := NewHandler(&onceQueueAPI{inner: q, dispatched: &dispatched}, db, &mockMetricsAPI{}, &mockSecretsStore{}, &config.Config{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		handler.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-db.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processor did not start")
+	}
+
+	// Simulate SIGTERM mid-processing.
+	cancel()
+
+	// Run must not return while the processor is still in flight.
+	select {
+	case <-done:
+		t.Fatal("handler returned before in-flight processor completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(db.release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after in-flight processor completed")
+	}
+
+	if db.ctxErr != nil {
+		t.Errorf("processing context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", db.ctxErr)
+	}
+}
+
+// onceQueueAPI returns the inner queue's messages on the first receive and empty
+// thereafter, so the drain does not redeliver the same message.
+type onceQueueAPI struct {
+	inner      *mockQueueAPI
+	dispatched *int32
+}
+
+func (o *onceQueueAPI) ReceiveMessages(ctx context.Context, maxMessages, waitSeconds int32) ([]queue.Message, error) {
+	if atomic.CompareAndSwapInt32(o.dispatched, 0, 1) {
+		return o.inner.ReceiveMessages(ctx, maxMessages, waitSeconds)
+	}
+	return nil, nil
+}
+
+func (o *onceQueueAPI) DeleteMessage(ctx context.Context, handle string) error {
+	return o.inner.DeleteMessage(ctx, handle)
 }
 
 func TestMessage_Structure(t *testing.T) {

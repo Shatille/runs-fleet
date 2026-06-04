@@ -52,6 +52,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "runs-fleet.orchestrator.serviceAccountName" . }}
+      # Allow the orchestrator to drain in-flight message processing on SIGTERM
+      # (it stops accepting new work but lets dispatched processors finish, up to
+      # ~90s) before k8s SIGKILLs the pod.
+      terminationGracePeriodSeconds: {{ .Values.orchestrator.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.orchestrator.securityContext | nindent 8 }}
       containers:

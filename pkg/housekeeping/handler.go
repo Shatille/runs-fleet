@@ -71,6 +71,10 @@ type HandlerMetricsAPI interface {
 // message-processing latency metric.
 const queueHousekeeping = "housekeeping"
 
+// handlerTickInterval is the interval for the housekeeping handler loop. Exposed
+// as a variable to allow tests to use a shorter duration.
+var handlerTickInterval = 1 * time.Second
+
 // TaskExecutor executes housekeeping tasks.
 type TaskExecutor interface {
 	ExecuteOrphanedInstances(ctx context.Context) error
@@ -129,7 +133,7 @@ func (h *Handler) SetMetrics(m HandlerMetricsAPI) {
 
 // Run starts the housekeeping handler loop.
 func (h *Handler) Run(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(handlerTickInterval)
 	defer ticker.Stop()
 
 	for {
@@ -198,7 +202,12 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		}()
 	}
 
-	taskCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	// Detach the task context from the handler's parent (SIGTERM) context while
+	// keeping its log values, so an in-flight housekeeping task runs to completion
+	// on shutdown instead of aborting with "context canceled". The receive loop
+	// still stops on ctx.Done() so no new task is dequeued, and the bounded timeout
+	// still caps a hung task.
+	taskCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 4*time.Minute)
 	defer cancel()
 
 	var err error
@@ -234,7 +243,10 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	}
 
 	if msg.Handle != "" {
-		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
+		// Delete on taskCtx (detached from SIGTERM) so a task that ran to
+		// completion during shutdown is acknowledged and not redelivered to the
+		// next pod.
+		if err := h.queueClient.DeleteMessage(taskCtx, msg.Handle); err != nil {
 			return fmt.Errorf("failed to delete message: %w", err)
 		}
 	}

@@ -30,6 +30,14 @@ spec:
         app.kubernetes.io/name: runs-fleet-orchestrator
     spec:
       serviceAccountName: runs-fleet-orchestrator
+      # On SIGTERM the orchestrator stops accepting new work but lets in-flight
+      # message processing run to completion (bounded by the ~90s
+      # MessageProcessTimeout). This must exceed the internal worker drain
+      # timeout (MessageProcessTimeout + 10s) plus the HTTP/telemetry shutdown
+      # steps, or k8s SIGKILLs the pod mid-drain and reintroduces the rollout
+      # error burst. Tradeoff: each old pod can take up to this long to leave
+      # during a rollout, though typical drains finish in seconds.
+      terminationGracePeriodSeconds: 120
       containers:
         - name: orchestrator
           # Pin a vX.Y.Z tag in real deploys; :latest only shown for brevity.
@@ -45,9 +53,6 @@ spec:
               memory: 1Gi
             limits:
               memory: 2Gi
-          # The orchestrator handles SIGTERM by draining in-flight reconciles
-          # before exit. The default 30s grace period is usually enough.
-          terminationGracePeriodSeconds: 60
           env:
             - name: AWS_REGION
               value: "ap-northeast-1"

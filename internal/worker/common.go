@@ -155,7 +155,15 @@ func drainQueue(ctx context.Context, name string, q queue.Queue, processor Messa
 				defer activeWork.Done()
 				defer func() { <-sem }()
 
-				processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
+				// Detach the per-message processing context from the loop's parent
+				// context (typically the SIGTERM signal context) while keeping its
+				// log/trace values. On shutdown the receive path above still stops on
+				// ctx.Done(), so no NEW work is accepted; but an already-dispatched
+				// processor must run to completion rather than abort with "context
+				// canceled" and produce a rollout error burst. WithTimeout still
+				// bounds it at MessageProcessTimeout, and the deferred activeWork.Wait
+				// drains these processors before the worker returns.
+				processCtx, processCancel := context.WithTimeout(context.WithoutCancel(ctx), config.MessageProcessTimeout)
 				defer processCancel()
 				processor(processCtx, msg)
 				result = "ok"

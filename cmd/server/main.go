@@ -223,9 +223,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Workers share the signal context and are already cancelling; wait for them
-	// to return (bounded) before flushing telemetry so their final spans and
-	// metrics are captured, rather than abandoning them mid-iteration.
+	// Workers share the signal context: receiving has already stopped, but each
+	// has detached its in-flight processing from the signal so it can finish.
+	// Wait for that drain (bounded by workerDrainTimeout) before flushing
+	// telemetry so in-flight jobs complete and their final spans and metrics are
+	// captured, rather than aborting them mid-flight.
 	if waitForWorkers(&workers, workerDrainTimeout) {
 		log.Info(ctx, "background workers stopped")
 	} else {
@@ -245,8 +247,13 @@ func main() {
 }
 
 // workerDrainTimeout bounds how long shutdown waits for background workers to
-// observe the cancelled context and return.
-const workerDrainTimeout = 15 * time.Second
+// drain in-flight message processing and return. On SIGTERM each worker stops
+// accepting new work immediately but lets an already-dispatched processor run to
+// completion (detached from the signal, bounded by config.MessageProcessTimeout);
+// this must cover that processing window plus a small buffer so the drain is not
+// abandoned while an in-flight job is still finishing. It must stay below the
+// pod's terminationGracePeriodSeconds (see deploy/) or k8s SIGKILLs mid-drain.
+const workerDrainTimeout = config.MessageProcessTimeout + 10*time.Second
 
 // waitForWorkers waits for the worker WaitGroup to drain, returning false if the
 // timeout elapses first.

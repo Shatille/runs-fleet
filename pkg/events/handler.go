@@ -222,24 +222,24 @@ func (h *Handler) Run(ctx context.Context) {
 					// Start timing after acquiring the concurrency slot so the
 					// metric reflects processing time, not slot-wait time.
 					start = time.Now()
-					processCtx, processCancel := context.WithTimeout(ctx, config.MessageProcessTimeout)
+					// Detach from the parent (SIGTERM) context while keeping its
+					// log/trace values so an in-flight event (e.g. a spot-interruption
+					// requeue) runs to completion on shutdown instead of aborting with
+					// "context canceled". The receive path above still stops on
+					// ctx.Done(), so no new work is accepted; the WithTimeout still
+					// bounds a hung processor.
+					processCtx, processCancel := context.WithTimeout(context.WithoutCancel(ctx), config.MessageProcessTimeout)
 					defer processCancel()
 					h.processEvent(processCtx, msg)
 					result = "ok"
 				}()
 			}
 
-			done := make(chan struct{})
-			go func() {
-				wg.Wait()
-				close(done)
-			}()
-
-			select {
-			case <-done:
-			case <-ctx.Done():
-				return
-			}
+			// Wait for this batch's processors to finish before polling again. On
+			// shutdown the processors are detached from ctx (above) and run to
+			// completion, so wg.Wait() drains them rather than abandoning in-flight
+			// work; the loop then observes ctx.Done() at the top and returns.
+			wg.Wait()
 		}
 	}
 }
