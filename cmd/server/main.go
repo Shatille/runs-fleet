@@ -133,7 +133,7 @@ func main() {
 		terminationQueueClient := queue.NewClient(sqsCfg, cfg.TerminationQueueURL)
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
 	}
-	housekeepingHandler, housekeepingScheduler := initHousekeeping(awsCfg, sqsCfg, cfg, secretsStore, metricsPublisher, dbClient)
+	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient)
 
 	runnerManager := initRunnerManager(secretsStore, cfg)
 
@@ -196,11 +196,8 @@ func main() {
 	if terminationHandler != nil {
 		runWorker(terminationHandler.Run)
 	}
-	if housekeepingHandler != nil {
-		runWorker(housekeepingHandler.Run)
-	}
-	if housekeepingScheduler != nil {
-		runWorker(housekeepingScheduler.Run)
+	if housekeepingRunner != nil {
+		runWorker(housekeepingRunner.Run)
 	}
 
 	go func() {
@@ -336,12 +333,12 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	return store
 }
 
-func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client) (*housekeeping.Handler, *housekeeping.Scheduler) {
-	if cfg.HousekeepingQueueURL == "" {
-		return nil, nil
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client) *housekeeping.Runner {
+	if dbClient == nil || cfg.PoolsTableName == "" {
+		logging.WithComponent(logging.LogTypeServer, "housekeeping").Warn(context.Background(),
+			"housekeeping disabled: no pools table configured for task locking")
+		return nil
 	}
-
-	housekeepingQueueClient := queue.NewClient(sqsCfg, cfg.HousekeepingQueueURL)
 
 	var costReporter housekeeping.CostReporter
 	if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
@@ -349,10 +346,7 @@ func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStor
 	}
 
 	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, metricsPublisher, costReporter)
-
-	if dbClient != nil {
-		tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
-	}
+	tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
 
 	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
 		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
@@ -364,19 +358,10 @@ func initHousekeeping(awsCfg, sqsCfg aws.Config, cfg *config.Config, secretsStor
 		}
 	}
 
-	h := housekeeping.NewHandler(housekeepingQueueClient, tasksExecutor, cfg)
-	h.SetMetrics(metricsPublisher)
-
-	if dbClient != nil {
-		instanceID := uuid.NewString()
-		h.SetTaskLocker(dbClient, instanceID)
-	}
-
-	schedulerCfg := housekeeping.DefaultSchedulerConfig()
-	scheduler := housekeeping.NewSchedulerFromConfig(sqsCfg, cfg.HousekeepingQueueURL, schedulerCfg)
-	scheduler.SetMetrics(metricsPublisher)
-
-	return h, scheduler
+	r := housekeeping.NewRunner(tasksExecutor, housekeeping.DefaultSchedulerConfig())
+	r.SetMetrics(metricsPublisher)
+	r.SetTaskLocker(dbClient, uuid.NewString())
+	return r
 }
 
 func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http.Handler) {
