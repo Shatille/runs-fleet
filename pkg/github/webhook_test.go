@@ -275,16 +275,66 @@ func TestParseLabels(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "Marker only (no run-id, no spec)",
+			labels: []string{
+				"runs-fleet",
+			},
+			want: &JobConfig{
+				RunID: "",
+				Pool:  "",
+				Spot:  true,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Marker with spec, no run-id",
+			labels: []string{
+				"runs-fleet/cpu=8/arch=arm64/pool=default/spot=false",
+			},
+			want: &JobConfig{
+				RunID: "",
+				Pool:  "default",
+				Spot:  false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Marker found among other labels",
+			labels: []string{
+				"self-hosted",
+				"linux",
+				"runs-fleet/cpu=4",
+			},
+			want: &JobConfig{
+				RunID: "",
+				Pool:  "",
+				Spot:  true,
+			},
+			wantErr: false,
+		},
+		{
 			name:    "Missing runs-fleet label",
 			labels:  []string{"self-hosted", "linux"},
 			want:    nil,
 			wantErr: true,
 		},
 		{
-			name:    "Invalid format",
-			labels:  []string{"runs-fleet="},
+			name:    "runs-fleet prefix in another label is not the marker",
+			labels:  []string{"runs-fleet-foo", "runs-fleetish"},
 			want:    nil,
 			wantErr: true,
+		},
+		{
+			name: "Legacy empty run-id marker only (run-id now optional)",
+			labels: []string{
+				"runs-fleet=",
+			},
+			want: &JobConfig{
+				RunID: "",
+				Pool:  "",
+				Spot:  true,
+			},
+			wantErr: false,
 		},
 	}
 
@@ -307,6 +357,92 @@ func TestParseLabels(t *testing.T) {
 				if got.Spot != tt.want.Spot {
 					t.Errorf("ParseLabels() Spot = %v, want %v", got.Spot, tt.want.Spot)
 				}
+			}
+		})
+	}
+}
+
+// TestParseLabels_MarkerForms verifies that the spec is parsed identically
+// across all three marker forms (legacy "runs-fleet=<run-id>/...", new
+// "runs-fleet/...", and marker-only "runs-fleet"), and that RunID is only
+// populated by the legacy form.
+func TestParseLabels_MarkerForms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		labels            []string
+		wantRunID         string
+		wantCPUMin        int
+		wantCPUMax        int
+		wantArch          string
+		wantPool          string
+		wantSpot          bool
+		wantOriginalLabel string
+	}{
+		{
+			name:              "legacy form carries run-id and spec",
+			labels:            []string{"runs-fleet=12345/cpu=8/arch=arm64/pool=default/spot=false"},
+			wantRunID:         "12345",
+			wantCPUMin:        8,
+			wantCPUMax:        16,
+			wantArch:          "arm64",
+			wantPool:          "default",
+			wantSpot:          false,
+			wantOriginalLabel: "runs-fleet=12345/cpu=8/arch=arm64/pool=default/spot=false",
+		},
+		{
+			name:              "new form parses spec with no run-id",
+			labels:            []string{"runs-fleet/cpu=8/arch=arm64/pool=default/spot=false"},
+			wantRunID:         "",
+			wantCPUMin:        8,
+			wantCPUMax:        16,
+			wantArch:          "arm64",
+			wantPool:          "default",
+			wantSpot:          false,
+			wantOriginalLabel: "runs-fleet/cpu=8/arch=arm64/pool=default/spot=false",
+		},
+		{
+			name:              "marker only yields defaults",
+			labels:            []string{"runs-fleet"},
+			wantRunID:         "",
+			wantCPUMin:        2,
+			wantCPUMax:        4,
+			wantArch:          "",
+			wantPool:          "",
+			wantSpot:          true,
+			wantOriginalLabel: "runs-fleet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Fatalf("ParseLabels() error = %v", err)
+			}
+			if got.RunID != tt.wantRunID {
+				t.Errorf("RunID = %q, want %q", got.RunID, tt.wantRunID)
+			}
+			if got.CPUMin != tt.wantCPUMin {
+				t.Errorf("CPUMin = %d, want %d", got.CPUMin, tt.wantCPUMin)
+			}
+			if got.CPUMax != tt.wantCPUMax {
+				t.Errorf("CPUMax = %d, want %d", got.CPUMax, tt.wantCPUMax)
+			}
+			if got.Arch != tt.wantArch {
+				t.Errorf("Arch = %q, want %q", got.Arch, tt.wantArch)
+			}
+			if got.Pool != tt.wantPool {
+				t.Errorf("Pool = %q, want %q", got.Pool, tt.wantPool)
+			}
+			if got.Spot != tt.wantSpot {
+				t.Errorf("Spot = %v, want %v", got.Spot, tt.wantSpot)
+			}
+			if got.OriginalLabel != tt.wantOriginalLabel {
+				t.Errorf("OriginalLabel = %q, want %q", got.OriginalLabel, tt.wantOriginalLabel)
 			}
 		})
 	}

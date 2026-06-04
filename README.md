@@ -13,25 +13,32 @@ Replace GitHub-hosted runners:
 
 ```yaml
 # Basic (ARM64, 4 vCPUs, spot instance)
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+runs-on: "runs-fleet/cpu=4/arch=arm64"
 
 # Fast start with warm pool (~10s vs ~60s cold)
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
+runs-on: "runs-fleet/cpu=4/arch=arm64/pool=default"
 
 # Spot diversification across instance sizes
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/family=c7g+m7g/arch=arm64"
+runs-on: "runs-fleet/cpu=4+16/family=c7g+m7g/arch=arm64"
 
 # Force on-demand for critical jobs
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/spot=false"
+runs-on: "runs-fleet/cpu=4/arch=arm64/spot=false"
+
+# Bare marker (all defaults: ~2-4 vCPUs, spot)
+runs-on: "runs-fleet"
 ```
 
 | Label | Description |
 |-------|-------------|
-| `runs-fleet=<run-id>` | Workflow run identifier (required) |
+| `runs-fleet` | Marker (required). `runs-fleet=<run-id>/...` legacy form still works |
 | `cpu=<n>` or `cpu=<min>+<max>` | vCPU count or range (default: 2) |
 | `arch=<arch>` | `arm64` or `amd64` |
 | `pool=<name>` | Warm pool for fast start |
 | `spot=false` | Force on-demand |
+
+The `runs-fleet` marker is all that is required; run_id is read from the webhook
+payload. The legacy `runs-fleet=${{ github.run_id }}/...` form remains fully
+supported.
 
 See [docs/USAGE.md](docs/USAGE.md) for full label reference and examples. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for environment variables.
 

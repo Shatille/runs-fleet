@@ -79,7 +79,7 @@ func ParseWebhook(r *http.Request, secret string) (interface{}, error) {
 
 // JobConfig represents parsed runner configuration from workflow job labels.
 type JobConfig struct {
-	RunID        string
+	RunID        string // Optional; only set by the legacy runs-fleet=<run-id> form
 	InstanceType string
 	Pool         string
 	Spot         bool
@@ -99,12 +99,20 @@ type JobConfig struct {
 	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
 }
 
-// ParseLabels extracts runner configuration from runs-fleet= workflow job labels.
+// markerPrefix is the bare runs-fleet marker that identifies a runner label.
+const markerPrefix = "runs-fleet"
+
+// ParseLabels extracts runner configuration from runs-fleet workflow job labels.
 //
-// Format:
+// The label is recognized in three forms, all of which parse the spec
+// (cpu/ram/family/gen/arch/pool/spot/disk) identically:
 //
-//	runs-fleet=<run-id>/cpu=4/arch=arm64/pool=default/spot=true
-//	runs-fleet=<run-id>/cpu=4+16/ram=8+32/family=c7g+m7g/arch=arm64
+//	runs-fleet                                            (marker only, all defaults)
+//	runs-fleet/cpu=4/arch=arm64/pool=default/spot=true    (marker + spec, no run-id)
+//	runs-fleet=<run-id>/cpu=4/arch=arm64/pool=default     (legacy, marker carries run-id)
+//
+// run_id is optional in the label; the legacy form still populates RunID from
+// the segment after "runs-fleet=", but downstream prefers the webhook's run_id.
 //
 // CPU and RAM ranges (min+max) enable spot diversification for better availability.
 // Multiple instance families can be specified with + separator.
@@ -114,31 +122,16 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 		Arch: "", // Empty = arch doesn't matter, uses non-suffixed launch template
 	}
 
-	var runsFleetLabel string
-	for _, label := range labels {
-		if strings.HasPrefix(label, "runs-fleet=") {
-			runsFleetLabel = label
-			break
-		}
-	}
-
-	if runsFleetLabel == "" {
+	runsFleetLabel, ok := findMarkerLabel(labels)
+	if !ok {
 		return nil, errors.New("no runs-fleet label found")
 	}
 
 	cfg.OriginalLabel = runsFleetLabel
 
-	parts := strings.Split(strings.TrimPrefix(runsFleetLabel, "runs-fleet="), "/")
-	if len(parts) == 0 {
-		return nil, errors.New("invalid runs-fleet label format")
-	}
+	specParts := labelSpecParts(cfg, runsFleetLabel)
 
-	cfg.RunID = parts[0]
-	if cfg.RunID == "" {
-		return nil, errors.New("empty run-id in label")
-	}
-
-	if err := parseLabelParts(cfg, parts[1:]); err != nil {
+	if err := parseLabelParts(cfg, specParts); err != nil {
 		return nil, err
 	}
 
@@ -147,6 +140,40 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// findMarkerLabel returns the runs-fleet marker label from the label set. It
+// matches the bare marker "runs-fleet", the new "runs-fleet/..." form, and the
+// legacy "runs-fleet=..." form, while rejecting unrelated labels that merely
+// share the prefix (e.g. "runs-fleet-foo", "runs-fleetish").
+func findMarkerLabel(labels []string) (string, bool) {
+	for _, label := range labels {
+		if label == markerPrefix ||
+			strings.HasPrefix(label, markerPrefix+"=") ||
+			strings.HasPrefix(label, markerPrefix+"/") {
+			return label, true
+		}
+	}
+	return "", false
+}
+
+// labelSpecParts strips the marker (and any legacy run-id) from the label and
+// returns the remaining "/"-separated spec segments. For the legacy
+// "runs-fleet=<run-id>/..." form it also records RunID on cfg.
+func labelSpecParts(cfg *JobConfig, label string) []string {
+	if rest, ok := strings.CutPrefix(label, markerPrefix+"="); ok {
+		// Legacy form: the first segment is the run-id, the rest is spec.
+		parts := strings.Split(rest, "/")
+		cfg.RunID = parts[0]
+		return parts[1:]
+	}
+
+	rest := strings.TrimPrefix(label, markerPrefix)
+	rest = strings.TrimPrefix(rest, "/")
+	if rest == "" {
+		return nil
+	}
+	return strings.Split(rest, "/")
 }
 
 // parseLabelParts parses key=value pairs from the runs-fleet label and populates the JobConfig.

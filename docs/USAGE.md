@@ -7,14 +7,19 @@ Replace GitHub-hosted runners with runs-fleet by changing the `runs-on` field:
 runs-on: ubuntu-latest
 
 # After (runs-fleet)
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=2/arch=arm64"
+runs-on: "runs-fleet/cpu=2/arch=arm64"
 ```
+
+The bare `runs-fleet` marker is the only required token; run_id is read from the
+webhook payload. The legacy `runs-fleet=${{ github.run_id }}/...` form remains
+fully supported (its run_id segment is now optional and ignored — the webhook is
+authoritative).
 
 ## Label Reference
 
 | Label | Description |
 |-------|-------------|
-| `runs-fleet=<run-id>` | Workflow run identifier (required) |
+| `runs-fleet` | Runner marker (required). Legacy `runs-fleet=<run-id>/...` still works |
 | `cpu=<n>` | vCPU count (default: 2). Defaults to a 2x range (e.g., `cpu=4` → 4-8 vCPUs) |
 | `cpu=<min>+<max>` | Explicit vCPU range for spot diversification |
 | `ram=<n>` | Minimum RAM in GB (no auto-range, unlike `cpu=`) |
@@ -34,22 +39,22 @@ runs-fleet uses flexible specs to select instances dynamically via EC2 Fleet:
 
 ```yaml
 # 4 vCPUs with bounded diversification (matches 4-8 vCPUs by default)
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+runs-on: "runs-fleet/cpu=4/arch=arm64"
 
 # Explicit CPU range for wider spot diversification
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+16/arch=arm64"
+runs-on: "runs-fleet/cpu=4+16/arch=arm64"
 
 # Pin exact CPU count (still diversifies across families)
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4+4/arch=arm64"
+runs-on: "runs-fleet/cpu=4+4/arch=arm64"
 
 # Specific families for workload requirements
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/family=c7g+m7g/arch=arm64"
+runs-on: "runs-fleet/cpu=4/family=c7g+m7g/arch=arm64"
 
 # Pin instance generation (e.g., Graviton4)
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/gen=8"
+runs-on: "runs-fleet/cpu=4/arch=arm64/gen=8"
 
 # Architecture-agnostic: runs-fleet picks the cheaper-on-spot arch at launch
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4"
+runs-on: "runs-fleet/cpu=4"
 ```
 
 ### CPU Range Behavior
@@ -82,7 +87,7 @@ If you want hard control over architecture, set `arch=arm64` or `arch=amd64` exp
 Disk size: `disk=<size>` in GiB (1-16384):
 
 ```yaml
-runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/disk=200"
+runs-on: "runs-fleet/cpu=4/arch=arm64/disk=200"
 ```
 
 > **Cost note:** gp3 EBS storage costs ~$0.08/GB-month. Large disks add up quickly (e.g., 1TB = $80/month).
@@ -97,7 +102,7 @@ on: [push, pull_request]
 
 jobs:
   test:
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64"
+    runs-on: "runs-fleet/cpu=4/arch=arm64"
     steps:
       - uses: actions/checkout@v5
       - run: make test
@@ -109,7 +114,7 @@ jobs:
 jobs:
   build:
     # Pool provides ~10s start time vs ~60s cold start
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=default"
+    runs-on: "runs-fleet/cpu=4/arch=arm64/pool=default"
 ```
 
 ### AMD64 for x86-specific builds
@@ -117,7 +122,7 @@ jobs:
 ```yaml
 jobs:
   build-amd64:
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=amd64"
+    runs-on: "runs-fleet/cpu=4/arch=amd64"
 ```
 
 ### Force on-demand instance (cold-start)
@@ -127,7 +132,7 @@ jobs:
   critical-deploy:
     # Skip spot for cold-start jobs that can't tolerate interruption
     # (warm pool jobs are always on-demand)
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/spot=false"
+    runs-on: "runs-fleet/cpu=4/arch=arm64/spot=false"
 ```
 
 > **Note:** `spot=false` is case-sensitive. `spot=False` or `spot=0` will **not** disable spot — only the literal lowercase `false` does.
@@ -140,7 +145,7 @@ jobs:
     strategy:
       matrix:
         arch: [arm64, amd64]
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=${{ matrix.arch }}"
+    runs-on: "runs-fleet/cpu=4/arch=${{ matrix.arch }}"
 ```
 
 ### Ephemeral pools (auto-created)
@@ -152,7 +157,7 @@ jobs:
   build:
     # Pool "my-project" created automatically if it doesn't exist
     # Inherits cpu/ram/arch from this job's labels
-    runs-on: "runs-fleet=${{ github.run_id }}/cpu=4/arch=arm64/pool=my-project"
+    runs-on: "runs-fleet/cpu=4/arch=arm64/pool=my-project"
 ```
 
 Ephemeral pool behavior:
