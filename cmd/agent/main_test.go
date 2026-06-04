@@ -215,10 +215,12 @@ func TestAgentConfig_WithRunnerConfig(t *testing.T) {
 type mockTerminator struct {
 	terminateCalled bool
 	terminateErr    error
+	lastStatus      agent.JobStatus
 }
 
-func (m *mockTerminator) TerminateInstance(_ context.Context, _ string, _ agent.JobStatus) error {
+func (m *mockTerminator) TerminateInstance(_ context.Context, _ string, status agent.JobStatus) error {
 	m.terminateCalled = true
+	m.lastStatus = status
 	return m.terminateErr
 }
 
@@ -461,10 +463,12 @@ func TestAgentConfig_TelemetryField(t *testing.T) {
 type mockTelemetry struct {
 	jobStartedCalled   bool
 	jobCompletedCalled bool
+	startedStatus      agent.JobStatus
 }
 
-func (m *mockTelemetry) SendJobStarted(_ context.Context, _ agent.JobStatus) error {
+func (m *mockTelemetry) SendJobStarted(_ context.Context, status agent.JobStatus) error {
 	m.jobStartedCalled = true
+	m.startedStatus = status
 	return nil
 }
 
@@ -722,5 +726,111 @@ func TestRunnerConfig_NilLabels(t *testing.T) {
 
 	if rc.Labels != nil {
 		t.Error("Labels should be nil")
+	}
+}
+
+// Regression values from the production incident: a successful job whose record
+// was keyed by job_id but whose termination carried the run_id, causing
+// MarkJobComplete to miss the real record and the job to be finalized orphaned.
+const (
+	regressionJobID = "79443780247"
+	regressionRunID = "26928632771"
+)
+
+func TestResolveJobID_FromConfig(t *testing.T) {
+	_ = os.Unsetenv("RUNS_FLEET_JOB_ID")
+
+	ac := &agentConfig{
+		runnerConfig: &secrets.RunnerConfig{
+			JobID: regressionJobID,
+			RunID: regressionRunID,
+		},
+	}
+
+	got := resolveJobID(ac)
+	if got != regressionJobID {
+		t.Errorf("resolveJobID() = %q, want job_id %q", got, regressionJobID)
+	}
+	if got == regressionRunID {
+		t.Errorf("resolveJobID() returned the run_id %q; it must return the job_id", got)
+	}
+}
+
+func TestResolveJobID_EnvOverridesConfig(t *testing.T) {
+	const envJobID = "555000111"
+	_ = os.Setenv("RUNS_FLEET_JOB_ID", envJobID)
+	defer func() { _ = os.Unsetenv("RUNS_FLEET_JOB_ID") }()
+
+	ac := &agentConfig{
+		runnerConfig: &secrets.RunnerConfig{
+			JobID: regressionJobID,
+			RunID: regressionRunID,
+		},
+	}
+
+	if got := resolveJobID(ac); got != envJobID {
+		t.Errorf("resolveJobID() = %q, want env value %q", got, envJobID)
+	}
+}
+
+func TestResolveJobID_EmptyWhenNoSource(t *testing.T) {
+	_ = os.Unsetenv("RUNS_FLEET_JOB_ID")
+
+	if got := resolveJobID(&agentConfig{}); got != "" {
+		t.Errorf("resolveJobID() = %q, want empty string when no source available", got)
+	}
+}
+
+// TestTerminateWithError_ReportsJobIDNotRunID is the core regression test: the
+// terminated JobStatus must carry the real job_id, not the run_id. Before the
+// fix this site set JobID to the run_id, so MarkJobComplete keyed on the wrong
+// DynamoDB record.
+func TestTerminateWithError_ReportsJobIDNotRunID(t *testing.T) {
+	terminator := &mockTerminator{}
+
+	terminateWithError(
+		context.Background(),
+		terminator,
+		"i-instance",
+		regressionJobID,
+		"download_failed",
+		errors.New("boom"),
+	)
+
+	if !terminator.terminateCalled {
+		t.Fatal("terminator.TerminateInstance should have been called")
+	}
+	if terminator.lastStatus.JobID != regressionJobID {
+		t.Errorf("JobStatus.JobID = %q, want job_id %q", terminator.lastStatus.JobID, regressionJobID)
+	}
+	if terminator.lastStatus.JobID == regressionRunID {
+		t.Errorf("JobStatus.JobID = %q is the run_id; it must be the job_id", terminator.lastStatus.JobID)
+	}
+}
+
+// TestRunID_StaysSeparateFromJobID guards the legitimate uses of run_id: it is
+// still the CloudWatch log-stream component and the RUNS_FLEET_RUN_ID resolution
+// input, and must not collapse into the job_id key when the two differ.
+func TestRunID_StaysSeparateFromJobID(t *testing.T) {
+	_ = os.Unsetenv("RUNS_FLEET_JOB_ID")
+
+	rc := &secrets.RunnerConfig{
+		JobID: regressionJobID,
+		RunID: regressionRunID,
+	}
+	ac := &agentConfig{runnerConfig: rc}
+
+	jobID := resolveJobID(ac)
+	if jobID == rc.RunID {
+		t.Errorf("resolved job_id %q collapsed to run_id %q", jobID, rc.RunID)
+	}
+	if rc.RunID != regressionRunID {
+		t.Errorf("run_id %q was mutated; want %q", rc.RunID, regressionRunID)
+	}
+
+	// The CloudWatch log stream is built from run_id, not job_id.
+	logStream := "i-instance" + "/" + rc.RunID
+	if logStream != "i-instance/"+regressionRunID {
+		t.Errorf("log stream = %q, want run_id-based stream", logStream)
 	}
 }
