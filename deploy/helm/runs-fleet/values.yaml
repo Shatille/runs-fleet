@@ -10,6 +10,11 @@ commonLabels: {}
 aws:
   region: ap-northeast-1
 
+  # Orchestrator's own externally-reachable HTTPS endpoint, served to runners as
+  # ACTIONS_CACHE_URL for the S3-backed Actions cache. Required. Set per-deployment
+  # (kept empty here to avoid hardcoding an environment-specific host in-chart).
+  baseUrl: ""
+
   # Network
   vpcId: ""
   subnetIds: []

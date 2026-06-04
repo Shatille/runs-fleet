@@ -50,7 +50,7 @@ The agent has **no CLI flags** — all configuration arrives via environment and
 | `RUNS_FLEET_VALKEY_ADDR`, `_PASSWORD`, `_DB` | Valkey telemetry on K8s |
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | SafetyMonitor cap (default 360) |
 | `RUNS_FLEET_LOG_GROUP` | Optional CloudWatch log group |
-| `RUNS_FLEET_CACHE_URL`, `RUNS_FLEET_CACHE_TOKEN` | Forwarded to runner as `ACTIONS_CACHE_*` |
+| `RUNS_FLEET_CACHE_TOKEN` | Forwarded to runner as `ACTIONS_CACHE_TOKEN`; cache URL sourced from runner config |
 | `AWS_REGION` | Defaults to `ap-northeast-1` |
 
 Exit codes: `1` on panic recovery; otherwise the agent always reaches `TerminateInstance` and returns `0`.

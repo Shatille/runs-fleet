@@ -60,7 +60,7 @@ From `pkg/state/valkey.go`:
 From `pkg/runner/manager.go`:
 
 - `type Manager struct { ... }`
-- `type ManagerConfig { CacheSecret, CacheURL, TerminationQueueURL string }`
+- `type ManagerConfig { CacheSecret, BaseURL, TerminationQueueURL string }`
 - `type PrepareRunnerRequest { InstanceID, JobID, RunID, Repo, Pool, Conditions string; Labels []string }`
 - `func NewManager(githubClient *GitHubClient, secretsStore secrets.Store, config ManagerConfig) *Manager`
 - `(m *Manager) PrepareRunner(ctx, PrepareRunnerRequest) error`

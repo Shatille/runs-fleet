@@ -182,7 +182,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 	logger.Println("Runner registered successfully")
 
-	cacheURL := os.Getenv("RUNS_FLEET_CACHE_URL")
+	cacheURL := ac.runnerConfig.CacheURL
 	if envErr := registrar.SetRunnerEnvironment(runnerPath, cacheURL, ac.runnerConfig.CacheToken); envErr != nil {
 		logger.Printf("Warning: failed to set runner environment: %v", envErr)
 	}

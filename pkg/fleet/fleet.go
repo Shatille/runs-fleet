@@ -686,13 +686,6 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 			Value: aws.String(m.config.TerminationQueueURL),
 		})
 	}
-	if m.config.CacheURL != "" {
-		tags = append(tags, types.Tag{
-			Key:   aws.String("runs-fleet:cache-url"),
-			Value: aws.String(m.config.CacheURL),
-		})
-	}
-
 	// Add secrets backend configuration for runner agent
 	if m.config.SecretsBackend != "" {
 		tags = append(tags, types.Tag{
