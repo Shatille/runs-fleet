@@ -7,11 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
-	"time"
 
-	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
-	"github.com/Shavakan/runs-fleet/pkg/queue"
 )
 
 func captureCtxLogs(t *testing.T, buf *bytes.Buffer) {
@@ -41,7 +38,7 @@ func findLog(t *testing.T, buf *bytes.Buffer, msg string) map[string]any {
 
 // loggingTaskExecutor emits a log from within an executor using the same
 // component logger as production code, proving that the task identity stashed
-// by processMessage reaches logs emitted deep in a task.
+// by the runner reaches logs emitted deep in a task.
 type loggingTaskExecutor struct {
 	mockTaskExecutor
 	log *logging.Logger
@@ -52,22 +49,17 @@ func (e *loggingTaskExecutor) ExecuteOrphanedInstances(ctx context.Context) erro
 	return errors.New("boom")
 }
 
-// TestProcessMessageLogsCarryTask proves that the housekeeping consumer stashes
-// the task type onto the context per message, so both a log emitted inside the
-// executor and the handler's own "task failed" log inherit it without restating
-// the field.
-func TestProcessMessageLogsCarryTask(t *testing.T) {
+// TestRunnerLogsCarryTask proves the runner stashes the task type onto the
+// context per task, so both a log emitted inside the executor and the runner's
+// own "task failed" log inherit it without restating the field.
+func TestRunnerLogsCarryTask(t *testing.T) {
 	var buf bytes.Buffer
 	captureCtxLogs(t, &buf)
 
 	executor := &loggingTaskExecutor{log: logging.WithComponent(logging.LogTypeHousekeep, "tasks")}
-	handler := NewHandler(&mockQueueAPI{}, executor, &config.Config{})
+	r := NewRunner(executor, DefaultSchedulerConfig())
 
-	body, _ := json.Marshal(Message{TaskType: TaskOrphanedInstances, Timestamp: time.Now()})
-	err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceipt})
-	if err == nil {
-		t.Fatal("expected error from failing executor")
-	}
+	r.tryRunTask(context.Background(), findSpec(t, r, TaskOrphanedInstances))
 
 	want := string(TaskOrphanedInstances)
 
