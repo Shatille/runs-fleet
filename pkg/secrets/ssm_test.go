@@ -189,6 +189,22 @@ func TestSSMStore_Get(t *testing.T) {
 	}
 }
 
+func TestSSMStore_Get_NotFound(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSSMClient{
+		getFunc: func(_ context.Context, _ *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
+			return nil, &types.ParameterNotFound{Message: aws.String("parameter does not exist")}
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	_, err := store.Get(context.Background(), "i-notfound")
+	if !errors.Is(err, ErrConfigNotFound) {
+		t.Errorf("Get() error = %v, want errors.Is ErrConfigNotFound", err)
+	}
+}
+
 func TestSSMStore_Delete(t *testing.T) {
 	t.Parallel()
 

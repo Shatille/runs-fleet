@@ -737,6 +737,58 @@ const (
 	regressionRunID = "26928632771"
 )
 
+type fakeSecretsStore struct {
+	config    *secrets.RunnerConfig
+	err       error
+	failCalls int
+	calls     int
+}
+
+func (f *fakeSecretsStore) Get(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
+	f.calls++
+	if f.calls <= f.failCalls {
+		return nil, f.err
+	}
+	return f.config, nil
+}
+func (f *fakeSecretsStore) Put(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
+	return nil
+}
+func (f *fakeSecretsStore) Delete(_ context.Context, _ string) error { return nil }
+func (f *fakeSecretsStore) List(_ context.Context) ([]string, error) { return nil, nil }
+
+func TestFetchRunnerConfig_RetriesThenStandby(t *testing.T) {
+	orig := configFetchRetryDelay
+	configFetchRetryDelay = time.Millisecond
+	defer func() { configFetchRetryDelay = orig }()
+
+	store := &fakeSecretsStore{err: secrets.ErrConfigNotFound, failCalls: configFetchAttempts}
+	if _, err := fetchRunnerConfig(context.Background(), store, "i-x", &stdLogger{}); !errors.Is(err, secrets.ErrConfigNotFound) {
+		t.Errorf("fetchRunnerConfig() err = %v, want errors.Is ErrConfigNotFound", err)
+	}
+	if store.calls != configFetchAttempts {
+		t.Errorf("Get calls = %d, want %d", store.calls, configFetchAttempts)
+	}
+}
+
+func TestFetchRunnerConfig_RetriesThenSucceeds(t *testing.T) {
+	orig := configFetchRetryDelay
+	configFetchRetryDelay = time.Millisecond
+	defer func() { configFetchRetryDelay = orig }()
+
+	store := &fakeSecretsStore{config: &secrets.RunnerConfig{RunID: "r1"}, err: errors.New("transient"), failCalls: 2}
+	cfg, err := fetchRunnerConfig(context.Background(), store, "i-x", &stdLogger{})
+	if err != nil {
+		t.Fatalf("fetchRunnerConfig() err = %v", err)
+	}
+	if cfg.RunID != "r1" {
+		t.Errorf("RunID = %q, want r1", cfg.RunID)
+	}
+	if store.calls != 3 {
+		t.Errorf("Get calls = %d, want 3", store.calls)
+	}
+}
+
 func TestResolveJobID_FromConfig(t *testing.T) {
 	_ = os.Unsetenv("RUNS_FLEET_JOB_ID")
 
@@ -756,9 +808,10 @@ func TestResolveJobID_FromConfig(t *testing.T) {
 	}
 }
 
-func TestResolveJobID_EnvOverridesConfig(t *testing.T) {
-	const envJobID = "555000111"
-	_ = os.Setenv("RUNS_FLEET_JOB_ID", envJobID)
+// TestResolveJobID_IgnoresEnv guards the unification: the agent reads its config
+// from the secrets backend, so a stale RUNS_FLEET_JOB_ID env must not override it.
+func TestResolveJobID_IgnoresEnv(t *testing.T) {
+	_ = os.Setenv("RUNS_FLEET_JOB_ID", "555000111")
 	defer func() { _ = os.Unsetenv("RUNS_FLEET_JOB_ID") }()
 
 	ac := &agentConfig{
@@ -768,8 +821,8 @@ func TestResolveJobID_EnvOverridesConfig(t *testing.T) {
 		},
 	}
 
-	if got := resolveJobID(ac); got != envJobID {
-		t.Errorf("resolveJobID() = %q, want env value %q", got, envJobID)
+	if got := resolveJobID(ac); got != regressionJobID {
+		t.Errorf("resolveJobID() = %q, want config job_id %q (env ignored)", got, regressionJobID)
 	}
 }
 

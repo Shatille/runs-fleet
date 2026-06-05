@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -87,6 +88,10 @@ func (s *SSMStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, err
 		WithDecryption: aws.Bool(true),
 	})
 	if err != nil {
+		var notFound *types.ParameterNotFound
+		if errors.As(err, &notFound) {
+			return nil, fmt.Errorf("%s: %w", paramPath, ErrConfigNotFound)
+		}
 		return nil, fmt.Errorf("failed to get runner config from SSM: %w", err)
 	}
 

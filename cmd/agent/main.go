@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -57,23 +58,21 @@ func main() {
 
 	ac, err := initAgent(ctx, instanceID, logger)
 	if err != nil {
+		if errors.Is(err, secrets.ErrConfigNotFound) {
+			logger.Println("No job config found — instance in pool standby")
+			os.Exit(0)
+		}
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
-
-	// Resolve run ID: env var takes precedence, then secrets store config.
-	// In SSM mode the bootstrap only sets INSTANCE_ID and REGION — the run_id
-	// comes from the config fetched by initAgent.
-	runID := os.Getenv("RUNS_FLEET_RUN_ID")
-	if runID == "" && ac.runnerConfig != nil {
-		runID = ac.runnerConfig.RunID
+	if closer, ok := ac.secretsStore.(interface{ Close() }); ok {
+		defer closer.Close()
 	}
+
+	runID := ac.runnerConfig.RunID
 	if runID == "" {
-		log.Fatal("RUNS_FLEET_RUN_ID not set and not found in runner config")
+		log.Fatal("run_id missing from runner config")
 	}
 
-	// Resolve job ID: env var takes precedence, then secrets store config.
-	// In SSM mode the bootstrap does not export RUNS_FLEET_JOB_ID, so the
-	// value comes from the config fetched by initAgent.
 	jobID := resolveJobID(ac)
 
 	logger.Printf("Agent configuration: run_id=%s, job_id=%s, instance_id=%s, max_runtime=%dm",
@@ -91,14 +90,36 @@ func main() {
 	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger)
 }
 
-// resolveJobID resolves the GitHub job_id used to key the job record, returning
-// an empty string when no source is available.
+// resolveJobID returns the GitHub job_id (used to key the job record) from the
+// runner config, or "" when unset.
 func resolveJobID(ac *agentConfig) string {
-	jobID := os.Getenv("RUNS_FLEET_JOB_ID")
-	if jobID == "" && ac.runnerConfig != nil {
-		jobID = ac.runnerConfig.JobID
+	if ac.runnerConfig == nil {
+		return ""
 	}
-	return jobID
+	return ac.runnerConfig.JobID
+}
+
+const configFetchAttempts = 5
+
+var configFetchRetryDelay = 2 * time.Second
+
+// fetchRunnerConfig reads the runner config from the backend, retrying transient
+// failures and the cold-start window before the orchestrator writes the config.
+func fetchRunnerConfig(ctx context.Context, store secrets.Store, instanceID string, logger *stdLogger) (*secrets.RunnerConfig, error) {
+	var lastErr error
+	for attempt := 1; attempt <= configFetchAttempts; attempt++ {
+		config, err := store.Get(ctx, instanceID)
+		if err == nil {
+			return config, nil
+		}
+		lastErr = err
+		if attempt < configFetchAttempts {
+			logger.Printf("config fetch attempt %d/%d failed: %v; retrying in %s",
+				attempt, configFetchAttempts, err, configFetchRetryDelay)
+			time.Sleep(configFetchRetryDelay)
+		}
+	}
+	return nil, fmt.Errorf("config fetch failed after %d attempts: %w", configFetchAttempts, lastErr)
 }
 
 // initAgent initializes the agent components (AWS config, secrets, telemetry, terminator).
@@ -123,16 +144,13 @@ func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agen
 	}
 	ac.secretsStore = secretsStore
 
-	runnerConfig, err := secretsStore.Get(ctx, instanceID)
+	runnerConfig, err := fetchRunnerConfig(ctx, secretsStore, instanceID, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch config from secrets store: %w", err)
+		return nil, err
 	}
 	ac.runnerConfig = runnerConfig
 
-	terminationQueueURL := os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL")
-	if terminationQueueURL == "" {
-		terminationQueueURL = runnerConfig.TerminationQueueURL
-	}
+	terminationQueueURL := runnerConfig.TerminationQueueURL
 	if terminationQueueURL != "" {
 		ac.telemetry = agent.NewSQSTelemetry(awsCfg, terminationQueueURL, logger)
 	}
