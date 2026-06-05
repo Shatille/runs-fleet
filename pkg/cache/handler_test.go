@@ -507,3 +507,138 @@ func TestHandler_DownloadCacheArtifact_InvalidKey(t *testing.T) {
 		t.Errorf("DownloadCacheArtifact() with invalid key status = %v, want %v", w.Code, http.StatusBadRequest)
 	}
 }
+
+// mockMetrics records cache metric emissions for assertions.
+type mockMetrics struct {
+	requests     []string
+	operations   []string
+	bytesStored  []int64
+	errorsOps    []string
+	authRejected []string
+}
+
+func (m *mockMetrics) PublishCacheRequest(_ context.Context, result string) error {
+	m.requests = append(m.requests, result)
+	return nil
+}
+
+func (m *mockMetrics) PublishCacheOperation(_ context.Context, operation string) error {
+	m.operations = append(m.operations, operation)
+	return nil
+}
+
+func (m *mockMetrics) PublishCacheBytesStored(_ context.Context, bytes int64) error {
+	m.bytesStored = append(m.bytesStored, bytes)
+	return nil
+}
+
+func (m *mockMetrics) PublishCacheError(_ context.Context, operation string) error {
+	m.errorsOps = append(m.errorsOps, operation)
+	return nil
+}
+
+func (m *mockMetrics) PublishCacheAuthRejected(_ context.Context, reason string) error {
+	m.authRejected = append(m.authRejected, reason)
+	return nil
+}
+
+func TestHandler_CommitCacheEntry_EmitsMetrics(t *testing.T) {
+	t.Parallel()
+
+	m := &mockMetrics{}
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandlerWithMetrics(server, m)
+
+	req := httptest.NewRequest(http.MethodPatch, "/_apis/artifactcache/caches/caches/abc/my-key", strings.NewReader(`{"size":2048}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.CommitCacheEntry(w, req, "caches/abc/my-key")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("CommitCacheEntry() status = %v, want %v", w.Code, http.StatusOK)
+	}
+	if len(m.operations) != 1 || m.operations[0] != "commit" {
+		t.Errorf("operations = %v, want [commit]", m.operations)
+	}
+	if len(m.bytesStored) != 1 || m.bytesStored[0] != 2048 {
+		t.Errorf("bytesStored = %v, want [2048]", m.bytesStored)
+	}
+	if len(m.errorsOps) != 0 {
+		t.Errorf("errorsOps = %v, want none", m.errorsOps)
+	}
+}
+
+func TestHandler_ReserveCacheEntry_EmitsErrorMetric(t *testing.T) {
+	t.Parallel()
+
+	m := &mockMetrics{}
+	mockPresign := &mockPresignClient{
+		presignPutFunc: func(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+			return nil, errors.New("presign failed")
+		},
+	}
+	server := cache.NewServerWithClients(&mockS3Client{}, mockPresign, "test-bucket")
+	handler := cache.NewHandlerWithMetrics(server, m)
+
+	req := httptest.NewRequest(http.MethodPost, "/_apis/artifactcache/caches", strings.NewReader(`{"key":"k","version":"v"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ReserveCacheEntry(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("ReserveCacheEntry() status = %v, want %v", w.Code, http.StatusInternalServerError)
+	}
+	if len(m.errorsOps) != 1 || m.errorsOps[0] != "reserve" {
+		t.Errorf("errorsOps = %v, want [reserve]", m.errorsOps)
+	}
+	if len(m.operations) != 0 {
+		t.Errorf("operations = %v, want none on error", m.operations)
+	}
+}
+
+func TestHandler_GetCacheEntry_EmitsErrorMetric(t *testing.T) {
+	t.Parallel()
+
+	m := &mockMetrics{}
+	mockS3 := &mockS3Client{
+		headObjectFunc: func(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+			return nil, errors.New("S3 error")
+		},
+	}
+	server := cache.NewServerWithClients(mockS3, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandlerWithMetrics(server, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/_apis/artifactcache/cache?keys=my-key&version=abc123", nil)
+	w := httptest.NewRecorder()
+
+	handler.GetCacheEntry(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("GetCacheEntry() status = %v, want %v", w.Code, http.StatusInternalServerError)
+	}
+	if len(m.errorsOps) != 1 || m.errorsOps[0] != "get" {
+		t.Errorf("errorsOps = %v, want [get]", m.errorsOps)
+	}
+}
+
+func TestHandler_DownloadCacheArtifact_EmitsOperation(t *testing.T) {
+	t.Parallel()
+
+	m := &mockMetrics{}
+	server := cache.NewServerWithClients(&mockS3Client{}, &mockPresignClient{}, "test-bucket")
+	handler := cache.NewHandlerWithMetrics(server, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/_artifacts/caches/abc/my-key", nil)
+	w := httptest.NewRecorder()
+
+	handler.DownloadCacheArtifact(w, req, "caches/abc/my-key")
+
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("DownloadCacheArtifact() status = %v, want %v", w.Code, http.StatusTemporaryRedirect)
+	}
+	if len(m.operations) != 1 || m.operations[0] != "download" {
+		t.Errorf("operations = %v, want [download]", m.operations)
+	}
+}

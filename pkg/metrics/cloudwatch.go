@@ -212,6 +212,26 @@ func (p *CloudWatchPublisher) PublishCacheRequest(ctx context.Context, result st
 	return p.putCounter(ctx, "CacheRequests", dims("Result", result))
 }
 
+// PublishCacheOperation publishes the cache operation counter.
+func (p *CloudWatchPublisher) PublishCacheOperation(ctx context.Context, operation string) error {
+	return p.putCounter(ctx, "CacheOperations", dims("Operation", operation))
+}
+
+// PublishCacheBytesStored publishes total bytes written to the cache.
+func (p *CloudWatchPublisher) PublishCacheBytesStored(ctx context.Context, bytes int64) error {
+	return p.putCounterValueUnit(ctx, "CacheBytesStored", float64(bytes), types.StandardUnitBytes, nil)
+}
+
+// PublishCacheError publishes the cache error counter.
+func (p *CloudWatchPublisher) PublishCacheError(ctx context.Context, operation string) error {
+	return p.putCounter(ctx, "CacheErrors", dims("Operation", operation))
+}
+
+// PublishCacheAuthRejected publishes the cache auth-rejection counter.
+func (p *CloudWatchPublisher) PublishCacheAuthRejected(ctx context.Context, reason string) error {
+	return p.putCounter(ctx, "CacheAuthRejected", dims("Reason", reason))
+}
+
 // PublishHousekeepingAction publishes the housekeeping action counter.
 func (p *CloudWatchPublisher) PublishHousekeepingAction(ctx context.Context, action string, count int) error {
 	return p.putCounterValue(ctx, "HousekeepingActions", float64(count), dims("Action", action))
@@ -279,13 +299,17 @@ func (p *CloudWatchPublisher) putCounter(ctx context.Context, name string, dimen
 }
 
 func (p *CloudWatchPublisher) putCounterValue(ctx context.Context, name string, value float64, dimensions []types.Dimension) error {
+	return p.putCounterValueUnit(ctx, name, value, types.StandardUnitCount, dimensions)
+}
+
+func (p *CloudWatchPublisher) putCounterValueUnit(ctx context.Context, name string, value float64, unit types.StandardUnit, dimensions []types.Dimension) error {
 	_, err := p.client.PutMetricData(ctx, &cloudwatch.PutMetricDataInput{
 		Namespace: aws.String(p.namespace),
 		MetricData: []types.MetricDatum{
 			{
 				MetricName: aws.String(name),
 				Value:      aws.Float64(value),
-				Unit:       types.StandardUnitCount,
+				Unit:       unit,
 				Timestamp:  aws.Time(time.Now()),
 				Dimensions: dimensions,
 			},

@@ -110,14 +110,26 @@ func ValidateCacheToken(secret, token string) bool {
 type AuthMiddleware struct {
 	secret  string
 	enabled bool
+	metrics Metrics
 }
 
 // NewAuthMiddleware creates authentication middleware for cache endpoints.
 // If secret is empty, authentication is disabled (for backwards compatibility).
-func NewAuthMiddleware(secret string) *AuthMiddleware {
+func NewAuthMiddleware(secret string, metrics Metrics) *AuthMiddleware {
 	return &AuthMiddleware{
 		secret:  secret,
 		enabled: secret != "",
+		metrics: metrics,
+	}
+}
+
+func (m *AuthMiddleware) emitRejected(ctx context.Context, reason string) {
+	if m.metrics == nil {
+		return
+	}
+	if err := m.metrics.PublishCacheAuthRejected(ctx, reason); err != nil {
+		authLog.Error(ctx, "cache auth-rejected metric failed",
+			slog.String("reason", reason), slog.String("error", err.Error()))
 	}
 }
 
@@ -141,12 +153,14 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 
 		if token == "" {
 			authLog.Warn(r.Context(), "cache auth failed: missing token", slog.String("remote_addr", r.RemoteAddr))
+			m.emitRejected(r.Context(), "missing")
 			http.Error(w, "Unauthorized: missing cache token", http.StatusUnauthorized)
 			return
 		}
 
 		if !ValidateCacheToken(m.secret, token) {
 			authLog.Warn(r.Context(), "cache auth failed: invalid token", slog.String("remote_addr", r.RemoteAddr))
+			m.emitRejected(r.Context(), "invalid")
 			http.Error(w, "Unauthorized: invalid cache token", http.StatusUnauthorized)
 			return
 		}

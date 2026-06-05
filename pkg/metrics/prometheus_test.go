@@ -111,6 +111,10 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishAWSCallDuration", func() error { return pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5) }},
 		{"PublishAWSCallFailure", func() error { return pub.PublishAWSCallFailure(ctx, "SQS", "ReceiveMessage", "timeout") }},
 		{"PublishCacheRequest", func() error { return pub.PublishCacheRequest(ctx, "hit") }},
+		{"PublishCacheOperation", func() error { return pub.PublishCacheOperation(ctx, "commit") }},
+		{"PublishCacheBytesStored", func() error { return pub.PublishCacheBytesStored(ctx, 1024) }},
+		{"PublishCacheError", func() error { return pub.PublishCacheError(ctx, "commit") }},
+		{"PublishCacheAuthRejected", func() error { return pub.PublishCacheAuthRejected(ctx, "invalid") }},
 		{"PublishHousekeepingAction", func() error { return pub.PublishHousekeepingAction(ctx, "ssm_params", 3) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "job_claim") }},
 		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx, "events") }},
@@ -141,6 +145,10 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	_ = pub.PublishFleetCreate(ctx, "1", "success")
 	_ = pub.PublishAWSCallDuration(ctx, "SQS", "ReceiveMessage", 1.5)
 	_ = pub.PublishAWSCallFailure(ctx, "DynamoDB", "GetItem", "timeout")
+	_ = pub.PublishCacheOperation(ctx, "commit")
+	_ = pub.PublishCacheBytesStored(ctx, 2048)
+	_ = pub.PublishCacheError(ctx, "commit")
+	_ = pub.PublishCacheAuthRejected(ctx, "invalid")
 
 	body := scrape(t, pub)
 
@@ -152,6 +160,10 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 		`runs_fleet_fleet_create_total{capacity="1",result="success"} 1`,
 		`runs_fleet_aws_call_duration_seconds_count{operation="ReceiveMessage",service="SQS"} 1`,
 		`runs_fleet_aws_call_failures_total{operation="GetItem",result="timeout",service="DynamoDB"} 1`,
+		`runs_fleet_cache_operations_total{operation="commit"} 1`,
+		`runs_fleet_cache_bytes_stored_total 2048`,
+		`runs_fleet_cache_errors_total{operation="commit"} 1`,
+		`runs_fleet_cache_auth_rejected_total{reason="invalid"} 1`,
 	}
 
 	for _, metric := range expectedMetrics {
