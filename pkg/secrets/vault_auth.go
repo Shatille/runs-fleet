@@ -36,8 +36,18 @@ func authenticate(ctx context.Context, client *api.Client, cfg VaultConfig) erro
 	}
 }
 
+const awsSTSRegionalEndpointsEnv = "AWS_STS_REGIONAL_ENDPOINTS"
+
+func useRegionalSTSEndpoint() {
+	if os.Getenv(awsSTSRegionalEndpointsEnv) == "" {
+		_ = os.Setenv(awsSTSRegionalEndpointsEnv, "regional")
+	}
+}
+
 // authenticateAWS authenticates using AWS IAM credentials.
 func authenticateAWS(ctx context.Context, client *api.Client, role, region string) error {
+	useRegionalSTSEndpoint()
+
 	opts := []aws.LoginOption{
 		aws.WithIAMAuth(),
 	}
