@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -336,116 +337,89 @@ func (m *mockFleetManagerEC2) CreateFleet(ctx context.Context, spec *fleet.Launc
 	return []string{"i-123"}, nil
 }
 
-// fleetManagerInterface allows testing CreateFleetWithRetry with mock.
-type fleetManagerInterface interface {
-	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
-}
-
-// createFleetWithRetryTestable mirrors CreateFleetWithRetry logic but accepts an interface for testing.
-// SYNC NOTE: Keep retry logic (attempts, backoff) in sync with CreateFleetWithRetry in ec2.go.
-func createFleetWithRetryTestable(ctx context.Context, f fleetManagerInterface, spec *fleet.LaunchSpec) ([]string, error) {
-	var instanceIDs []string
-	var err error
-	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
-		if attempt > 0 {
-			backoff := FleetRetryBaseDelay * time.Duration(1<<uint(attempt-1))
-			time.Sleep(backoff)
-		}
-
-		instanceIDs, err = f.CreateFleet(ctx, spec)
-		if err == nil {
-			return instanceIDs, nil
-		}
-	}
-	return nil, err
-}
-
 func TestCreateFleetWithRetry_Success(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		mockFleet := &mockFleetManagerEC2{
+			CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+				return []string{"i-123", "i-456"}, nil
+			},
+		}
 
-	mockFleet := &mockFleetManagerEC2{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
-			return []string{"i-123", "i-456"}, nil
-		},
-	}
+		spec := &fleet.LaunchSpec{
+			RunID:        12345,
+			InstanceType: "t3.micro",
+		}
 
-	spec := &fleet.LaunchSpec{
-		RunID:        12345,
-		InstanceType: "t3.micro",
-	}
-
-	result, err := createFleetWithRetryTestable(context.Background(), mockFleet, spec)
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
-	if len(result) != 2 {
-		t.Errorf("Expected 2 instance IDs, got %d", len(result))
-	}
+		result, err := CreateFleetWithRetry(context.Background(), mockFleet, spec)
+		if err != nil {
+			t.Errorf("Expected no error, got %v", err)
+		}
+		if len(result) != 2 {
+			t.Errorf("Expected 2 instance IDs, got %d", len(result))
+		}
+	})
 }
 
 func TestCreateFleetWithRetry_SuccessAfterRetries(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
+	// No FleetRetryBaseDelay override: inside the synctest bubble the real
+	// backoff sleeps run on the fake clock, so the production retry schedule is
+	// exercised instantly.
+	synctest.Test(t, func(t *testing.T) {
+		attempts := 0
+		mockFleet := &mockFleetManagerEC2{
+			CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+				attempts++
+				if attempts < 3 {
+					return nil, errors.New("temporary failure")
+				}
+				return []string{"i-123"}, nil
+			},
+		}
 
-	attempts := 0
-	mockFleet := &mockFleetManagerEC2{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
-			attempts++
-			if attempts < 3 {
-				return nil, errors.New("temporary failure")
-			}
-			return []string{"i-123"}, nil
-		},
-	}
+		spec := &fleet.LaunchSpec{
+			RunID:        12345,
+			InstanceType: "t3.micro",
+		}
 
-	spec := &fleet.LaunchSpec{
-		RunID:        12345,
-		InstanceType: "t3.micro",
-	}
-
-	result, err := createFleetWithRetryTestable(context.Background(), mockFleet, spec)
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
-	if len(result) != 1 {
-		t.Errorf("Expected 1 instance ID, got %d", len(result))
-	}
-	if attempts != 3 {
-		t.Errorf("Expected 3 attempts, got %d", attempts)
-	}
+		result, err := CreateFleetWithRetry(context.Background(), mockFleet, spec)
+		if err != nil {
+			t.Errorf("Expected no error, got %v", err)
+		}
+		if len(result) != 1 {
+			t.Errorf("Expected 1 instance ID, got %d", len(result))
+		}
+		if attempts != 3 {
+			t.Errorf("Expected 3 attempts, got %d", attempts)
+		}
+	})
 }
 
 func TestCreateFleetWithRetry_Failure(t *testing.T) {
-	origRetryDelay := FleetRetryBaseDelay
-	defer func() { FleetRetryBaseDelay = origRetryDelay }()
-	FleetRetryBaseDelay = 1 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		attempts := 0
+		mockFleet := &mockFleetManagerEC2{
+			CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+				attempts++
+				return nil, errors.New("permanent failure")
+			},
+		}
 
-	attempts := 0
-	mockFleet := &mockFleetManagerEC2{
-		CreateFleetFunc: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
-			attempts++
-			return nil, errors.New("permanent failure")
-		},
-	}
+		spec := &fleet.LaunchSpec{
+			RunID:        12345,
+			InstanceType: "t3.micro",
+		}
 
-	spec := &fleet.LaunchSpec{
-		RunID:        12345,
-		InstanceType: "t3.micro",
-	}
-
-	result, err := createFleetWithRetryTestable(context.Background(), mockFleet, spec)
-	if err == nil {
-		t.Error("Expected error")
-	}
-	if result != nil {
-		t.Error("Expected nil result on failure")
-	}
-	if attempts != maxFleetCreateRetries {
-		t.Errorf("Expected %d attempts, got %d", maxFleetCreateRetries, attempts)
-	}
+		result, err := CreateFleetWithRetry(context.Background(), mockFleet, spec)
+		if err == nil {
+			t.Error("Expected error")
+		}
+		if result != nil {
+			t.Error("Expected nil result on failure")
+		}
+		if attempts != maxFleetCreateRetries {
+			t.Errorf("Expected %d attempts, got %d", maxFleetCreateRetries, attempts)
+		}
+	})
 }
 
 func TestProcessEC2Message_InvalidJSON(t *testing.T) {

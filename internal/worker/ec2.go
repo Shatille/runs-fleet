@@ -373,8 +373,13 @@ func SelectSubnet(cfg *config.Config, subnetIndex *uint64) string {
 	return cfg.SubnetIDs[idx%uint64(len(cfg.SubnetIDs))]
 }
 
+// fleetManagerInterface is the subset of *fleet.Manager used by CreateFleetWithRetry.
+type fleetManagerInterface interface {
+	CreateFleet(ctx context.Context, spec *fleet.LaunchSpec) ([]string, error)
+}
+
 // CreateFleetWithRetry attempts to create a fleet with exponential backoff.
-func CreateFleetWithRetry(ctx context.Context, f *fleet.Manager, spec *fleet.LaunchSpec) ([]string, error) {
+func CreateFleetWithRetry(ctx context.Context, f fleetManagerInterface, spec *fleet.LaunchSpec) ([]string, error) {
 	var instanceIDs []string
 	var err error
 	for attempt := 0; attempt < maxFleetCreateRetries; attempt++ {
