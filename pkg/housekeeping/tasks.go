@@ -13,6 +13,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
+	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -45,6 +46,15 @@ type MetricsAPI interface {
 	PublishHousekeepingAction(ctx context.Context, action string, count int) error
 	PublishPoolInstances(ctx context.Context, pool, state string, n int) error
 	PublishPoolDesired(ctx context.Context, pool, kind string, n int) error
+	PublishJobRequeued(ctx context.Context, reason string) error
+	PublishSchedulingFailure(ctx context.Context, taskType string) error
+}
+
+// JobRequeuer re-enqueues a job onto the main job queue. Satisfied by the SQS
+// queue client; used by the unconfirmed-runner watchdog to recover a job whose
+// instance launched but whose runner never registered.
+type JobRequeuer interface {
+	SendMessage(ctx context.Context, job *queue.JobMessage) error
 }
 
 // Housekeeping action labels for PublishHousekeepingAction.
@@ -54,6 +64,7 @@ const (
 	housekeepingActionJobRecords        = "job_records"
 	housekeepingActionOrphanedJobs      = "orphaned_jobs"
 	housekeepingActionStaleJobs         = "stale_jobs"
+	housekeepingActionUnconfirmedRunner = "unconfirmed_runners"
 )
 
 // CostReporter generates cost reports.
@@ -95,16 +106,24 @@ type PoolDBAPI interface {
 
 // Tasks implements housekeeping task execution.
 type Tasks struct {
-	ec2Client      EC2API
-	secretsStore   secrets.Store
-	dynamoClient   DynamoDBAPI
-	sqsClient      SQSAPI
-	poolDB         PoolDBAPI
-	gitHubChecker  GitHubJobChecker
-	metrics        MetricsAPI
-	costReporter   CostReporter
-	config         *config.Config
-	log            *logging.Logger
+	ec2Client     EC2API
+	secretsStore  secrets.Store
+	dynamoClient  DynamoDBAPI
+	sqsClient     SQSAPI
+	poolDB        PoolDBAPI
+	gitHubChecker GitHubJobChecker
+	jobRequeuer   JobRequeuer
+	metrics       MetricsAPI
+	costReporter  CostReporter
+	config        *config.Config
+	log           *logging.Logger
+}
+
+// SetJobRequeuer wires the main-queue requeuer used by the unconfirmed-runner
+// watchdog. When unset, the watchdog is a no-op (it never destroys a job it
+// cannot recover).
+func (t *Tasks) SetJobRequeuer(r JobRequeuer) {
+	t.jobRequeuer = r
 }
 
 // logger returns the logger, using a default if not initialized.

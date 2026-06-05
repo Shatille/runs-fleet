@@ -14,26 +14,28 @@ import (
 
 // mockTaskExecutor implements TaskExecutor for testing.
 type mockTaskExecutor struct {
-	orphanedErr      error
-	ssmErr           error
-	jobsErr          error
-	orphanedJobsErr  error
-	staleJobsErr     error
-	poolErr          error
-	costErr          error
-	dlqErr           error
-	ephemeralPoolErr error
-	packerErr        error
-	orphanedCall      int
-	ssmCall           int
-	jobsCall          int
-	orphanedJobsCall  int
-	staleJobsCall     int
-	poolCall          int
-	costCall          int
-	dlqCall           int
-	ephemeralPoolCall int
-	packerCall        int
+	orphanedErr        error
+	ssmErr             error
+	jobsErr            error
+	orphanedJobsErr    error
+	staleJobsErr       error
+	unconfirmedRunErr  error
+	poolErr            error
+	costErr            error
+	dlqErr             error
+	ephemeralPoolErr   error
+	packerErr          error
+	orphanedCall       int
+	ssmCall            int
+	jobsCall           int
+	orphanedJobsCall   int
+	staleJobsCall      int
+	unconfirmedRunCall int
+	poolCall           int
+	costCall           int
+	dlqCall            int
+	ephemeralPoolCall  int
+	packerCall         int
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -59,6 +61,11 @@ func (m *mockTaskExecutor) ExecuteOrphanedJobs(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteStaleJobs(_ context.Context) error {
 	m.staleJobsCall++
 	return m.staleJobsErr
+}
+
+func (m *mockTaskExecutor) ExecuteUnconfirmedRunners(_ context.Context) error {
+	m.unconfirmedRunCall++
+	return m.unconfirmedRunErr
 }
 
 func (m *mockTaskExecutor) ExecutePoolAudit(_ context.Context) error {
@@ -150,6 +157,7 @@ func longIntervals() SchedulerConfig {
 		DLQRedriveInterval:              d,
 		EphemeralPoolCleanupInterval:    d,
 		StaleJobsInterval:               d,
+		UnconfirmedRunnersInterval:      d,
 		OrphanedPackerInstancesInterval: d,
 	}
 }
@@ -206,7 +214,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 
 	want := []TaskType{
 		TaskOrphanedInstances, TaskStaleSecrets, TaskOldJobs, TaskOrphanedJobs,
-		TaskStaleJobs, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
+		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
 		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances,
 	}
 	r := NewRunner(&mockTaskExecutor{}, DefaultSchedulerConfig())
@@ -245,6 +253,7 @@ func TestRunner_TryRunTask_DispatchesToExecutor(t *testing.T) {
 		{TaskOldJobs, func(m *mockTaskExecutor) int { return m.jobsCall }},
 		{TaskOrphanedJobs, func(m *mockTaskExecutor) int { return m.orphanedJobsCall }},
 		{TaskStaleJobs, func(m *mockTaskExecutor) int { return m.staleJobsCall }},
+		{TaskUnconfirmedRunners, func(m *mockTaskExecutor) int { return m.unconfirmedRunCall }},
 		{TaskPoolAudit, func(m *mockTaskExecutor) int { return m.poolCall }},
 		{TaskCostReport, func(m *mockTaskExecutor) int { return m.costCall }},
 		{TaskDLQRedrive, func(m *mockTaskExecutor) int { return m.dlqCall }},

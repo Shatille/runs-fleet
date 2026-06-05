@@ -26,6 +26,12 @@ type Publisher interface {
 	// failure counterpart is PublishSchedulingFailure.
 	PublishJobAssigned(ctx context.Context, pool, source, repo string) error
 
+	// PublishRunnerConfirmed increments runner_confirmed_total when a launched
+	// instance's runner registers and begins executing the job (the agent's
+	// "started" signal). A flatline here while jobs_assigned keeps climbing is a
+	// leading indicator of a fleet-wide runner-registration failure.
+	PublishRunnerConfirmed(ctx context.Context, pool string) error
+
 	// PublishJobCompleted increments jobs_completed_total when a job finishes.
 	// result is OUR runner's operational lifecycle: served, interrupted, error, or
 	// timeout. served means the runner ran the job to completion and exited cleanly,
@@ -187,6 +193,9 @@ func (NoopPublisher) PublishJobEnqueued(context.Context, string, string, string,
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishJobAssigned(context.Context, string, string, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishRunnerConfirmed(context.Context, string) error { return nil }
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishJobCompleted(context.Context, string, string, string) error { return nil }

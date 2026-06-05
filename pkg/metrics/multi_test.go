@@ -140,6 +140,7 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 	}{
 		{"PublishJobEnqueued", func() error { return multi.PublishJobEnqueued(ctx, "default", "arm64", "4", "o/r") }},
 		{"PublishJobAssigned", func() error { return multi.PublishJobAssigned(ctx, "default", "warm_pool", "o/r") }},
+		{"PublishRunnerConfirmed", func() error { return multi.PublishRunnerConfirmed(ctx, "default") }},
 		{"PublishJobCompleted", func() error { return multi.PublishJobCompleted(ctx, "default", "success", "o/r") }},
 		{"PublishJobRequeued", func() error { return multi.PublishJobRequeued(ctx, "spot_interruption") }},
 		{"PublishJobWaitSeconds", func() error { return multi.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},

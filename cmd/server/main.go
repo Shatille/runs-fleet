@@ -133,7 +133,7 @@ func main() {
 		terminationQueueClient := queue.NewClient(sqsCfg, cfg.TerminationQueueURL)
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
 	}
-	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient)
+	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, jobQueue)
 
 	runnerManager := initRunnerManager(secretsStore, cfg)
 
@@ -333,7 +333,7 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	return store
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client) *housekeeping.Runner {
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, jobQueue queue.Queue) *housekeeping.Runner {
 	if dbClient == nil || cfg.PoolsTableName == "" {
 		logging.WithComponent(logging.LogTypeServer, "housekeeping").Warn(context.Background(),
 			"housekeeping disabled: no pools table configured for task locking")
@@ -347,6 +347,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 
 	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, metricsPublisher, costReporter)
 	tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
+	tasksExecutor.SetJobRequeuer(jobQueue)
 
 	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
 		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)

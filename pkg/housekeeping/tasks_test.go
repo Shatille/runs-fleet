@@ -178,14 +178,17 @@ func (m *mockTaskDynamoDBAPI) UpdateItem(_ context.Context, _ *dynamodb.UpdateIt
 
 // mockTaskMetricsAPI implements MetricsAPI for testing.
 type mockTaskMetricsAPI struct {
-	orphanedCount     int
-	ssmCount          int
-	jobCount          int
-	orphanedJobsCount int
-	staleJobsCount    int
-	poolRunning       map[string]int
-	poolDesired       map[string]int
-	err               error
+	orphanedCount      int
+	ssmCount           int
+	jobCount           int
+	orphanedJobsCount  int
+	staleJobsCount     int
+	unconfirmedCount   int
+	requeuedReasons    []string
+	schedulingFailures []string
+	poolRunning        map[string]int
+	poolDesired        map[string]int
+	err                error
 }
 
 func (m *mockTaskMetricsAPI) PublishHousekeepingAction(_ context.Context, action string, count int) error {
@@ -200,7 +203,19 @@ func (m *mockTaskMetricsAPI) PublishHousekeepingAction(_ context.Context, action
 		m.orphanedJobsCount = count
 	case housekeepingActionStaleJobs:
 		m.staleJobsCount = count
+	case housekeepingActionUnconfirmedRunner:
+		m.unconfirmedCount = count
 	}
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishJobRequeued(_ context.Context, reason string) error {
+	m.requeuedReasons = append(m.requeuedReasons, reason)
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishSchedulingFailure(_ context.Context, taskType string) error {
+	m.schedulingFailures = append(m.schedulingFailures, taskType)
 	return m.err
 }
 

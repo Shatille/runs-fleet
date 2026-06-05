@@ -106,8 +106,8 @@ func TestProcessMessageLogsCarryStashedIdentity(t *testing.T) {
 }
 
 // TestStartedEventDoesNotLogProcessing proves a "started" event is logged as a
-// Debug "runner started" line and never as "processing termination", so it does
-// not masquerade as a completion being processed.
+// "runner confirmed" line (the launched -> running transition) and never as
+// "processing termination", so it does not masquerade as a completion.
 func TestStartedEventDoesNotLogProcessing(t *testing.T) {
 	var buf bytes.Buffer
 	captureCtxLogs(t, &buf)
@@ -124,12 +124,12 @@ func TestStartedEventDoesNotLogProcessing(t *testing.T) {
 	if logExists(t, &buf, "processing termination") {
 		t.Errorf("started event must not emit 'processing termination'; logs: %s", buf.String())
 	}
-	started := findLog(t, &buf, "runner started")
-	if got := started[logging.KeyInstanceID]; got != "i-started" {
-		t.Errorf("runner started: %s = %v, want i-started", logging.KeyInstanceID, got)
+	confirmed := findLog(t, &buf, "runner confirmed")
+	if got := confirmed[logging.KeyInstanceID]; got != "i-started" {
+		t.Errorf("runner confirmed: %s = %v, want i-started", logging.KeyInstanceID, got)
 	}
-	if got := started[logging.KeyJobID]; got != "777" {
-		t.Errorf("runner started: %s = %v, want 777", logging.KeyJobID, got)
+	if got := confirmed[logging.KeyJobID]; got != "777" {
+		t.Errorf("runner confirmed: %s = %v, want 777", logging.KeyJobID, got)
 	}
 }
 

@@ -18,6 +18,9 @@ import (
 // Test constants for table names.
 const testPoolsTable = "pools-table"
 
+// Test constant for the default pool name.
+const testPoolDefault = "default"
+
 // Test constant for repository names.
 const testRepo = "org/repo"
 
@@ -25,7 +28,7 @@ const testRepo = "org/repo"
 const errPoolsTableNotConfigured = "pools table not configured"
 
 // Test constant for condition expressions.
-const condStatusRunning = "#status = :current_status"
+const condRequeueActive = "#status IN (:running, :launched)"
 
 // MockDynamoDBAPI implements DynamoDBAPI interface.
 //
@@ -263,7 +266,7 @@ func TestGetJobByInstance(t *testing.T) {
 						"job_id":        int64(12345),
 						"run_id":        int64(67890),
 						"instance_type": "t4g.medium",
-						"pool":          "default",
+						"pool":          testPoolDefault,
 						"spot":          true,
 						"retry_count":   0,
 						"status":        string(JobStatusRunning),
@@ -349,7 +352,7 @@ func TestSaveJob(t *testing.T) {
 				RunID:        67890,
 				InstanceID:   "i-1234567890abcdef0",
 				InstanceType: "t4g.medium",
-				Pool:         "default",
+				Pool:         testPoolDefault,
 				Spot:         true,
 				RetryCount:   0,
 			},
@@ -940,7 +943,7 @@ func TestJobRecord_Structure(t *testing.T) {
 		Repo:         "owner/repo",
 		InstanceID:   "i-abc123",
 		InstanceType: "t4g.medium",
-		Pool:         "default",
+		Pool:         testPoolDefault,
 		Spot:         false,
 		RetryCount:   2,
 	}
@@ -960,7 +963,7 @@ func TestJobRecord_Structure(t *testing.T) {
 	if job.InstanceType != "t4g.medium" {
 		t.Errorf("InstanceType = %s, want t4g.medium", job.InstanceType)
 	}
-	if job.Pool != "default" {
+	if job.Pool != testPoolDefault {
 		t.Errorf("Pool = %s, want default", job.Pool)
 	}
 	if job.Spot {
@@ -1129,7 +1132,7 @@ func TestGetJobByJobID_Success(t *testing.T) {
 				Repo:         testRepo,
 				InstanceID:   "i-abc",
 				InstanceType: "c7g.xlarge",
-				Pool:         "default",
+				Pool:         testPoolDefault,
 				Spot:         true,
 				RetryCount:   1,
 				Status:       string(JobStatusRunning),
@@ -1224,8 +1227,8 @@ func TestMarkJobRequeuedByJobID_Success(t *testing.T) {
 			if _, ok := input.Key["job_id"]; !ok {
 				t.Error("MarkJobRequeuedByJobID() should use job_id as key")
 			}
-			if input.ConditionExpression == nil || *input.ConditionExpression != condStatusRunning {
-				t.Errorf("ConditionExpression = %v, want condStatusRunning", input.ConditionExpression)
+			if input.ConditionExpression == nil || *input.ConditionExpression != condRequeueActive {
+				t.Errorf("ConditionExpression = %v, want %q", input.ConditionExpression, condRequeueActive)
 			}
 			return &dynamodb.UpdateItemOutput{}, nil
 		},
@@ -1730,6 +1733,74 @@ func TestFailExhaustedClaim_RaceLost(t *testing.T) {
 	}
 }
 
+func TestMarkJobStarted_TransitionsLaunchedToRunning(t *testing.T) {
+	t.Parallel()
+
+	var gotStatus, gotCondition, gotStartedAt string
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			if params.ConditionExpression != nil {
+				gotCondition = *params.ConditionExpression
+			}
+			if v, ok := params.ExpressionAttributeValues[":running"].(*types.AttributeValueMemberS); ok {
+				gotStatus = v.Value
+			}
+			if v, ok := params.ExpressionAttributeValues[":started_at"].(*types.AttributeValueMemberS); ok {
+				gotStartedAt = v.Value
+			}
+			return &dynamodb.UpdateItemOutput{Attributes: map[string]types.AttributeValue{
+				"job_id": &types.AttributeValueMemberN{Value: "12345"},
+				"pool":   &types.AttributeValueMemberS{Value: testPoolDefault},
+			}}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	startedAt := time.Date(2026, 6, 5, 5, 5, 0, 0, time.UTC)
+	info, err := client.MarkJobStarted(context.Background(), 12345, startedAt)
+	if err != nil {
+		t.Fatalf("MarkJobStarted() unexpected error: %v", err)
+	}
+	if info == nil {
+		t.Fatal("MarkJobStarted() must return the updated record when the transition applied")
+	}
+	if info.Pool != testPoolDefault {
+		t.Errorf("MarkJobStarted() returned pool %q, want %q", info.Pool, testPoolDefault)
+	}
+	if gotStatus != string(JobStatusRunning) {
+		t.Errorf("MarkJobStarted() must set status=running; got %q", gotStatus)
+	}
+	if gotCondition != "#status = :launched" {
+		t.Errorf("MarkJobStarted() must guard on a launched record; got condition %q", gotCondition)
+	}
+	if gotStartedAt != startedAt.Format(time.RFC3339) {
+		t.Errorf("MarkJobStarted() must stamp started_at=%q; got %q", startedAt.Format(time.RFC3339), gotStartedAt)
+	}
+}
+
+// A "started" message that arrives after the job already left the launched state
+// (completed, or recovered by the watchdog) must be a no-op: nil record, no error.
+func TestMarkJobStarted_LateMessageNoOp(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{Message: nil}
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	info, err := client.MarkJobStarted(context.Background(), 12345, time.Now())
+	if err != nil {
+		t.Errorf("MarkJobStarted() must treat a lost race as success; got %v", err)
+	}
+	if info != nil {
+		t.Errorf("MarkJobStarted() must return nil record on a no-op; got %+v", info)
+	}
+}
+
 // SaveJob with a JobRecord that has no Pool set must omit the pool
 // attribute from the marshaled item, matching ClaimJob behavior.
 func TestSaveJob_OmitsEmptyPoolAttribute(t *testing.T) {
@@ -1784,7 +1855,7 @@ func TestSaveJob_WritesNonEmptyPoolAttribute(t *testing.T) {
 		JobID:        12345,
 		InstanceID:   "i-1234567890abcdef0",
 		InstanceType: "t4g.medium",
-		Pool:         "default",
+		Pool:         testPoolDefault,
 	})
 	if err != nil {
 		t.Fatalf("SaveJob() unexpected error: %v", err)
@@ -1793,8 +1864,41 @@ func TestSaveJob_WritesNonEmptyPoolAttribute(t *testing.T) {
 	if !ok {
 		t.Fatalf("SaveJob() pool attribute missing or wrong type: %#v", captured["pool"])
 	}
-	if got.Value != "default" {
-		t.Errorf("SaveJob() pool = %q, want %q", got.Value, "default")
+	if got.Value != testPoolDefault {
+		t.Errorf("SaveJob() pool = %q, want %q", got.Value, testPoolDefault)
+	}
+}
+
+func TestSaveJob_WritesLaunchedStatus(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]types.AttributeValue
+	mockDB := &MockDynamoDBAPI{
+		PutItemFunc: func(_ context.Context, params *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			captured = params.Item
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	client := &Client{
+		dynamoClient: mockDB,
+		jobsTable:    "jobs-table",
+	}
+
+	err := client.SaveJob(context.Background(), &JobRecord{
+		JobID:        12345,
+		InstanceID:   "i-1234567890abcdef0",
+		InstanceType: "t4g.medium",
+	})
+	if err != nil {
+		t.Fatalf("SaveJob() unexpected error: %v", err)
+	}
+	got, ok := captured["status"].(*types.AttributeValueMemberS)
+	if !ok {
+		t.Fatalf("SaveJob() status attribute missing or wrong type: %#v", captured["status"])
+	}
+	if got.Value != string(JobStatusLaunched) {
+		t.Errorf("SaveJob() status = %q, want %q (instance launched, runner not yet confirmed)", got.Value, JobStatusLaunched)
 	}
 }
 
@@ -3401,7 +3505,7 @@ func TestListJobsForAdmin(t *testing.T) {
 								"repo":             &types.AttributeValueMemberS{Value: testRepo},
 								"instance_id":      &types.AttributeValueMemberS{Value: "i-abc123"},
 								"instance_type":    &types.AttributeValueMemberS{Value: "c7g.medium"},
-								"pool":             &types.AttributeValueMemberS{Value: "default"},
+								"pool":             &types.AttributeValueMemberS{Value: testPoolDefault},
 								"spot":             &types.AttributeValueMemberBOOL{Value: true},
 								"warm_pool_hit":    &types.AttributeValueMemberBOOL{Value: false},
 								"retry_count":      &types.AttributeValueMemberN{Value: "0"},
@@ -3564,7 +3668,7 @@ func TestGetJobForAdmin(t *testing.T) {
 							"repo":             &types.AttributeValueMemberS{Value: testRepo},
 							"instance_id":      &types.AttributeValueMemberS{Value: "i-abc123"},
 							"instance_type":    &types.AttributeValueMemberS{Value: "c7g.medium"},
-							"pool":             &types.AttributeValueMemberS{Value: "default"},
+							"pool":             &types.AttributeValueMemberS{Value: testPoolDefault},
 							"spot":             &types.AttributeValueMemberBOOL{Value: true},
 							"warm_pool_hit":    &types.AttributeValueMemberBOOL{Value: true},
 							"retry_count":      &types.AttributeValueMemberN{Value: "1"},
@@ -3833,7 +3937,7 @@ func TestGetPoolBusyInstanceIDs(t *testing.T) {
 	}{
 		{
 			name:      "Returns instance IDs for running jobs",
-			poolName:  "default",
+			poolName:  testPoolDefault,
 			jobsTable: "jobs-table",
 			mockDB: &MockDynamoDBAPI{
 				ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
@@ -3873,7 +3977,7 @@ func TestGetPoolBusyInstanceIDs(t *testing.T) {
 		},
 		{
 			name:      "Jobs table not configured returns nil",
-			poolName:  "default",
+			poolName:  testPoolDefault,
 			jobsTable: "",
 			mockDB:    &MockDynamoDBAPI{},
 			wantIDs:   nil,
@@ -3881,7 +3985,7 @@ func TestGetPoolBusyInstanceIDs(t *testing.T) {
 		},
 		{
 			name:      "DynamoDB error propagation",
-			poolName:  "default",
+			poolName:  testPoolDefault,
 			jobsTable: "jobs-table",
 			mockDB: &MockDynamoDBAPI{
 				ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
@@ -4059,7 +4163,7 @@ func TestGetPoolBusyInstanceIDs_ScanPath(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4100,7 +4204,7 @@ func TestGetPoolBusyInstanceIDs_GSIPath(t *testing.T) {
 		jobsPoolStatusGSI: "pool-status-index",
 	}
 
-	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4112,6 +4216,43 @@ func TestGetPoolBusyInstanceIDs_GSIPath(t *testing.T) {
 	}
 	if ids[0] != "i-gsi-1" || ids[1] != "i-gsi-2" {
 		t.Errorf("got %v, want [i-gsi-1 i-gsi-2]", ids)
+	}
+}
+
+// A freshly launched instance (runner not yet confirmed) must be reported busy so
+// pool reconciliation does not stop it mid-boot. The GSI is keyed on a single
+// status, so the lookup queries both launched and running and unions the result.
+func TestGetPoolBusyInstanceIDs_GSIIncludesLaunched(t *testing.T) {
+	t.Parallel()
+
+	queriedStatuses := map[string]bool{}
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			status := input.ExpressionAttributeValues[":status"].(*types.AttributeValueMemberS).Value
+			queriedStatuses[status] = true
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-" + status}},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table", jobsPoolStatusGSI: "pool-status-index"}
+
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !queriedStatuses[string(JobStatusLaunched)] || !queriedStatuses[string(JobStatusRunning)] {
+		t.Errorf("must query both launched and running; queried %v", queriedStatuses)
+	}
+	got := map[string]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got["i-launched"] || !got["i-running"] {
+		t.Errorf("busy set must include both launched and running instances; got %v", ids)
 	}
 }
 
@@ -4139,7 +4280,7 @@ func TestGetPoolBusyInstanceIDs_GSIFallbackToScan(t *testing.T) {
 		jobsPoolStatusGSI: "pool-status-index",
 	}
 
-	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4174,7 +4315,7 @@ func TestQueryPoolJobHistory_GSIPath(t *testing.T) {
 			}
 			item, _ := attributevalue.MarshalMap(map[string]interface{}{
 				"job_id":     int64(7),
-				"pool":       "default",
+				"pool":       testPoolDefault,
 				"created_at": now.Add(-30 * time.Minute).Format(time.RFC3339),
 			})
 			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item}}, nil
@@ -4190,7 +4331,7 @@ func TestQueryPoolJobHistory_GSIPath(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	entries, err := client.QueryPoolJobHistory(context.Background(), "default", since)
+	entries, err := client.QueryPoolJobHistory(context.Background(), testPoolDefault, since)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4226,7 +4367,7 @@ func TestQueryPoolJobHistory_GSIFallbackToScan(t *testing.T) {
 			}
 			item, _ := attributevalue.MarshalMap(map[string]interface{}{
 				"job_id":     int64(11),
-				"pool":       "default",
+				"pool":       testPoolDefault,
 				"created_at": now.Add(-15 * time.Minute).Format(time.RFC3339),
 			})
 			return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{item}}, nil
@@ -4238,7 +4379,7 @@ func TestQueryPoolJobHistory_GSIFallbackToScan(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	entries, err := client.QueryPoolJobHistory(context.Background(), "default", since)
+	entries, err := client.QueryPoolJobHistory(context.Background(), testPoolDefault, since)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4271,7 +4412,7 @@ func TestQueryPoolJobHistory_GSINonValidationError(t *testing.T) {
 		jobsTable:    "jobs-table",
 	}
 
-	_, err := client.QueryPoolJobHistory(context.Background(), "default", since)
+	_, err := client.QueryPoolJobHistory(context.Background(), testPoolDefault, since)
 	if err == nil {
 		t.Fatal("expected error for non-validation GSI failure")
 	}
@@ -4501,7 +4642,7 @@ func TestGetPoolBusyInstanceIDs_GSINonValidationError(t *testing.T) {
 		jobsPoolStatusGSI: "pool-status-index",
 	}
 
-	_, err := client.GetPoolBusyInstanceIDs(context.Background(), "default")
+	_, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
 	if err == nil {
 		t.Fatal("expected error for non-validation GSI failure")
 	}
@@ -4525,7 +4666,7 @@ func TestGetJobByInstance_GSIPath(t *testing.T) {
 				"job_id":        int64(99999),
 				"run_id":        int64(88888),
 				"instance_type": "c7g.large",
-				"pool":          "default",
+				"pool":          testPoolDefault,
 				"spot":          true,
 				"retry_count":   0,
 				"status":        string(JobStatusRunning),
@@ -4556,6 +4697,51 @@ func TestGetJobByInstance_GSIPath(t *testing.T) {
 	}
 	if job.JobID != 99999 {
 		t.Errorf("JobID = %d, want 99999", job.JobID)
+	}
+}
+
+// GetJobByInstance must also match a launched job (runner not yet confirmed) so
+// that, e.g., a spot interruption on a not-yet-confirmed instance still finds the
+// job to requeue.
+func TestGetJobByInstance_GSIMatchesLaunched(t *testing.T) {
+	t.Parallel()
+
+	var filterValues map[string]types.AttributeValue
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			filterValues = input.ExpressionAttributeValues
+			item, _ := attributevalue.MarshalMap(map[string]interface{}{
+				"instance_id": "i-launched", "job_id": int64(42), "status": string(JobStatusLaunched),
+			})
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		},
+	}
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table", jobsInstanceIDGSI: "instance-id-index"}
+
+	job, err := client.GetJobByInstance(context.Background(), "i-launched")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if job == nil || job.JobID != 42 {
+		t.Fatalf("expected launched job 42, got %+v", job)
+	}
+	if _, ok := filterValues[":launched"]; !ok {
+		t.Errorf("GetJobByInstance filter must include :launched; got values %v", filterValues)
+	}
+}
+
+func TestOccupiesInstance_LaunchedCountsAsBusy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	if !occupiesInstance(JobStatusLaunched, now.Add(-5*time.Minute), now) {
+		t.Error("a recent launched job must occupy capacity (instance is up, runner booting)")
+	}
+	if occupiesInstance(JobStatusLaunched, now.Add(-3*time.Hour), now) {
+		t.Error("a launched job older than the runtime ceiling must not count (abandoned)")
+	}
+	if occupiesInstance(JobStatusClaiming, now.Add(-1*time.Minute), now) {
+		t.Error("a claiming stub must not occupy capacity")
 	}
 }
 
@@ -4619,7 +4805,7 @@ func TestGetJobByInstance_ScanPath(t *testing.T) {
 				"job_id":        int64(55555),
 				"run_id":        int64(44444),
 				"instance_type": "m7g.medium",
-				"pool":          "default",
+				"pool":          testPoolDefault,
 				"spot":          true,
 				"retry_count":   0,
 				"status":        string(JobStatusRunning),

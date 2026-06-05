@@ -28,6 +28,7 @@ type PrometheusPublisher struct {
 	// Job lifecycle
 	jobsEnqueued        *prometheus.CounterVec
 	jobsAssigned        *prometheus.CounterVec
+	runnerConfirmed     *prometheus.CounterVec
 	jobsCompleted       *prometheus.CounterVec
 	jobsRequeued        *prometheus.CounterVec
 	jobWaitSeconds      *prometheus.HistogramVec
@@ -96,6 +97,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "jobs_assigned_total",
 			Help: "Jobs for which we delivered a runner (success side of the fulfillment SLA; failure side is scheduling_failure_total)",
 		}, []string{"pool", "source", "repo"}),
+		runnerConfirmed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_confirmed_total",
+			Help: "Launched instances whose runner registered and began executing; a flatline vs jobs_assigned flags fleet-wide registration failure",
+		}, []string{"pool"}),
 		jobsCompleted: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "jobs_completed_total",
 			Help: "Jobs finished, by our runner's operational result (served, interrupted, error, timeout); never the client workflow's pass/fail",
@@ -233,7 +238,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 	}
 
 	registry.MustRegister(
-		p.jobsEnqueued, p.jobsAssigned, p.jobsCompleted, p.jobsRequeued,
+		p.jobsEnqueued, p.jobsAssigned, p.runnerConfirmed, p.jobsCompleted, p.jobsRequeued,
 		p.jobWaitSeconds, p.jobExecutionSeconds,
 		p.instanceProvisionSeconds, p.fleetCreate, p.fleetCreateSeconds, p.instances,
 		p.spotInterruptions, p.circuitBreakerTrip, p.circuitBreakerOpen,
@@ -283,6 +288,11 @@ func (p *PrometheusPublisher) PublishJobCompleted(_ context.Context, pool, resul
 
 func (p *PrometheusPublisher) PublishJobRequeued(_ context.Context, reason string) error { //nolint:revive
 	p.jobsRequeued.WithLabelValues(reason).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerConfirmed(_ context.Context, pool string) error { //nolint:revive
+	p.runnerConfirmed.WithLabelValues(pool).Inc()
 	return nil
 }
 

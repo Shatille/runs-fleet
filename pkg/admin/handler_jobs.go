@@ -87,6 +87,7 @@ func (h *JobsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 	statusFilter := q.Get("status")
 	if statusFilter != "" {
 		validStatuses := map[string]bool{
+			string(db.JobStatusLaunched):    true,
 			string(db.JobStatusRunning):     true,
 			string(db.JobStatusClaiming):    true,
 			string(db.JobStatusTerminating): true,
@@ -98,7 +99,7 @@ func (h *JobsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 			string(db.JobStatusOrphaned):    true,
 		}
 		if !validStatuses[statusFilter] {
-			h.writeError(w, http.StatusBadRequest, "Invalid status filter", fmt.Sprintf("allowed values: running, claiming, terminating, requeued, completed, success, failed, error, orphaned; got %q", statusFilter))
+			h.writeError(w, http.StatusBadRequest, "Invalid status filter", fmt.Sprintf("allowed values: launched, running, claiming, terminating, requeued, completed, success, failed, error, orphaned; got %q", statusFilter))
 			return
 		}
 	}
