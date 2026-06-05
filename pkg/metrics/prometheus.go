@@ -59,6 +59,10 @@ type PrometheusPublisher struct {
 
 	// Cache / housekeeping / misc
 	cacheRequests           *prometheus.CounterVec
+	cacheOperations         *prometheus.CounterVec
+	cacheBytesStored        prometheus.Counter
+	cacheErrors             *prometheus.CounterVec
+	cacheAuthRejected       *prometheus.CounterVec
 	housekeepingActions     *prometheus.CounterVec
 	schedulingFailure       *prometheus.CounterVec
 	messageDeletionFailures *prometheus.CounterVec
@@ -189,6 +193,22 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "cache_requests_total",
 			Help: "Total number of cache requests by result",
 		}, []string{"result"}),
+		cacheOperations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "cache_operations_total",
+			Help: "Total cache operations by operation",
+		}, []string{"operation"}),
+		cacheBytesStored: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: ns, Name: "cache_bytes_stored_total",
+			Help: "Total bytes written to the cache",
+		}),
+		cacheErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "cache_errors_total",
+			Help: "Total cache server errors by operation",
+		}, []string{"operation"}),
+		cacheAuthRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "cache_auth_rejected_total",
+			Help: "Total rejected cache auth attempts by reason",
+		}, []string{"reason"}),
 		housekeepingActions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "housekeeping_actions_total",
 			Help: "Total number of housekeeping actions by type",
@@ -220,7 +240,8 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.poolInstances, p.poolDesired, p.poolActions, p.poolReconcileSeconds,
 		p.messageProcessingSeconds, p.lockWaitSeconds, p.workerInflight,
 		p.queueDepth, p.queueReceive, p.awsCallDuration, p.awsCallFailures,
-		p.cacheRequests, p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
+		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
+		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
 		p.instanceHours, p.estimatedCost,
 	)
 
@@ -367,6 +388,26 @@ func (p *PrometheusPublisher) PublishAWSCallFailure(_ context.Context, service, 
 
 func (p *PrometheusPublisher) PublishCacheRequest(_ context.Context, result string) error { //nolint:revive
 	p.cacheRequests.WithLabelValues(result).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishCacheOperation(_ context.Context, operation string) error { //nolint:revive
+	p.cacheOperations.WithLabelValues(operation).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishCacheBytesStored(_ context.Context, bytes int64) error { //nolint:revive
+	p.cacheBytesStored.Add(float64(bytes))
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishCacheError(_ context.Context, operation string) error { //nolint:revive
+	p.cacheErrors.WithLabelValues(operation).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishCacheAuthRejected(_ context.Context, reason string) error { //nolint:revive
+	p.cacheAuthRejected.WithLabelValues(reason).Inc()
 	return nil
 }
 

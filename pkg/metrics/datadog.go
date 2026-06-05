@@ -223,6 +223,22 @@ func (p *DatadogPublisher) PublishCacheRequest(_ context.Context, result string)
 	return p.client.Incr("cache_requests", ddTag(nil, "result", result), p.sampleRate)
 }
 
+func (p *DatadogPublisher) PublishCacheOperation(_ context.Context, operation string) error { //nolint:revive
+	return p.client.Incr("cache_operations", ddTag(nil, "operation", operation), p.sampleRate)
+}
+
+func (p *DatadogPublisher) PublishCacheBytesStored(_ context.Context, bytes int64) error { //nolint:revive
+	return p.client.Count("cache_bytes_stored", bytes, nil, 1)
+}
+
+func (p *DatadogPublisher) PublishCacheError(_ context.Context, operation string) error { //nolint:revive
+	return p.client.Incr("cache_errors", ddTag(nil, "operation", operation), 1)
+}
+
+func (p *DatadogPublisher) PublishCacheAuthRejected(_ context.Context, reason string) error { //nolint:revive
+	return p.client.Incr("cache_auth_rejected", ddTag(nil, "reason", reason), 1)
+}
+
 func (p *DatadogPublisher) PublishHousekeepingAction(_ context.Context, action string, count int) error { //nolint:revive
 	return p.client.Count("housekeeping_actions", int64(count), ddTag(nil, "action", action), 1)
 }

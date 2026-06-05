@@ -236,6 +236,30 @@ func (m *MultiPublisher) PublishCacheRequest(ctx context.Context, result string)
 	})
 }
 
+func (m *MultiPublisher) PublishCacheOperation(ctx context.Context, operation string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishCacheOperation(ctx, operation)
+	})
+}
+
+func (m *MultiPublisher) PublishCacheBytesStored(ctx context.Context, bytes int64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishCacheBytesStored(ctx, bytes)
+	})
+}
+
+func (m *MultiPublisher) PublishCacheError(ctx context.Context, operation string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishCacheError(ctx, operation)
+	})
+}
+
+func (m *MultiPublisher) PublishCacheAuthRejected(ctx context.Context, reason string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishCacheAuthRejected(ctx, reason)
+	})
+}
+
 func (m *MultiPublisher) PublishHousekeepingAction(ctx context.Context, action string, count int) error { //nolint:revive
 	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishHousekeepingAction(ctx, action, count)

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,20 @@ import (
 
 const testSecret = "test-secret"
 const testScope = "org/repo"
+
+// recordingMetrics records cache auth-rejection reasons for assertions.
+type recordingMetrics struct {
+	authRejected []string
+}
+
+func (r *recordingMetrics) PublishCacheRequest(context.Context, string) error    { return nil }
+func (r *recordingMetrics) PublishCacheOperation(context.Context, string) error  { return nil }
+func (r *recordingMetrics) PublishCacheBytesStored(context.Context, int64) error { return nil }
+func (r *recordingMetrics) PublishCacheError(context.Context, string) error      { return nil }
+func (r *recordingMetrics) PublishCacheAuthRejected(_ context.Context, reason string) error {
+	r.authRejected = append(r.authRejected, reason)
+	return nil
+}
 
 func TestGenerateCacheToken(t *testing.T) {
 	t.Parallel()
@@ -284,7 +299,7 @@ func TestAuthMiddleware_Disabled(t *testing.T) {
 	t.Parallel()
 
 	// Empty secret disables auth
-	middleware := NewAuthMiddleware("")
+	middleware := NewAuthMiddleware("", nil)
 
 	if middleware.IsEnabled() {
 		t.Error("middleware should be disabled with empty secret")
@@ -312,7 +327,8 @@ func TestAuthMiddleware_Disabled(t *testing.T) {
 func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
 	t.Parallel()
 
-	middleware := NewAuthMiddleware(testSecret)
+	metrics := &recordingMetrics{}
+	middleware := NewAuthMiddleware(testSecret, metrics)
 
 	if !middleware.IsEnabled() {
 		t.Error("middleware should be enabled with secret")
@@ -333,12 +349,16 @@ func TestAuthMiddleware_Enabled_NoToken(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
 	}
+	if len(metrics.authRejected) != 1 || metrics.authRejected[0] != "missing" {
+		t.Errorf("authRejected = %v, want [missing]", metrics.authRejected)
+	}
 }
 
 func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
 	t.Parallel()
 
-	middleware := NewAuthMiddleware(testSecret)
+	metrics := &recordingMetrics{}
+	middleware := NewAuthMiddleware(testSecret, metrics)
 
 	called := false
 	handler := middleware.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -356,13 +376,16 @@ func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
 	}
+	if len(metrics.authRejected) != 1 || metrics.authRejected[0] != "invalid" {
+		t.Errorf("authRejected = %v, want [invalid]", metrics.authRejected)
+	}
 }
 
 func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 	t.Parallel()
 
 	secret := testSecret
-	middleware := NewAuthMiddleware(secret)
+	middleware := NewAuthMiddleware(secret, nil)
 
 	// Generate a valid token
 	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "org/repo")
@@ -390,7 +413,7 @@ func TestAuthMiddleware_BearerToken(t *testing.T) {
 	t.Parallel()
 
 	secret := testSecret
-	middleware := NewAuthMiddleware(secret)
+	middleware := NewAuthMiddleware(secret, nil)
 
 	// Generate a valid token
 	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "org/repo")
@@ -418,7 +441,7 @@ func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
 	t.Parallel()
 
 	secret := testSecret
-	middleware := NewAuthMiddleware(secret)
+	middleware := NewAuthMiddleware(secret, nil)
 
 	// Generate a valid token
 	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "org/repo")
@@ -448,7 +471,8 @@ func TestAuthMiddleware_WrongSecret(t *testing.T) {
 	t.Parallel()
 
 	// Server has one secret
-	middleware := NewAuthMiddleware("server-secret")
+	metrics := &recordingMetrics{}
+	middleware := NewAuthMiddleware("server-secret", metrics)
 
 	// Token generated with different secret
 	wrongToken := GenerateCacheToken("different-secret", "job-123", "i-abc", "org/repo")
@@ -469,13 +493,16 @@ func TestAuthMiddleware_WrongSecret(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
 	}
+	if len(metrics.authRejected) != 1 || metrics.authRejected[0] != "invalid" {
+		t.Errorf("authRejected = %v, want [invalid]", metrics.authRejected)
+	}
 }
 
 func TestAuthMiddleware_ScopeInContext(t *testing.T) {
 	t.Parallel()
 
 	secret := testSecret
-	middleware := NewAuthMiddleware(secret)
+	middleware := NewAuthMiddleware(secret, nil)
 
 	// Generate a valid token with scope
 	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "myorg/myrepo")
@@ -500,7 +527,7 @@ func TestScopeFromContext_NoScope(t *testing.T) {
 	t.Parallel()
 
 	secret := testSecret
-	middleware := NewAuthMiddleware(secret)
+	middleware := NewAuthMiddleware(secret, nil)
 
 	// Generate a valid token with empty scope
 	validToken := GenerateCacheToken(secret, "job-123", "i-abc", "")

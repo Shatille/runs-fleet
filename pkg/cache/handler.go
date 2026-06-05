@@ -17,6 +17,10 @@ var cacheLog = logging.WithComponent(logging.LogTypeCache, "handler")
 // Metrics defines the interface for publishing cache metrics.
 type Metrics interface {
 	PublishCacheRequest(ctx context.Context, result string) error
+	PublishCacheOperation(ctx context.Context, operation string) error
+	PublishCacheBytesStored(ctx context.Context, bytes int64) error
+	PublishCacheError(ctx context.Context, operation string) error
+	PublishCacheAuthRejected(ctx context.Context, reason string) error
 }
 
 // Handler implements HTTP endpoints for GitHub Actions cache protocol.
@@ -42,7 +46,7 @@ func NewHandlerWithAuth(server *Server, metrics Metrics, cacheSecret string) *Ha
 	var auth *AuthMiddleware
 
 	if cacheSecret != "" {
-		auth = NewAuthMiddleware(cacheSecret)
+		auth = NewAuthMiddleware(cacheSecret, metrics)
 		cacheLog.Info(context.Background(), "cache authentication enabled")
 	} else {
 		cacheLog.Warn(context.Background(), "cache authentication disabled - RUNS_FLEET_CACHE_SECRET not set")
@@ -68,6 +72,35 @@ func (h *Handler) scopedServer(r *http.Request) *Server {
 		return h.server.WithScope(scope)
 	}
 	return h.server
+}
+
+func (h *Handler) emitOperation(ctx context.Context, operation string) {
+	if h.metrics == nil {
+		return
+	}
+	if err := h.metrics.PublishCacheOperation(ctx, operation); err != nil {
+		cacheLog.Error(ctx, "cache operation metric failed",
+			slog.String("operation", operation), slog.String("error", err.Error()))
+	}
+}
+
+func (h *Handler) emitError(ctx context.Context, operation string) {
+	if h.metrics == nil {
+		return
+	}
+	if err := h.metrics.PublishCacheError(ctx, operation); err != nil {
+		cacheLog.Error(ctx, "cache error metric failed",
+			slog.String("operation", operation), slog.String("error", err.Error()))
+	}
+}
+
+func (h *Handler) emitBytesStored(ctx context.Context, bytes int64) {
+	if h.metrics == nil {
+		return
+	}
+	if err := h.metrics.PublishCacheBytesStored(ctx, bytes); err != nil {
+		cacheLog.Error(ctx, "cache bytes-stored metric failed", slog.String("error", err.Error()))
+	}
 }
 
 type reserveCacheRequest struct {
@@ -116,6 +149,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 		cacheLog.Error(r.Context(), "upload URL generation failed",
 			slog.String("cache_key", cacheKey),
 			slog.String("error", err.Error()))
+		h.emitError(r.Context(), "reserve")
 		http.Error(w, "Failed to generate upload URL", http.StatusInternalServerError)
 		return
 	}
@@ -135,6 +169,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", uploadURL)
 	_ = json.NewEncoder(w).Encode(resp)
+	h.emitOperation(r.Context(), "reserve")
 }
 
 // CommitCacheEntry commits a cache entry after upload via PATCH /_apis/artifactcache/caches/{id}.
@@ -161,6 +196,7 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 			slog.String("cache_id", cacheID),
 			slog.Int64("size", req.Size),
 			slog.String("error", err.Error()))
+		h.emitError(r.Context(), "commit")
 		http.Error(w, "Failed to commit cache entry", http.StatusInternalServerError)
 		return
 	}
@@ -171,6 +207,8 @@ func (h *Handler) CommitCacheEntry(w http.ResponseWriter, r *http.Request, cache
 		slog.Int64("size", req.Size),
 		slog.String("scope", scope))
 	w.WriteHeader(http.StatusOK)
+	h.emitOperation(r.Context(), "commit")
+	h.emitBytesStored(r.Context(), req.Size)
 }
 
 // GetCacheEntry retrieves cache metadata via GET /_apis/artifactcache/cache.
@@ -203,6 +241,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 			slog.String("version", version),
 			slog.String("scope", scope),
 			slog.String("error", err.Error()))
+		h.emitError(r.Context(), "get")
 		http.Error(w, "Failed to check cache entry", http.StatusInternalServerError)
 		return
 	}
@@ -226,6 +265,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		cacheLog.Error(r.Context(), "download URL generation failed",
 			slog.String("cache_key", cacheKey),
 			slog.String("error", err.Error()))
+		h.emitError(r.Context(), "get")
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
@@ -271,6 +311,7 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 		cacheLog.Error(r.Context(), "download URL generation failed",
 			slog.String("cache_id", cacheID),
 			slog.String("error", err.Error()))
+		h.emitError(r.Context(), "download")
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
@@ -279,6 +320,7 @@ func (h *Handler) DownloadCacheArtifact(w http.ResponseWriter, r *http.Request, 
 	cacheLog.Info(r.Context(), "redirecting to download URL",
 		slog.String("cache_id", cacheID),
 		slog.String("scope", scope))
+	h.emitOperation(r.Context(), "download")
 	http.Redirect(w, r, downloadURL, http.StatusTemporaryRedirect)
 }
 

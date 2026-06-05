@@ -146,6 +146,27 @@ func TestCloudWatchPublisher_CounterMetrics(t *testing.T) {
 			},
 		},
 		{
+			name: "CacheOperation", wantName: "CacheOperations",
+			wantDims: map[string]string{"Operation": "commit"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishCacheOperation(context.Background(), "commit")
+			},
+		},
+		{
+			name: "CacheError", wantName: "CacheErrors",
+			wantDims: map[string]string{"Operation": "commit"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishCacheError(context.Background(), "commit")
+			},
+		},
+		{
+			name: "CacheAuthRejected", wantName: "CacheAuthRejected",
+			wantDims: map[string]string{"Reason": "invalid"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishCacheAuthRejected(context.Background(), "invalid")
+			},
+		},
+		{
 			name: "SchedulingFailure", wantName: "SchedulingFailure",
 			wantDims: map[string]string{"TaskType": "job_claim"},
 			publish: func(p *CloudWatchPublisher) error {
@@ -204,6 +225,25 @@ func TestCloudWatchPublisher_HousekeepingActionUsesCount(t *testing.T) {
 		t.Errorf("value = %v, want 7", got.value)
 	}
 	assertDimMap(t, got.dimensions, map[string]string{"Action": "ssm_params"})
+}
+
+func TestCloudWatchPublisher_CacheBytesStoredUsesValue(t *testing.T) {
+	t.Parallel()
+	var got capturedDatum
+	p := capturingPublisher(t, &got)
+	if err := p.PublishCacheBytesStored(context.Background(), 4096); err != nil {
+		t.Fatalf("publish error = %v", err)
+	}
+	if got.name != "CacheBytesStored" {
+		t.Errorf("name = %s, want CacheBytesStored", got.name)
+	}
+	if !got.hasValue || got.value != 4096 {
+		t.Errorf("value = %v (hasValue=%v), want 4096", got.value, got.hasValue)
+	}
+	if got.unit != types.StandardUnitBytes {
+		t.Errorf("unit = %v, want Bytes", got.unit)
+	}
+	assertDimMap(t, got.dimensions, map[string]string{})
 }
 
 func TestCloudWatchPublisher_GaugeMetrics(t *testing.T) {

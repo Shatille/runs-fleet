@@ -126,6 +126,18 @@ type Publisher interface {
 	// result is hit or miss.
 	PublishCacheRequest(ctx context.Context, result string) error
 
+	// PublishCacheOperation counts a cache operation (reserve, commit, download).
+	PublishCacheOperation(ctx context.Context, operation string) error
+
+	// PublishCacheBytesStored adds to the total bytes written to the cache.
+	PublishCacheBytesStored(ctx context.Context, bytes int64) error
+
+	// PublishCacheError counts a cache server error, by operation.
+	PublishCacheError(ctx context.Context, operation string) error
+
+	// PublishCacheAuthRejected counts a rejected cache auth attempt, by reason.
+	PublishCacheAuthRejected(ctx context.Context, reason string) error
+
 	// PublishHousekeepingAction increments the housekeeping action counter by
 	// count, labeled by action. action is orphaned_instances, ssm_params,
 	// job_records, orphaned_jobs, or stale_jobs.
@@ -258,6 +270,18 @@ func (NoopPublisher) PublishAWSCallFailure(context.Context, string, string, stri
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishCacheRequest(context.Context, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishCacheOperation(context.Context, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishCacheBytesStored(context.Context, int64) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishCacheError(context.Context, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishCacheAuthRejected(context.Context, string) error { return nil }
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishHousekeepingAction(context.Context, string, int) error { return nil }
