@@ -34,6 +34,9 @@ const (
 	TaskOrphanedJobs TaskType = "orphaned_jobs"
 	// TaskStaleJobs detects jobs stuck in running/claiming by checking GitHub API.
 	TaskStaleJobs TaskType = "stale_jobs"
+	// TaskUnconfirmedRunners recovers jobs whose instance launched but whose
+	// runner never registered (stuck in the launched state past the boot budget).
+	TaskUnconfirmedRunners TaskType = "unconfirmed_runners"
 	// TaskOrphanedPackerInstances terminates packer builder instances left
 	// running by killed or cancelled AMI-build workflows.
 	TaskOrphanedPackerInstances TaskType = "orphaned_packer_instances"
@@ -52,6 +55,7 @@ type TaskExecutor interface {
 	ExecuteOldJobs(ctx context.Context) error
 	ExecuteOrphanedJobs(ctx context.Context) error
 	ExecuteStaleJobs(ctx context.Context) error
+	ExecuteUnconfirmedRunners(ctx context.Context) error
 	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
 	ExecuteDLQRedrive(ctx context.Context) error
@@ -112,6 +116,10 @@ type SchedulerConfig struct {
 	// Default: 5 minutes
 	StaleJobsInterval time.Duration
 
+	// UnconfirmedRunnersInterval is how often to recover jobs whose runner never
+	// registered. Default: 2 minutes
+	UnconfirmedRunnersInterval time.Duration
+
 	// OrphanedPackerInstancesInterval is how often to reap stale packer
 	// builder instances left behind by killed AMI-build workflows.
 	// Default: 15 minutes
@@ -130,6 +138,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		DLQRedriveInterval:              1 * time.Minute,
 		EphemeralPoolCleanupInterval:    1 * time.Hour,
 		StaleJobsInterval:               5 * time.Minute,
+		UnconfirmedRunnersInterval:      2 * time.Minute,
 		OrphanedPackerInstancesInterval: 15 * time.Minute,
 	}
 }
@@ -195,6 +204,7 @@ func (r *Runner) taskSpecs() []taskSpec {
 		{taskType: TaskOldJobs, interval: c.OldJobsInterval, execute: e.ExecuteOldJobs},
 		{taskType: TaskOrphanedJobs, interval: c.OrphanedJobsInterval, execute: e.ExecuteOrphanedJobs},
 		{taskType: TaskStaleJobs, interval: c.StaleJobsInterval, execute: e.ExecuteStaleJobs},
+		{taskType: TaskUnconfirmedRunners, interval: c.UnconfirmedRunnersInterval, execute: e.ExecuteUnconfirmedRunners},
 		{taskType: TaskPoolAudit, interval: c.PoolAuditInterval, execute: e.ExecutePoolAudit},
 		{taskType: TaskCostReport, interval: c.CostReportInterval, execute: e.ExecuteCostReport},
 		{taskType: TaskEphemeralPoolCleanup, interval: c.EphemeralPoolCleanupInterval, execute: e.ExecuteEphemeralPoolCleanup},

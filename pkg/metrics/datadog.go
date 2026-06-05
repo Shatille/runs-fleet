@@ -130,6 +130,10 @@ func (p *DatadogPublisher) PublishJobRequeued(_ context.Context, reason string) 
 	return p.client.Incr("jobs_requeued", ddTag(nil, "reason", reason), 1)
 }
 
+func (p *DatadogPublisher) PublishRunnerConfirmed(_ context.Context, pool string) error { //nolint:revive
+	return p.client.Incr("runner_confirmed", ddTag(nil, "pool", pool), 1)
+}
+
 func (p *DatadogPublisher) PublishJobWaitSeconds(_ context.Context, pool, source string, seconds float64) error { //nolint:revive
 	return p.client.Distribution("job_wait_seconds", seconds, ddTag(ddTag(nil, "pool", pool), "source", source), 1)
 }

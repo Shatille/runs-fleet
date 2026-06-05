@@ -69,11 +69,30 @@ func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) er
 type mockDBAPI struct {
 	markCompleteErr  error
 	updateMetricsErr error
+	markStartedErr   error
+	startedNoOp      bool
 	completeCalls    int
+	startedCalls     int
 	metricsCalls     int
 	lastJobID        int64
 	lastStatus       string
 	completeRecord   *events.JobInfo
+	startedRecord    *events.JobInfo
+}
+
+func (m *mockDBAPI) MarkJobStarted(_ context.Context, jobID int64, _ time.Time) (*events.JobInfo, error) {
+	m.startedCalls++
+	m.lastJobID = jobID
+	if m.markStartedErr != nil {
+		return nil, m.markStartedErr
+	}
+	if m.startedNoOp {
+		return nil, nil
+	}
+	if m.startedRecord != nil {
+		return m.startedRecord, nil
+	}
+	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo, Pool: "default"}, nil
 }
 
 func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status string, _, _ int) (*events.JobInfo, error) {
@@ -96,13 +115,16 @@ func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time)
 
 // mockMetricsAPI implements MetricsAPI for testing.
 type mockMetricsAPI struct {
-	completedCalls int
-	servedCalls    int
-	nonServedCalls int
-	lastResult     string
-	lastPool       string
-	lastRepo       string
-	completedErr   error
+	completedCalls    int
+	servedCalls       int
+	nonServedCalls    int
+	confirmedCalls    int
+	lastResult        string
+	lastPool          string
+	lastRepo          string
+	lastConfirmedPool string
+	completedErr      error
+	confirmedErr      error
 
 	processingMu          sync.Mutex
 	processingCalls       int
@@ -122,6 +144,12 @@ func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, re
 		m.nonServedCalls++
 	}
 	return m.completedErr
+}
+
+func (m *mockMetricsAPI) PublishRunnerConfirmed(_ context.Context, pool string) error {
+	m.confirmedCalls++
+	m.lastConfirmedPool = pool
+	return m.confirmedErr
 }
 
 func (m *mockMetricsAPI) PublishJobExecutionSeconds(_ context.Context, _, _ string, _ float64) error {
@@ -359,12 +387,69 @@ func TestHandler_processMessage_Started(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should not call db or metrics for "started" status
+	// "started" confirms the job (launched -> running), not completion.
+	if db.startedCalls != 1 {
+		t.Errorf("expected 1 MarkJobStarted call for 'started' status, got %d", db.startedCalls)
+	}
 	if db.completeCalls != 0 {
 		t.Errorf("expected 0 complete calls for 'started' status, got %d", db.completeCalls)
 	}
+	if metrics.confirmedCalls != 1 {
+		t.Errorf("expected 1 runner-confirmed metric for 'started' status, got %d", metrics.confirmedCalls)
+	}
+	if metrics.lastConfirmedPool != "default" {
+		t.Errorf("expected confirmation metric tagged pool=default, got %q", metrics.lastConfirmedPool)
+	}
 	if metrics.servedCalls != 0 || metrics.nonServedCalls != 0 {
 		t.Error("expected no completion metrics for 'started' status")
+	}
+}
+
+// A late "started" message (job already left launched) is a no-op: MarkJobStarted
+// returns a nil record, so no confirmation metric is emitted, and the message is
+// still deleted.
+func TestHandler_processMessage_StartedLateNoOp(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{startedNoOp: true} // already past launched => no-op transition
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, &config.Config{})
+
+	msg := Message{InstanceID: "i-12345", JobID: "12345678901", Status: "started"}
+	body, _ := json.Marshal(msg)
+
+	err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if db.startedCalls != 1 {
+		t.Errorf("expected 1 MarkJobStarted call, got %d", db.startedCalls)
+	}
+	if metrics.confirmedCalls != 0 {
+		t.Errorf("expected no confirmation metric on a no-op transition, got %d", metrics.confirmedCalls)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected the started message to be deleted, got %d delete calls", q.deleteCalls)
+	}
+}
+
+// A transient DB error on the "started" path must NOT delete the message, so SQS
+// redelivers it and the watchdog does not later mistake a healthy job for one
+// that never confirmed.
+func TestHandler_processMessage_StartedDBErrorRetries(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{markStartedErr: errors.New("transient db error")}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, &config.Config{})
+
+	msg := Message{InstanceID: "i-12345", JobID: "12345678901", Status: "started"}
+	body, _ := json.Marshal(msg)
+
+	err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination})
+	if err == nil {
+		t.Fatal("expected an error so the message is retried, got nil")
+	}
+	if q.deleteCalls != 0 {
+		t.Errorf("expected the message NOT to be deleted on DB error, got %d delete calls", q.deleteCalls)
 	}
 }
 
@@ -621,6 +706,10 @@ func (m *blockingDBAPI) MarkJobComplete(ctx context.Context, jobID int64, _ stri
 	m.startedOnce.Do(func() { close(m.started) })
 	<-m.release
 	m.ctxErr = ctx.Err()
+	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo}, nil
+}
+
+func (m *blockingDBAPI) MarkJobStarted(_ context.Context, jobID int64, _ time.Time) (*events.JobInfo, error) {
 	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo}, nil
 }
 

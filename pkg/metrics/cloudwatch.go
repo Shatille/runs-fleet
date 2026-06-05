@@ -59,6 +59,11 @@ func (p *CloudWatchPublisher) PublishJobAssigned(ctx context.Context, pool, sour
 	))
 }
 
+// PublishRunnerConfirmed publishes the runner confirmed counter.
+func (p *CloudWatchPublisher) PublishRunnerConfirmed(ctx context.Context, pool string) error {
+	return p.putCounter(ctx, "RunnerConfirmed", dims("Pool", pool))
+}
+
 // PublishJobCompleted publishes the jobs completed counter.
 func (p *CloudWatchPublisher) PublishJobCompleted(ctx context.Context, pool, result, repo string) error {
 	return p.putCounter(ctx, "JobsCompleted", dims(

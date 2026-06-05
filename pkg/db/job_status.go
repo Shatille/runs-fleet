@@ -5,6 +5,7 @@ type JobStatus string
 
 // Job lifecycle states stored in DynamoDB.
 const (
+	JobStatusLaunched    JobStatus = "launched"
 	JobStatusRunning     JobStatus = "running"
 	JobStatusClaiming    JobStatus = "claiming"
 	JobStatusTerminating JobStatus = "terminating"

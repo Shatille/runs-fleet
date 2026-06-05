@@ -22,6 +22,7 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 		{"Close", pub.Close},
 		{"PublishJobEnqueued", func() error { return pub.PublishJobEnqueued(ctx, "default", "arm64", "4", "o/r") }},
 		{"PublishJobAssigned", func() error { return pub.PublishJobAssigned(ctx, "default", "warm_pool", "o/r") }},
+		{"PublishRunnerConfirmed", func() error { return pub.PublishRunnerConfirmed(ctx, "default") }},
 		{"PublishJobCompleted", func() error { return pub.PublishJobCompleted(ctx, "default", "success", "o/r") }},
 		{"PublishJobRequeued", func() error { return pub.PublishJobRequeued(ctx, "spot_interruption") }},
 		{"PublishJobWaitSeconds", func() error { return pub.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},

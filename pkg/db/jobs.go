@@ -87,7 +87,8 @@ type JobHistoryEntry struct {
 }
 
 // SaveJob creates or updates a job record in DynamoDB.
-// The job is stored with status "running" and can be queried by instance_id via the GSI.
+// The job is stored with status "launched" (instance up, runner not yet confirmed)
+// and can be queried by instance_id via the GSI.
 func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 	if job == nil {
 		return fmt.Errorf("job record cannot be nil")
@@ -113,7 +114,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		Spot:           job.Spot,
 		RetryCount:     job.RetryCount,
 		WarmPoolHit:    job.WarmPoolHit,
-		Status:         string(JobStatusRunning),
+		Status:         string(JobStatusLaunched),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		SpotRequestID:  job.SpotRequestID,
 		PersistentSpot: job.PersistentSpot,
@@ -346,6 +347,54 @@ func (c *Client) FailExhaustedClaim(ctx context.Context, jobID int64) error {
 	return nil
 }
 
+// MarkJobStarted transitions a launched job to "running" once the agent reports
+// the runner has registered and begun executing (the SendJobStarted signal). It
+// returns the updated job record (via ReturnValueAllNew, like MarkJobComplete) so
+// the caller can emit a confirmation metric without a second read.
+//
+// The write is conditioned on the record still being in the launched state, so a
+// late "started" message that arrives after the job already completed or was
+// recovered by the watchdog is a no-op: it returns (nil, nil) rather than
+// resurrecting a terminal record. A non-nil return means the transition applied.
+func (c *Client) MarkJobStarted(ctx context.Context, jobID int64, startedAt time.Time) (*events.JobInfo, error) {
+	if jobID == 0 {
+		return nil, fmt.Errorf("job ID cannot be zero")
+	}
+	if c.jobsTable == "" {
+		return nil, fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{"job_id": jobID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	output, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           aws.String(c.jobsTable),
+		Key:                 key,
+		UpdateExpression:    aws.String("SET #status = :running, started_at = :started_at"),
+		ConditionExpression: aws.String("#status = :launched"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":running":    &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":launched":   &types.AttributeValueMemberS{Value: string(JobStatusLaunched)},
+			":started_at": &types.AttributeValueMemberS{Value: startedAt.Format(time.RFC3339)},
+		},
+		ReturnValues: types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to mark job started: %w", err)
+	}
+
+	return unmarshalJobInfo(output.Attributes)
+}
+
 // DeleteJobClaim removes a job claim record. Used for cleanup on processing failure.
 func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
 	if jobID == 0 {
@@ -538,13 +587,14 @@ func (c *Client) getJobByInstanceViaGSI(ctx context.Context, instanceID string) 
 		TableName:              aws.String(c.jobsTable),
 		IndexName:              aws.String(c.jobsInstanceIDGSI),
 		KeyConditionExpression: aws.String("instance_id = :instance_id"),
-		FilterExpression:       aws.String("#status = :status"),
+		FilterExpression:       aws.String("#status IN (:running, :launched)"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
-			":status":      &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":running":     &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":launched":    &types.AttributeValueMemberS{Value: string(JobStatusLaunched)},
 		},
 		Limit: aws.Int32(1),
 	}
@@ -564,13 +614,14 @@ func (c *Client) getJobByInstanceViaGSI(ctx context.Context, instanceID string) 
 func (c *Client) getJobByInstanceViaScan(ctx context.Context, instanceID string) (*events.JobInfo, error) {
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
-		FilterExpression: aws.String("instance_id = :instance_id AND #status = :status"),
+		FilterExpression: aws.String("instance_id = :instance_id AND #status IN (:running, :launched)"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
-			":status":      &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":running":     &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":launched":    &types.AttributeValueMemberS{Value: string(JobStatusLaunched)},
 		},
 		Limit: aws.Int32(1),
 	}
@@ -761,12 +812,13 @@ func parseJobHistoryItems(items []map[string]types.AttributeValue) []JobHistoryE
 const maxConcurrencyRuntime = 2 * time.Hour
 
 // occupiesInstance reports whether a job that has not recorded a completion is still
-// genuinely running on an instance. Only active statuses (running, terminating) created
-// within maxConcurrencyRuntime count; claim stubs, terminal-without-completion records,
-// and abandoned active records do not occupy capacity.
+// genuinely running on an instance. Only active statuses (launched, running, terminating)
+// created within maxConcurrencyRuntime count; claim stubs, terminal-without-completion
+// records, and abandoned active records do not occupy capacity. launched counts because
+// the instance is up and consuming capacity even before its runner confirms.
 func occupiesInstance(status JobStatus, createdAt, now time.Time) bool {
 	switch status {
-	case JobStatusRunning, JobStatusTerminating:
+	case JobStatusLaunched, JobStatusRunning, JobStatusTerminating:
 		return now.Sub(createdAt) < maxConcurrencyRuntime
 	default:
 		return false
@@ -903,40 +955,56 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 }
 
 func (c *Client) getPoolBusyInstanceIDsViaGSI(ctx context.Context, poolName string) ([]string, error) {
-	input := &dynamodb.QueryInput{
-		TableName:              aws.String(c.jobsTable),
-		IndexName:              aws.String(c.jobsPoolStatusGSI),
-		KeyConditionExpression: aws.String("#pool = :pool AND #status = :status"),
-		ExpressionAttributeNames: map[string]string{
-			"#pool":   "pool",
-			"#status": "status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pool":   &types.AttributeValueMemberS{Value: poolName},
-			":status": &types.AttributeValueMemberS{Value: "running"},
-		},
-		ProjectionExpression: aws.String("instance_id"),
+	// The pool-status GSI is keyed on status (sort key), so one Query can only
+	// match a single status. Both launched (instance up, runner unconfirmed) and
+	// running (runner executing) occupy the instance and must not be stopped, so
+	// query each and union the instance IDs.
+	var ids []string
+	seen := make(map[string]struct{})
+	for _, status := range []JobStatus{JobStatusLaunched, JobStatusRunning} {
+		input := &dynamodb.QueryInput{
+			TableName:              aws.String(c.jobsTable),
+			IndexName:              aws.String(c.jobsPoolStatusGSI),
+			KeyConditionExpression: aws.String("#pool = :pool AND #status = :status"),
+			ExpressionAttributeNames: map[string]string{
+				"#pool":   "pool",
+				"#status": "status",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pool":   &types.AttributeValueMemberS{Value: poolName},
+				":status": &types.AttributeValueMemberS{Value: string(status)},
+			},
+			ProjectionExpression: aws.String("instance_id"),
+		}
+
+		output, err := c.dynamoClient.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query GSI: %w", err)
+		}
+		for _, id := range extractInstanceIDs(output.Items) {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
 	}
 
-	output, err := c.dynamoClient.Query(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query GSI: %w", err)
-	}
-
-	return extractInstanceIDs(output.Items), nil
+	return ids, nil
 }
 
 func (c *Client) getPoolBusyInstanceIDsViaScan(ctx context.Context, poolName string) ([]string, error) {
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
-		FilterExpression: aws.String("#pool = :pool AND #status = :status"),
+		FilterExpression: aws.String("#pool = :pool AND #status IN (:running, :launched)"),
 		ExpressionAttributeNames: map[string]string{
 			"#pool":   "pool",
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pool":   &types.AttributeValueMemberS{Value: poolName},
-			":status": &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":pool":     &types.AttributeValueMemberS{Value: poolName},
+			":running":  &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
+			":launched": &types.AttributeValueMemberS{Value: string(JobStatusLaunched)},
 		},
 		ProjectionExpression: aws.String("instance_id"),
 	}
@@ -1028,7 +1096,7 @@ func (c *Client) GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInf
 }
 
 // MarkJobRequeuedByJobID atomically marks a job as "requeued" using the job_id partition key.
-// Returns true if the job was successfully marked (was in "running" state).
+// Returns true if the job was successfully marked (was in "running" or "launched" state).
 // Returns false if the job was already in another state (terminating, requeued, etc.).
 func (c *Client) MarkJobRequeuedByJobID(ctx context.Context, jobID int64) (bool, error) {
 	if jobID == 0 {
@@ -1051,14 +1119,18 @@ func (c *Client) markJobRequeued(ctx context.Context, key map[string]types.Attri
 	}
 
 	update := "SET #status = :new_status, requeued_at = :requeued_at"
-	condition := "#status = :current_status"
+	// Requeue an active job whether or not its runner confirmed: a spot
+	// interruption can hit a launched (not-yet-confirmed) instance, and the
+	// unconfirmed-runner watchdog requeues launched jobs whose runner never came up.
+	condition := "#status IN (:running, :launched)"
 	exprNames := map[string]string{
 		"#status": "status",
 	}
 	exprValues, err := attributevalue.MarshalMap(map[string]interface{}{
-		":new_status":     string(JobStatusRequeued),
-		":current_status": string(JobStatusRunning),
-		":requeued_at":    time.Now().Format(time.RFC3339),
+		":new_status":  string(JobStatusRequeued),
+		":running":     string(JobStatusRunning),
+		":launched":    string(JobStatusLaunched),
+		":requeued_at": time.Now().Format(time.RFC3339),
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal values: %w", err)
@@ -1276,7 +1348,7 @@ func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*Adm
 						stats.Completed++
 					case string(JobStatusFailed), string(JobStatusError):
 						stats.Failed++
-					case string(JobStatusRunning), string(JobStatusClaiming):
+					case string(JobStatusLaunched), string(JobStatusRunning), string(JobStatusClaiming):
 						stats.Running++
 					case string(JobStatusRequeued):
 						stats.Requeued++

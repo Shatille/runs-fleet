@@ -37,22 +37,23 @@ const (
 	orphanInstanceCheckBatchSize = 100
 )
 
-// FindOrphanedJobCandidates scans DynamoDB for jobs in "running" or "claiming" status
-// older than the given threshold. Jobs in "running" status without an instance_id are
-// excluded (they need an instance to verify against). Jobs in "claiming" status without
-// an instance_id are included (instance creation failed).
+// FindOrphanedJobCandidates scans DynamoDB for jobs in "running", "claiming", or
+// "launched" status older than the given threshold. Jobs in "running" or "launched"
+// status without an instance_id are excluded (they need an instance to verify against).
+// Jobs in "claiming" status without an instance_id are included (instance creation failed).
 func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, threshold time.Duration) ([]OrphanedJobCandidate, error) {
 	cutoffTime := time.Now().Add(-threshold).Format(time.RFC3339)
 
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(jobsTableName),
-		FilterExpression: aws.String("(#status = :running OR #status = :claiming) AND created_at < :cutoff"),
+		FilterExpression: aws.String("(#status = :running OR #status = :claiming OR #status = :launched) AND created_at < :cutoff"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
+			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
 		ProjectionExpression: aws.String("job_id, instance_id, #status"),
@@ -92,7 +93,7 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 				continue
 			}
 
-			if status == string(db.JobStatusRunning) && instanceID == "" {
+			if (status == string(db.JobStatusRunning) || status == string(db.JobStatusLaunched)) && instanceID == "" {
 				continue
 			}
 
@@ -201,8 +202,9 @@ func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 			":now":      &types.AttributeValueMemberS{Value: now},
 			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
+			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
 		},
-		ConditionExpression: aws.String("#status = :running OR #status = :claiming"),
+		ConditionExpression: aws.String("#status = :running OR #status = :claiming OR #status = :launched"),
 	})
 
 	if err != nil {

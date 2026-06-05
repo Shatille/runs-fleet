@@ -98,6 +98,12 @@ func (m *MultiPublisher) PublishJobAssigned(ctx context.Context, pool, source, r
 	})
 }
 
+func (m *MultiPublisher) PublishRunnerConfirmed(ctx context.Context, pool string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishRunnerConfirmed(ctx, pool)
+	})
+}
+
 func (m *MultiPublisher) PublishJobCompleted(ctx context.Context, pool, result, repo string) error { //nolint:revive
 	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobCompleted(ctx, pool, result, repo)

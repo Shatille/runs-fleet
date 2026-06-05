@@ -35,12 +35,14 @@ type QueueAPI interface {
 // DBAPI provides database operations for termination processing.
 type DBAPI interface {
 	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) (*events.JobInfo, error)
+	MarkJobStarted(ctx context.Context, jobID int64, startedAt time.Time) (*events.JobInfo, error)
 	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 }
 
 // MetricsAPI provides metrics publishing for job completion.
 type MetricsAPI interface {
 	PublishJobCompleted(ctx context.Context, pool, result, repo string) error
+	PublishRunnerConfirmed(ctx context.Context, pool string) error
 	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
 	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
 }
@@ -215,12 +217,24 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		slog.String(logging.KeyInstanceID, termMsg.InstanceID),
 		slog.String(logging.KeyJobID, termMsg.JobID))
 
-	// "started" events carry no completion to process; they only announce the
-	// runner came up. Log them at Debug so they don't masquerade as the
-	// "processing termination" line, which processTermination emits for
-	// completion events once the DB record (run_id/repo) is in hand.
+	// A "started" event announces the runner registered and began executing; it
+	// carries no completion, so it confirms the job (launched -> running) rather
+	// than going through processTermination. A failed confirmation is retried via
+	// SQS redelivery so the watchdog does not later mistake a healthy job for a
+	// never-confirmed one.
 	if termMsg.Status == "started" {
-		termLog.Debug(ctx, "runner started")
+		if err := h.validateMessage(&termMsg); err != nil {
+			return fmt.Errorf("invalid message: %w", err)
+		}
+		if err := h.confirmRunnerStarted(ctx, &termMsg); err != nil {
+			return err
+		}
+		if msg.Handle != "" {
+			if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
+				return fmt.Errorf("failed to delete message: %w", err)
+			}
+		}
+		return nil
 	}
 
 	if err := h.validateMessage(&termMsg); err != nil {
@@ -237,6 +251,35 @@ func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 		}
 	}
 
+	return nil
+}
+
+// confirmRunnerStarted transitions a launched job to running on the agent's
+// "started" signal and emits the confirmation metric. A DB error is returned so
+// the message is retried (SQS redelivery) before the watchdog's window elapses;
+// a malformed job_id is logged and skipped (non-retryable).
+func (h *Handler) confirmRunnerStarted(ctx context.Context, msg *Message) error {
+	jobID, err := strconv.ParseInt(msg.JobID, 10, 64)
+	if err != nil {
+		termLog.Warn(ctx, "started message has invalid job_id", slog.String("error", err.Error()))
+		return nil
+	}
+
+	info, err := h.dbClient.MarkJobStarted(ctx, jobID, msg.StartedAt)
+	if err != nil {
+		return fmt.Errorf("failed to mark job started: %w", err)
+	}
+	if info == nil {
+		// Already past the launched state (completed, or recovered): no-op.
+		return nil
+	}
+
+	termLog.Info(ctx, "runner confirmed")
+	if h.metrics != nil {
+		if err := h.metrics.PublishRunnerConfirmed(ctx, info.Pool); err != nil {
+			termLog.Warn(ctx, "runner confirmed metric failed", slog.String("error", err.Error()))
+		}
+	}
 	return nil
 }
 
