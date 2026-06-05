@@ -4,7 +4,13 @@ package secrets
 
 import (
 	"context"
+	"errors"
 )
+
+// ErrConfigNotFound is returned by Store.Get when no runner config exists for the
+// given runner ID — e.g. a warm-pool instance that booted before being assigned a
+// job. Callers use errors.Is to distinguish this from real backend failures.
+var ErrConfigNotFound = errors.New("runner config not found")
 
 // RunnerConfig represents configuration passed to runners.
 // This is the canonical structure used by both server and agent components.

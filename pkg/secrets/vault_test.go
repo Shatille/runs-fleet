@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -386,7 +387,34 @@ func TestVaultStore_Get_NotFound(t *testing.T) {
 
 	_, err = store.Get(t.Context(), "i-notfound")
 	if err == nil {
-		t.Error("Get() expected error for non-existent secret")
+		t.Fatal("Get() expected error for non-existent secret")
+	}
+	if !errors.Is(err, ErrConfigNotFound) {
+		t.Errorf("Get() error = %v, want errors.Is ErrConfigNotFound", err)
+	}
+}
+
+func TestVaultStore_Get_NotFound_KVv1(t *testing.T) {
+	t.Parallel()
+
+	server := mockVaultServer(map[string]http.HandlerFunc{
+		"/v1/secret/runs-fleet/runners/i-notfound": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		},
+	})
+	defer server.Close()
+
+	client, err := api.NewClient(&api.Config{Address: server.URL})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.SetToken("test-token")
+
+	store := NewVaultStoreWithClient(client, "secret", "runs-fleet/runners", 1)
+
+	_, err = store.Get(t.Context(), "i-notfound")
+	if !errors.Is(err, ErrConfigNotFound) {
+		t.Errorf("Get() error = %v, want errors.Is ErrConfigNotFound", err)
 	}
 }
 

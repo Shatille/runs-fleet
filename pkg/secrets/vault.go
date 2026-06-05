@@ -278,10 +278,13 @@ func (v *VaultStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, e
 	if v.kvVersion == 2 {
 		secret, err := v.client.KVv2(v.kvMount).Get(ctx, v.basePath+"/"+runnerID)
 		if err != nil {
+			if isNotFoundError(err) {
+				return nil, fmt.Errorf("%s: %w", runnerID, ErrConfigNotFound)
+			}
 			return nil, fmt.Errorf("failed to read secret from Vault: %w", err)
 		}
 		if secret == nil || secret.Data == nil {
-			return nil, fmt.Errorf("secret not found")
+			return nil, fmt.Errorf("%s: %w", runnerID, ErrConfigNotFound)
 		}
 		data = secret.Data
 	} else {
@@ -289,8 +292,9 @@ func (v *VaultStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, e
 		if err != nil {
 			return nil, fmt.Errorf("failed to read secret from Vault: %w", err)
 		}
+		// KV v1 returns (nil, nil) for a missing secret.
 		if secret == nil || secret.Data == nil {
-			return nil, fmt.Errorf("secret not found")
+			return nil, fmt.Errorf("%s: %w", runnerID, ErrConfigNotFound)
 		}
 		data = secret.Data
 	}
@@ -329,6 +333,9 @@ func (v *VaultStore) Delete(ctx context.Context, runnerID string) error {
 
 // isNotFoundError checks if the error indicates a secret was not found.
 func isNotFoundError(err error) bool {
+	if errors.Is(err, api.ErrSecretNotFound) {
+		return true
+	}
 	var respErr *api.ResponseError
 	if errors.As(err, &respErr) {
 		return respErr.StatusCode == 404
