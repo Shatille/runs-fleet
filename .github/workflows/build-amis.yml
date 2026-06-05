@@ -55,6 +55,10 @@ jobs:
     outputs:
       base: ${{ steps.filter.outputs.base }}
       runner: ${{ steps.filter.outputs.runner }}
+      # `image` mirrors Build Runner Image's own push paths: true means this same
+      # push also rebuilds the runner Docker image, so a workflow_run cascade is
+      # coming. The runner-AMI job uses it to defer (avoid baking a stale :latest).
+      image: ${{ steps.filter.outputs.image }}
     steps:
       - uses: actions/checkout@v5
 
@@ -73,6 +77,12 @@ jobs:
               - 'packer/provision-runs-fleet.sh'
               - 'scripts/**'
               - '.github/workflows/build-amis.yml'
+            image:
+              - 'docker/runner/**'
+              - 'cmd/agent/**'
+              - 'pkg/agent/**'
+              - '.trivy/**'
+              - '.github/workflows/build-runner.yml'
 
   build-base:
     name: Build Base AMI ${{ matrix.arch }}
@@ -170,14 +180,29 @@ jobs:
     # Gate on build-base completing — success unblocks; skipped means base
     # didn't need to rebuild and we proceed against the existing latest base;
     # failed blocks because the runner AMI would inherit a stale/broken base.
+    #
+    # On push, defer to the cascade when this same push also rebuilds the runner
+    # image (`changes.image`). The AMI bakes `:latest` (provision-runs-fleet.sh),
+    # so building it here would race the in-flight image build and bake the stale
+    # tag; the workflow_run cascade fires after the image is promoted and owns the
+    # build. `image` is only set on push, so other triggers fall through unchanged.
+    #
+    # The workflow_run branch requires conclusion == 'success': a failed image
+    # build promotes no new :latest, so cascading into an AMI build would bake the
+    # stale tag. `always()` here bypasses the skipped `changes` job (which already
+    # carries this success guard), so the check must be repeated on this branch.
     if: |
       always() &&
       (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
-      (needs.changes.outputs.runner == 'true' ||
-       needs.changes.outputs.base == 'true' ||
-       github.event_name == 'workflow_run' ||
-       github.event_name == 'schedule' ||
-       github.event_name == 'workflow_dispatch')
+      (
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success') ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' &&
+         needs.changes.outputs.image != 'true' &&
+         (needs.changes.outputs.runner == 'true' || needs.changes.outputs.base == 'true'))
+      )
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
