@@ -2,9 +2,11 @@ package secrets
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -558,5 +560,69 @@ func TestAuthenticateK8s_LoginFailure(t *testing.T) {
 	err = authenticateWithJWT(context.Background(), client, "kubernetes", "my-role", jwtPath)
 	if err == nil {
 		t.Error("authenticateWithJWT() expected error for login failure")
+	}
+}
+
+func TestUseRegionalSTSEndpoint_DefaultsToRegional(t *testing.T) {
+	t.Setenv(awsSTSRegionalEndpointsEnv, "")
+
+	useRegionalSTSEndpoint()
+
+	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "regional" {
+		t.Errorf("useRegionalSTSEndpoint() = %q, want %q", got, "regional")
+	}
+}
+
+func TestUseRegionalSTSEndpoint_RespectsExisting(t *testing.T) {
+	t.Setenv(awsSTSRegionalEndpointsEnv, "legacy")
+
+	useRegionalSTSEndpoint()
+
+	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "legacy" {
+		t.Errorf("useRegionalSTSEndpoint() overrode explicit value: got %q, want %q", got, "legacy")
+	}
+}
+
+func TestAuthenticateAWS_SignsForRegionalSTSEndpoint(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secretexamplekey")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv(awsSTSRegionalEndpointsEnv, "")
+
+	var gotSTSURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			IAMRequestURL string `json:"iam_request_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.IAMRequestURL != "" {
+			if raw, derr := base64.StdEncoding.DecodeString(body.IAMRequestURL); derr == nil {
+				gotSTSURL = string(raw)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"auth": map[string]interface{}{"client_token": "test-token"},
+		})
+	}))
+	defer server.Close()
+
+	client, err := api.NewClient(&api.Config{Address: server.URL})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	if err = authenticateAWS(context.Background(), client, "runs-fleet-runner", "ap-northeast-1"); err != nil {
+		t.Fatalf("authenticateAWS() error = %v", err)
+	}
+
+	if gotSTSURL == "" {
+		t.Fatal("login request did not include an STS request URL")
+	}
+	parsed, err := url.Parse(gotSTSURL)
+	if err != nil {
+		t.Fatalf("failed to parse STS URL %q: %v", gotSTSURL, err)
+	}
+	if want := "sts.ap-northeast-1.amazonaws.com"; parsed.Host != want {
+		t.Errorf("STS request signed for host %q, want regional endpoint %q", parsed.Host, want)
 	}
 }
