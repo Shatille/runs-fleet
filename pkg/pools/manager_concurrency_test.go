@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -236,65 +237,63 @@ func TestClaimAndStartPoolInstance_DeadContextNoAWS(t *testing.T) {
 // DescribeInstances blocks until pool B's claim has completed; if the two pools
 // shared a lock, this would deadlock and the test would time out.
 func TestClaimAndStartPoolInstance_DifferentPoolsDoNotSerialize(t *testing.T) {
-	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		bDone := make(chan struct{})
+		aProceed := make(chan struct{})
 
-	bDone := make(chan struct{})
-	aProceed := make(chan struct{})
+		claimed := newClaimTracker()
 
-	claimed := newClaimTracker()
+		mockDB := &MockDBClient{
+			ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, jobID int64, _ time.Duration) error {
+				return claimed.claim(instanceID, jobID)
+			},
+		}
 
-	mockDB := &MockDBClient{
-		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, jobID int64, _ time.Duration) error {
-			return claimed.claim(instanceID, jobID)
-		},
-	}
-
-	mockEC2 := &MockEC2API{
-		DescribeInstancesFunc: func(_ context.Context, params *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-			// Identify the pool from the tag filter.
-			pool := poolFromFilters(params)
-			if pool == "pool-a" {
-				// Pool A must wait until pool B finishes; if pools serialized on a
-				// shared lock, B could never run and this would block forever.
-				select {
-				case <-bDone:
-				case <-time.After(5 * time.Second):
-					return nil, errors.New("pool A timed out waiting for pool B (pools serialized)")
+		mockEC2 := &MockEC2API{
+			DescribeInstancesFunc: func(_ context.Context, params *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+				// Identify the pool from the tag filter.
+				pool := poolFromFilters(params)
+				if pool == "pool-a" {
+					// Pool A must wait until pool B finishes; if pools serialized on
+					// a shared lock, B could never run and the bubble would deadlock
+					// — synctest reports that instantly instead of hanging on a 5s
+					// escape-hatch timeout.
+					<-bDone
+					return &ec2.DescribeInstancesOutput{Reservations: stoppedReservation("i-a")}, nil
 				}
-				return &ec2.DescribeInstancesOutput{Reservations: stoppedReservation("i-a")}, nil
-			}
-			return &ec2.DescribeInstancesOutput{Reservations: stoppedReservation("i-b")}, nil
-		},
-		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
-			return &ec2.StartInstancesOutput{}, nil
-		},
-	}
+				return &ec2.DescribeInstancesOutput{Reservations: stoppedReservation("i-b")}, nil
+			},
+			StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+				return &ec2.StartInstancesOutput{}, nil
+			},
+		}
 
-	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
-	manager.SetEC2Client(mockEC2)
+		manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+		manager.SetEC2Client(mockEC2)
 
-	var aErr, bErr error
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		<-aProceed
-		_, aErr = manager.ClaimAndStartPoolInstance(context.Background(), "pool-a", 1, "owner/repo", nil)
-	}()
-	go func() {
-		defer wg.Done()
-		close(aProceed) // let A start (and block in DescribeInstances)
-		_, bErr = manager.ClaimAndStartPoolInstance(context.Background(), "pool-b", 2, "owner/repo", nil)
-		close(bDone) // unblock A
-	}()
-	wg.Wait()
+		var aErr, bErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-aProceed
+			_, aErr = manager.ClaimAndStartPoolInstance(context.Background(), "pool-a", 1, "owner/repo", nil)
+		}()
+		go func() {
+			defer wg.Done()
+			close(aProceed) // let A start (and block in DescribeInstances)
+			_, bErr = manager.ClaimAndStartPoolInstance(context.Background(), "pool-b", 2, "owner/repo", nil)
+			close(bDone) // unblock A
+		}()
+		wg.Wait()
 
-	if aErr != nil {
-		t.Errorf("pool A claim failed: %v", aErr)
-	}
-	if bErr != nil {
-		t.Errorf("pool B claim failed: %v", bErr)
-	}
+		if aErr != nil {
+			t.Errorf("pool A claim failed: %v", aErr)
+		}
+		if bErr != nil {
+			t.Errorf("pool B claim failed: %v", bErr)
+		}
+	})
 }
 
 // poolFromFilters extracts the runs-fleet:pool tag value from a DescribeInstances

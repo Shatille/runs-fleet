@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -577,33 +578,33 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 }
 
 func TestHandler_Run_Cancellation(t *testing.T) {
-	q := &mockQueueAPI{
-		messages: []queue.Message{},
-	}
-	db := &mockDBAPI{}
-	metrics := &mockMetricsAPI{}
-	secretsStore := &mockSecretsStore{}
-	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	synctest.Test(t, func(t *testing.T) {
+		q := &mockQueueAPI{
+			messages: []queue.Message{},
+		}
+		db := &mockDBAPI{}
+		metrics := &mockMetricsAPI{}
+		secretsStore := &mockSecretsStore{}
+		cfg := &config.Config{}
+		handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	// Cancel immediately
-	cancel()
-
-	// Wait for handler to stop
-	select {
-	case <-done:
-		// Success
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not stop after cancellation")
-	}
+		// Cancel immediately; Run must observe ctx.Done and return.
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
+	})
 }
 
 // blockingDBAPI lets a test pause MarkJobComplete mid-processing so it can
@@ -633,58 +634,62 @@ func (m *blockingDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.T
 // completion observing a context that is NOT cancelled, and Run must block on
 // its WaitGroup until the processor finishes.
 func TestHandler_Run_InflightProcessorRunsToCompletionAfterCancel(t *testing.T) {
-	body, err := json.Marshal(Message{
-		InstanceID:      "i-12345",
-		JobID:           "12345678901",
-		Status:          testStatusSuccess,
-		ExitCode:        0,
-		DurationSeconds: 30,
+	synctest.Test(t, func(t *testing.T) {
+		body, err := json.Marshal(Message{
+			InstanceID:      "i-12345",
+			JobID:           "12345678901",
+			Status:          testStatusSuccess,
+			ExitCode:        0,
+			DurationSeconds: 30,
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		dispatched := int32(0)
+		// Return the message only on the first receive so the drain does not
+		// re-dispatch it.
+		q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: testReceiptTermination}}}
+		db := &blockingDBAPI{started: make(chan struct{}), release: make(chan struct{})}
+		handler := NewHandler(&onceQueueAPI{inner: q, dispatched: &dispatched}, db, &mockMetricsAPI{}, &mockSecretsStore{}, &config.Config{})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
+
+		// Block until the processor is in flight (parked on <-release). The
+		// fake clock advances to fire the tick that receives and dispatches.
+		<-db.started
+		synctest.Wait()
+
+		// Simulate SIGTERM mid-processing.
+		cancel()
+		synctest.Wait()
+
+		// Run must not return while the processor is still in flight: it is
+		// detached from the signal and blocked on release.
+		select {
+		case <-done:
+			t.Fatal("handler returned before in-flight processor completed")
+		default:
+		}
+
+		close(db.release)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not return after in-flight processor completed")
+		}
+
+		// done is closed, so this read happens-after the processor wrote ctxErr.
+		if db.ctxErr != nil {
+			t.Errorf("processing context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", db.ctxErr)
+		}
 	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	dispatched := int32(0)
-	// Return the message only on the first receive so the drain does not
-	// re-dispatch it.
-	q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: testReceiptTermination}}}
-	db := &blockingDBAPI{started: make(chan struct{}), release: make(chan struct{})}
-	handler := NewHandler(&onceQueueAPI{inner: q, dispatched: &dispatched}, db, &mockMetricsAPI{}, &mockSecretsStore{}, &config.Config{})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
-
-	select {
-	case <-db.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("processor did not start")
-	}
-
-	// Simulate SIGTERM mid-processing.
-	cancel()
-
-	// Run must not return while the processor is still in flight.
-	select {
-	case <-done:
-		t.Fatal("handler returned before in-flight processor completed")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(db.release)
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not return after in-flight processor completed")
-	}
-
-	if db.ctxErr != nil {
-		t.Errorf("processing context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", db.ctxErr)
-	}
 }
 
 // onceQueueAPI returns the inner queue's messages on the first receive and empty
@@ -883,142 +888,141 @@ func TestHandler_processTermination_NoTimestamps(t *testing.T) {
 }
 
 func TestHandler_Run_WithMessages(t *testing.T) {
-	msg := Message{
-		InstanceID:      "i-12345",
-		JobID:           "12345678901",
-		Status:          testStatusSuccess,
-		DurationSeconds: 60,
-	}
-	body, _ := json.Marshal(msg)
+	synctest.Test(t, func(t *testing.T) {
+		msg := Message{
+			InstanceID:      "i-12345",
+			JobID:           "12345678901",
+			Status:          testStatusSuccess,
+			DurationSeconds: 60,
+		}
+		body, _ := json.Marshal(msg)
 
-	receiveCalled := make(chan struct{}, 1)
-	q := &mockQueueAPI{
-		messages: []queue.Message{
-			{
-				Body:   string(body),
-				Handle: "receipt-1",
+		receiveCalled := make(chan struct{}, 1)
+		q := &mockQueueAPI{
+			messages: []queue.Message{
+				{
+					Body:   string(body),
+					Handle: "receipt-1",
+				},
 			},
-		},
-		receiveCalled: receiveCalled,
-	}
-	db := &mockDBAPI{}
-	metrics := &mockMetricsAPI{}
-	secretsStore := &mockSecretsStore{}
-	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+			receiveCalled: receiveCalled,
+		}
+		db := &mockDBAPI{}
+		metrics := &mockMetricsAPI{}
+		secretsStore := &mockSecretsStore{}
+		cfg := &config.Config{}
+		handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	// Wait for ReceiveMessages to be called (channel-based synchronization)
-	select {
-	case <-receiveCalled:
-		// ReceiveMessages was called, message processing initiated
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ReceiveMessages to be called")
-	}
-	cancel()
+		// Block until ReceiveMessages is called; the fake clock advances to
+		// fire the tick that triggers the receive.
+		<-receiveCalled
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
 
-	select {
-	case <-done:
-		// Success
-	case <-time.After(3 * time.Second):
-		t.Fatal("handler did not stop after cancellation")
-	}
-
-	// Verify message was processed
-	if q.receiveCalls < 1 {
-		t.Errorf("expected at least 1 receive call, got %d", q.receiveCalls)
-	}
+		// Verify message was processed
+		if q.receiveCalls < 1 {
+			t.Errorf("expected at least 1 receive call, got %d", q.receiveCalls)
+		}
+	})
 }
 
 // TestHandler_Run_EmitsMessageProcessingSeconds proves the termination worker
 // emits the message-processing latency tagged with the termination queue and an
 // "ok" result for a successfully processed message.
 func TestHandler_Run_EmitsMessageProcessingSeconds(t *testing.T) {
-	msg := Message{InstanceID: "i-1", JobID: "12345678901", Status: testStatusSuccess, DurationSeconds: 60}
-	body, _ := json.Marshal(msg)
+	synctest.Test(t, func(t *testing.T) {
+		msg := Message{InstanceID: "i-1", JobID: "12345678901", Status: testStatusSuccess, DurationSeconds: 60}
+		body, _ := json.Marshal(msg)
 
-	q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: "r1"}}}
-	metrics := &mockMetricsAPI{}
-	handler := NewHandler(q, &mockDBAPI{}, metrics, &mockSecretsStore{}, &config.Config{})
+		q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: "r1"}}}
+		metrics := &mockMetricsAPI{}
+		handler := NewHandler(q, &mockDBAPI{}, metrics, &mockSecretsStore{}, &config.Config{})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	deadline := time.After(2 * time.Second)
-	for {
+		// Advance one tick and settle: the message is received and processed,
+		// emitting the latency metric. Replaces a 2s deadline + 5ms poll loop.
+		time.Sleep(handlerTickInterval)
+		synctest.Wait()
+
 		n, queueLabel, result := metrics.processingSnapshot()
-		if n > 0 {
-			if queueLabel != queueTermination {
-				t.Errorf("processing queue label = %q, want termination", queueLabel)
-			}
-			if result != "ok" {
-				t.Errorf("processing result = %q, want ok", result)
-			}
-			break
-		}
-		select {
-		case <-deadline:
+		if n == 0 {
 			cancel()
-			<-done
+			synctest.Wait()
 			t.Fatal("message-processing metric was never emitted")
-		case <-time.After(5 * time.Millisecond):
 		}
-	}
-	cancel()
-	<-done
+		if queueLabel != queueTermination {
+			t.Errorf("processing queue label = %q, want termination", queueLabel)
+		}
+		if result != "ok" {
+			t.Errorf("processing result = %q, want ok", result)
+		}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not return after cancel")
+		}
+	})
 }
 
 func TestHandler_Run_ReceiveError(t *testing.T) {
-	receiveCalled := make(chan struct{}, 1)
-	q := &mockQueueAPI{
-		receiveErr:    errors.New("receive error"),
-		receiveCalled: receiveCalled,
-	}
-	db := &mockDBAPI{}
-	metrics := &mockMetricsAPI{}
-	secretsStore := &mockSecretsStore{}
-	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	synctest.Test(t, func(t *testing.T) {
+		receiveCalled := make(chan struct{}, 1)
+		q := &mockQueueAPI{
+			receiveErr:    errors.New("receive error"),
+			receiveCalled: receiveCalled,
+		}
+		db := &mockDBAPI{}
+		metrics := &mockMetricsAPI{}
+		secretsStore := &mockSecretsStore{}
+		cfg := &config.Config{}
+		handler := NewHandler(q, db, metrics, secretsStore, cfg)
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	// Wait for ReceiveMessages to be called (channel-based synchronization)
-	select {
-	case <-receiveCalled:
-		// ReceiveMessages was called (even though it returns error)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ReceiveMessages to be called")
-	}
-	cancel()
+		// Block until ReceiveMessages is called; the fake clock advances to
+		// fire the tick. The handler continues despite the receive error.
+		<-receiveCalled
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
 
-	select {
-	case <-done:
-		// Success - handler should continue despite receive errors
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not stop after cancellation")
-	}
-
-	// Verify receive was attempted despite error
-	if q.receiveCalls < 1 {
-		t.Errorf("expected at least 1 receive call, got %d", q.receiveCalls)
-	}
+		// Verify receive was attempted despite error
+		if q.receiveCalls < 1 {
+			t.Errorf("expected at least 1 receive call, got %d", q.receiveCalls)
+		}
+	})
 }
 
 func TestHandler_processTermination_MetricsErrors(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -380,31 +381,35 @@ func TestDeleteMessageFailureMetric(t *testing.T) {
 }
 
 func TestHandlerRunContextCancellation(t *testing.T) {
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				return nil, nil
+	synctest.Test(t, func(t *testing.T) {
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					return nil, nil
+				},
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  &MockMetricsAPI{},
-		config:   &config.Config{},
-	}
+			dbClient: &MockDBAPI{},
+			metrics:  &MockMetricsAPI{},
+			config:   &config.Config{},
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
 
-	done := make(chan bool)
-	go func() {
-		handler.Run(ctx)
-		done <- true
-	}()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Handler did not stop on context cancellation")
-	}
+		// ctx is already cancelled, so Run observes ctx.Done and returns.
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Error("Handler did not stop on context cancellation")
+		}
+	})
 }
 
 // TestHandlerRun_InflightProcessorRunsToCompletionAfterCancel simulates a
@@ -414,163 +419,174 @@ func TestHandlerRunContextCancellation(t *testing.T) {
 // job's requeue is not abandoned), and Run must return only after the
 // in-flight processing drains.
 func TestHandlerRun_InflightProcessorRunsToCompletionAfterCancel(t *testing.T) {
-	const body = `{"detail-type":"EC2 Spot Instance Interruption Warning","detail":{"instance-id":"i-abc123"}}`
+	synctest.Test(t, func(t *testing.T) {
+		const body = `{"detail-type":"EC2 Spot Instance Interruption Warning","detail":{"instance-id":"i-abc123"}}`
 
-	dispatched := int32(0)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var ctxErr error
+		dispatched := int32(0)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var ctxErr error
 
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				if atomic.CompareAndSwapInt32(&dispatched, 0, 1) {
-					return []queue.Message{{Body: body, Handle: "h1"}}, nil
-				}
-				return nil, nil
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					if atomic.CompareAndSwapInt32(&dispatched, 0, 1) {
+						return []queue.Message{{Body: body, Handle: "h1"}}, nil
+					}
+					return nil, nil
+				},
 			},
-		},
-		dbClient: &MockDBAPI{
-			MarkInstanceTerminatingFunc: func(ctx context.Context, _ string) error {
-				close(started)
-				<-release
-				ctxErr = ctx.Err()
-				return nil
+			dbClient: &MockDBAPI{
+				MarkInstanceTerminatingFunc: func(ctx context.Context, _ string) error {
+					close(started)
+					<-release
+					ctxErr = ctx.Err()
+					return nil
+				},
 			},
-		},
-		metrics: &MockMetricsAPI{},
-		config:  &config.Config{},
-	}
+			metrics: &MockMetricsAPI{},
+			config:  &config.Config{},
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("processor did not start")
-	}
+		// Block until the processor is in flight (parked on <-release); the fake
+		// clock advances to fire the tick that receives and dispatches.
+		<-started
+		synctest.Wait()
 
-	// Simulate SIGTERM mid-processing.
-	cancel()
+		// Simulate SIGTERM mid-processing.
+		cancel()
+		synctest.Wait()
 
-	// Run must not return while the processor is still in flight.
-	select {
-	case <-done:
-		t.Fatal("handler returned before in-flight processor completed")
-	case <-time.After(50 * time.Millisecond):
-	}
+		// Run must not return while the processor is still in flight.
+		select {
+		case <-done:
+			t.Fatal("handler returned before in-flight processor completed")
+		default:
+		}
 
-	close(release)
+		close(release)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not return after in-flight processor completed")
+		}
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not return after in-flight processor completed")
-	}
-
-	if ctxErr != nil {
-		t.Errorf("processing context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", ctxErr)
-	}
+		// done is closed, so this read happens-after the processor wrote ctxErr.
+		if ctxErr != nil {
+			t.Errorf("processing context was cancelled by SIGTERM (%v); in-flight work must be detached from the signal", ctxErr)
+		}
+	})
 }
 
 func TestHandlerReceiveMessagesTimeout(t *testing.T) {
-	receiveCallCount := 0
-	receiveCalled := make(chan struct{}, 1)
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				receiveCallCount++
-				_, ok := ctx.Deadline()
-				if !ok {
-					t.Error("Expected context with deadline, got none")
-				}
-				select {
-				case receiveCalled <- struct{}{}:
-				default:
-				}
-				return nil, nil
+	synctest.Test(t, func(t *testing.T) {
+		receiveCallCount := 0
+		receiveCalled := make(chan struct{}, 1)
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					receiveCallCount++
+					_, ok := ctx.Deadline()
+					if !ok {
+						t.Error("Expected context with deadline, got none")
+					}
+					select {
+					case receiveCalled <- struct{}{}:
+					default:
+					}
+					return nil, nil
+				},
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  &MockMetricsAPI{},
-		config:   &config.Config{},
-	}
+			dbClient: &MockDBAPI{},
+			metrics:  &MockMetricsAPI{},
+			config:   &config.Config{},
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	// Wait for at least one ReceiveMessages call
-	select {
-	case <-receiveCalled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for ReceiveMessages to be called")
-	}
-	cancel()
-	<-done
+		// Block until ReceiveMessages is called; the fake clock advances to fire
+		// the tick.
+		<-receiveCalled
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
 
-	if receiveCallCount == 0 {
-		t.Error("ReceiveMessages was never called")
-	}
+		if receiveCallCount == 0 {
+			t.Error("ReceiveMessages was never called")
+		}
+	})
 }
 
 func TestHandlerReceiveMessagesHasIndependentTimeout(t *testing.T) {
-	var capturedTime time.Time
-	var capturedDeadline time.Time
-	receiveCalled := make(chan struct{}, 1)
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				capturedTime = time.Now()
-				deadline, ok := ctx.Deadline()
-				if !ok {
-					t.Fatal("Expected context with deadline, got none")
-				}
-				capturedDeadline = deadline
-				select {
-				case receiveCalled <- struct{}{}:
-				default:
-				}
-				return nil, nil
+	synctest.Test(t, func(t *testing.T) {
+		var capturedTime time.Time
+		var capturedDeadline time.Time
+		receiveCalled := make(chan struct{}, 1)
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(ctx context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					capturedTime = time.Now()
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						t.Fatal("Expected context with deadline, got none")
+					}
+					capturedDeadline = deadline
+					select {
+					case receiveCalled <- struct{}{}:
+					default:
+					}
+					return nil, nil
+				},
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  &MockMetricsAPI{},
-		config:   &config.Config{},
-	}
+			dbClient: &MockDBAPI{},
+			metrics:  &MockMetricsAPI{},
+			config:   &config.Config{},
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	// Wait for ReceiveMessages to be called and capture deadline
-	select {
-	case <-receiveCalled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for ReceiveMessages to be called")
-	}
-	cancel()
-	<-done
+		// Block until ReceiveMessages is called and captures its deadline; the
+		// fake clock advances to fire the tick.
+		<-receiveCalled
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
 
-	timeoutDuration := capturedDeadline.Sub(capturedTime)
-	if timeoutDuration < 23*time.Second || timeoutDuration > 26*time.Second {
-		t.Errorf("Expected timeout ~25s from call time, got %v", timeoutDuration)
-	}
+		timeoutDuration := capturedDeadline.Sub(capturedTime)
+		if timeoutDuration < 23*time.Second || timeoutDuration > 26*time.Second {
+			t.Errorf("Expected timeout ~25s from call time, got %v", timeoutDuration)
+		}
+	})
 }
 
 // TestHandlerRun_EmitsMessageProcessingSeconds proves the events worker emits
@@ -582,45 +598,51 @@ func TestHandlerRun_EmitsMessageProcessingSeconds(t *testing.T) {
 		result  string
 		seconds float64
 	}
-	got := make(chan call, 1)
+	synctest.Test(t, func(t *testing.T) {
+		got := make(chan call, 1)
 
-	var returned bool
-	var mu sync.Mutex
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				mu.Lock()
-				defer mu.Unlock()
-				if returned {
-					return nil, nil
-				}
-				returned = true
-				return []queue.Message{{
-					Body:   `{"detail-type": "EC2 Instance State-change Notification", "detail": {"instance-id": "i-1", "state": "running"}}`,
-					Handle: "r1",
-				}}, nil
+		var returned bool
+		var mu sync.Mutex
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					if returned {
+						return nil, nil
+					}
+					returned = true
+					return []queue.Message{{
+						Body:   `{"detail-type": "EC2 Instance State-change Notification", "detail": {"instance-id": "i-1", "state": "running"}}`,
+						Handle: "r1",
+					}}, nil
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
 			},
-			DeleteMessageFunc: func(_ context.Context, _ string) error { return nil },
-		},
-		dbClient: &MockDBAPI{},
-		metrics: &MockMetricsAPI{
-			PublishMessageProcessingSecondsFunc: func(_ context.Context, queue, result string, seconds float64) error {
-				select {
-				case got <- call{queue: queue, result: result, seconds: seconds}:
-				default:
-				}
-				return nil
+			dbClient: &MockDBAPI{},
+			metrics: &MockMetricsAPI{
+				PublishMessageProcessingSecondsFunc: func(_ context.Context, queue, result string, seconds float64) error {
+					select {
+					case got <- call{queue: queue, result: result, seconds: seconds}:
+					default:
+					}
+					return nil
+				},
 			},
-		},
-		config: &config.Config{},
-	}
+			config: &config.Config{},
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go handler.Run(ctx)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	select {
-	case c := <-got:
+		// Block until the metric is emitted; the fake clock advances to fire the
+		// tick that receives and processes the message.
+		c := <-got
 		if c.queue != queueEvents {
 			t.Errorf("queue label = %q, want events", c.queue)
 		}
@@ -630,478 +652,490 @@ func TestHandlerRun_EmitsMessageProcessingSeconds(t *testing.T) {
 		if c.seconds < 0 {
 			t.Errorf("seconds = %v, want >= 0", c.seconds)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("message-processing metric was never emitted")
-	}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not return after cancel")
+		}
+	})
 }
 
 func TestConcurrentEventProcessing(t *testing.T) {
-	const numMessages = 10
-	const minConcurrent = 3 // At least this many must start concurrently
+	synctest.Test(t, func(t *testing.T) {
+		const numMessages = 10
+		const minConcurrent = 3 // At least this many must start concurrently
 
-	var messageReturned bool
-	var mu sync.Mutex
+		var messageReturned bool
+		var mu sync.Mutex
 
-	// Barrier pattern: all goroutines signal when they start, then wait for release
-	startedChan := make(chan struct{}, numMessages)
-	releaseChan := make(chan struct{})
-	var startedCount int32
+		// Barrier pattern: all goroutines signal when they start, then park on
+		// release. synctest.Wait returns only once every admitted processor is
+		// parked here, so the buffered start count is the simultaneous in-flight
+		// count. The escape-hatch timeout is dropped — the barrier is a pure
+		// channel receive.
+		startedChan := make(chan struct{}, numMessages)
+		releaseChan := make(chan struct{})
+		var startedCount int32
 
-	messages := make([]queue.Message, numMessages)
-	for i := 0; i < numMessages; i++ {
-		messages[i] = queue.Message{
-			Body: fmt.Sprintf(`{
-				"detail-type": "EC2 Spot Instance Interruption Warning",
-				"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
-			}`, i),
-			Handle: fmt.Sprintf("receipt-%d", i),
-		}
-	}
-
-	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
-			// Signal that this goroutine has started
-			atomic.AddInt32(&startedCount, 1)
-			startedChan <- struct{}{}
-			// Wait for release signal (or timeout)
-			select {
-			case <-releaseChan:
-			case <-time.After(100 * time.Millisecond):
+		messages := make([]queue.Message, numMessages)
+		for i := 0; i < numMessages; i++ {
+			messages[i] = queue.Message{
+				Body: fmt.Sprintf(`{
+					"detail-type": "EC2 Spot Instance Interruption Warning",
+					"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
+				}`, i),
+				Handle: fmt.Sprintf("receipt-%d", i),
 			}
-			return nil
-		},
-	}
+		}
 
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				mu.Lock()
-				defer mu.Unlock()
-				if messageReturned {
-					return nil, nil
-				}
-				messageReturned = true
-				return messages, nil
-			},
-			DeleteMessageFunc: func(_ context.Context, _ string) error {
+		mockMetrics := &MockMetricsAPI{
+			PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
+				atomic.AddInt32(&startedCount, 1)
+				startedChan <- struct{}{}
+				<-releaseChan
 				return nil
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  mockMetrics,
-		config:   &config.Config{},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
-
-	// Wait for at least minConcurrent goroutines to start concurrently
-	concurrentStarted := 0
-	timeout := time.After(2 * time.Second)
-waitLoop:
-	for concurrentStarted < minConcurrent {
-		select {
-		case <-startedChan:
-			concurrentStarted++
-		case <-timeout:
-			break waitLoop
 		}
-	}
 
-	// Release all waiting goroutines
-	close(releaseChan)
-	cancel()
-	<-done
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					if messageReturned {
+						return nil, nil
+					}
+					messageReturned = true
+					return messages, nil
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+			},
+			dbClient: &MockDBAPI{},
+			metrics:  mockMetrics,
+			config:   &config.Config{},
+		}
 
-	finalCount := atomic.LoadInt32(&startedCount)
-	if concurrentStarted < minConcurrent {
-		t.Errorf("Expected at least %d concurrent starts, but only %d started concurrently (total started: %d)",
-			minConcurrent, concurrentStarted, finalCount)
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
+
+		// Fire the tick and let the admitted processors park on the barrier.
+		time.Sleep(eventsTickInterval)
+		synctest.Wait()
+
+		// Every processor past the concurrency semaphore is now parked on
+		// releaseChan; the buffered start count is how many ran simultaneously.
+		concurrentStarted := len(startedChan)
+
+		// Release the waiting processors and stop the handler.
+		close(releaseChan)
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancel")
+		}
+
+		finalCount := atomic.LoadInt32(&startedCount)
+		if concurrentStarted < minConcurrent {
+			t.Errorf("Expected at least %d concurrent starts, but only %d started concurrently (total started: %d)",
+				minConcurrent, concurrentStarted, finalCount)
+		}
+	})
 }
 
 func TestBoundedConcurrency(t *testing.T) {
-	const numMessages = 20
-	const maxConcurrency = 5
+	synctest.Test(t, func(t *testing.T) {
+		const numMessages = 20
+		const maxConcurrency = 5
 
-	var activeTasks int32
-	var maxActive int32
-	var mu sync.Mutex
+		var activeTasks int32
+		var maxActive int32
+		var mu sync.Mutex
 
-	// Use a barrier pattern: goroutines signal they started and wait for release
-	startedChan := make(chan struct{}, numMessages)
-	releaseChan := make(chan struct{})
-	concurrencyObserved := make(chan struct{}, 1)
+		// Barrier pattern: processors signal they started and park on release.
+		// The escape-hatch timeout is dropped; synctest.Wait settles once the
+		// admitted batch is parked, capturing the true peak concurrency.
+		startedChan := make(chan struct{}, numMessages)
+		releaseChan := make(chan struct{})
 
-	messages := make([]queue.Message, numMessages)
-	for i := 0; i < numMessages; i++ {
-		messages[i] = queue.Message{
-			Body: fmt.Sprintf(`{
-				"detail-type": "EC2 Spot Instance Interruption Warning",
-				"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
-			}`, i),
-			Handle: fmt.Sprintf("receipt-%d", i),
+		messages := make([]queue.Message, numMessages)
+		for i := 0; i < numMessages; i++ {
+			messages[i] = queue.Message{
+				Body: fmt.Sprintf(`{
+					"detail-type": "EC2 Spot Instance Interruption Warning",
+					"detail": {"instance-id": "i-%d", "instance-action": "terminate"}
+				}`, i),
+				Handle: fmt.Sprintf("receipt-%d", i),
+			}
 		}
-	}
 
-	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
-			active := atomic.AddInt32(&activeTasks, 1)
+		mockMetrics := &MockMetricsAPI{
+			PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
+				active := atomic.AddInt32(&activeTasks, 1)
 
-			mu.Lock()
-			if active > maxActive {
-				maxActive = active
-			}
-			// Signal when we've observed concurrent execution
-			if active >= 2 {
-				select {
-				case concurrencyObserved <- struct{}{}:
-				default:
+				mu.Lock()
+				if active > maxActive {
+					maxActive = active
 				}
-			}
-			mu.Unlock()
+				mu.Unlock()
 
-			// Signal that this goroutine has started
-			startedChan <- struct{}{}
+				// Signal that this goroutine has started
+				startedChan <- struct{}{}
 
-			// Wait for release signal (with timeout to prevent test hang)
-			select {
-			case <-releaseChan:
-			case <-time.After(100 * time.Millisecond):
-			}
+				<-releaseChan
 
-			atomic.AddInt32(&activeTasks, -1)
-			return nil
-		},
-	}
-
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				return messages, nil
-			},
-			DeleteMessageFunc: func(_ context.Context, _ string) error {
+				atomic.AddInt32(&activeTasks, -1)
 				return nil
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  mockMetrics,
-		config:   &config.Config{},
-	}
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					return messages, nil
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+			},
+			dbClient: &MockDBAPI{},
+			metrics:  mockMetrics,
+			config:   &config.Config{},
+		}
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	// Wait until we observe concurrent execution
-	select {
-	case <-concurrencyObserved:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for concurrent execution to be observed")
-	}
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	// Release all waiting goroutines
-	close(releaseChan)
-	cancel()
-	<-done
+		// Fire the tick; the admitted batch parks on the barrier, bounded by the
+		// concurrency semaphore.
+		time.Sleep(eventsTickInterval)
+		synctest.Wait()
 
-	mu.Lock()
-	maxActiveVal := maxActive
-	mu.Unlock()
+		mu.Lock()
+		maxActiveVal := maxActive
+		mu.Unlock()
 
-	if maxActiveVal > maxConcurrency+1 {
-		t.Errorf("Expected max concurrency ~%d, got %d", maxConcurrency, maxActiveVal)
-	}
-	if maxActiveVal < 2 {
-		t.Error("Expected some concurrency, but processing appears to be sequential")
-	}
+		if maxActiveVal > maxConcurrency+1 {
+			t.Errorf("Expected max concurrency ~%d, got %d", maxConcurrency, maxActiveVal)
+		}
+		if maxActiveVal < 2 {
+			t.Error("Expected some concurrency, but processing appears to be sequential")
+		}
+
+		// Release all waiting goroutines and stop the handler.
+		close(releaseChan)
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancel")
+		}
+	})
 }
 
 func TestMetricsCallsHaveTimeout(t *testing.T) {
-	var capturedCtx context.Context
-	var mu sync.Mutex
-	metricsCalled := make(chan struct{}, 1)
-	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(ctx context.Context, _ string) error {
-			mu.Lock()
-			capturedCtx = ctx
-			mu.Unlock()
-			select {
-			case metricsCalled <- struct{}{}:
-			default:
-			}
-			return nil
-		},
-	}
-
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				return []queue.Message{{
-					Body: `{
-						"detail-type": "EC2 Spot Instance Interruption Warning",
-						"detail": {"instance-id": "i-test", "instance-action": "terminate"}
-					}`,
-					Handle: "receipt-test",
-				}}, nil
-			},
-			DeleteMessageFunc: func(_ context.Context, _ string) error {
+	synctest.Test(t, func(t *testing.T) {
+		var capturedCtx context.Context
+		var mu sync.Mutex
+		metricsCalled := make(chan struct{}, 1)
+		mockMetrics := &MockMetricsAPI{
+			PublishSpotInterruptionFunc: func(ctx context.Context, _ string) error {
+				mu.Lock()
+				capturedCtx = ctx
+				mu.Unlock()
+				select {
+				case metricsCalled <- struct{}{}:
+				default:
+				}
 				return nil
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  mockMetrics,
-		config:   &config.Config{},
-	}
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					return []queue.Message{{
+						Body: `{
+							"detail-type": "EC2 Spot Instance Interruption Warning",
+							"detail": {"instance-id": "i-test", "instance-action": "terminate"}
+						}`,
+						Handle: "receipt-test",
+					}}, nil
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+			},
+			dbClient: &MockDBAPI{},
+			metrics:  mockMetrics,
+			config:   &config.Config{},
+		}
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	// Wait for PublishSpotInterruption to be called
-	select {
-	case <-metricsCalled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for PublishSpotInterruption to be called")
-	}
-	cancel()
-	<-done
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	mu.Lock()
-	metricsCtx := capturedCtx
-	mu.Unlock()
+		// Block until PublishSpotInterruption is called; the fake clock advances
+		// to fire the tick.
+		<-metricsCalled
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
 
-	if metricsCtx == nil {
-		t.Fatal("PublishSpotInterruption was never called")
-	}
+		mu.Lock()
+		metricsCtx := capturedCtx
+		mu.Unlock()
 
-	_, ok := metricsCtx.Deadline()
-	if !ok {
-		t.Error("Expected metrics call to have deadline, got none")
-	}
+		if metricsCtx == nil {
+			t.Fatal("PublishSpotInterruption was never called")
+		}
+
+		_, ok := metricsCtx.Deadline()
+		if !ok {
+			t.Error("Expected metrics call to have deadline, got none")
+		}
+	})
 }
 
 func TestMetricsTimeoutDoesNotBlockProcessing(t *testing.T) {
-	messages := []queue.Message{
-		{
-			Body: `{
+	synctest.Test(t, func(t *testing.T) {
+		messages := []queue.Message{
+			{
+				Body: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-1", "instance-action": "terminate"}
 			}`,
-			Handle: "receipt-1",
-		},
-		{
-			Body: `{
+				Handle: "receipt-1",
+			},
+			{
+				Body: `{
 				"detail-type": "EC2 Spot Instance Interruption Warning",
 				"detail": {"instance-id": "i-2", "instance-action": "terminate"}
 			}`,
-			Handle: "receipt-2",
-		},
-	}
-
-	var callCount int32
-	// Barrier pattern: first message blocks until released, second message signals it started
-	firstStarted := make(chan struct{}, 1)
-	releaseChan := make(chan struct{})
-	secondStarted := make(chan struct{}, 1)
-
-	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
-			currentCount := atomic.AddInt32(&callCount, 1)
-
-			if currentCount == 1 {
-				// Signal that first goroutine started
-				select {
-				case firstStarted <- struct{}{}:
-				default:
-				}
-				// Wait for release (or timeout)
-				select {
-				case <-releaseChan:
-				case <-time.After(100 * time.Millisecond):
-				}
-			}
-			if currentCount == 2 {
-				// Signal that second goroutine started while first is still blocked
-				select {
-				case secondStarted <- struct{}{}:
-				default:
-				}
-			}
-			return nil
-		},
-	}
-
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				return messages, nil
+				Handle: "receipt-2",
 			},
-			DeleteMessageFunc: func(_ context.Context, _ string) error {
-				return nil
-			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  mockMetrics,
-		config:   &config.Config{},
-	}
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+		var callCount int32
+		// Barrier pattern: the first message parks on release, the second signals
+		// it started. The escape-hatch timeout is dropped; synctest proves the
+		// second processor ran while the first was still parked.
+		firstStarted := make(chan struct{}, 1)
+		releaseChan := make(chan struct{})
+		secondStarted := make(chan struct{}, 1)
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		mockMetrics := &MockMetricsAPI{
+			PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
+				currentCount := atomic.AddInt32(&callCount, 1)
 
-	// Wait for first message to start processing
-	select {
-	case <-firstStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for first message to start")
-	}
-
-	// Wait for second message to start (proves first didn't block it)
-	select {
-	case <-secondStarted:
-		// Success: second message started while first was still blocked
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for second message - first message blocked processing")
-	}
-
-	// Release all waiting goroutines
-	close(releaseChan)
-	cancel()
-	<-done
-
-	finalCount := atomic.LoadInt32(&callCount)
-	if finalCount < 2 {
-		t.Errorf("Expected at least 2 metrics calls, got %d", finalCount)
-	}
-}
-
-func TestPanicRecovery(t *testing.T) {
-	panicCount := 0
-	processCount := 0
-	deletedReceipts := make(map[string]bool)
-	var mu sync.Mutex
-	bothDeleted := make(chan struct{}, 1)
-
-	messages := []queue.Message{
-		{
-			Body: `{
-				"detail-type": "EC2 Spot Instance Interruption Warning",
-				"detail": {"instance-id": "i-panic", "instance-action": "terminate"}
-			}`,
-			Handle: "receipt-panic",
-		},
-		{
-			Body: `{
-				"detail-type": "EC2 Spot Instance Interruption Warning",
-				"detail": {"instance-id": "i-normal", "instance-action": "terminate"}
-			}`,
-			Handle: "receipt-normal",
-		},
-	}
-
-	mockMetrics := &MockMetricsAPI{
-		PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
-			mu.Lock()
-			processCount++
-			currentCount := processCount
-			if currentCount == 1 {
-				panicCount++
-				mu.Unlock()
-				panic("test panic in processEvent")
-			}
-			mu.Unlock()
-			return nil
-		},
-	}
-
-	handler := &Handler{
-		queueClient: &MockQueueAPI{
-			ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
-				mu.Lock()
-				defer mu.Unlock()
-				if processCount >= 2 {
-					return nil, nil
-				}
-				return messages, nil
-			},
-			DeleteMessageFunc: func(_ context.Context, receiptHandle string) error {
-				mu.Lock()
-				deletedReceipts[receiptHandle] = true
-				// Signal when both receipts have been deleted
-				if deletedReceipts["receipt-panic"] && deletedReceipts["receipt-normal"] {
+				if currentCount == 1 {
+					// Signal that first goroutine started, then park.
 					select {
-					case bothDeleted <- struct{}{}:
+					case firstStarted <- struct{}{}:
+					default:
+					}
+					<-releaseChan
+				}
+				if currentCount == 2 {
+					// Signal that second goroutine started while first is parked.
+					select {
+					case secondStarted <- struct{}{}:
 					default:
 					}
 				}
+				return nil
+			},
+		}
+
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					return messages, nil
+				},
+				DeleteMessageFunc: func(_ context.Context, _ string) error {
+					return nil
+				},
+			},
+			dbClient: &MockDBAPI{},
+			metrics:  mockMetrics,
+			config:   &config.Config{},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
+
+		// Block until the first message starts; the fake clock advances to fire
+		// the tick. Then settle so the second processor runs while the first is
+		// still parked on release.
+		<-firstStarted
+		synctest.Wait()
+		select {
+		case <-secondStarted:
+		default:
+			t.Fatal("second message did not start - first message blocked processing")
+		}
+
+		// Release the parked processor and stop the handler.
+		close(releaseChan)
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancel")
+		}
+
+		finalCount := atomic.LoadInt32(&callCount)
+		if finalCount < 2 {
+			t.Errorf("Expected at least 2 metrics calls, got %d", finalCount)
+		}
+	})
+}
+
+func TestPanicRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		panicCount := 0
+		processCount := 0
+		deletedReceipts := make(map[string]bool)
+		var mu sync.Mutex
+		bothDeleted := make(chan struct{}, 1)
+
+		messages := []queue.Message{
+			{
+				Body: `{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-panic", "instance-action": "terminate"}
+			}`,
+				Handle: "receipt-panic",
+			},
+			{
+				Body: `{
+				"detail-type": "EC2 Spot Instance Interruption Warning",
+				"detail": {"instance-id": "i-normal", "instance-action": "terminate"}
+			}`,
+				Handle: "receipt-normal",
+			},
+		}
+
+		mockMetrics := &MockMetricsAPI{
+			PublishSpotInterruptionFunc: func(_ context.Context, _ string) error {
+				mu.Lock()
+				processCount++
+				currentCount := processCount
+				if currentCount == 1 {
+					panicCount++
+					mu.Unlock()
+					panic("test panic in processEvent")
+				}
 				mu.Unlock()
 				return nil
 			},
-		},
-		dbClient: &MockDBAPI{},
-		metrics:  mockMetrics,
-		config:   &config.Config{},
-	}
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+		handler := &Handler{
+			queueClient: &MockQueueAPI{
+				ReceiveMessagesFunc: func(_ context.Context, _ int32, _ int32) ([]queue.Message, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					if processCount >= 2 {
+						return nil, nil
+					}
+					return messages, nil
+				},
+				DeleteMessageFunc: func(_ context.Context, receiptHandle string) error {
+					mu.Lock()
+					deletedReceipts[receiptHandle] = true
+					// Signal when both receipts have been deleted
+					if deletedReceipts["receipt-panic"] && deletedReceipts["receipt-normal"] {
+						select {
+						case bothDeleted <- struct{}{}:
+						default:
+						}
+					}
+					mu.Unlock()
+					return nil
+				},
+			},
+			dbClient: &MockDBAPI{},
+			metrics:  mockMetrics,
+			config:   &config.Config{},
+		}
 
-	done := make(chan struct{})
-	go func() {
-		handler.Run(ctx)
-		close(done)
-	}()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
 
-	// Wait for both messages to be deleted
-	select {
-	case <-bothDeleted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Timeout waiting for both messages to be deleted")
-	}
-	cancel()
-	<-done
+		done := make(chan struct{})
+		go func() {
+			handler.Run(ctx)
+			close(done)
+		}()
 
-	mu.Lock()
-	finalPanicCount := panicCount
-	finalProcessCount := processCount
-	panicReceiptDeleted := deletedReceipts["receipt-panic"]
-	normalReceiptDeleted := deletedReceipts["receipt-normal"]
-	mu.Unlock()
+		// Block until both messages are deleted; the fake clock advances to fire
+		// the tick. The panicking processor's deferred delete still runs during
+		// unwinding and the panic is recovered, so the batch completes.
+		<-bothDeleted
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("handler did not stop after cancellation")
+		}
 
-	if finalPanicCount != 1 {
-		t.Errorf("Expected 1 panic, got %d", finalPanicCount)
-	}
-	if finalProcessCount < 2 {
-		t.Errorf("Expected at least 2 messages processed despite panic, got %d", finalProcessCount)
-	}
-	if !panicReceiptDeleted {
-		t.Error("Expected message with panic to be deleted, but it was not")
-	}
-	if !normalReceiptDeleted {
-		t.Error("Expected normal message to be deleted, but it was not")
-	}
+		mu.Lock()
+		finalPanicCount := panicCount
+		finalProcessCount := processCount
+		panicReceiptDeleted := deletedReceipts["receipt-panic"]
+		normalReceiptDeleted := deletedReceipts["receipt-normal"]
+		mu.Unlock()
+
+		if finalPanicCount != 1 {
+			t.Errorf("Expected 1 panic, got %d", finalPanicCount)
+		}
+		if finalProcessCount < 2 {
+			t.Errorf("Expected at least 2 messages processed despite panic, got %d", finalProcessCount)
+		}
+		if !panicReceiptDeleted {
+			t.Error("Expected message with panic to be deleted, but it was not")
+		}
+		if !normalReceiptDeleted {
+			t.Error("Expected normal message to be deleted, but it was not")
+		}
+	})
 }
 
 func TestSpotInterruptionHandling(t *testing.T) {
