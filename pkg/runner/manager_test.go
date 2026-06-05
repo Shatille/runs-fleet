@@ -79,7 +79,7 @@ func TestNewManager(t *testing.T) {
 	mockStore := &mockSecretsStore{}
 	config := ManagerConfig{
 		CacheSecret:         "test-secret",
-		CacheURL:            "https://cache.example.com",
+		BaseURL:             "https://cache.example.com",
 		TerminationQueueURL: "https://sqs.example.com/queue",
 	}
 
@@ -262,15 +262,15 @@ func TestManagerConfig_Structure(t *testing.T) {
 
 	config := ManagerConfig{
 		CacheSecret:         "my-secret",
-		CacheURL:            "https://cache.example.com",
+		BaseURL:             "https://cache.example.com",
 		TerminationQueueURL: "https://sqs.example.com/queue",
 	}
 
 	if config.CacheSecret != "my-secret" {
 		t.Errorf("expected CacheSecret 'my-secret', got '%s'", config.CacheSecret)
 	}
-	if config.CacheURL != "https://cache.example.com" {
-		t.Errorf("expected CacheURL 'https://cache.example.com', got '%s'", config.CacheURL)
+	if config.BaseURL != "https://cache.example.com" {
+		t.Errorf("expected BaseURL 'https://cache.example.com', got '%s'", config.BaseURL)
 	}
 	if config.TerminationQueueURL != "https://sqs.example.com/queue" {
 		t.Errorf("expected TerminationQueueURL 'https://sqs.example.com/queue', got '%s'", config.TerminationQueueURL)
@@ -373,7 +373,7 @@ func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req Prepar
 		RunnerName:          runnerName,
 		JobID:               req.JobID,
 		CacheToken:          cacheToken,
-		CacheURL:            tm.config.CacheURL,
+		CacheURL:            tm.config.BaseURL,
 		TerminationQueueURL: tm.config.TerminationQueueURL,
 		IsOrg:               regResult.IsOrg,
 	}
@@ -406,7 +406,7 @@ func TestManager_PrepareRunnerWithMock_Success(t *testing.T) {
 
 	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
 		CacheSecret:         "test-secret",
-		CacheURL:            testCacheURL,
+		BaseURL:             testCacheURL,
 		TerminationQueueURL: testTerminationQueueURL,
 	})
 
@@ -470,7 +470,7 @@ func TestManager_PrepareRunnerWithMock_GitHubError(t *testing.T) {
 
 	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
 		CacheSecret:         "test-secret",
-		CacheURL:            testCacheURL,
+		BaseURL:             testCacheURL,
 		TerminationQueueURL: testTerminationQueueURL,
 	})
 
@@ -511,7 +511,7 @@ func TestManager_PrepareRunnerWithMock_StoreError(t *testing.T) {
 
 	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
 		CacheSecret:         "",
-		CacheURL:            testCacheURL,
+		BaseURL:             testCacheURL,
 		TerminationQueueURL: testTerminationQueueURL,
 	})
 
@@ -544,7 +544,7 @@ func TestManager_PrepareRunnerWithMock_NoCacheSecret(t *testing.T) {
 	// No cache secret configured
 	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
 		CacheSecret:         "",
-		CacheURL:            testCacheURL,
+		BaseURL:             testCacheURL,
 		TerminationQueueURL: testTerminationQueueURL,
 	})
 
@@ -579,7 +579,7 @@ func TestManager_PrepareRunnerWithMock_UserRepo(t *testing.T) {
 
 	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
 		CacheSecret: "secret",
-		CacheURL:    testCacheURL,
+		BaseURL:     testCacheURL,
 	})
 
 	req := PrepareRunnerRequest{

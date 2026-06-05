@@ -961,7 +961,6 @@ func TestBuildTags(t *testing.T) {
 			config: &config.Config{
 				RunnerImage:         "ghcr.io/org/runner:latest",
 				TerminationQueueURL: "https://sqs.us-west-2.amazonaws.com/123/term-queue",
-				CacheURL:            "https://cache.example.com",
 			},
 			spec: &LaunchSpec{
 				RunID: 12345,
@@ -972,7 +971,6 @@ func TestBuildTags(t *testing.T) {
 				"runs-fleet:managed":               "true",
 				"runs-fleet:runner-image":          "ghcr.io/org/runner:latest",
 				"runs-fleet:termination-queue-url": "https://sqs.us-west-2.amazonaws.com/123/term-queue",
-				"runs-fleet:cache-url":             "https://cache.example.com",
 			},
 		},
 		{
@@ -989,7 +987,6 @@ func TestBuildTags(t *testing.T) {
 			wantAbsent: []string{
 				"runs-fleet:runner-image",
 				"runs-fleet:termination-queue-url",
-				"runs-fleet:cache-url",
 			},
 		},
 		{

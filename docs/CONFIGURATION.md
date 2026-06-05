@@ -60,7 +60,7 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | Variable | Description |
 |----------|-------------|
 | `RUNS_FLEET_CACHE_SECRET` | HMAC secret for cache auth |
-| `RUNS_FLEET_CACHE_URL` | Cache service URL (passed to runners) |
+| `RUNS_FLEET_BASE_URL` | **Required.** Orchestrator's externally-reachable HTTPS base URL; served to runners as `ACTIONS_CACHE_URL` for the S3-backed Actions cache |
 
 ## Metrics
 

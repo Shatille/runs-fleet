@@ -16,6 +16,9 @@
 {{- if not .Values.aws.subnetIds }}
 {{- fail "aws.subnetIds is required" }}
 {{- end }}
+{{- if not .Values.aws.baseUrl }}
+{{- fail "aws.baseUrl is required" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -100,10 +103,6 @@ spec:
             - name: RUNS_FLEET_TERMINATION_QUEUE_URL
               value: {{ .Values.aws.terminationQueueUrl | quote }}
             {{- end }}
-            {{- if .Values.aws.housekeepingQueueUrl }}
-            - name: RUNS_FLEET_HOUSEKEEPING_QUEUE_URL
-              value: {{ .Values.aws.housekeepingQueueUrl | quote }}
-            {{- end }}
             # DynamoDB tables
             - name: RUNS_FLEET_JOBS_TABLE
               value: {{ .Values.aws.jobsTable | quote }}
@@ -122,6 +121,8 @@ spec:
             - name: RUNS_FLEET_CONFIG_BUCKET
               value: {{ .Values.aws.configBucket | quote }}
             {{- end }}
+            - name: RUNS_FLEET_BASE_URL
+              value: {{ .Values.aws.baseUrl | quote }}
             # EC2 runner settings
             - name: RUNS_FLEET_RUNNER_IMAGE
               value: {{ .Values.aws.runnerImage | quote }}

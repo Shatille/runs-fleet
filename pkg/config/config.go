@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -59,7 +60,7 @@ type Config struct {
 	TagKeyService     string // Tag key for the fixed "runner" value (default: "Service")
 
 	CacheSecret    string
-	CacheURL       string
+	BaseURL        string
 	AdminSecret    string
 	AdminRateLimit int
 	TraceUIURL     string
@@ -150,7 +151,7 @@ func Load() (*Config, error) {
 		TagKeyService:      getEnv("RUNS_FLEET_TAG_KEY_SERVICE", "Service"),
 
 		CacheSecret:    getEnv("RUNS_FLEET_CACHE_SECRET", ""),
-		CacheURL:       getEnv("RUNS_FLEET_CACHE_URL", ""),
+		BaseURL:        getEnv("RUNS_FLEET_BASE_URL", ""),
 		AdminSecret:    getEnv("RUNS_FLEET_ADMIN_SECRET", ""),
 		AdminRateLimit: getEnvIntDefault("RUNS_FLEET_ADMIN_RATE_LIMIT", 60),
 		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
@@ -213,6 +214,12 @@ func (c *Config) Validate() error {
 	}
 	if c.QueueURL == "" {
 		return fmt.Errorf("RUNS_FLEET_QUEUE_URL is required")
+	}
+	if c.BaseURL == "" {
+		return fmt.Errorf("RUNS_FLEET_BASE_URL is required")
+	}
+	if err := validateBaseURL(c.BaseURL); err != nil {
+		return fmt.Errorf("RUNS_FLEET_BASE_URL: %w", err)
 	}
 	if c.MaxRuntimeMinutes <= 0 {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must be greater than 0, got %d", c.MaxRuntimeMinutes)
@@ -345,6 +352,21 @@ func (c *Config) validateMetricsConfig() error {
 	return nil
 }
 
+// validateBaseURL validates that the orchestrator base URL is an absolute https URL.
+func validateBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("must be an absolute https:// URL, got scheme %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("must include a host")
+	}
+	return nil
+}
+
 // validateHostPort validates that addr is a valid host:port format (IPv4 or IPv6).
 func validateHostPort(addr string) error {
 	if addr == "" {
@@ -471,7 +493,6 @@ func validateTags(tags map[string]string) error {
 		// - Role (conditional)
 		// - runs-fleet:runner-image (conditional)
 		// - runs-fleet:termination-queue-url (conditional)
-		// - runs-fleet:cache-url (conditional)
 		// Reserve 15 for system tags to be safe, allowing 35 custom tags
 		systemTagReserve = 15
 		maxTags          = 50 - systemTagReserve

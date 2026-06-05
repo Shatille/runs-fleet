@@ -287,7 +287,7 @@ func initRunnerManager(secretsStore secrets.Store, cfg *config.Config) *runner.M
 	}
 	return runner.NewManager(githubClient, secretsStore, runner.ManagerConfig{
 		CacheSecret:         cfg.CacheSecret,
-		CacheURL:            cfg.CacheURL,
+		BaseURL:             cfg.BaseURL,
 		TerminationQueueURL: cfg.TerminationQueueURL,
 	})
 }

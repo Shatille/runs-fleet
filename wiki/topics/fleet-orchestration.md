@@ -76,7 +76,7 @@ launch template via `getLaunchTemplateForArch(spec.OS, arch)` and calls
 - **`pkg/circuit`** — `CircuitBreaker.CheckCircuit(ctx, instanceType)` returns
   `circuit.State`; `circuit.StateOpen` forces on-demand.
 - **`pkg/config`** — `*config.Config` provides `SpotEnabled`,
-  `LaunchTemplateName`, `RunnerImage`, `TerminationQueueURL`, `CacheURL`,
+  `LaunchTemplateName`, `RunnerImage`, `TerminationQueueURL`, `BaseURL`,
   `SecretsBackend`, Vault settings, custom `Tags` map. `aws.Config` feeds the
   EC2 client constructor.
 - **`pkg/logging`** — component logger
@@ -153,8 +153,7 @@ func (is InstanceSpec) MatchesFlexibleSpec(spec FlexibleSpec) bool
 - `runs-fleet:region` — Phase 3 multi-region support.
 - `runs-fleet:environment` and standard `Environment` — Phase 6 per-stack envs.
 - `Role` — set to `Repo` for cost allocation.
-- `runs-fleet:runner-image`, `runs-fleet:termination-queue-url`,
-  `runs-fleet:cache-url` — bootstrap script reads these.
+- `runs-fleet:runner-image`, `runs-fleet:termination-queue-url` — bootstrap script reads these.
 - `runs-fleet:secrets-backend` plus `runs-fleet:vault-*`
   (`vault-addr`, `vault-kv-mount`, `vault-kv-version`, `vault-base-path`,
   `vault-auth-method=aws`, `vault-aws-role=runs-fleet-runner`) when

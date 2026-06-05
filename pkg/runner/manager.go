@@ -16,7 +16,7 @@ var runnerLog = logging.WithComponent(logging.LogTypeRunner, "manager")
 // ManagerConfig holds configuration for the runner manager.
 type ManagerConfig struct {
 	CacheSecret         string
-	CacheURL            string
+	BaseURL             string
 	TerminationQueueURL string
 }
 
@@ -88,7 +88,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		RunnerName:          runnerName,
 		JobID:               req.JobID,
 		CacheToken:          cacheToken,
-		CacheURL:            m.config.CacheURL,
+		CacheURL:            m.config.BaseURL,
 		TerminationQueueURL: m.config.TerminationQueueURL,
 		IsOrg:               regResult.IsOrg,
 	}

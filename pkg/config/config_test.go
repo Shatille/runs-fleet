@@ -30,13 +30,14 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
 				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 				"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+				"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
 			},
 			wantErr: false,
 		},
@@ -44,7 +45,7 @@ func TestLoad(t *testing.T) {
 			name: "Missing Queue URL",
 			env: map[string]string{
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -57,7 +58,7 @@ func TestLoad(t *testing.T) {
 			name: "Missing VPC ID",
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
-				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -71,7 +72,7 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
@@ -85,13 +86,44 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 				"RUNS_FLEET_VPC_ID":                 "vpc-123",
-				"RUNS_FLEET_SUBNET_IDS":      "subnet-1,subnet-2",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
 				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
 				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
 				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 				"RUNS_FLEET_RUNNER_IMAGE":           "docker.io/library/runner:latest",
+			},
+			wantErr: true,
+		},
+		{
+			name: "Missing Base URL",
+			env: map[string]string{
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+				"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+			},
+			wantErr: true,
+		},
+		{
+			name: "Non-HTTPS Base URL",
+			env: map[string]string{
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+				"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+				"RUNS_FLEET_BASE_URL":               "http://runs-fleet.example.com",
 			},
 			wantErr: true,
 		},
@@ -139,6 +171,7 @@ func TestLoadCostAttributionTagKeys(t *testing.T) {
 		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
 	}
 
 	tests := []struct {
@@ -212,6 +245,7 @@ func TestLoadIgnoresMetricsNamespaceEnv(t *testing.T) {
 		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
 		"RUNS_FLEET_METRICS_NAMESPACE":      "teamx",
 	} {
 		_ = os.Setenv(k, v)
@@ -271,13 +305,14 @@ func ec2Env(extra map[string]string) map[string]string {
 	env := map[string]string{
 		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
 		"RUNS_FLEET_VPC_ID":                 "vpc-123",
-		"RUNS_FLEET_SUBNET_IDS":     "subnet-1,subnet-2",
+		"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
 		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
 		"RUNS_FLEET_GITHUB_APP_ID":          "123",
 		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "key",
 		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
 		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
 		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
 	}
 	for k, v := range extra {
 		env[k] = v
@@ -588,6 +623,30 @@ func TestParseTags(t *testing.T) {
 	}
 }
 
+func TestValidateBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "valid https", url: "https://runs-fleet.example.com", wantErr: false},
+		{name: "valid https with port and path", url: "https://runs-fleet.example.com:8443/cache", wantErr: false},
+		{name: "empty", url: "", wantErr: true},
+		{name: "non-https scheme", url: "http://runs-fleet.example.com", wantErr: true},
+		{name: "no scheme", url: "runs-fleet.example.com", wantErr: true},
+		{name: "port-only host", url: "https://:443/path", wantErr: true},
+		{name: "scheme only", url: "https://", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBaseURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateBaseURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateHostPort(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -696,8 +755,8 @@ func TestVaultAuthConfigLoading(t *testing.T) {
 		wantVaultK8sJWTPath string
 	}{
 		{
-			name: "defaults when not set",
-			env: ec2Env(nil),
+			name:                "defaults when not set",
+			env:                 ec2Env(nil),
 			wantVaultAuthMethod: "aws",
 			wantVaultK8sRole:    "",
 			wantVaultK8sJWTPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
