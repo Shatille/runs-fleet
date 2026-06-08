@@ -42,12 +42,20 @@ sudo chown ec2-user:ec2-user /opt/runs-fleet/runs-fleet-agent
 # without running as root.
 echo "==> Granting agent CAP_NET_BIND_SERVICE for the cache interceptor"
 sudo setcap 'cap_net_bind_service=+ep' /opt/runs-fleet/runs-fleet-agent
-# NOTE: full engagement also edits /etc/hosts (pin the results host) and the
-# system trust store (update-ca-trust) — both root-only. The agent runs as
-# ec2-user and FAILS OPEN if it cannot do these (runner falls back to GitHub's
-# cache), so this is safe to ship. The privilege model for those two steps
-# (run the agent privileged vs a scoped sudoers rule) is finalized during
-# canary validation on runs-fleet-test before broad rollout.
+# Full engagement also edits /etc/hosts (pin the results host) and the system
+# trust store — both root-only. Rather than run the agent as root, bake a
+# root-owned engage helper and grant ec2-user a scoped NOPASSWD sudoers rule for
+# exactly that helper; the agent (ec2-user) invokes it after its listener is
+# healthy and removes the pin on teardown, so fail-open is preserved. The helper
+# lives in /usr/local/sbin (root-owned), NOT under /opt/runs-fleet (ec2-user-owned),
+# so it can't be swapped out to escalate through the sudoers grant.
+echo "==> Installing root-owned cache-engage helper"
+sudo install -m 0755 -o root -g root /tmp/cache-engage.sh /usr/local/sbin/runs-fleet-cache-engage
+
+echo "==> Installing scoped sudoers drop-in for cache-engage"
+sudo install -m 0440 -o root -g root /tmp/sudoers-cache-engage /etc/sudoers.d/10-runs-fleet-cache
+# Fail the build (before snapshot) on a malformed drop-in rather than at boot.
+sudo visudo -cf /etc/sudoers.d/10-runs-fleet-cache
 
 # Cleanup Docker image to save space
 sudo docker rmi ${RUNNER_IMAGE} || true

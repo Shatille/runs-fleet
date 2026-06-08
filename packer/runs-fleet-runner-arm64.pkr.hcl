@@ -121,6 +121,16 @@ build {
     destination = "/tmp/cloud-init-boot.sh"
   }
 
+  provisioner "file" {
+    source      = "${path.root}/../scripts/cache-engage.sh"
+    destination = "/tmp/cache-engage.sh"
+  }
+
+  provisioner "file" {
+    source      = "${path.root}/../scripts/sudoers-cache-engage"
+    destination = "/tmp/sudoers-cache-engage"
+  }
+
   provisioner "shell" {
     environment_vars = [
       "ECR_REPOSITORY=${var.ecr_repository}",

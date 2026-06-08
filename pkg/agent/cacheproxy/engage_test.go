@@ -1,66 +1,71 @@
 package cacheproxy
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func tempHosts(t *testing.T, content string) {
+// stubHelper replaces runHelper with a recorder for the duration of a test.
+func stubHelper(t *testing.T) *struct {
+	stdin []byte
+	args  []string
+	err   error
+} {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "hosts")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	rec := &struct {
+		stdin []byte
+		args  []string
+		err   error
+	}{}
+	old := runHelper
+	runHelper = func(stdin []byte, args ...string) error {
+		rec.stdin = stdin
+		rec.args = args
+		return rec.err
 	}
-	old := HostsPath
-	HostsPath = path
-	t.Cleanup(func() { HostsPath = old })
+	t.Cleanup(func() { runHelper = old })
+	return rec
 }
 
-func readHosts(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile(HostsPath)
-	if err != nil {
-		t.Fatal(err)
+func TestEngageInvokesHelperWithEngageArgsAndCAOnStdin(t *testing.T) {
+	rec := stubHelper(t)
+	host := "results-receiver.actions.githubusercontent.com"
+	pem := []byte("CA-PEM")
+
+	if err := EngageCacheTrustAndPin(host, pem); err != nil {
+		t.Fatalf("engage: %v", err)
 	}
-	return string(data)
+	if len(rec.args) != 2 || rec.args[0] != "engage" || rec.args[1] != host {
+		t.Errorf("args = %v, want [engage %s]", rec.args, host)
+	}
+	if string(rec.stdin) != "CA-PEM" {
+		t.Errorf("stdin = %q, want the CA PEM", rec.stdin)
+	}
 }
 
-func TestPinResultsHostAppendsOnceAndPreserves(t *testing.T) {
-	tempHosts(t, "127.0.0.1 localhost\n::1 localhost\n")
+func TestDisengageInvokesHelperWithDisengageArgs(t *testing.T) {
+	rec := stubHelper(t)
 	host := "results-receiver.actions.githubusercontent.com"
 
-	if err := PinResultsHost(host); err != nil {
-		t.Fatalf("pin: %v", err)
+	if err := DisengageCache(host); err != nil {
+		t.Fatalf("disengage: %v", err)
 	}
-	if err := PinResultsHost(host); err != nil { // idempotent
-		t.Fatalf("pin again: %v", err)
+	if len(rec.args) != 2 || rec.args[0] != "disengage" || rec.args[1] != host {
+		t.Errorf("args = %v, want [disengage %s]", rec.args, host)
 	}
-	got := readHosts(t)
-	if !strings.Contains(got, "127.0.0.1 localhost") || !strings.Contains(got, "::1 localhost") {
-		t.Error("existing hosts entries not preserved")
-	}
-	if n := strings.Count(got, host); n != 1 {
-		t.Errorf("pin appears %d times, want exactly 1 (idempotent)", n)
+	if len(rec.stdin) != 0 {
+		t.Errorf("disengage should send no stdin, got %q", rec.stdin)
 	}
 }
 
-func TestUnpinResultsHostRemovesOnlyPin(t *testing.T) {
-	host := "results-receiver.actions.githubusercontent.com"
-	tempHosts(t, "127.0.0.1 localhost\n")
-	if err := PinResultsHost(host); err != nil {
-		t.Fatal(err)
-	}
-	if err := UnpinResultsHost(host); err != nil {
-		t.Fatalf("unpin: %v", err)
-	}
-	got := readHosts(t)
-	if strings.Contains(got, host) {
-		t.Error("pin not removed")
-	}
-	if !strings.Contains(got, "127.0.0.1 localhost") {
-		t.Error("unrelated entry was removed")
+func TestEngagePropagatesHelperError(t *testing.T) {
+	rec := stubHelper(t)
+	rec.err = errors.New("boom")
+
+	if err := EngageCacheTrustAndPin("results-receiver.actions.githubusercontent.com", []byte("x")); err == nil {
+		t.Fatal("expected the helper error to propagate (so the caller fails open)")
 	}
 }
 

@@ -53,4 +53,39 @@ UNIT=/etc/systemd/system/runs-fleet-agent.service
 sudo systemd-analyze verify "$UNIT" || fail "$UNIT failed systemd verification"
 echo "  OK: $UNIT"
 
+echo "==> Validating cache-engage helper"
+HELPER=/usr/local/sbin/runs-fleet-cache-engage
+HOST=results-receiver.actions.githubusercontent.com
+ANCHOR=/etc/pki/ca-trust/source/anchors/runs-fleet-cache-ca.crt
+[ -x "$HELPER" ] || fail "$HELPER missing or not executable"
+OWNMODE=$(stat -c '%U:%G %a' "$HELPER")
+[ "$OWNMODE" = "root:root 755" ] || fail "$HELPER wrong owner/mode: $OWNMODE"
+bash -n "$HELPER" || fail "$HELPER has a shell syntax error"
+# The helper must refuse any host other than the single results host it pins.
+# Invoke it directly (not via sudo) to exercise its own validation gate; a bogus
+# host is rejected before any root step is attempted.
+if "$HELPER" engage bogus.example.com </dev/null 2>/dev/null; then
+  fail "$HELPER accepted an unexpected host"
+fi
+echo "  OK: $HELPER"
+
+echo "==> Validating cache-engage sudoers drop-in"
+SUDOERS=/etc/sudoers.d/10-runs-fleet-cache
+[ -f "$SUDOERS" ] || fail "$SUDOERS missing"
+OWNMODE=$(stat -c '%U:%G %a' "$SUDOERS")
+[ "$OWNMODE" = "root:root 440" ] || fail "$SUDOERS wrong owner/mode: $OWNMODE"
+sudo visudo -cf "$SUDOERS" || fail "$SUDOERS failed visudo validation"
+# Exercise the real engage->disengage path end-to-end via passwordless sudo
+# (provisioners run as ec2-user): the pin lands and teardown removes it. The
+# scoped rule's syntax is covered by visudo -cf above; broad AL2023 NOPASSWD
+# sudo is intentionally retained, so this exercises the path without isolating
+# which rule grants it. The CA on stdin drives the best-effort trust step.
+echo "validate-ca" | sudo -n "$HELPER" engage "$HOST" || fail "engage via sudo failed"
+grep -qF "127.0.0.1 $HOST # runs-fleet-cache" /etc/hosts || fail "pin not present after engage"
+sudo -n "$HELPER" disengage "$HOST" || fail "disengage via sudo failed"
+if grep -qF "$HOST" /etc/hosts; then fail "pin not removed after disengage"; fi
+sudo rm -f "$ANCHOR"
+sudo update-ca-trust extract 2>/dev/null || true
+echo "  OK: $SUDOERS"
+
 echo "==> Agent AMI validation passed"
