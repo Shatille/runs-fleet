@@ -19,6 +19,12 @@ echo "==> Replacing *-minimal packages with full variants"
 # full packages we need.
 sudo dnf install -y --allowerasing curl gnupg2
 
+# dl fetches a URL with retries (silent, fail-on-error, follow redirects) so a
+# transient release/CDN hiccup — a 5xx like the 504s we have seen, or a reset —
+# is retried instead of aborting the whole AMI build. All toolchain downloads
+# below go through it.
+dl() { curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors "$@"; }
+
 echo "==> Installing base packages"
 sudo dnf install -y \
   git \
@@ -63,7 +69,7 @@ if [ "$ARCH" = "aarch64" ]; then
   echo "==> Building gold linker from source (required for Go race detector on ARM64)"
   BINUTILS_VERSION="2.43"
   cd /tmp
-  curl -sL "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz" -o binutils.tar.xz
+  dl "https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz" -o binutils.tar.xz
   tar xf binutils.tar.xz
   cd binutils-${BINUTILS_VERSION}
   mkdir build && cd build
@@ -100,9 +106,9 @@ DOCKER_COMPOSE_VERSION="2.24.5"
 COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
 COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
 # Download and verify checksum (filenames must match for sha256sum -c)
-curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o "/tmp/${COMPOSE_BINARY}.sha256" \
+dl "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o "/tmp/${COMPOSE_BINARY}.sha256" \
   || { echo "Failed to download Docker Compose checksum"; exit 1; }
-curl -sfL "${COMPOSE_URL}/${COMPOSE_BINARY}" -o "/tmp/${COMPOSE_BINARY}" \
+dl "${COMPOSE_URL}/${COMPOSE_BINARY}" -o "/tmp/${COMPOSE_BINARY}" \
   || { echo "Failed to download Docker Compose"; exit 1; }
 cd /tmp && sha256sum -c "${COMPOSE_BINARY}.sha256" \
   || { echo "Docker Compose checksum mismatch"; rm -f "/tmp/${COMPOSE_BINARY}" "/tmp/${COMPOSE_BINARY}.sha256"; exit 1; }
@@ -127,9 +133,9 @@ fi
 NODE_DIST="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}"
 # Download and verify checksum
-curl -sfL "${NODE_URL}/SHASUMS256.txt" -o /tmp/node-shasums.txt \
+dl "${NODE_URL}/SHASUMS256.txt" -o /tmp/node-shasums.txt \
   || { echo "Failed to download Node.js checksums"; exit 1; }
-curl -sfL "${NODE_URL}/${NODE_DIST}.tar.xz" -o "/tmp/${NODE_DIST}.tar.xz" \
+dl "${NODE_URL}/${NODE_DIST}.tar.xz" -o "/tmp/${NODE_DIST}.tar.xz" \
   || { echo "Failed to download Node.js"; exit 1; }
 NODE_CHECKSUM=$(grep "${NODE_DIST}.tar.xz" /tmp/node-shasums.txt | cut -d' ' -f1) \
   || { echo "Node.js checksum not found"; exit 1; }
@@ -204,9 +210,9 @@ else
   VAULT_ARCH="arm64"
 fi
 VAULT_ZIP="vault_${VAULT_VERSION}_linux_${VAULT_ARCH}.zip"
-curl -sfL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/${VAULT_ZIP}" \
+dl "https://releases.hashicorp.com/vault/${VAULT_VERSION}/${VAULT_ZIP}" \
   -o "/tmp/${VAULT_ZIP}" || { echo "Failed to download Vault"; exit 1; }
-curl -sfL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" \
+dl "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_SHA256SUMS" \
   -o /tmp/vault_checksums.txt || { echo "Failed to download checksums"; exit 1; }
 CHECKSUM_LINE=$(grep "${VAULT_ZIP}" /tmp/vault_checksums.txt) || { echo "Checksum not found"; exit 1; }
 [[ "$CHECKSUM_LINE" =~ ^[a-f0-9]{64}[[:space:]]+vault_ ]] || { echo "Invalid checksum format"; exit 1; }
@@ -227,11 +233,11 @@ YQ_BINARY="yq_linux_${YQ_ARCH}"
 YQ_URL="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}"
 cleanup_yq_tmp() { rm -f /tmp/yq /tmp/yq_checksums.txt /tmp/yq_hashes_order.txt; }
 trap cleanup_yq_tmp EXIT
-curl -sfL "${YQ_URL}/${YQ_BINARY}" -o /tmp/yq \
+dl "${YQ_URL}/${YQ_BINARY}" -o /tmp/yq \
   || { echo "Failed to download yq"; exit 1; }
-curl -sfL "${YQ_URL}/checksums" -o /tmp/yq_checksums.txt \
+dl "${YQ_URL}/checksums" -o /tmp/yq_checksums.txt \
   || { echo "Failed to download yq checksums"; exit 1; }
-curl -sfL "${YQ_URL}/checksums_hashes_order" -o /tmp/yq_hashes_order.txt \
+dl "${YQ_URL}/checksums_hashes_order" -o /tmp/yq_hashes_order.txt \
   || { echo "Failed to download yq hash order"; exit 1; }
 # yq's `checksums` file is "<filename> <hash1> <hash2> ..." with one column per
 # algorithm; `checksums_hashes_order` lists which algorithm sits at each column
@@ -321,7 +327,7 @@ sudo dnf install -y java-21-amazon-corretto-headless \
 echo "==> Installing sbt"
 SBT_VERSION="1.10.7"
 SBT_SHA256="32c15233c636c233ee25a2c31879049db7021cfef70807c187515c39b96b0fe6"
-curl -fsSL --max-time 300 -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
+dl --max-time 300 -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
   || { echo "sbt download failed"; exit 1; }
 echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c \
   || { echo "sbt checksum verification failed"; rm /tmp/sbt.tgz; exit 1; }
@@ -340,7 +346,7 @@ else
 fi
 sudo mkdir -p /opt/actions-runner
 sudo chown ec2-user:ec2-user /opt/actions-runner
-curl -fsSL -o /tmp/actions-runner.tar.gz \
+dl -o /tmp/actions-runner.tar.gz \
   "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_PLATFORM}-${RUNNER_VERSION}.tar.gz" \
   || { echo "actions-runner download failed"; exit 1; }
 tar xzf /tmp/actions-runner.tar.gz -C /opt/actions-runner \
