@@ -104,7 +104,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	// teardown on a reused warm-pool instance): if the results host already
 	// resolves to loopback, pinning would point the reverse proxy at our own
 	// listener and loop all passthrough traffic. Refuse → the agent fails open.
-	ip := net.ParseIP(addrs[0])
+	ip := net.ParseIP(addrs[0]) // addrs is non-empty: checked above
 	if ip == nil || ip.IsLoopback() {
 		return fmt.Errorf("results host %q resolved to %q (loopback/invalid); refusing to pin", p.cfg.ResultsHost, addrs[0])
 	}
