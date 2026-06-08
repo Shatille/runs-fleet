@@ -1,3 +1,9 @@
+// Package blobshim translates the Azure Block Blob REST surface that the GitHub
+// Actions v2 cache client speaks (stage block, commit block list, ranged get)
+// into plain HTTP against an orchestrator-presigned S3 URL. It runs on the
+// runner host; the v2 CacheService hands the client a /blob/<token> URL whose
+// token is the (base64url-encoded) presigned S3 URL the orchestrator minted.
+// The runner holds no S3 credentials — the presigned URL is the only capability.
 package blobshim
 
 import (
@@ -5,94 +11,95 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"time"
 )
 
 // PathPrefix is the URL path under which the shim serves blob operations.
-// The v2 CacheService issues URLs of the form <base><PathPrefix><token>.
 const PathPrefix = "/blob/"
 
 const (
-	msgForbidden = "forbidden"
-	msgNotFound  = "not found"
+	msgBadTarget = "bad blob target"
+	msgUpstream  = "upstream error"
 	msgStaging   = "staging error"
 )
 
-// Handler serves the Azure Block Blob REST subset the v2 cache client uses and
-// translates it to ObjectStore operations. Staged blocks are buffered under a
-// per-key directory and reassembled, in block-list order, on commit.
+// Handler serves the Azure Block Blob subset the v2 cache client uses and
+// forwards the bytes to the presigned S3 URL encoded in the request path.
+// Staged blocks are buffered under a per-blob directory and reassembled, in
+// block-list order, on commit. The handler is stateless across cache entries.
 type Handler struct {
-	store   ObjectStore
-	signer  *Signer
+	client  *http.Client
 	staging string
-	now     func() time.Time
 }
 
-// NewHandler returns a shim handler backed by store, validating capability
-// tokens with signer and buffering staged blocks under stagingDir.
-func NewHandler(store ObjectStore, signer *Signer, stagingDir string) *Handler {
-	return &Handler{store: store, signer: signer, staging: stagingDir, now: time.Now}
+// NewHandler returns a shim handler that forwards via client and buffers staged
+// blocks under stagingDir.
+func NewHandler(client *http.Client, stagingDir string) *Handler {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &Handler{client: client, staging: stagingDir}
+}
+
+// EncodeTarget encodes a presigned URL into a path-safe blob token.
+func EncodeTarget(presignedURL string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(presignedURL))
+}
+
+func decodeTarget(token string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return "", fmt.Errorf("decode blob token: %w", err)
+	}
+	return string(raw), nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, PathPrefix) {
-		http.Error(w, msgNotFound, http.StatusNotFound)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	token := strings.TrimPrefix(r.URL.Path, PathPrefix)
-	op, s3Key, err := h.signer.Verify(token, h.now())
+	target, err := decodeTarget(token)
 	if err != nil {
-		http.Error(w, msgForbidden, http.StatusForbidden)
+		http.Error(w, msgBadTarget, http.StatusBadRequest)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodPut:
-		if op != OpWrite {
-			http.Error(w, msgForbidden, http.StatusForbidden)
-			return
-		}
 		switch r.URL.Query().Get("comp") {
 		case "block":
-			h.stageBlock(w, r, s3Key)
+			h.stageBlock(w, r, token)
 		case "blocklist":
-			h.commitBlockList(w, r, s3Key)
+			h.commitBlockList(w, r, token, target)
 		case "":
-			h.putBlob(w, r, s3Key)
+			h.putBlob(w, r, target)
 		default:
 			http.Error(w, "unsupported comp", http.StatusBadRequest)
 		}
 	case http.MethodGet:
-		if op != OpRead {
-			http.Error(w, msgForbidden, http.StatusForbidden)
-			return
-		}
-		h.getBlob(w, r, s3Key)
+		h.getBlob(w, r, target)
 	case http.MethodHead:
-		if op != OpRead {
-			http.Error(w, msgForbidden, http.StatusForbidden)
-			return
-		}
-		h.headBlob(w, r, s3Key)
+		h.headBlob(w, r, target)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, s3Key string) {
+func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, token string) {
 	blockID := r.URL.Query().Get("blockid")
 	if blockID == "" {
 		http.Error(w, "missing blockid", http.StatusBadRequest)
 		return
 	}
-	dir := h.blockDir(s3Key)
+	dir := h.blockDir(token)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		http.Error(w, msgStaging, http.StatusInternalServerError)
 		return
@@ -110,100 +117,174 @@ func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, s3Key strin
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, s3Key string) {
+func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token, target string) {
 	ids, err := parseBlockList(r.Body)
 	if err != nil {
 		http.Error(w, "invalid block list", http.StatusBadRequest)
 		return
 	}
-	dir := h.blockDir(s3Key)
+	dir := h.blockDir(token)
 	files := make([]*os.File, 0, len(ids))
 	readers := make([]io.Reader, 0, len(ids))
+	var total int64
 	cleanup := func() {
 		for _, f := range files {
 			_ = f.Close()
 		}
 	}
 	for _, id := range ids {
-		f, err := os.Open(filepath.Join(dir, encodeBlockID(id)))
-		if err != nil {
+		f, openErr := os.Open(filepath.Join(dir, encodeBlockID(id)))
+		if openErr != nil {
 			cleanup()
 			http.Error(w, "unknown block", http.StatusBadRequest)
 			return
 		}
+		info, statErr := f.Stat()
+		if statErr != nil {
+			_ = f.Close()
+			cleanup()
+			http.Error(w, msgStaging, http.StatusInternalServerError)
+			return
+		}
+		total += info.Size()
 		files = append(files, f)
 		readers = append(readers, f)
 	}
 
-	if err := h.store.Put(r.Context(), s3Key, io.MultiReader(readers...)); err != nil {
-		cleanup()
-		http.Error(w, "upload error", http.StatusInternalServerError)
-		return
-	}
+	status, err := h.forwardPut(r, target, io.MultiReader(readers...), total)
 	cleanup()
-	_ = os.RemoveAll(dir)
-	w.WriteHeader(http.StatusCreated)
-}
-
-func (h *Handler) putBlob(w http.ResponseWriter, r *http.Request, s3Key string) {
-	if err := h.store.Put(r.Context(), s3Key, r.Body); err != nil {
-		http.Error(w, "upload error", http.StatusInternalServerError)
+	_ = os.RemoveAll(dir) // always drop staged blocks, success or failure
+	if err != nil || status/100 != 2 {
+		http.Error(w, msgUpstream, http.StatusBadGateway)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request, s3Key string) {
-	res, err := h.store.Get(r.Context(), s3Key, r.Header.Get("Range"))
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			http.Error(w, msgNotFound, http.StatusNotFound)
-			return
-		}
-		http.Error(w, "read error", http.StatusInternalServerError)
+func (h *Handler) putBlob(w http.ResponseWriter, r *http.Request, target string) {
+	// The Azure block-blob client always sets Content-Length on a single-shot
+	// Put Blob, so r.ContentLength is known here. A chunked (-1) request would
+	// be forwarded length-unknown and S3 would reject the presigned PUT (411),
+	// surfacing as the 502 below.
+	status, err := h.forwardPut(r, target, r.Body, r.ContentLength)
+	if err != nil || status/100 != 2 {
+		http.Error(w, msgUpstream, http.StatusBadGateway)
 		return
 	}
-	defer func() { _ = res.Body.Close() }()
-	setBlobHeaders(w, res.Info)
-	if res.Partial {
-		w.Header().Set("Content-Range", res.ContentRange)
-		w.WriteHeader(http.StatusPartialContent)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
-	_, _ = io.Copy(w, res.Body)
+	w.WriteHeader(http.StatusCreated)
 }
 
-func (h *Handler) headBlob(w http.ResponseWriter, r *http.Request, s3Key string) {
-	info, err := h.store.Head(r.Context(), s3Key)
+// forwardPut PUTs body to the presigned target. contentLength must be set (-1
+// is rejected by S3 presigned PUTs), so callers pass the known size.
+func (h *Handler) forwardPut(r *http.Request, target string, body io.Reader, contentLength int64) (int, error) {
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPut, target, body)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			http.Error(w, msgNotFound, http.StatusNotFound)
-			return
-		}
-		http.Error(w, "read error", http.StatusInternalServerError)
+		return 0, err
+	}
+	req.ContentLength = contentLength
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
+func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request, target string) {
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		http.Error(w, msgUpstream, http.StatusBadGateway)
 		return
 	}
-	setBlobHeaders(w, *info)
+	if rng := r.Header.Get("Range"); rng != "" {
+		req.Header.Set("Range", rng)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	copyHeader(w, resp, "Content-Length", "Content-Range", "ETag", "Content-Type", "Accept-Ranges", "Last-Modified")
+	w.Header().Set("x-ms-blob-type", "BlockBlob")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+// headBlob answers an Azure getProperties by issuing a 0-0 ranged GET to the
+// presigned URL (S3 presigned GET URLs are signed for GET, not HEAD) and
+// reporting the total size from the Content-Range.
+func (h *Handler) headBlob(w http.ResponseWriter, r *http.Request, target string) {
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	// S3 answers a 0-0 ranged GET with 206 + Content-Range on a non-empty
+	// object, and 416 on a zero-byte object (a valid, if rare, cache). Treat
+	// 416 as size 0; any other non-2xx is a genuine miss.
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable && resp.StatusCode/100 != 2 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	size := int64(0)
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		size = headBlobSize(resp)
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	copyHeader(w, resp, "ETag", "Content-Type", "Last-Modified")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("x-ms-blob-type", "BlockBlob")
 	w.WriteHeader(http.StatusOK)
 }
 
-func setBlobHeaders(w http.ResponseWriter, info ObjectInfo) {
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
-	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("x-ms-blob-type", "BlockBlob")
-	if info.ETag != "" {
-		w.Header().Set("ETag", info.ETag)
+func copyHeader(w http.ResponseWriter, resp *http.Response, keys ...string) {
+	for _, k := range keys {
+		if v := resp.Header.Get(k); v != "" {
+			w.Header().Set(k, v)
+		}
 	}
-	ct := info.ContentType
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
 }
 
-func (h *Handler) blockDir(s3Key string) string {
-	sum := sha256.Sum256([]byte(s3Key))
+// headBlobSize derives the object's total size from a 0-0 ranged GET response:
+// the Content-Range total when present (a 206), else the Content-Length (a 200
+// where the server ignored the range), defaulting to 0.
+func headBlobSize(resp *http.Response) int64 {
+	if total, ok := totalFromContentRange(resp.Header.Get("Content-Range")); ok {
+		return total
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// totalFromContentRange parses the total size out of "bytes 0-0/12345".
+func totalFromContentRange(cr string) (int64, bool) {
+	_, total, ok := strings.Cut(cr, "/")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(total), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func (h *Handler) blockDir(token string) string {
+	sum := sha256.Sum256([]byte(token))
 	return filepath.Join(h.staging, hex.EncodeToString(sum[:]))
 }
 
@@ -214,8 +295,8 @@ func encodeBlockID(id string) string {
 }
 
 // blockList mirrors the Azure Put Block List XML body. Block IDs may appear
-// under Committed, Uncommitted, or Latest; the @azure/storage-blob client emits
-// Latest for freshly staged blocks. Order across elements is preserved.
+// under Committed, Uncommitted, or Latest; @azure/storage-blob emits Latest for
+// freshly staged blocks. Order across elements is preserved.
 type blockList struct {
 	XMLName xml.Name `xml:"BlockList"`
 	Blocks  []block  `xml:",any"`
@@ -232,8 +313,7 @@ func parseBlockList(r io.Reader) ([]string, error) {
 	}
 	ids := make([]string, 0, len(bl.Blocks))
 	for _, b := range bl.Blocks {
-		id := strings.TrimSpace(b.ID)
-		if id != "" {
+		if id := strings.TrimSpace(b.ID); id != "" {
 			ids = append(ids, id)
 		}
 	}
