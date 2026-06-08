@@ -32,8 +32,8 @@ type JobResult struct {
 
 // Executor handles running the GitHub Actions runner process.
 type Executor struct {
-	logger          Logger
-	safetyMonitor   *SafetyMonitor
+	logger           Logger
+	safetyMonitor    *SafetyMonitor
 	cloudWatchLogger *CloudWatchLogger
 }
 
