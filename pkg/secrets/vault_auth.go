@@ -39,9 +39,13 @@ func authenticate(ctx context.Context, client *api.Client, cfg VaultConfig) erro
 const awsSTSRegionalEndpointsEnv = "AWS_STS_REGIONAL_ENDPOINTS"
 
 func useRegionalSTSEndpoint() {
-	if os.Getenv(awsSTSRegionalEndpointsEnv) == "" {
-		_ = os.Setenv(awsSTSRegionalEndpointsEnv, "regional")
-	}
+	// Vault's api/auth/aws helper signs the GetCallerIdentity request for the
+	// configured region but resolves the legacy global STS host unless this is
+	// "regional", so STS rejects region-scoped credentials ("Credential should
+	// be scoped to a valid region"). "regional" is a hard requirement here, not a
+	// preference — force it, overriding any inherited value (e.g. "legacy"), which
+	// would otherwise silently reintroduce the failure.
+	_ = os.Setenv(awsSTSRegionalEndpointsEnv, "regional")
 }
 
 // authenticateAWS authenticates using AWS IAM credentials.
