@@ -9,26 +9,43 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
 // fakeS3 is an in-memory stand-in for the presigned S3 endpoint: it stores PUT
 // bodies and serves GETs with Range support, like S3 honoring a presigned URL.
+// httptest serves requests on background goroutines, so shared state is
+// synchronized: objs under mu, putStatus atomically.
 type fakeS3 struct {
 	mu        sync.Mutex
 	objs      map[string][]byte
-	putStatus int // when non-zero, PUTs return this status instead of storing
+	putStatus atomic.Int32 // when non-zero, PUTs return this status instead of storing
 }
 
 func newFakeS3() *fakeS3 { return &fakeS3{objs: map[string][]byte{}} }
+
+// seed stores an object directly (test setup), holding the lock the handler uses.
+func (f *fakeS3) seed(key string, data []byte) {
+	f.mu.Lock()
+	f.objs[key] = data
+	f.mu.Unlock()
+}
+
+// get reads a stored object under the lock (post-request assertions).
+func (f *fakeS3) get(key string) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.objs[key]
+}
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path
 	switch r.Method {
 	case http.MethodPut:
-		if f.putStatus != 0 {
+		if status := f.putStatus.Load(); status != 0 {
 			_, _ = io.Copy(io.Discard, r.Body)
-			w.WriteHeader(f.putStatus)
+			w.WriteHeader(int(status))
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -87,7 +104,12 @@ func setup(t *testing.T) (*Handler, *fakeS3, *httptest.Server) {
 	s3 := newFakeS3()
 	upstream := httptest.NewServer(s3)
 	t.Cleanup(upstream.Close)
-	return NewHandler(upstream.Client(), t.TempDir()), s3, upstream
+	h := NewHandler(upstream.Client(), t.TempDir())
+	// The fake S3 is on loopback http, which the production target guard
+	// rejects; allow it here so these tests exercise forwarding. The guard
+	// itself is covered by TestAllowedTarget / TestServeRejectsDisallowedTarget.
+	h.allowTarget = func(string) bool { return true }
+	return h, s3, upstream
 }
 
 // blobURL builds the shim path for a target object on the fake S3.
@@ -115,7 +137,7 @@ func TestPutBlobForwardsToPresignedURL(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rec.Code)
 	}
-	if got := string(s3.objs["/obj"]); got != "payload" {
+	if got := string(s3.get("/obj")); got != "payload" {
 		t.Errorf("forwarded body = %q, want payload", got)
 	}
 }
@@ -142,7 +164,7 @@ func TestStageAndCommitReassemblesInOrder(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("commit status = %d, want 201", rec.Code)
 	}
-	if got := string(s3.objs["/obj"]); got != "hello world" {
+	if got := string(s3.get("/obj")); got != "hello world" {
 		t.Errorf("reassembled = %q, want %q", got, "hello world")
 	}
 }
@@ -158,7 +180,7 @@ func TestCommitHonorsBlockListOrder(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPut, target+"?comp=blocklist", strings.NewReader(blockListXML("two", "one")))
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if got := string(s3.objs["/obj"]); got != "BBBAAA" {
+	if got := string(s3.get("/obj")); got != "BBBAAA" {
 		t.Errorf("reassembled = %q, want BBBAAA", got)
 	}
 }
@@ -179,7 +201,7 @@ func TestGetFullAndRange(t *testing.T) {
 	t.Parallel()
 
 	h, s3, up := setup(t)
-	s3.objs["/obj"] = []byte("0123456789")
+	s3.seed("/obj", []byte("0123456789"))
 	target := blobURL(up, "obj")
 
 	full := httptest.NewRecorder()
@@ -217,7 +239,7 @@ func TestFailedCommitCleansStaging(t *testing.T) {
 	stage := httptest.NewRequest(http.MethodPut, blobPath+"?comp=block&blockid=AAAA", strings.NewReader("hello"))
 	h.ServeHTTP(httptest.NewRecorder(), stage)
 
-	s3.putStatus = http.StatusInternalServerError // upstream PUT fails
+	s3.putStatus.Store(http.StatusInternalServerError) // upstream PUT fails
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, blobPath+"?comp=blocklist", strings.NewReader(blockListXML("AAAA"))))
 	if rec.Code != http.StatusBadGateway {
@@ -232,7 +254,7 @@ func TestHeadZeroByteObject(t *testing.T) {
 	t.Parallel()
 
 	h, s3, up := setup(t)
-	s3.objs["/empty"] = []byte{} // zero-byte cache; S3 answers 0-0 range with 416
+	s3.seed("/empty", []byte{}) // zero-byte cache; S3 answers 0-0 range with 416
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, blobURL(up, "empty"), nil))
 	if rec.Code != http.StatusOK {
@@ -247,7 +269,7 @@ func TestHeadSynthesizesSizeFromRange(t *testing.T) {
 	t.Parallel()
 
 	h, s3, up := setup(t)
-	s3.objs["/obj"] = []byte("0123456789")
+	s3.seed("/obj", []byte("0123456789"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, blobURL(up, "obj"), nil))
 	if rec.Code != http.StatusOK {
@@ -267,6 +289,43 @@ func TestBadTokenIsBadRequest(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestAllowedTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		target string
+		want   bool
+	}{
+		{"https://bucket.s3.ap-northeast-1.amazonaws.com/key?sig=x", true},
+		{"http://bucket.s3.amazonaws.com/key", false},        // not https
+		{"https://169.254.169.254/latest/meta-data/", false}, // IMDS (link-local)
+		{"https://127.0.0.1/x", false},                       // loopback
+		{"https://10.0.0.5/x", false},                        // private
+		{"https://[::1]/x", false},                           // loopback v6
+		{"ftp://example.com/x", false},                       // wrong scheme
+		{"://nonsense", false},                               // unparseable/no host
+	}
+	for _, tc := range tests {
+		if got := allowedTarget(tc.target); got != tc.want {
+			t.Errorf("allowedTarget(%q) = %v, want %v", tc.target, got, tc.want)
+		}
+	}
+}
+
+func TestServeRejectsDisallowedTarget(t *testing.T) {
+	t.Parallel()
+
+	// A handler with the production guard must 400 a token pointing at the
+	// instance metadata endpoint, even though the path/method are otherwise valid.
+	h := NewHandler(http.DefaultClient, t.TempDir())
+	req := httptest.NewRequest(http.MethodGet, PathPrefix+EncodeTarget("https://169.254.169.254/latest/meta-data/"), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for SSRF-y target", rec.Code)
 	}
 }
 

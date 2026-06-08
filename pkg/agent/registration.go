@@ -156,15 +156,19 @@ func (r *Registrar) SetRunnerEnvironment(runnerPath string, cacheURL string, cac
 // SetRunnerEnvironment). The cache interceptor uses it to add
 // NODE_EXTRA_CA_CERTS once it has engaged, so the runner's Node-based actions
 // trust the per-instance CA.
-func (r *Registrar) AppendRunnerEnv(runnerPath, key, value string) error {
+func (r *Registrar) AppendRunnerEnv(runnerPath, key, value string) (err error) {
 	envFile := filepath.Join(runnerPath, ".env")
-	f, err := os.OpenFile(envFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open .env file: %w", err)
+	f, openErr := os.OpenFile(envFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if openErr != nil {
+		return fmt.Errorf("failed to open .env file: %w", openErr)
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := fmt.Fprintf(f, "%s=%s\n", key, value); err != nil {
-		return fmt.Errorf("failed to append to .env file: %w", err)
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close .env file: %w", cerr)
+		}
+	}()
+	if _, werr := fmt.Fprintf(f, "%s=%s\n", key, value); werr != nil {
+		return fmt.Errorf("failed to append to .env file: %w", werr)
 	}
 	return nil
 }

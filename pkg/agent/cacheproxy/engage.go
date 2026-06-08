@@ -21,7 +21,7 @@ const hostsTag = "# runs-fleet-cache"
 // client reaches the local interceptor. Idempotent. The agent calls this LAST,
 // only after the CA is trusted, so traffic is never redirected to a listener
 // the client doesn't trust.
-func PinResultsHost(host string) error {
+func PinResultsHost(host string) (err error) {
 	lines, err := readLines(HostsPath)
 	if err != nil {
 		return err
@@ -31,13 +31,17 @@ func PinResultsHost(host string) error {
 			return nil
 		}
 	}
-	f, err := os.OpenFile(HostsPath, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open hosts file: %w", err)
+	f, openErr := os.OpenFile(HostsPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if openErr != nil {
+		return fmt.Errorf("open hosts file: %w", openErr)
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := fmt.Fprintf(f, "127.0.0.1 %s %s\n", host, hostsTag); err != nil {
-		return fmt.Errorf("write hosts pin: %w", err)
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close hosts file: %w", cerr)
+		}
+	}()
+	if _, werr := fmt.Fprintf(f, "127.0.0.1 %s %s\n", host, hostsTag); werr != nil {
+		return fmt.Errorf("write hosts pin: %w", werr)
 	}
 	return nil
 }

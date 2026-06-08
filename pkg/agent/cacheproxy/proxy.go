@@ -10,6 +10,7 @@ package cacheproxy
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -130,8 +131,15 @@ func (p *Proxy) Start(ctx context.Context) error {
 		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: 15 * time.Second,
 	}
-	go func() { _ = p.server.ServeTLS(ln, "", "") }()
 	p.healthy.Store(true)
+	go func() {
+		// If the listener fails after startup, disengage so the interceptor
+		// stops claiming traffic it can't serve (fail-open).
+		if err := p.server.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "cacheproxy: TLS server stopped: %v\n", err)
+			p.healthy.Store(false)
+		}
+	}()
 	return nil
 }
 

@@ -13,7 +13,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,8 +36,9 @@ const (
 // Staged blocks are buffered under a per-blob directory and reassembled, in
 // block-list order, on commit. The handler is stateless across cache entries.
 type Handler struct {
-	client  *http.Client
-	staging string
+	client      *http.Client
+	staging     string
+	allowTarget func(string) bool
 }
 
 // NewHandler returns a shim handler that forwards via client and buffers staged
@@ -44,7 +47,7 @@ func NewHandler(client *http.Client, stagingDir string) *Handler {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Handler{client: client, staging: stagingDir}
+	return &Handler{client: client, staging: stagingDir, allowTarget: allowedTarget}
 }
 
 // EncodeTarget encodes a presigned URL into a path-safe blob token.
@@ -60,6 +63,24 @@ func decodeTarget(token string) (string, error) {
 	return string(raw), nil
 }
 
+// allowedTarget guards the forward target, which is decoded from the
+// client-controllable blob token: it must be an https URL to a public host.
+// This stops the shim from being used as an SSRF relay to loopback/link-local
+// (e.g. the instance metadata endpoint) or private addresses. The orchestrator
+// only ever mints https S3 URLs whose host is a public name.
+func allowedTarget(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return false
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, PathPrefix) {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -67,7 +88,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimPrefix(r.URL.Path, PathPrefix)
 	target, err := decodeTarget(token)
-	if err != nil {
+	if err != nil || !h.allowTarget(target) {
 		http.Error(w, msgBadTarget, http.StatusBadRequest)
 		return
 	}
