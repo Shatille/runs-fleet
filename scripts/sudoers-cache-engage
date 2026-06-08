@@ -1,0 +1,7 @@
+# Scoped sudoers drop-in for the transparent cache interceptor. Lets the
+# (ec2-user) agent run ONLY the root-owned engage helper without a password, so
+# engagement does not depend on the broad AL2023 NOPASSWD default (which CI jobs
+# still use). The exact argument vectors are pinned here (defence-in-depth on top
+# of the helper's own validation), so the grant permits nothing else. Installed
+# root:root 0440.
+ec2-user ALL=(root) NOPASSWD: /usr/local/sbin/runs-fleet-cache-engage engage results-receiver.actions.githubusercontent.com, /usr/local/sbin/runs-fleet-cache-engage disengage results-receiver.actions.githubusercontent.com

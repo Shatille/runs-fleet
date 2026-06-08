@@ -305,31 +305,33 @@ func engageCache(ctx context.Context, ac *agentConfig, registrar *agent.Registra
 		_ = cp.Stop(context.Background())
 		return nil
 	}
-	if err := cacheproxy.PinResultsHost(cacheproxy.DefaultResultsHost); err != nil {
-		logger.Printf("cache interceptor pin failed (fail open): %v", err)
+	if err := cacheproxy.EngageCacheTrustAndPin(cacheproxy.DefaultResultsHost, cp.CACertPEM()); err != nil {
+		logger.Printf("cache interceptor engage failed (fail open): %v", err)
 		_ = cp.Stop(context.Background())
 		return nil
 	}
 	logger.Printf("cache interceptor engaged: %s -> %s", cacheproxy.DefaultResultsHost, cp.Addr())
 	return func() {
-		_ = cacheproxy.UnpinResultsHost(cacheproxy.DefaultResultsHost)
+		if err := cacheproxy.DisengageCache(cacheproxy.DefaultResultsHost); err != nil {
+			logger.Printf("cache disengage failed: %v", err)
+		}
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = cp.Stop(stopCtx)
 	}
 }
 
-// provisionCacheTrust makes the per-instance CA trusted before any pin: it
-// writes the CA file, points NODE_EXTRA_CA_CERTS at it (Node-based actions),
-// and installs it into the system trust store (everything else).
+// provisionCacheTrust makes the per-instance CA trusted for the runner's
+// Node-based cache/artifact clients before any pin: it writes the CA file and
+// points NODE_EXTRA_CA_CERTS at it. Both writes land under the runner dir, so
+// this needs no privilege. The system trust store (for any non-Node client) is
+// handled best-effort by the engage helper, since NODE_EXTRA_CA_CERTS already
+// covers the v2 cache client.
 func provisionCacheTrust(cp *cacheproxy.Proxy, registrar *agent.Registrar, runnerPath, caPath string) error {
 	if err := cacheproxy.WriteCACert(caPath, cp.CACertPEM()); err != nil {
 		return err
 	}
-	if err := registrar.AppendRunnerEnv(runnerPath, "NODE_EXTRA_CA_CERTS", caPath); err != nil {
-		return err
-	}
-	return cacheproxy.InstallSystemTrust(cp.CACertPEM())
+	return registrar.AppendRunnerEnv(runnerPath, "NODE_EXTRA_CA_CERTS", caPath)
 }
 
 // terminateWithError terminates the instance after an error.
