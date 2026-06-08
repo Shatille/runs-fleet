@@ -71,10 +71,21 @@ jobs:
               - 'packer/runner-base-*.pkr.hcl'
               - 'packer/provision-base.sh'
               - 'packer/provision-base-hook.sh'
+              # The base build also runs the Trivy CVE gate, so its provisioner
+              # and config must rebuild base too.
+              - 'packer/provision-trivy-scan.sh'
+              - '.trivy/**'
               - '.github/workflows/build-amis.yml'
             runner:
               - 'packer/runs-fleet-runner-*.pkr.hcl'
               - 'packer/provision-runs-fleet.sh'
+              # Provisioners the runner build runs besides provision-runs-fleet.sh.
+              # Without these, a push touching only one of them fires the workflow
+              # (via the broad packer/** trigger) but matches no rebuild filter, so
+              # every build job skips — a silent no-op.
+              - 'packer/provision-validate-agent.sh'
+              - 'packer/provision-trivy-scan.sh'
+              - '.trivy/**'
               - 'scripts/**'
               - '.github/workflows/build-amis.yml'
             image:
