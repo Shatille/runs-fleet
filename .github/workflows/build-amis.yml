@@ -80,7 +80,13 @@ jobs:
             image:
               - 'docker/runner/**'
               - 'cmd/agent/**'
-              - 'pkg/agent/**'
+              # Mirror build-runner.yml's trigger set: any package the agent can
+              # be built from. A push touching these also rebuilds the image, so
+              # the runner-AMI job must defer to the cascade rather than bake the
+              # about-to-be-replaced :latest.
+              - 'pkg/**'
+              - 'go.mod'
+              - 'go.sum'
               - '.trivy/**'
               - '.github/workflows/build-runner.yml'
 
@@ -259,6 +265,10 @@ jobs:
             ${{ matrix.packer_file }} | tee packer-output.txt
 
           AMI_ID=$(grep 'artifact,0,id' packer-output.txt | cut -d: -f2)
+          if [ -z "$AMI_ID" ]; then
+            echo "ERROR: Packer build did not produce an AMI" >&2
+            exit 1
+          fi
           echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
           echo "Built AMI: $AMI_ID"
 

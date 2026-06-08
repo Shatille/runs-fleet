@@ -9,7 +9,13 @@ on:
     paths:
       - "docker/runner/**"
       - "cmd/agent/**"
-      - "pkg/agent/**"
+      # The agent binary is compiled into this image, so any package it can
+      # depend on must rebuild it (a fix in e.g. pkg/secrets must reach :latest,
+      # else a stale agent is baked into the next AMI). Broad on purpose —
+      # over-rebuilding is safe; hand-maintaining the agent's import list is not.
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
       - ".trivy/**"
       - ".github/workflows/build-runner.yml"
   workflow_dispatch:
@@ -88,7 +94,9 @@ jobs:
           CHANGED=$(git diff --name-only "$PREV_TAG" "${{ github.ref_name }}" -- \
             'docker/runner/**' \
             'cmd/agent/**' \
-            'pkg/agent/**' \
+            'pkg/**' \
+            'go.mod' \
+            'go.sum' \
             | head -1)
 
           if [[ -n "$CHANGED" ]]; then
@@ -132,10 +140,34 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
+  # Gate the image publish on the agent's own tests. The agent binary baked into
+  # this image is what runs on every EC2 runner; a regression in its init/auth
+  # path (e.g. the Vault AWS-IAM regional-STS signing) must fail here so :latest
+  # is never published. build-amis cascades only on a *successful* image build,
+  # so a failure here means no new AMI can extract the broken agent (fail-closed).
+  test:
+    name: Test Agent
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The agent binary's complete first-party dependency set (go list -deps
+      # ./cmd/agent): none import pkg/admin, so this needs no admin-UI embed,
+      # unlike the full `make test`. Includes the regional-STS signing test.
+      - name: Test agent packages
+        run: go test ./cmd/agent/... ./pkg/agent/... ./pkg/secrets/... ./internal/validation/...
+
   # Build on native runners (no QEMU)
   build:
     name: Build ${{ matrix.arch }}
-    needs: prepare
+    needs: [prepare, test]
     runs-on: ${{ matrix.runner }}
     env:
       # Read from secrets so deployments that treat the repository path as
