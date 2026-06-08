@@ -3,11 +3,9 @@ package cache
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
 	"github.com/Shavakan/runs-fleet/pkg/config"
@@ -18,53 +16,35 @@ import (
 // over ACTIONS_RESULTS_URL; the on-host interceptor routes it here.
 const cacheServiceV2Prefix = "/twirp/github.actions.results.api.v1.CacheService/"
 
-// blobURLTTL bounds how long an issued blob capability URL stays valid. Cache
-// archives can be large and a save/restore step can run for many minutes, so
-// the window is generous; the instance is ephemeral and single-tenant anyway.
-const blobURLTTL = 6 * time.Hour
-
 const contentTypeJSON = "application/json"
 
-// blobURLBuilder mints signed, expiring blob-shim URLs for cache archives.
-type blobURLBuilder struct {
-	baseURL string
-	signer  *blobshim.Signer
-	ttl     time.Duration
-	now     func() time.Time
+// Presigner obtains orchestrator-minted presigned S3 URLs. The runner holds no
+// S3 credentials — all presigning (and cache scoping, via the orchestrator's
+// HMAC-token auth) happens on the orchestrator, which is the only entity with
+// bucket access. This preserves the v1 isolation property.
+type Presigner interface {
+	// PresignUpload returns a presigned PUT URL for the given cache key+version.
+	PresignUpload(ctx context.Context, key, version string) (url string, err error)
+	// PresignDownload looks up the best match for keys (primary + restore keys)
+	// at version and returns a presigned GET URL plus the matched key. found is
+	// false on a cache miss.
+	PresignDownload(ctx context.Context, keys []string, version string) (url, matchedKey string, found bool, err error)
 }
 
-func (b *blobURLBuilder) build(op blobshim.Operation, s3Key string) string {
-	return b.baseURL + blobshim.PathPrefix + b.signer.Sign(op, s3Key, b.now().Add(b.ttl))
-}
-
-// ServiceV2 implements the GitHub Actions v2 cache Twirp service backed by
-// the S3 Server. CreateCacheEntry/GetCacheEntryDownloadURL hand the client URLs
-// that point at the on-host blob shim; FinalizeCacheEntryUpload confirms the
-// archive landed in S3.
+// ServiceV2 answers the GitHub Actions v2 cache Twirp service on the runner. It
+// turns CreateCacheEntry/GetCacheEntryDownloadURL into orchestrator presign
+// calls and hands the client a local blob-shim URL that embeds the presigned S3
+// URL; the shim then translates Azure block-blob bytes onto it.
 type ServiceV2 struct {
-	server  *Server
-	blobs   *blobURLBuilder
-	metrics Metrics
+	presigner Presigner
+	blobBase  string
+	metrics   Metrics
 }
 
-// NewServiceV2 returns a v2 cache service backed by server, scoped to the given
-// org/repo. A non-empty scope is mandatory: the S3 bucket is shared fleet-wide,
-// so an unscoped service would let every repo read and overwrite every other
-// repo's cache. Blob URLs are issued under blobBaseURL and signed by signer;
-// metrics may be nil.
-func NewServiceV2(server *Server, scope, blobBaseURL string, signer *blobshim.Signer, metrics Metrics) (*ServiceV2, error) {
-	if scope == "" {
-		return nil, fmt.Errorf("cache v2 service requires a non-empty scope")
-	}
-	scoped := server.WithScope(scope)
-	if scoped.defaultScope != scope {
-		return nil, fmt.Errorf("invalid cache scope %q", scope)
-	}
-	return &ServiceV2{
-		server:  scoped,
-		blobs:   &blobURLBuilder{baseURL: blobBaseURL, signer: signer, ttl: blobURLTTL, now: time.Now},
-		metrics: metrics,
-	}, nil
+// NewServiceV2 returns a v2 cache service that presigns via presigner and issues
+// blob URLs under blobBaseURL (the on-host shim's base). metrics may be nil.
+func NewServiceV2(presigner Presigner, blobBaseURL string, metrics Metrics) *ServiceV2 {
+	return &ServiceV2{presigner: presigner, blobBase: blobBaseURL, metrics: metrics}
 }
 
 // RegisterRoutes mounts the three v2 cache RPCs on mux.
@@ -72,6 +52,10 @@ func (c *ServiceV2) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(cacheServiceV2Prefix+"CreateCacheEntry", c.handleCreateCacheEntry)
 	mux.HandleFunc(cacheServiceV2Prefix+"GetCacheEntryDownloadURL", c.handleGetDownloadURL)
 	mux.HandleFunc(cacheServiceV2Prefix+"FinalizeCacheEntryUpload", c.handleFinalize)
+}
+
+func (c *ServiceV2) blobURL(presignedURL string) string {
+	return c.blobBase + blobshim.PathPrefix + blobshim.EncodeTarget(presignedURL)
 }
 
 type createCacheEntryRequest struct {
@@ -117,14 +101,19 @@ func (c *ServiceV2) handleCreateCacheEntry(w http.ResponseWriter, r *http.Reques
 		writeTwirpError(w, http.StatusBadRequest, "malformed", "invalid request body")
 		return
 	}
-	s3Key, err := c.server.CreateCacheEntry(r.Context(), req.Key, req.Version)
+	if req.Key == "" || req.Version == "" {
+		writeTwirpError(w, http.StatusBadRequest, "invalid_argument", "key and version are required")
+		return
+	}
+	url, err := c.presigner.PresignUpload(r.Context(), req.Key, req.Version)
 	if err != nil {
-		writeTwirpError(w, http.StatusBadRequest, "invalid_argument", err.Error())
+		cacheLog.Error(r.Context(), "v2 presign upload failed", slog.String("error", err.Error()))
+		writeTwirpError(w, http.StatusBadGateway, "unavailable", "presign failed")
 		return
 	}
 	cacheLog.Info(r.Context(), "v2 cache entry created",
 		slog.String("key", req.Key), slog.String("version", req.Version))
-	writeJSON(w, createCacheEntryResponse{OK: true, SignedUploadURL: c.blobs.build(blobshim.OpWrite, s3Key)})
+	writeJSON(w, createCacheEntryResponse{OK: true, SignedUploadURL: c.blobURL(url)})
 }
 
 func (c *ServiceV2) handleGetDownloadURL(w http.ResponseWriter, r *http.Request) {
@@ -138,17 +127,17 @@ func (c *ServiceV2) handleGetDownloadURL(w http.ResponseWriter, r *http.Request)
 		writeTwirpError(w, http.StatusBadRequest, "malformed", "invalid request body")
 		return
 	}
-	if req.Key == "" {
-		writeTwirpError(w, http.StatusBadRequest, "invalid_argument", "key is required")
+	if req.Key == "" || req.Version == "" {
+		writeTwirpError(w, http.StatusBadRequest, "invalid_argument", "key and version are required")
 		return
 	}
 
 	keys := append([]string{req.Key}, req.RestoreKeys...)
-	s3Key, found, err := c.server.GetCacheEntry(r.Context(), keys, req.Version)
+	url, matchedKey, found, err := c.presigner.PresignDownload(r.Context(), keys, req.Version)
 	if err != nil {
 		// Fail open: a lookup error is reported to the client as a miss so the
 		// job proceeds without our cache rather than failing.
-		cacheLog.Error(r.Context(), "v2 cache lookup failed", slog.String("error", err.Error()))
+		cacheLog.Error(r.Context(), "v2 presign download failed", slog.String("error", err.Error()))
 		c.publish(r.Context(), "miss")
 		writeJSON(w, getCacheEntryDownloadURLResponse{OK: false})
 		return
@@ -164,9 +153,20 @@ func (c *ServiceV2) handleGetDownloadURL(w http.ResponseWriter, r *http.Request)
 		slog.String("key", req.Key), slog.String("version", req.Version))
 	writeJSON(w, getCacheEntryDownloadURLResponse{
 		OK:                true,
-		SignedDownloadURL: c.blobs.build(blobshim.OpRead, s3Key),
-		MatchedKey:        c.server.bareKeyFromS3Key(req.Version, s3Key),
+		SignedDownloadURL: c.blobURL(url),
+		MatchedKey:        bareKeyForVersion(matchedKey, req.Version),
 	})
+}
+
+// bareKeyForVersion recovers the cache key the client sent from the
+// orchestrator's full S3 key (caches/<scope>/<version>/<key>). The client
+// compares matchedKey against its requested keys, so it must be the bare key.
+func bareKeyForVersion(fullKey, version string) string {
+	marker := "/" + version + "/"
+	if i := strings.Index(fullKey, marker); i >= 0 {
+		return fullKey[i+len(marker):]
+	}
+	return fullKey
 }
 
 func (c *ServiceV2) handleFinalize(w http.ResponseWriter, r *http.Request) {
@@ -184,10 +184,9 @@ func (c *ServiceV2) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		writeTwirpError(w, http.StatusBadRequest, "invalid_argument", "key is required")
 		return
 	}
-	// The shim commits the archive to S3 on block-list commit, so the object is
-	// already present; confirm it landed and report the result.
-	_, found, err := c.server.GetCacheEntry(r.Context(), []string{req.Key}, req.Version)
-	writeJSON(w, finalizeCacheEntryUploadResponse{OK: err == nil && found, EntryID: "1"})
+	// The shim already PUT the archive to S3 on block-list commit (the client
+	// only reaches Finalize after a successful upload), so this is an ack.
+	writeJSON(w, finalizeCacheEntryUploadResponse{OK: true, EntryID: "1"})
 }
 
 func (c *ServiceV2) publish(ctx context.Context, result string) {
@@ -208,10 +207,4 @@ func writeTwirpError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", contentTypeJSON)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "msg": msg})
-}
-
-// bareKeyFromS3Key recovers the cache key the client sent from a full S3 key,
-// stripping the caches/<scope>/<version>/ prefix.
-func (s *Server) bareKeyFromS3Key(version, s3Key string) string {
-	return strings.TrimPrefix(s3Key, s.buildCachePrefix(version, ""))
 }
