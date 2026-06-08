@@ -18,9 +18,11 @@ echo "==> Installing Trivy v${TRIVY_VERSION} (${TRIVY_ARCH})"
 TRIVY_TARBALL="trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz"
 TRIVY_URL="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
 
-curl -sfL "${TRIVY_URL}/${TRIVY_TARBALL}" -o "/tmp/${TRIVY_TARBALL}" \
+# --retry-all-errors so a transient GitHub release-CDN error (e.g. a 504 on the
+# tarball, which we have observed) is retried rather than failing the AMI build.
+curl -sfL --retry 5 --retry-delay 3 --retry-all-errors "${TRIVY_URL}/${TRIVY_TARBALL}" -o "/tmp/${TRIVY_TARBALL}" \
   || { echo "Failed to download Trivy"; exit 1; }
-curl -sfL "${TRIVY_URL}/trivy_${TRIVY_VERSION}_checksums.txt" \
+curl -sfL --retry 5 --retry-delay 3 --retry-all-errors "${TRIVY_URL}/trivy_${TRIVY_VERSION}_checksums.txt" \
   -o /tmp/trivy_checksums.txt \
   || { echo "Failed to download Trivy checksums"; exit 1; }
 
