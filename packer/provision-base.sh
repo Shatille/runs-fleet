@@ -102,7 +102,7 @@ sudo systemctl enable docker
 sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
-DOCKER_COMPOSE_VERSION="2.24.5"
+DOCKER_COMPOSE_VERSION="5.1.4"
 COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
 COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
 # Download and verify checksum (filenames must match for sha256sum -c)
@@ -223,7 +223,7 @@ rm "/tmp/${VAULT_ZIP}" /tmp/vault_checksums.txt
 sudo chmod +x /usr/local/bin/vault
 
 echo "==> Installing yq"
-YQ_VERSION="4.53.2"
+YQ_VERSION="4.53.3"
 if [ "$ARCH" = "x86_64" ]; then
   YQ_ARCH="amd64"
 else
