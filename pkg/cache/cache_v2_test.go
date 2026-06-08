@@ -105,6 +105,42 @@ func TestGetDownloadURLHit(t *testing.T) {
 	}
 }
 
+func TestGetDownloadURLAcceptsSnakeCaseRestoreKeys(t *testing.T) {
+	t.Parallel()
+
+	// The real cache@v5 Twirp client (protobuf-ts) serializes the proto field
+	// restore_keys in snake_case on the wire, not camelCase. If we only bind
+	// "restoreKeys", restore-keys are silently dropped and the orchestrator does
+	// only the exact HeadObject — never the prefix fallback. Both casings must work.
+	p := &mockPresigner{found: false}
+	postJSON(t, NewServiceV2(p, testBlobBase, nil), "GetCacheEntryDownloadURL",
+		`{"key":"primary","restore_keys":["pfx-a","pfx-b"],"version":"v1"}`)
+	if len(p.gotKeys) != 3 || p.gotKeys[0] != "primary" || p.gotKeys[1] != "pfx-a" || p.gotKeys[2] != "pfx-b" {
+		t.Errorf("presigner keys = %v, want [primary pfx-a pfx-b] (snake_case restore_keys dropped)", p.gotKeys)
+	}
+}
+
+func TestGetDownloadURLSnakeCaseRestoreKeyHit(t *testing.T) {
+	t.Parallel()
+
+	// A snake_case restore-key must round-trip a hit, not just reach the
+	// presigner: the matched full key is stripped to the bare key the client
+	// compares against.
+	p := &mockPresigner{downloadURL: "https://s3.example/get?sig=xyz", matchedKey: "caches/org/repo/v1/pfx-abc", found: true}
+	rec := postJSON(t, NewServiceV2(p, testBlobBase, nil), "GetCacheEntryDownloadURL",
+		`{"key":"primary","restore_keys":["pfx-"],"version":"v1"}`)
+	var resp getCacheEntryDownloadURLResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK || resp.MatchedKey != "pfx-abc" {
+		t.Fatalf("ok=%v matchedKey=%q, want hit with bare key pfx-abc", resp.OK, resp.MatchedKey)
+	}
+	if len(p.gotKeys) != 2 || p.gotKeys[0] != "primary" || p.gotKeys[1] != "pfx-" {
+		t.Errorf("presigner keys = %v, want [primary pfx-]", p.gotKeys)
+	}
+}
+
 func TestGetDownloadURLMiss(t *testing.T) {
 	t.Parallel()
 

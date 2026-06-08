@@ -69,9 +69,31 @@ type createCacheEntryResponse struct {
 }
 
 type getCacheEntryDownloadURLRequest struct {
-	Key         string   `json:"key"`
-	RestoreKeys []string `json:"restoreKeys"`
-	Version     string   `json:"version"`
+	Key string `json:"key"`
+	// The cache@v5 Twirp client serializes the proto field restore_keys in
+	// snake_case on the wire; bind both forms because encoding/json is
+	// case-insensitive but not underscore-insensitive, so one tag can't cover
+	// both. restoreKeys() merges them.
+	RestoreKeysCamel []string `json:"restoreKeys"`
+	RestoreKeysSnake []string `json:"restore_keys"`
+	Version          string   `json:"version"`
+}
+
+// restoreKeys returns the restore-key list regardless of the wire casing,
+// unioning both forms (order-preserving, de-duplicated) so neither is dropped.
+func (r getCacheEntryDownloadURLRequest) restoreKeys() []string {
+	seen := make(map[string]struct{}, len(r.RestoreKeysCamel)+len(r.RestoreKeysSnake))
+	out := make([]string, 0, len(r.RestoreKeysCamel)+len(r.RestoreKeysSnake))
+	for _, src := range [][]string{r.RestoreKeysCamel, r.RestoreKeysSnake} {
+		for _, k := range src {
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 type getCacheEntryDownloadURLResponse struct {
@@ -132,7 +154,7 @@ func (c *ServiceV2) handleGetDownloadURL(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	keys := append([]string{req.Key}, req.RestoreKeys...)
+	keys := append([]string{req.Key}, req.restoreKeys()...)
 	url, matchedKey, found, err := c.presigner.PresignDownload(r.Context(), keys, req.Version)
 	if err != nil {
 		// Fail open: a lookup error is reported to the client as a miss so the
