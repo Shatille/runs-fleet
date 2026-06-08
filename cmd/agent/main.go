@@ -312,7 +312,9 @@ func engageCache(ctx context.Context, ac *agentConfig, registrar *agent.Registra
 	}
 	logger.Printf("cache interceptor engaged: %s -> %s", cacheproxy.DefaultResultsHost, cp.Addr())
 	return func() {
-		_ = cacheproxy.DisengageCache(cacheproxy.DefaultResultsHost)
+		if err := cacheproxy.DisengageCache(cacheproxy.DefaultResultsHost); err != nil {
+			logger.Printf("cache disengage failed: %v", err)
+		}
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = cp.Stop(stopCtx)
