@@ -200,7 +200,7 @@ jobs:
 
       - id: coverage
         run: |
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | sed 's/%//')
           echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
 
       - uses: schneegans/dynamic-badges-action@v1.7.0
