@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
+	"github.com/Shavakan/runs-fleet/pkg/agent/cacheproxy"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -205,6 +207,12 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		logger.Printf("Warning: failed to set runner environment: %v", envErr)
 	}
 
+	// Engage the transparent v2 cache interceptor. Best effort and fail-open:
+	// any failure leaves the runner talking to GitHub's cache directly.
+	if stop := engageCache(ctx, ac, registrar, runnerPath, logger); stop != nil {
+		defer stop()
+	}
+
 	jobStartedAt := time.Now()
 
 	if ac.telemetry != nil {
@@ -267,6 +275,61 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 
 	logger.Println("Agent completed successfully")
+}
+
+// engageCache starts the on-host cache interceptor and redirects the runner's
+// cache traffic to it. Every step is fail-open: on any error the function logs
+// and returns nil, leaving the runner pointed at GitHub's own cache. On success
+// it returns a teardown closure. The pin is installed LAST, only after the CA
+// is trusted, so traffic is never redirected to an untrusted listener.
+func engageCache(ctx context.Context, ac *agentConfig, registrar *agent.Registrar, runnerPath string, logger *stdLogger) func() {
+	if ac.runnerConfig.CacheURL == "" {
+		return nil
+	}
+	cp, err := cacheproxy.New(cacheproxy.Config{
+		OrchestratorBaseURL: ac.runnerConfig.CacheURL,
+		CacheToken:          ac.runnerConfig.CacheToken,
+		StagingDir:          filepath.Join(runnerPath, "_rf_cache_staging"),
+	})
+	if err != nil {
+		logger.Printf("cache interceptor disabled (fail open): %v", err)
+		return nil
+	}
+	if err := cp.Start(ctx); err != nil {
+		logger.Printf("cache interceptor start failed (fail open): %v", err)
+		return nil
+	}
+	caPath := filepath.Join(runnerPath, "runs-fleet-cache-ca.pem")
+	if err := provisionCacheTrust(cp, registrar, runnerPath, caPath); err != nil {
+		logger.Printf("cache interceptor not engaged (fail open): %v", err)
+		_ = cp.Stop(context.Background())
+		return nil
+	}
+	if err := cacheproxy.PinResultsHost(cacheproxy.DefaultResultsHost); err != nil {
+		logger.Printf("cache interceptor pin failed (fail open): %v", err)
+		_ = cp.Stop(context.Background())
+		return nil
+	}
+	logger.Printf("cache interceptor engaged: %s -> %s", cacheproxy.DefaultResultsHost, cp.Addr())
+	return func() {
+		_ = cacheproxy.UnpinResultsHost(cacheproxy.DefaultResultsHost)
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = cp.Stop(stopCtx)
+	}
+}
+
+// provisionCacheTrust makes the per-instance CA trusted before any pin: it
+// writes the CA file, points NODE_EXTRA_CA_CERTS at it (Node-based actions),
+// and installs it into the system trust store (everything else).
+func provisionCacheTrust(cp *cacheproxy.Proxy, registrar *agent.Registrar, runnerPath, caPath string) error {
+	if err := cacheproxy.WriteCACert(caPath, cp.CACertPEM()); err != nil {
+		return err
+	}
+	if err := registrar.AppendRunnerEnv(runnerPath, "NODE_EXTRA_CA_CERTS", caPath); err != nil {
+		return err
+	}
+	return cacheproxy.InstallSystemTrust(cp.CACertPEM())
 }
 
 // terminateWithError terminates the instance after an error.

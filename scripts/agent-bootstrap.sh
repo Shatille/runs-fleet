@@ -83,6 +83,11 @@ AWS_REGION=${REGION}
 EOF
 fi
 
+# Scrub any stale cache-interceptor /etc/hosts pin left by a prior boot (e.g. an
+# agent SIGKILLed before teardown on a reused warm-pool instance) so the results
+# host resolves to the real GitHub IP on this fresh boot, not loopback.
+sed -i '/# runs-fleet-cache/d' /etc/hosts
+
 systemctl start runs-fleet-agent
 if systemctl is-failed --quiet runs-fleet-agent; then
   echo "ERROR: runs-fleet-agent service failed to start"

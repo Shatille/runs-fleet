@@ -37,6 +37,18 @@ sudo docker rm ${CONTAINER_ID}
 sudo chmod +x /opt/runs-fleet/runs-fleet-agent
 sudo chown ec2-user:ec2-user /opt/runs-fleet/runs-fleet-agent
 
+# The transparent cache interceptor binds 127.0.0.1:443 (the results host is
+# pinned there); grant the agent CAP_NET_BIND_SERVICE so it can bind a low port
+# without running as root.
+echo "==> Granting agent CAP_NET_BIND_SERVICE for the cache interceptor"
+sudo setcap 'cap_net_bind_service=+ep' /opt/runs-fleet/runs-fleet-agent
+# NOTE: full engagement also edits /etc/hosts (pin the results host) and the
+# system trust store (update-ca-trust) — both root-only. The agent runs as
+# ec2-user and FAILS OPEN if it cannot do these (runner falls back to GitHub's
+# cache), so this is safe to ship. The privilege model for those two steps
+# (run the agent privileged vs a scoped sudoers rule) is finalized during
+# canary validation on runs-fleet-test before broad rollout.
+
 # Cleanup Docker image to save space
 sudo docker rmi ${RUNNER_IMAGE} || true
 
