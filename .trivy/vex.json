@@ -1,10 +1,10 @@
 {
-  "_note": "PURLs below are pinned to the versions Trivy currently detects in this image: docker/docker@v28.5.2 (vendored by docker-buildx-plugin and docker-compose-plugin) and containerd/v2@v2.2.3 (real runtime dependency of the AL2023 `docker` dnf package, also vendored as library code by the same plugins). When `dnf install docker` resolves to a newer version, or the plugins bump their vendored libraries, this file must be reviewed: if the new versions are past the CVE fixes the entries can be removed; otherwise the PURLs must be updated.",
+  "_note": "PURLs below are pinned to the versions Trivy currently detects in this image: docker/docker@v28.5.2 (vendored by docker-buildx-plugin and docker-compose-plugin) and containerd/v2@v2.2.3 (real runtime dependency of the AL2023 `docker` dnf package, also vendored as library code by the same plugins). When `dnf install docker` resolves to a newer version, or the plugins bump their vendored libraries, this file must be reviewed: if the new versions are past the CVE fixes the entries can be removed; otherwise the PURLs must be updated. Go stdlib CVEs (stdlib@v1.26.3) are pinned to the Go toolchain version Trivy detects inside the docker cli-plugins; when Docker republishes buildx/compose built on a patched Go (>=1.25.11 / >=1.26.4), the detected version changes and the entry must be re-reviewed or removed.",
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/Shatille/runs-fleet/.trivy/vex.json",
   "author": "runs-fleet maintainers",
-  "timestamp": "2026-05-26T00:00:00Z",
-  "version": 1,
+  "timestamp": "2026-06-08T00:00:00Z",
+  "version": 2,
   "statements": [
     {
       "vulnerability": {
@@ -61,6 +61,20 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "Trivy reports this against dockerd (real containerd runtime dependency) and docker-buildx / docker-compose plugins (vendored as library code). The exploit requires a runAsNonRoot SecurityContext to flow through containerd's CRI plugin — a Kubernetes-only path. This AMI runs `docker run` via the legacy moby socket; CRI is not loaded and no Kubernetes pod spec is ever applied, so the user-ID resolution code path tied to runAsNonRoot enforcement is never exercised. The plugins are pure API clients that do not host the runtime at all."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-42504",
+        "description": "Quadratic complexity in the Go stdlib mime.(*WordDecoder).DecodeHeader: decoding a maliciously-crafted MIME header with many invalid RFC 2047 encoded-words consumes excessive CPU (Go advisory GO-2026-5038, go.dev/issue/79217; fixed in Go 1.25.11 / 1.26.4)."
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/stdlib@v1.26.3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Trivy flags the Go 1.26.3 stdlib only in the docker-buildx and docker-compose cli-plugins; dockerd, docker-proxy, containerd and the runs-fleet-agent build on a fixed/different Go and scan clean. The vulnerable function, mime.WordDecoder.DecodeHeader, performs RFC 2047 encoded-word decoding used by email/MIME parsing; it is not invoked by normal HTTP request/response header parsing (net/http and net/textproto.Reader.ReadMIMEHeader do not call it). buildx and compose are BuildKit/registry/daemon API clients that do no RFC 2047 MIME header decoding, so the quadratic-complexity path is never reached. Fixed upstream in Go 1.25.11/1.26.4; Docker has not yet republished these plugins on the patched toolchain. PURL pinned to stdlib@v1.26.3 so a future plugin rebuild on patched Go changes the detected version, invalidates this statement, and forces re-review."
     }
   ]
 }
