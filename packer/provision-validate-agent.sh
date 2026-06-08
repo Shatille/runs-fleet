@@ -71,8 +71,10 @@ echo "  OK: $HELPER"
 
 echo "==> Validating cache-engage sudoers drop-in"
 SUDOERS=/etc/sudoers.d/10-runs-fleet-cache
-[ -f "$SUDOERS" ] || fail "$SUDOERS missing"
-OWNMODE=$(stat -c '%U:%G %a' "$SUDOERS")
+# /etc/sudoers.d is 0750 root:root, so the (ec2-user) provisioner can't stat
+# files under it without sudo — inspect via sudo to avoid a false "missing".
+sudo test -f "$SUDOERS" || fail "$SUDOERS missing"
+OWNMODE=$(sudo stat -c '%U:%G %a' "$SUDOERS")
 [ "$OWNMODE" = "root:root 440" ] || fail "$SUDOERS wrong owner/mode: $OWNMODE"
 sudo visudo -cf "$SUDOERS" || fail "$SUDOERS failed visudo validation"
 # Exercise the real engage->disengage path end-to-end via passwordless sudo
