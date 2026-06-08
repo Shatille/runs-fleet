@@ -573,13 +573,15 @@ func TestUseRegionalSTSEndpoint_DefaultsToRegional(t *testing.T) {
 	}
 }
 
-func TestUseRegionalSTSEndpoint_RespectsExisting(t *testing.T) {
+func TestUseRegionalSTSEndpoint_OverridesExisting(t *testing.T) {
+	// "regional" is required for the Vault AWS-IAM login to succeed; an inherited
+	// non-regional value (e.g. "legacy") must be overridden, not preserved.
 	t.Setenv(awsSTSRegionalEndpointsEnv, "legacy")
 
 	useRegionalSTSEndpoint()
 
-	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "legacy" {
-		t.Errorf("useRegionalSTSEndpoint() overrode explicit value: got %q, want %q", got, "legacy")
+	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "regional" {
+		t.Errorf("useRegionalSTSEndpoint() did not override existing value: got %q, want %q", got, "regional")
 	}
 }
 
