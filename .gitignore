@@ -48,9 +48,6 @@ Thumbs.db
 # Build artifacts
 dist/
 
-# Agent guidance (Claude Code-generated)
-AGENTS.md
-
 # Claude Code runtime
 .claude/scheduled_tasks.lock
 .claude/worktrees/

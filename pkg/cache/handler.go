@@ -23,7 +23,16 @@ type Metrics interface {
 	PublishCacheAuthRejected(ctx context.Context, reason string) error
 }
 
-// Handler implements HTTP endpoints for GitHub Actions cache protocol.
+// Handler implements GitHub Actions' v1 cache HTTP API — the
+// /_apis/artifactcache/* REST endpoints — on the orchestrator.
+//
+// "v1" and "v2" throughout this package track GitHub's own cache protocol
+// versions, NOT runs-fleet's internal versioning: GitHub replaced the v1
+// artifactcache REST API with the v2 Twirp CacheService (over
+// ACTIONS_RESULTS_URL; see cache_v2.go). runs-fleet keeps both so it can serve
+// whichever protocol the runner's cache client speaks; the v2 on-host
+// interceptor delegates the S3 work back to this v1 server, which holds the
+// bucket credentials.
 type Handler struct {
 	server  *Server
 	metrics Metrics

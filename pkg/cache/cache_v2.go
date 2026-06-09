@@ -35,6 +35,10 @@ type Presigner interface {
 // turns CreateCacheEntry/GetCacheEntryDownloadURL into orchestrator presign
 // calls and hands the client a local blob-shim URL that embeds the presigned S3
 // URL; the shim then translates Azure block-blob bytes onto it.
+//
+// "v2" is GitHub's cache protocol version (the Twirp CacheService that
+// superseded the v1 artifactcache REST API in handler.go), not runs-fleet
+// versioning — see the Handler doc for the v1/v2 relationship.
 type ServiceV2 struct {
 	presigner Presigner
 	blobBase  string
