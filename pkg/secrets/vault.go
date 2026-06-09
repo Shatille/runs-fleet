@@ -24,7 +24,7 @@ type VaultConfig struct {
 
 	// AWS IAM auth
 	AWSRole   string // Vault role for AWS auth
-	AWSRegion string // AWS region for STS calls
+	AWSRegion string // operating region (error context only; the STS login signs global/us-east-1)
 
 	// Kubernetes auth
 	K8sAuthMount string // Vault Kubernetes auth mount path (default: "kubernetes")

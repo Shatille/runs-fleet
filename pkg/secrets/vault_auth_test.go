@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/vault/api"
@@ -563,42 +564,38 @@ func TestAuthenticateK8s_LoginFailure(t *testing.T) {
 	}
 }
 
-func TestUseRegionalSTSEndpoint_DefaultsToRegional(t *testing.T) {
-	t.Setenv(awsSTSRegionalEndpointsEnv, "")
+func TestUseGlobalSTSEndpoint_ForcesLegacy(t *testing.T) {
+	// An inherited "regional" value must be overridden: Vault validates the
+	// GetCallerIdentity against the global STS endpoint, which only accepts a
+	// us-east-1-scoped signature.
+	t.Setenv(awsSTSRegionalEndpointsEnv, "regional")
 
-	useRegionalSTSEndpoint()
+	useGlobalSTSEndpoint()
 
-	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "regional" {
-		t.Errorf("useRegionalSTSEndpoint() = %q, want %q", got, "regional")
+	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "legacy" {
+		t.Errorf("useGlobalSTSEndpoint() = %q, want %q", got, "legacy")
 	}
 }
 
-func TestUseRegionalSTSEndpoint_OverridesExisting(t *testing.T) {
-	// "regional" is required for the Vault AWS-IAM login to succeed; an inherited
-	// non-regional value (e.g. "legacy") must be overridden, not preserved.
-	t.Setenv(awsSTSRegionalEndpointsEnv, "legacy")
-
-	useRegionalSTSEndpoint()
-
-	if got := os.Getenv(awsSTSRegionalEndpointsEnv); got != "regional" {
-		t.Errorf("useRegionalSTSEndpoint() did not override existing value: got %q, want %q", got, "regional")
-	}
-}
-
-func TestAuthenticateAWS_SignsForRegionalSTSEndpoint(t *testing.T) {
+func TestAuthenticateAWS_SignsForGlobalSTSEndpoint(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "secretexamplekey")
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	t.Setenv(awsSTSRegionalEndpointsEnv, "")
+	// Even with an inherited regional setting, the login must sign global.
+	t.Setenv(awsSTSRegionalEndpointsEnv, "regional")
 
-	var gotSTSURL string
+	var gotSTSURL, gotHeaders string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			IAMRequestURL string `json:"iam_request_url"`
+			IAMRequestURL     string `json:"iam_request_url"`
+			IAMRequestHeaders string `json:"iam_request_headers"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.IAMRequestURL != "" {
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
 			if raw, derr := base64.StdEncoding.DecodeString(body.IAMRequestURL); derr == nil {
 				gotSTSURL = string(raw)
+			}
+			if raw, derr := base64.StdEncoding.DecodeString(body.IAMRequestHeaders); derr == nil {
+				gotHeaders = string(raw)
 			}
 		}
 		w.WriteHeader(http.StatusOK)
@@ -624,7 +621,16 @@ func TestAuthenticateAWS_SignsForRegionalSTSEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to parse STS URL %q: %v", gotSTSURL, err)
 	}
-	if want := "sts.ap-northeast-1.amazonaws.com"; parsed.Host != want {
-		t.Errorf("STS request signed for host %q, want regional endpoint %q", parsed.Host, want)
+	if want := "sts.amazonaws.com"; parsed.Host != want {
+		t.Errorf("STS request signed for host %q, want global endpoint %q", parsed.Host, want)
+	}
+	if gotHeaders == "" {
+		t.Fatal("login request did not include signed STS headers")
+	}
+	// The SigV4 credential scope must be us-east-1 to match the global endpoint
+	// Vault validates against; a regional scope is rejected with "Credential
+	// should be scoped to a valid region".
+	if !strings.Contains(gotHeaders, "/us-east-1/sts/aws4_request") {
+		t.Errorf("STS request not scoped to us-east-1; signed headers = %s", gotHeaders)
 	}
 }
