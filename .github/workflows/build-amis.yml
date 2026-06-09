@@ -39,7 +39,12 @@ permissions:
 
 concurrency:
   group: build-amis-${{ github.ref }}
-  cancel-in-progress: true
+  # A workflow_run cascade (fired by Build Runner Image) must not cancel an
+  # in-progress push run that is building the base AMI: with cancel-in-progress
+  # false for that trigger the cascade queues behind the push run and bakes the
+  # runner AMI after the fresh base completes, instead of killing it. A push (or
+  # schedule/dispatch) still supersedes in-progress + pending runs.
+  cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
 
 env:
   AWS_REGION: ap-northeast-1
