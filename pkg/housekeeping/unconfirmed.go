@@ -10,7 +10,6 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
-	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -25,20 +24,9 @@ var launchedConfirmThreshold = 5 * time.Minute
 
 // maxLaunchRecoveryRetries bounds how many times the watchdog requeues a job
 // whose runner never came up, mirroring the worker's on-demand retry cap so a
-// fleet-wide registration failure cannot churn instances indefinitely.
-const maxLaunchRecoveryRetries = 2
-
-// unconfirmedRunnerCandidate is a launched job that has not confirmed its runner,
-// carrying the fields needed to rebuild a requeue message.
-type unconfirmedRunnerCandidate struct {
-	JobID        int64
-	InstanceID   string
-	RunID        int64
-	Repo         string
-	InstanceType string
-	Pool         string
-	RetryCount   int
-}
+// fleet-wide registration failure cannot churn instances indefinitely. Shared with
+// the operator-triggered requeue action.
+const maxLaunchRecoveryRetries = MaxRequeueRetries
 
 // ExecuteUnconfirmedRunners recovers jobs whose instance launched but whose
 // runner never registered (stuck in the launched state past
@@ -55,7 +43,7 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 		return nil
 	}
 
-	candidates, err := findUnconfirmedLaunchedJobs(ctx, t.dynamoClient, t.config.JobsTableName, launchedConfirmThreshold)
+	candidates, err := FindRequeueableJobs(ctx, t.dynamoClient, t.config.JobsTableName, launchedConfirmThreshold, []db.JobStatus{db.JobStatusLaunched})
 	if err != nil {
 		return fmt.Errorf("failed to scan launched jobs: %w", err)
 	}
@@ -63,18 +51,31 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 		return nil
 	}
 
+	// The watchdog only recovers launched records that have an instance; a launched
+	// record with no instance_id never produced an instance and is left for the
+	// orphan/stale reapers (preserving prior behavior).
+	withInstance := make([]RequeueableJob, 0, len(candidates))
+	for _, c := range candidates {
+		if c.InstanceID != "" {
+			withInstance = append(withInstance, c)
+		}
+	}
+	if len(withInstance) == 0 {
+		return nil
+	}
+
 	fallback := func(ctx context.Context, instanceID string) bool {
 		exists, _ := t.instanceExists(ctx, instanceID)
 		return exists
 	}
-	checkList := make([]OrphanedJobCandidate, 0, len(candidates))
-	for _, c := range candidates {
+	checkList := make([]OrphanedJobCandidate, 0, len(withInstance))
+	for _, c := range withInstance {
 		checkList = append(checkList, OrphanedJobCandidate{JobID: c.JobID, InstanceID: c.InstanceID})
 	}
 	alive := BatchCheckInstanceExistence(ctx, t.ec2Client, checkList, fallback)
 
 	var recovered int
-	for _, c := range candidates {
+	for _, c := range withInstance {
 		jobCtx := logging.ContextWith(ctx,
 			slog.Int64(logging.KeyJobID, c.JobID),
 			slog.String(logging.KeyInstanceID, c.InstanceID))
@@ -123,22 +124,12 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 // requeued so the watchdog stops seeing it. The message is sent before the
 // status flip; if the flip fails, the next cycle re-sends (SQS dedupes on
 // job_id + retry_count).
-func (t *Tasks) requeueUnconfirmed(ctx context.Context, c unconfirmedRunnerCandidate) error {
+func (t *Tasks) requeueUnconfirmed(ctx context.Context, c RequeueableJob) error {
 	if c.RunID == 0 {
 		return fmt.Errorf("job %d has no run_id; cannot requeue", c.JobID)
 	}
 
-	msg := &queue.JobMessage{
-		JobID:         c.JobID,
-		RunID:         c.RunID,
-		Repo:          c.Repo,
-		InstanceType:  c.InstanceType,
-		Pool:          c.Pool,
-		Spot:          false,
-		RetryCount:    c.RetryCount + 1,
-		ForceOnDemand: true,
-	}
-	if err := t.jobRequeuer.SendMessage(ctx, msg); err != nil {
+	if err := t.jobRequeuer.SendMessage(ctx, BuildRequeueMessage(c)); err != nil {
 		return fmt.Errorf("send requeue message: %w", err)
 	}
 	if err := t.markLaunchedJobRequeued(ctx, c.JobID); err != nil {
@@ -191,52 +182,6 @@ func (t *Tasks) updateLaunchedJob(ctx context.Context, jobID int64, updateExpr s
 		return fmt.Errorf("update launched job: %w", err)
 	}
 	return nil
-}
-
-// findUnconfirmedLaunchedJobs scans for jobs stuck in the launched state past the
-// threshold, projecting the fields needed to requeue them.
-func findUnconfirmedLaunchedJobs(ctx context.Context, dynamoClient OrphanScanAPI, jobsTable string, threshold time.Duration) ([]unconfirmedRunnerCandidate, error) {
-	cutoff := time.Now().Add(-threshold).Format(time.RFC3339)
-	input := &dynamodb.ScanInput{
-		TableName:                aws.String(jobsTable),
-		FilterExpression:         aws.String("#status = :launched AND created_at < :cutoff"),
-		ExpressionAttributeNames: map[string]string{"#status": "status", "#pool": "pool"},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
-			":cutoff":   &types.AttributeValueMemberS{Value: cutoff},
-		},
-		ProjectionExpression: aws.String("job_id, instance_id, run_id, repo, instance_type, #pool, retry_count"),
-	}
-
-	var candidates []unconfirmedRunnerCandidate
-	var lastKey map[string]types.AttributeValue
-	for {
-		input.ExclusiveStartKey = lastKey
-		output, err := dynamoClient.Scan(ctx, input)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range output.Items {
-			c := unconfirmedRunnerCandidate{
-				JobID:        avInt64(item, "job_id"),
-				InstanceID:   avString(item, "instance_id"),
-				RunID:        avInt64(item, "run_id"),
-				Repo:         avString(item, "repo"),
-				InstanceType: avString(item, "instance_type"),
-				Pool:         avString(item, "pool"),
-				RetryCount:   int(avInt64(item, "retry_count")),
-			}
-			if c.JobID == 0 || c.InstanceID == "" {
-				continue
-			}
-			candidates = append(candidates, c)
-		}
-		lastKey = output.LastEvaluatedKey
-		if lastKey == nil {
-			break
-		}
-	}
-	return candidates, nil
 }
 
 func avString(item map[string]types.AttributeValue, key string) string {
