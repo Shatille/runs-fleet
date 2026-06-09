@@ -38,30 +38,34 @@ func authenticate(ctx context.Context, client *api.Client, cfg VaultConfig) erro
 
 const awsSTSRegionalEndpointsEnv = "AWS_STS_REGIONAL_ENDPOINTS"
 
-func useRegionalSTSEndpoint() {
-	// Vault's api/auth/aws helper signs the GetCallerIdentity request for the
-	// configured region but resolves the legacy global STS host unless this is
-	// "regional", so STS rejects region-scoped credentials ("Credential should
-	// be scoped to a valid region"). "regional" is a hard requirement here, not a
-	// preference — force it, overriding any inherited value (e.g. "legacy"), which
-	// would otherwise silently reintroduce the failure.
-	_ = os.Setenv(awsSTSRegionalEndpointsEnv, "regional")
+// globalSTSSigningRegion is the region the Vault AWS-IAM GetCallerIdentity is
+// signed for. Vault validates the login against the global STS endpoint, which
+// only accepts a us-east-1-scoped signature.
+const globalSTSSigningRegion = "us-east-1"
+
+func useGlobalSTSEndpoint() {
+	// Force the legacy (global) STS endpoint so the signed host is
+	// sts.amazonaws.com — the endpoint Vault replays validation to. Overrides an
+	// inherited "regional" value, which would sign a regional host/scope that
+	// Vault's global validation rejects ("Credential should be scoped to a valid
+	// region"). Read only by AWS SDK v1 (the Vault auth helper); the agent's
+	// SDK v2 clients ignore it.
+	_ = os.Setenv(awsSTSRegionalEndpointsEnv, "legacy")
 }
 
 // authenticateAWS authenticates using AWS IAM credentials.
 func authenticateAWS(ctx context.Context, client *api.Client, role, region string) error {
-	useRegionalSTSEndpoint()
+	useGlobalSTSEndpoint()
 
+	// Sign the login for the global STS endpoint regardless of the operating
+	// region; `region` still scopes real AWS API calls elsewhere.
 	opts := []aws.LoginOption{
 		aws.WithIAMAuth(),
+		aws.WithRegion(globalSTSSigningRegion),
 	}
 
 	if role != "" {
 		opts = append(opts, aws.WithRole(role))
-	}
-
-	if region != "" {
-		opts = append(opts, aws.WithRegion(region))
 	}
 
 	awsAuth, err := aws.NewAWSAuth(opts...)
