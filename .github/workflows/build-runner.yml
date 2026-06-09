@@ -58,12 +58,16 @@ env:
   RUNNER_BASE_TAG: ${{ vars.RUNNER_BASE_TAG || '2.334.0' }}
 
 jobs:
-  # Check if runner-related files changed since last tag
-  check-changes:
-    name: Check Runner Changes
+  # Decide whether to build (runner files changed since last tag) and, if so,
+  # prep the version tag + ECR registry — one job, one runner. Agent tests run
+  # at CI (pull_request) before merge, so there is no separate test gate here.
+  prepare:
+    name: Prepare Build
     runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
+      version: ${{ steps.version.outputs.version }}
+      registry: ${{ steps.login-ecr.outputs.registry }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -107,17 +111,8 @@ jobs:
             echo "No runner file changes, skipping build"
           fi
 
-  # Determine version once, share across jobs
-  prepare:
-    name: Prepare Build
-    needs: check-changes
-    if: needs.check-changes.outputs.should_build == 'true'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      registry: ${{ steps.login-ecr.outputs.registry }}
-    steps:
       - name: Configure AWS credentials
+        if: steps.check.outputs.should_build == 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
@@ -125,10 +120,12 @@ jobs:
 
       - name: Login to Amazon ECR
         id: login-ecr
+        if: steps.check.outputs.should_build == 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Determine version tag
         id: version
+        if: steps.check.outputs.should_build == 'true'
         run: |
           if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
@@ -140,34 +137,11 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
-  # Gate the image publish on the agent's own tests. The agent binary baked into
-  # this image is what runs on every EC2 runner; a regression in its init/auth
-  # path (e.g. the Vault AWS-IAM regional-STS signing) must fail here so :latest
-  # is never published. build-amis cascades only on a *successful* image build,
-  # so a failure here means no new AMI can extract the broken agent (fail-closed).
-  test:
-    name: Test Agent
-    needs: check-changes
-    if: needs.check-changes.outputs.should_build == 'true'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      # The agent binary's complete first-party dependency set (go list -deps
-      # ./cmd/agent): none import pkg/admin, so this needs no admin-UI embed,
-      # unlike the full `make test`. Includes the regional-STS signing test.
-      - name: Test agent packages
-        run: go test ./cmd/agent/... ./pkg/agent/... ./pkg/secrets/... ./internal/validation/...
-
   # Build on native runners (no QEMU)
   build:
     name: Build ${{ matrix.arch }}
-    needs: [prepare, test]
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
     runs-on: ${{ matrix.runner }}
     env:
       # Read from secrets so deployments that treat the repository path as
