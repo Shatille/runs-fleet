@@ -2,6 +2,7 @@ package housekeeping
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -129,6 +130,47 @@ func TestExecuteUnconfirmedRunners_InstanceGoneRequeues(t *testing.T) {
 	}
 	if len(rq.sent) != 1 {
 		t.Errorf("expected the job requeued, got %d requeues", len(rq.sent))
+	}
+}
+
+// Regression: `pool` is a DynamoDB reserved keyword. It must never appear bare in
+// the projection, only via the #pool alias mapped in ExpressionAttributeNames —
+// otherwise every Scan throws ValidationException ("reserved keyword: pool") and the
+// watchdog silently fails on every run (the defect that kept it from ever working).
+func TestExecuteUnconfirmedRunners_ScanAliasesReservedPool(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{launchedJobItem(42, "i-stuck", 7, 0)}}
+	metrics := &mockTaskMetricsAPI{}
+	rq := &mockJobRequeuer{}
+	tasks := newUnconfirmedTasks(ec2, dyn, metrics, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if len(dyn.scanInputs) == 0 {
+		t.Fatal("expected the watchdog to scan; no ScanInput captured")
+	}
+	in := dyn.scanInputs[0]
+
+	if in.ProjectionExpression == nil {
+		t.Fatal("ScanInput.ProjectionExpression is nil")
+	}
+	proj := *in.ProjectionExpression
+
+	// `pool` must appear only as the aliased token #pool, never bare. A word-boundary
+	// match for a bare `pool` not preceded by `#` would catch the regressed form.
+	barePool := regexp.MustCompile(`(^|[^#\w])pool\b`)
+	if barePool.MatchString(proj) {
+		t.Errorf("ProjectionExpression contains bare reserved keyword 'pool' (must be '#pool'): %q", proj)
+	}
+
+	if got := in.ExpressionAttributeNames["#pool"]; got != "pool" {
+		t.Errorf("ExpressionAttributeNames must map #pool -> pool, got %q (names=%v)", got, in.ExpressionAttributeNames)
+	}
+	// The pre-existing #status alias must remain intact alongside the new one.
+	if got := in.ExpressionAttributeNames["#status"]; got != "status" {
+		t.Errorf("ExpressionAttributeNames must still map #status -> status, got %q", got)
 	}
 }
 

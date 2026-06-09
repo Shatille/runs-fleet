@@ -138,6 +138,7 @@ type mockTaskDynamoDBAPI struct {
 	scanCalls     int
 	batchCalls    int
 	updateCalls   int
+	scanInputs    []*dynamodb.ScanInput
 }
 
 func (m *mockTaskDynamoDBAPI) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
@@ -158,8 +159,9 @@ func (m *mockTaskDynamoDBAPI) BatchWriteItem(_ context.Context, _ *dynamodb.Batc
 	return &dynamodb.BatchWriteItemOutput{}, nil
 }
 
-func (m *mockTaskDynamoDBAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+func (m *mockTaskDynamoDBAPI) Scan(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 	m.scanCalls++
+	m.scanInputs = append(m.scanInputs, params)
 	if m.scanErr != nil {
 		return nil, m.scanErr
 	}

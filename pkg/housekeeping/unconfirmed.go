@@ -200,12 +200,12 @@ func findUnconfirmedLaunchedJobs(ctx context.Context, dynamoClient OrphanScanAPI
 	input := &dynamodb.ScanInput{
 		TableName:                aws.String(jobsTable),
 		FilterExpression:         aws.String("#status = :launched AND created_at < :cutoff"),
-		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeNames: map[string]string{"#status": "status", "#pool": "pool"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoff},
 		},
-		ProjectionExpression: aws.String("job_id, instance_id, run_id, repo, instance_type, pool, retry_count"),
+		ProjectionExpression: aws.String("job_id, instance_id, run_id, repo, instance_type, #pool, retry_count"),
 	}
 
 	var candidates []unconfirmedRunnerCandidate
