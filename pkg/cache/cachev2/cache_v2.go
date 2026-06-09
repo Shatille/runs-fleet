@@ -1,4 +1,7 @@
-package cache
+// Package cachev2 is the runner-side GitHub Actions v2 cache: the Twirp
+// CacheService the on-host interceptor serves, bridged to the orchestrator's v1
+// cache API (pkg/cache) for presigning via HTTPPresigner. Runner-only.
+package cachev2
 
 import (
 	"context"
@@ -9,6 +12,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
 
 // cacheServiceV2Prefix is the Twirp route prefix for the GitHub Actions v2 cache
@@ -17,6 +21,15 @@ import (
 const cacheServiceV2Prefix = "/twirp/github.actions.results.api.v1.CacheService/"
 
 const contentTypeJSON = "application/json"
+
+var cacheLog = logging.WithComponent(logging.LogTypeCache, "cachev2")
+
+// Metrics is the minimal cache-metrics surface the v2 service uses; the
+// orchestrator's full publisher (pkg/metrics) satisfies it structurally. The
+// runner currently passes nil (no metrics on the agent).
+type Metrics interface {
+	PublishCacheRequest(ctx context.Context, result string) error
+}
 
 // Presigner obtains orchestrator-minted presigned S3 URLs. The runner holds no
 // S3 credentials — all presigning (and cache scoping, via the orchestrator's

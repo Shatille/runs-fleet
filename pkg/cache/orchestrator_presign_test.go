@@ -6,9 +6,16 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Shavakan/runs-fleet/pkg/cache/cachev2"
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// This contract test for cachev2.HTTPPresigner lives in package cache (not
+// cachev2) because it drives the presigner against the REAL v1 server using
+// package-internal helpers (NewServerWithClientsAndScope, MockS3API); cachev2
+// imports nothing from cache, so this stays acyclic.
 
 // v1Server stands up the real v1 cache handler (auth disabled) over the given
 // S3 mock, so HTTPPresigner is tested against the actual orchestrator contract.
@@ -26,7 +33,7 @@ func TestHTTPPresignerUpload(t *testing.T) {
 	t.Parallel()
 
 	ts := v1Server(t, &MockS3API{})
-	p := NewHTTPPresigner(ts.Client(), ts.URL, "")
+	p := cachev2.NewHTTPPresigner(ts.Client(), ts.URL, "")
 	url, err := p.PresignUpload(context.Background(), "k", "v1")
 	if err != nil {
 		t.Fatalf("PresignUpload: %v", err)
@@ -41,7 +48,7 @@ func TestHTTPPresignerDownloadHit(t *testing.T) {
 
 	// Default MockS3API.HeadObject succeeds => primary key found.
 	ts := v1Server(t, &MockS3API{})
-	p := NewHTTPPresigner(ts.Client(), ts.URL, "")
+	p := cachev2.NewHTTPPresigner(ts.Client(), ts.URL, "")
 	url, matchedKey, found, err := p.PresignDownload(context.Background(), []string{"k"}, "v1")
 	if err != nil {
 		t.Fatalf("PresignDownload: %v", err)
@@ -69,7 +76,7 @@ func TestHTTPPresignerDownloadMiss(t *testing.T) {
 		},
 	}
 	ts := v1Server(t, miss)
-	p := NewHTTPPresigner(ts.Client(), ts.URL, "")
+	p := cachev2.NewHTTPPresigner(ts.Client(), ts.URL, "")
 	_, _, found, err := p.PresignDownload(context.Background(), []string{"absent"}, "v1")
 	if err != nil {
 		t.Fatalf("PresignDownload: %v", err)
@@ -84,12 +91,12 @@ func TestHTTPPresignerSendsToken(t *testing.T) {
 
 	var gotToken string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotToken = r.Header.Get(CacheTokenHeader)
+		gotToken = r.Header.Get(wire.CacheTokenHeader)
 		w.Header().Set("Location", "https://example.com/presigned-put")
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(ts.Close)
-	p := NewHTTPPresigner(ts.Client(), ts.URL, "tok-123")
+	p := cachev2.NewHTTPPresigner(ts.Client(), ts.URL, "tok-123")
 	if _, err := p.PresignUpload(context.Background(), "k", "v1"); err != nil {
 		t.Fatalf("PresignUpload: %v", err)
 	}

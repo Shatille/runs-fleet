@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 )
 
 const testSecret = "test-secret"
@@ -366,7 +368,7 @@ func TestAuthMiddleware_Enabled_InvalidToken(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, "invalid-token")
+	req.Header.Set(wire.CacheTokenHeader, "invalid-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -397,7 +399,7 @@ func TestAuthMiddleware_Enabled_ValidToken(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, validToken)
+	req.Header.Set(wire.CacheTokenHeader, validToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -454,7 +456,7 @@ func TestAuthMiddleware_XCacheTokenPrecedence(t *testing.T) {
 
 	// X-Cache-Token should take precedence over Authorization header
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, validToken)
+	req.Header.Set(wire.CacheTokenHeader, validToken)
 	req.Header.Set("Authorization", "Bearer invalid-bearer")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -483,7 +485,7 @@ func TestAuthMiddleware_WrongSecret(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, wrongToken)
+	req.Header.Set(wire.CacheTokenHeader, wrongToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -514,7 +516,7 @@ func TestAuthMiddleware_ScopeInContext(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, validToken)
+	req.Header.Set(wire.CacheTokenHeader, validToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -539,7 +541,7 @@ func TestScopeFromContext_NoScope(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set(CacheTokenHeader, validToken)
+	req.Header.Set(wire.CacheTokenHeader, validToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

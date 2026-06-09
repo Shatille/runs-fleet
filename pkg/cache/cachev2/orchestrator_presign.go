@@ -1,4 +1,4 @@
-package cache
+package cachev2
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 )
 
 // HTTPPresigner implements Presigner by calling the orchestrator's existing v1
@@ -34,7 +36,7 @@ func NewHTTPPresigner(client *http.Client, baseURL, cacheToken string) *HTTPPres
 // PresignUpload reserves a cache entry on the orchestrator and returns the
 // presigned PUT URL it mints (the v1 Location header).
 func (p *HTTPPresigner) PresignUpload(ctx context.Context, key, version string) (string, error) {
-	body, err := json.Marshal(reserveCacheRequest{Key: key, Version: version})
+	body, err := json.Marshal(wire.ReserveCacheRequest{Key: key, Version: version})
 	if err != nil {
 		return "", err
 	}
@@ -84,7 +86,7 @@ func (p *HTTPPresigner) PresignDownload(ctx context.Context, keys []string, vers
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return "", "", false, nil
 	case http.StatusOK:
-		var gr getCacheResponse
+		var gr wire.GetCacheResponse
 		if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 			return "", "", false, fmt.Errorf("decode get cache response: %w", err)
 		}
@@ -97,6 +99,6 @@ func (p *HTTPPresigner) PresignDownload(ctx context.Context, keys []string, vers
 
 func (p *HTTPPresigner) authenticate(req *http.Request) {
 	if p.token != "" {
-		req.Header.Set(CacheTokenHeader, p.token)
+		req.Header.Set(wire.CacheTokenHeader, p.token)
 	}
 }

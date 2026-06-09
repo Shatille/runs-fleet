@@ -74,12 +74,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for runner file changes
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check for agent-relevant changes
         id: check
         run: |
           # Always build on workflow_dispatch or workflow_call
           if [[ "${{ github.event_name }}" != "push" ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "Non-push trigger, will build"
             exit 0
           fi
@@ -87,28 +92,39 @@ jobs:
           # Find previous tag
           PREV_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname | sed -n '2p')
           if [[ -z "$PREV_TAG" ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "No previous tag found, will build"
             exit 0
           fi
 
+          # Rebuild only when something the agent binary actually depends on
+          # changed. Derive the agent's first-party package dirs from its import
+          # graph rather than a broad pkg/** glob, so orchestrator-only package
+          # changes (e.g. the pkg/cache v1 server) don't rebuild the runner
+          # image. Not over-rebuilding, not a hand-maintained list. A go list
+          # failure falls back to building (safe default).
+          if ! AGENT_PKGS=$(go list -deps ./cmd/agent 2>&1); then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "go list failed, building to be safe: $AGENT_PKGS"
+            exit 0
+          fi
+          # Diff only the agent's first-party package dirs + the non-Go inputs
+          # baked into the image (Dockerfile, module files, Trivy config) + this
+          # workflow. Paths (one per line, no spaces) are piped to git via xargs,
+          # avoiding bash arrays/mapfile.
           echo "Comparing $PREV_TAG to ${{ github.ref_name }}"
-
-          # Check if runner-related files changed
-          CHANGED=$(git diff --name-only "$PREV_TAG" "${{ github.ref_name }}" -- \
-            'docker/runner/**' \
-            'cmd/agent/**' \
-            'pkg/**' \
-            'go.mod' \
-            'go.sum' \
-            | head -1)
-
+          CHANGED=$(
+            {
+              printf '%s\n' "$AGENT_PKGS" | sed -n 's#^github.com/Shavakan/runs-fleet/##p'
+              printf '%s\n' docker/runner go.mod go.sum .trivy .github/workflows/build-runner.yml
+            } | xargs git diff --name-only "$PREV_TAG" "${{ github.ref_name }}" -- | head -1
+          )
           if [[ -n "$CHANGED" ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "Runner files changed, will build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Agent-relevant files changed, will build"
           else
-            echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "No runner file changes, skipping build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "No agent-relevant changes, skipping build"
           fi
 
       - name: Configure AWS credentials
