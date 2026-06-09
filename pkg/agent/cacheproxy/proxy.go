@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent/tlsca"
-	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
+	"github.com/Shavakan/runs-fleet/pkg/cache/cachev2"
 	"github.com/Shavakan/runs-fleet/pkg/cache/intercept"
 )
 
@@ -110,9 +110,9 @@ func (p *Proxy) Start(ctx context.Context) error {
 	}
 	transport := intercept.PinnedTransport(p.cfg.ResultsHost, net.JoinHostPort(addrs[0], "443"))
 
-	presigner := cache.NewHTTPPresigner(p.cfg.HTTPClient, p.cfg.OrchestratorBaseURL, p.cfg.CacheToken)
+	presigner := cachev2.NewHTTPPresigner(p.cfg.HTTPClient, p.cfg.OrchestratorBaseURL, p.cfg.CacheToken)
 	cacheMux := http.NewServeMux()
-	cache.NewServiceV2(presigner, "https://"+p.cfg.ResultsHost, nil).RegisterRoutes(cacheMux)
+	cachev2.NewServiceV2(presigner, "https://"+p.cfg.ResultsHost, nil).RegisterRoutes(cacheMux)
 	shim := blobshim.NewHandler(p.cfg.HTTPClient, p.cfg.StagingDir)
 	upstream := &url.URL{Scheme: "https", Host: p.cfg.ResultsHost}
 	handler := intercept.NewInterceptor(cacheMux, shim, upstream, transport, p.healthy.Load)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
@@ -112,11 +113,6 @@ func (h *Handler) emitBytesStored(ctx context.Context, bytes int64) {
 	}
 }
 
-type reserveCacheRequest struct {
-	Key     string `json:"key"`
-	Version string `json:"version"`
-}
-
 type reserveCacheResponse struct {
 	CacheID  int    `json:"cacheId"`
 	CacheKey string `json:"cacheKey,omitempty"`
@@ -124,11 +120,6 @@ type reserveCacheResponse struct {
 
 type commitCacheRequest struct {
 	Size int64 `json:"size"`
-}
-
-type getCacheResponse struct {
-	ArchiveLocation string `json:"archiveLocation"`
-	CacheKey        string `json:"cacheKey"`
 }
 
 // ReserveCacheEntry reserves a cache entry for upload via POST /_apis/artifactcache/caches.
@@ -140,7 +131,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, config.MaxBodySize)
 
-	var req reserveCacheRequest
+	var req wire.ReserveCacheRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -290,7 +281,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := getCacheResponse{
+	resp := wire.GetCacheResponse{
 		ArchiveLocation: downloadURL,
 		CacheKey:        cacheKey,
 	}

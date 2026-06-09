@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
 
@@ -21,11 +22,6 @@ type contextKey string
 const (
 	// scopeContextKey is the context key for cache scope.
 	scopeContextKey contextKey = "cache_scope"
-)
-
-const (
-	// CacheTokenHeader is the HTTP header used to pass the cache authentication token.
-	CacheTokenHeader = "X-Cache-Token"
 )
 
 // GenerateCacheToken creates a self-contained HMAC token for cache authentication.
@@ -142,7 +138,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		token := r.Header.Get(CacheTokenHeader)
+		token := r.Header.Get(wire.CacheTokenHeader)
 		if token == "" {
 			// Also check Authorization header for Bearer token
 			auth := r.Header.Get("Authorization")
