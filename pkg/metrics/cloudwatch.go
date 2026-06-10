@@ -76,6 +76,12 @@ func (p *CloudWatchPublisher) PublishJobRequeued(ctx context.Context, reason str
 	return p.putCounter(ctx, "JobsRequeued", dims("Reason", reason))
 }
 
+// PublishJobDeduplicated publishes the jobs deduplicated counter (dual-path dedup
+// discards; not a fulfillment failure).
+func (p *CloudWatchPublisher) PublishJobDeduplicated(ctx context.Context, path string) error {
+	return p.putCounter(ctx, "JobsDeduplicated", dims("Path", path))
+}
+
 // PublishJobWaitSeconds publishes the job wait latency as a StatisticSet.
 func (p *CloudWatchPublisher) PublishJobWaitSeconds(ctx context.Context, pool, source string, seconds float64) error {
 	return p.putStatistic(ctx, "JobWaitSeconds", seconds, types.StandardUnitSeconds, dims(

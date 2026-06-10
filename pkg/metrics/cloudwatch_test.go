@@ -104,6 +104,13 @@ func TestCloudWatchPublisher_CounterMetrics(t *testing.T) {
 			},
 		},
 		{
+			name: "JobDeduplicated", wantName: "JobsDeduplicated",
+			wantDims: map[string]string{"Path": "queue"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobDeduplicated(context.Background(), "queue")
+			},
+		},
+		{
 			name: "FleetCreate", wantName: "FleetCreate",
 			wantDims: map[string]string{"Capacity": "1", "Result": "success"},
 			publish: func(p *CloudWatchPublisher) error {

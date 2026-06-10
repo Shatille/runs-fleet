@@ -52,10 +52,15 @@ const (
 	// hands a job back to the durable queue after fleet creation fails, so the
 	// ec2-worker can retry it with its on-demand fallback.
 	requeueReasonDirectFleetFailure = "direct_fleet_failure"
-	// discardReasonAlreadyClaimed is emitted when the ec2-worker drops an SQS
-	// message whose job was already claimed by a concurrent processor (typically
-	// the direct path). The metric makes this otherwise-silent dedup observable.
+	// discardReasonAlreadyClaimed labels the log line when the ec2-worker drops an
+	// SQS message whose job was already claimed by a concurrent processor (typically
+	// the direct path).
 	discardReasonAlreadyClaimed = "already_claimed"
+	// dedupPathQueue is the jobs_deduplicated path label for the durable-queue path
+	// dropping its copy after the fast direct path won the claim. This dedup is a
+	// success, not a fulfillment failure, so it is intentionally NOT a scheduling
+	// failure.
+	dedupPathQueue = "queue"
 )
 
 var (
@@ -133,6 +138,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	jobProcessed := false
 	poisonMessage := false
 	alreadyClaimed := false
+	claimExhausted := false
 
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
@@ -152,17 +158,33 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		if alreadyClaimed {
 			// The SQS copy of a job that a concurrent processor (typically the
 			// direct/webhook path) already claimed. Dropping it is correct dedup,
-			// but log + count it: this discard is the load-bearing half of the
-			// dual-path race, and was previously invisible.
+			// the load-bearing half of the dual-path race. Count it as a dedup, NOT
+			// a scheduling failure: the job did get a runner via the winning path,
+			// so it must not deflate the fulfillment SLA.
 			ec2Log.Debug(cleanupCtx, "discarding already-claimed message",
 				slog.String("reason", discardReasonAlreadyClaimed))
 			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
 				ec2Log.Error(cleanupCtx, "already claimed message delete failed", slog.String("error", err.Error()))
 			}
 			if deps.Metrics != nil {
-				if err := deps.Metrics.PublishSchedulingFailure(cleanupCtx, discardReasonAlreadyClaimed); err != nil {
-					ec2Log.Error(cleanupCtx, "already-claimed discard metric failed", slog.String("error", err.Error()))
+				if err := deps.Metrics.PublishJobDeduplicated(cleanupCtx, dedupPathQueue); err != nil {
+					ec2Log.Error(cleanupCtx, "already-claimed dedup metric failed", slog.String("error", err.Error()))
 				}
+				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, queueMain, -1); err != nil {
+					ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
+				}
+			}
+		}
+
+		if claimExhausted {
+			// The claim lease was exhausted and the job marked terminal;
+			// failJobClaimExhausted already emitted the scheduling failure. Just drop
+			// the message and decrement depth — this is a failure, NOT a dedup, so it
+			// must not emit jobs_deduplicated.
+			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
+				ec2Log.Error(cleanupCtx, "claim-exhausted message delete failed", slog.String("error", err.Error()))
+			}
+			if deps.Metrics != nil {
 				if err := deps.Metrics.PublishQueueDepth(cleanupCtx, queueMain, -1); err != nil {
 					ec2Log.Error(cleanupCtx, "queue depth metric failed", slog.String("error", err.Error()))
 				}
@@ -217,7 +239,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 				// terminal write fails, leave the message for redelivery rather than
 				// deleting it: dropping it here would strand the job in claiming.
 				if ferr := failJobClaimExhausted(ctx, deps, &job); ferr == nil {
-					alreadyClaimed = true
+					claimExhausted = true
 				}
 				return
 			}

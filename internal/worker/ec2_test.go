@@ -625,6 +625,7 @@ type mockMetricsPublisher struct {
 	requeuedReason         string
 	schedulingFailures     int
 	schedulingFailureTypes []string
+	dedupPaths             []string
 	jobWaits           []jobWaitCall
 	processingCalls    []processingCall
 }
@@ -667,6 +668,12 @@ func (m *mockMetricsPublisher) PublishSchedulingFailure(_ context.Context, taskT
 	defer m.mu.Unlock()
 	m.schedulingFailures++
 	m.schedulingFailureTypes = append(m.schedulingFailureTypes, taskType)
+	return nil
+}
+func (m *mockMetricsPublisher) PublishJobDeduplicated(_ context.Context, path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dedupPaths = append(m.dedupPaths, path)
 	return nil
 }
 func (m *mockMetricsPublisher) PublishJobWaitSeconds(_ context.Context, pool, source string, seconds float64) error {
@@ -1351,11 +1358,12 @@ func TestProcessEC2Message_ClaimExhausted_MarksTerminalAndDeletes(t *testing.T) 
 	}
 
 	fleetCreated := false
+	mockMetrics := &mockMetricsPublisher{}
 	var subnetIndex uint64
 	deps := EC2WorkerDeps{
 		Queue:       mockQueue,
 		Fleet:       &fleet.Manager{},
-		Metrics:     metrics.NoopPublisher{},
+		Metrics:     mockMetrics,
 		DB:          dbClient,
 		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
 		SubnetIndex: &subnetIndex,
@@ -1376,6 +1384,16 @@ func TestProcessEC2Message_ClaimExhausted_MarksTerminalAndDeletes(t *testing.T) 
 	}
 	if deleteCount == 0 {
 		t.Error("claim-exhausted message must be deleted, not redelivered forever")
+	}
+	// Exhaustion is a genuine fulfillment failure (job_claim), and must NOT be
+	// miscounted as a dedup — its message-cleanup shares no metric with the
+	// already-claimed dual-path discard.
+	if len(mockMetrics.schedulingFailureTypes) != 1 || mockMetrics.schedulingFailureTypes[0] != schedulingFailureJobClaim {
+		t.Errorf("claim-exhausted must emit one %q scheduling failure; got %v",
+			schedulingFailureJobClaim, mockMetrics.schedulingFailureTypes)
+	}
+	if len(mockMetrics.dedupPaths) != 0 {
+		t.Errorf("claim-exhausted must not emit a dedup metric; got %v", mockMetrics.dedupPaths)
 	}
 }
 
@@ -1491,8 +1509,9 @@ func TestProcessEC2Message_StaleReclaim_MessageNotLost(t *testing.T) {
 // TestProcessEC2Message_AlreadyClaimed_EmitsDiscardObservability proves that
 // when the ec2-worker drops an SQS copy of a job another processor already
 // claimed (the load-bearing half of the dual-path race), the discard is now
-// observable: the message is deleted, and a bounded-cardinality scheduling
-// failure metric is emitted with the already_claimed reason.
+// observable: the message is deleted and a jobs_deduplicated metric is emitted
+// with path=queue. Crucially it is NOT counted as a scheduling failure — the job
+// did get a runner via the winning path, so it must not deflate the fulfillment SLA.
 func TestProcessEC2Message_AlreadyClaimed_EmitsDiscardObservability(t *testing.T) {
 	origRetryDelay := RetryDelay
 	defer func() { RetryDelay = origRetryDelay }()
@@ -1552,15 +1571,15 @@ func TestProcessEC2Message_AlreadyClaimed_EmitsDiscardObservability(t *testing.T
 	if deleteCount != 1 {
 		t.Errorf("already-claimed message should be deleted once; got %d", deleteCount)
 	}
-	found := false
-	for _, ty := range mockMetrics.schedulingFailureTypes {
-		if ty == discardReasonAlreadyClaimed {
-			found = true
-		}
+	if len(mockMetrics.dedupPaths) != 1 || mockMetrics.dedupPaths[0] != dedupPathQueue {
+		t.Errorf("already-claimed discard must emit one jobs_deduplicated with path %q; got %v",
+			dedupPathQueue, mockMetrics.dedupPaths)
 	}
-	if !found {
-		t.Errorf("already-claimed discard must emit a scheduling failure with reason %q; got %v",
-			discardReasonAlreadyClaimed, mockMetrics.schedulingFailureTypes)
+	// The discard must NOT be a scheduling failure: the job was served by the
+	// winning path, so counting it would deflate the fulfillment SLA.
+	if len(mockMetrics.schedulingFailureTypes) != 0 {
+		t.Errorf("already-claimed discard must not emit a scheduling failure; got %v",
+			mockMetrics.schedulingFailureTypes)
 	}
 }
 
