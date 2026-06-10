@@ -4,14 +4,17 @@ package logging
 import (
 	"context"
 	"fmt"
+	"io"
 	golog "log"
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 )
 
-// Init configures the default slog logger with JSON output and
-// redirects stdlib log to the structured logger.
+// Init configures the default slog logger from RUNS_FLEET_LOG_LEVEL
+// (debug|info|warn|error, default info) and RUNS_FLEET_LOG_FORMAT
+// (json|text, default json), and redirects stdlib log to the structured logger.
 func Init() {
 	hostname := os.Getenv("HOSTNAME")
 	if hostname == "" {
@@ -25,9 +28,10 @@ func Init() {
 		}
 	}
 
-	baseHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})
+	levelEnv := os.Getenv("RUNS_FLEET_LOG_LEVEL")
+	formatEnv := os.Getenv("RUNS_FLEET_LOG_FORMAT")
+	level, levelWarn := parseLevel(levelEnv)
+	baseHandler, formatWarn := newBaseHandler(os.Stdout, level, formatEnv)
 	// Wrap with contextHandler so attrs stashed via ContextWith are emitted on
 	// *Context log calls. Host is added on the inner JSON handler so it appears
 	// on every record regardless of context.
@@ -40,6 +44,50 @@ func Init() {
 	// Redirect stdlib log.Print* calls to slog
 	golog.SetOutput(&slogWriter{logger: logger})
 	golog.SetFlags(0)
+
+	// Emit any misconfiguration warnings only after the configured handler is
+	// installed, so they land in the same stream/format as the rest of the logs
+	// rather than on the pre-Init default handler.
+	if levelWarn != "" {
+		slog.Warn(levelWarn, slog.String("value", levelEnv))
+	}
+	if formatWarn != "" {
+		slog.Warn(formatWarn, slog.String("value", formatEnv))
+	}
+}
+
+// parseLevel maps RUNS_FLEET_LOG_LEVEL to an slog.Level. Unset or unrecognized
+// values fall back to info; an unrecognized value also returns a warning message
+// (empty when the input is valid). It performs no logging so it stays pure and
+// the caller controls where/when the warning is emitted.
+func parseLevel(s string) (slog.Level, string) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, ""
+	case "", "info":
+		return slog.LevelInfo, ""
+	case "warn", "warning":
+		return slog.LevelWarn, ""
+	case "error":
+		return slog.LevelError, ""
+	default:
+		return slog.LevelInfo, "invalid RUNS_FLEET_LOG_LEVEL, using info"
+	}
+}
+
+// newBaseHandler builds the output handler for the given level and format.
+// format "text" selects a text handler; "json" or unset selects JSON; any other
+// value falls back to JSON and returns a warning message (empty otherwise).
+func newBaseHandler(w io.Writer, level slog.Level, format string) (slog.Handler, string) {
+	opts := &slog.HandlerOptions{Level: level}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "text":
+		return slog.NewTextHandler(w, opts), ""
+	case "", "json":
+		return slog.NewJSONHandler(w, opts), ""
+	default:
+		return slog.NewJSONHandler(w, opts), "invalid RUNS_FLEET_LOG_FORMAT, using json"
+	}
 }
 
 // slogWriter redirects stdlib log output to slog with logType=stdlib marker.
