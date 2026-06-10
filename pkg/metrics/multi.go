@@ -116,6 +116,12 @@ func (m *MultiPublisher) PublishJobRequeued(ctx context.Context, reason string) 
 	})
 }
 
+func (m *MultiPublisher) PublishJobDeduplicated(ctx context.Context, path string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishJobDeduplicated(ctx, path)
+	})
+}
+
 func (m *MultiPublisher) PublishJobWaitSeconds(ctx context.Context, pool, source string, seconds float64) error { //nolint:revive
 	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobWaitSeconds(ctx, pool, source, seconds)

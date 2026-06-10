@@ -143,6 +143,7 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 		{"PublishRunnerConfirmed", func() error { return multi.PublishRunnerConfirmed(ctx, "default") }},
 		{"PublishJobCompleted", func() error { return multi.PublishJobCompleted(ctx, "default", "success", "o/r") }},
 		{"PublishJobRequeued", func() error { return multi.PublishJobRequeued(ctx, "spot_interruption") }},
+		{"PublishJobDeduplicated", func() error { return multi.PublishJobDeduplicated(ctx, "queue") }},
 		{"PublishJobWaitSeconds", func() error { return multi.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},
 		{"PublishJobExecutionSeconds", func() error { return multi.PublishJobExecutionSeconds(ctx, "default", "success", 90) }},
 		{"PublishInstanceProvisionSeconds", func() error { return multi.PublishInstanceProvisionSeconds(ctx, "cold_start", "c7g", 30) }},

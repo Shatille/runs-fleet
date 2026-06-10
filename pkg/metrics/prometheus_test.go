@@ -91,6 +91,7 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishRunnerConfirmed", func() error { return pub.PublishRunnerConfirmed(ctx, "default") }},
 		{"PublishJobCompleted", func() error { return pub.PublishJobCompleted(ctx, "default", "success", "o/r") }},
 		{"PublishJobRequeued", func() error { return pub.PublishJobRequeued(ctx, "spot_interruption") }},
+		{"PublishJobDeduplicated", func() error { return pub.PublishJobDeduplicated(ctx, "queue") }},
 		{"PublishJobWaitSeconds", func() error { return pub.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},
 		{"PublishJobExecutionSeconds", func() error { return pub.PublishJobExecutionSeconds(ctx, "default", "success", 90) }},
 		{"PublishInstanceProvisionSeconds", func() error { return pub.PublishInstanceProvisionSeconds(ctx, "cold_start", "c7g", 30) }},

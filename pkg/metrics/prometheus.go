@@ -31,6 +31,7 @@ type PrometheusPublisher struct {
 	runnerConfirmed     *prometheus.CounterVec
 	jobsCompleted       *prometheus.CounterVec
 	jobsRequeued        *prometheus.CounterVec
+	jobsDeduplicated    *prometheus.CounterVec
 	jobWaitSeconds      *prometheus.HistogramVec
 	jobExecutionSeconds *prometheus.HistogramVec
 
@@ -109,6 +110,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "jobs_requeued_total",
 			Help: "Total number of jobs requeued",
 		}, []string{"reason"}),
+		jobsDeduplicated: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "jobs_deduplicated_total",
+			Help: "Job messages discarded as already-claimed by a concurrent processor (dual-path dedup); NOT a fulfillment failure",
+		}, []string{"path"}),
 		jobWaitSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: ns, Name: "job_wait_seconds",
 			Help: "Time from job enqueue to assignment in seconds", Buckets: latencyBucketsLong,
@@ -239,7 +244,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 
 	registry.MustRegister(
 		p.jobsEnqueued, p.jobsAssigned, p.runnerConfirmed, p.jobsCompleted, p.jobsRequeued,
-		p.jobWaitSeconds, p.jobExecutionSeconds,
+		p.jobsDeduplicated, p.jobWaitSeconds, p.jobExecutionSeconds,
 		p.instanceProvisionSeconds, p.fleetCreate, p.fleetCreateSeconds, p.instances,
 		p.spotInterruptions, p.circuitBreakerTrip, p.circuitBreakerOpen,
 		p.poolInstances, p.poolDesired, p.poolActions, p.poolReconcileSeconds,
@@ -288,6 +293,11 @@ func (p *PrometheusPublisher) PublishJobCompleted(_ context.Context, pool, resul
 
 func (p *PrometheusPublisher) PublishJobRequeued(_ context.Context, reason string) error { //nolint:revive
 	p.jobsRequeued.WithLabelValues(reason).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishJobDeduplicated(_ context.Context, path string) error { //nolint:revive
+	p.jobsDeduplicated.WithLabelValues(path).Inc()
 	return nil
 }
 

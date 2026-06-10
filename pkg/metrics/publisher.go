@@ -45,6 +45,15 @@ type Publisher interface {
 	// PublishJobRequeued increments jobs_requeued_total when a job is re-queued.
 	PublishJobRequeued(ctx context.Context, reason string) error
 
+	// PublishJobDeduplicated increments jobs_deduplicated_total when a job message
+	// is discarded because the job was already claimed by a concurrent processor
+	// (the dual-path dispatch: the fast direct path and the durable queue copy race
+	// to claim, and the loser drops its message). path identifies the discarding
+	// path (e.g. "queue"). This is correct deduplication, NOT a fulfillment failure:
+	// the job did get a runner via the winning path, so it must never be counted as
+	// a PublishSchedulingFailure.
+	PublishJobDeduplicated(ctx context.Context, path string) error
+
 	// PublishJobWaitSeconds records time from enqueue to assignment, by pool and
 	// source.
 	PublishJobWaitSeconds(ctx context.Context, pool, source string, seconds float64) error
@@ -152,9 +161,10 @@ type Publisher interface {
 	// PublishSchedulingFailure increments a scheduling failure counter with a task
 	// type dimension. This is the failure side of the fulfillment SLA: it counts
 	// every request for which we gave up on assigning a runner for any reason
-	// (capacity exhaustion with no fallback, claim exhaustion, an already-claimed
-	// discard, a housekeeping task that could not schedule). Its success counterpart
-	// is PublishJobAssigned. It must never reflect a client workflow's pass/fail.
+	// (capacity exhaustion with no fallback, claim exhaustion, a housekeeping task
+	// that could not schedule). Its success counterpart is PublishJobAssigned. It
+	// must never reflect a client workflow's pass/fail, nor a benign dual-path
+	// dedup discard (that is PublishJobDeduplicated, which is not an SLA failure).
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
 
 	// PublishMessageDeletionFailure increments a message deletion failure counter
@@ -202,6 +212,9 @@ func (NoopPublisher) PublishJobCompleted(context.Context, string, string, string
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishJobRequeued(context.Context, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishJobDeduplicated(context.Context, string) error { return nil }
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishJobWaitSeconds(context.Context, string, string, float64) error {
