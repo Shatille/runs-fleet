@@ -25,6 +25,11 @@ import (
 // operator-triggered requeue action.
 const MaxRequeueRetries = 2
 
+// requeueReasonOperator labels requeues and scheduling failures driven by the
+// operator-triggered RequeueHungJobs action, kept distinct from the watchdog's
+// unconfirmed_runners so a spike signals the automated watchdog isn't keeping up.
+const requeueReasonOperator = "operator_requeue"
+
 // RequeueableJob carries the fields needed to rebuild a launch message for a job whose
 // runner needs to be re-dispatched.
 type RequeueableJob struct {
@@ -132,6 +137,9 @@ type RequeueDeps struct {
 	Requeuer JobRequeuer
 	// JobsTable is the DynamoDB jobs table name.
 	JobsTable string
+	// Metrics is optional; when set, emits operator_requeue counters mirroring the
+	// unconfirmed-runner watchdog. Nil-safe (no emit when unset). Never emits on a dry run.
+	Metrics MetricsAPI
 	// Log is optional; a default is used when nil.
 	Log *logging.Logger
 }
@@ -213,6 +221,9 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 		if c.RetryCount >= MaxRequeueRetries {
 			result.SkippedExhausted++
 			log.Warn(jobCtx, "requeue skipped: retries exhausted", slog.Int("retry_count", c.RetryCount))
+			if !opts.DryRun && deps.Metrics != nil {
+				_ = deps.Metrics.PublishSchedulingFailure(jobCtx, requeueReasonOperator)
+			}
 			continue
 		}
 		if c.RunID == 0 {
@@ -245,6 +256,9 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 
 		result.Requeued++
 		result.JobIDs = append(result.JobIDs, c.JobID)
+		if deps.Metrics != nil {
+			_ = deps.Metrics.PublishJobRequeued(jobCtx, requeueReasonOperator)
+		}
 		log.Info(jobCtx, "hung job requeued", slog.Int("retry_count", c.RetryCount+1))
 	}
 

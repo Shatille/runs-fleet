@@ -84,6 +84,36 @@ func (m *mockRequeuer) SendMessage(_ context.Context, job *queue.JobMessage) err
 	return nil
 }
 
+// mockRequeueMetrics captures the operator_requeue counters so the handler→
+// housekeeping metrics wiring can be asserted end-to-end. It implements
+// housekeeping.MetricsAPI.
+type mockRequeueMetrics struct {
+	requeuedReasons    []string
+	schedulingFailures []string
+}
+
+func (m *mockRequeueMetrics) PublishJobRequeued(_ context.Context, reason string) error {
+	m.requeuedReasons = append(m.requeuedReasons, reason)
+	return nil
+}
+
+func (m *mockRequeueMetrics) PublishSchedulingFailure(_ context.Context, taskType string) error {
+	m.schedulingFailures = append(m.schedulingFailures, taskType)
+	return nil
+}
+
+func (m *mockRequeueMetrics) PublishHousekeepingAction(_ context.Context, _ string, _ int) error {
+	return nil
+}
+
+func (m *mockRequeueMetrics) PublishPoolInstances(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
+func (m *mockRequeueMetrics) PublishPoolDesired(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
 func requeueAdminItem(jobID int64, instanceID string, runID int64, retry int, status string) map[string]types.AttributeValue {
 	item := map[string]types.AttributeValue{
 		"job_id":        &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
@@ -104,7 +134,7 @@ func requeueAdminItem(jobID int64, instanceID string, runID int64, retry int, st
 func TestRequeueHandler_NoJobsTable(t *testing.T) {
 	t.Parallel()
 
-	handler := NewRequeueHandler(nil, nil, nil, "", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(nil, nil, nil, nil, "", NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -123,7 +153,7 @@ func TestRequeueHandler_ScansLaunchedOnly(t *testing.T) {
 	t.Parallel()
 
 	dyn := &mockRequeueDynamo{}
-	handler := NewRequeueHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, nil, "jobs-table", NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -157,8 +187,9 @@ func TestRequeueHandler_RequeuesHungJob(t *testing.T) {
 		requeueAdminItem(42, "i-stuck", 7, 0, "launched"),
 	}}
 	rq := &mockRequeuer{}
+	metrics := &mockRequeueMetrics{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, metrics, "jobs-table", NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -185,6 +216,49 @@ func TestRequeueHandler_RequeuesHungJob(t *testing.T) {
 	if dyn.updateCalls != 1 {
 		t.Errorf("expected record flipped to requeued, got %d updates", dyn.updateCalls)
 	}
+	// The handler must forward the operator_requeue counter through to metrics.
+	if !slices.Equal(metrics.requeuedReasons, []string{"operator_requeue"}) {
+		t.Errorf("expected one operator_requeue requeue metric, got %v", metrics.requeuedReasons)
+	}
+}
+
+// A candidate whose retries are exhausted is reported as skipped and emits an
+// operator_requeue scheduling-failure (never a requeue), so an operator sweep that
+// can no longer recover a job is observable.
+func TestRequeueHandler_ExhaustedEmitsSchedulingFailure(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockRequeueEC2{} // instance gone
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-gone", 7, 2, "launched"), // retry_count == MaxRequeueRetries
+	}}
+	rq := &mockRequeuer{}
+	metrics := &mockRequeueMetrics{}
+
+	handler := NewRequeueHandler(ec2Client, dyn, rq, metrics, "jobs-table", NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/housekeeping/requeue-hung-jobs", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var resp RequeueHungJobsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Requeued != 0 || resp.SkippedExhausted != 1 {
+		t.Errorf("expected requeued=0 skipped_exhausted=1, got %+v", resp)
+	}
+	if len(metrics.requeuedReasons) != 0 {
+		t.Errorf("exhausted job must not emit a requeue metric, got %v", metrics.requeuedReasons)
+	}
+	if !slices.Equal(metrics.schedulingFailures, []string{"operator_requeue"}) {
+		t.Errorf("expected one operator_requeue scheduling-failure metric, got %v", metrics.schedulingFailures)
+	}
 }
 
 func TestRequeueHandler_DryRunDoesNotMutate(t *testing.T) {
@@ -196,7 +270,7 @@ func TestRequeueHandler_DryRunDoesNotMutate(t *testing.T) {
 	}}
 	rq := &mockRequeuer{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -229,7 +303,7 @@ func TestRequeueHandler_ScanError(t *testing.T) {
 	dyn := &mockRequeueDynamo{scanErr: context.DeadlineExceeded}
 	rq := &mockRequeuer{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -254,7 +328,7 @@ func TestRequeueHandler_ThresholdBelowMinimumClampsToDefault(t *testing.T) {
 	}}
 	rq := &mockRequeuer{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
