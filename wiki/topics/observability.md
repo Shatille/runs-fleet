@@ -389,6 +389,22 @@ Unknown instance types fall back to `t4g.medium` (`0.0336`).
 
 ## Gotchas [coverage: high -- 8 sources]
 
+- **Per-pool gauges poisoned by instance-claim rows (high-cardinality
+  footgun).** Instance claims and housekeeping task locks share the *pools*
+  DynamoDB table, distinguished only by a sentinel `pool_name` prefix
+  (`__instance_claim:<instance-id>`, `__task_lock:<task>`). Any path that
+  scans the table as if every row were a pool and then publishes
+  `PoolName`/`Pool`-dimensioned metrics mints **one zero-valued metric series
+  per ephemeral instance ID** — unbounded cardinality that grows with instance
+  churn, not with pool count. This drove CloudWatch custom metrics
+  (`MetricMonitorUsage`) to 3,000+ series (~$900/mo) during busy periods while
+  collapsing back to ~baseline when idle, so it hides between bills. The guard
+  is `db.IsReservedPoolKey`: `ListPools`, `GetPoolConfig`, and
+  `ExecutePoolAudit` all skip reserved keys, so a phantom pool is never
+  reconciled (and never writes a reconcile lock). When adding a metric
+  dimensioned by pool, confirm the pool value comes from a *filtered* pool list,
+  never a raw table scan — and prefer a billing alarm on CloudWatch estimated
+  charges to catch the next cardinality blowup on day one.
 - **CloudWatch put-rate.** Most metric methods issue one
   `PutMetricData` per call. High-frequency calls (e.g., per-cache-event)
   will hit CloudWatch's request limits — there's no batching layer.
@@ -456,3 +472,7 @@ Unknown instance types fall back to `t4g.medium` (`0.0336`).
 - [/Users/shavakan/workspace/runs-fleet/pkg/logging/logger.go](../../pkg/logging/logger.go)
 - [/Users/shavakan/workspace/runs-fleet/pkg/cost/reporter.go](../../pkg/cost/reporter.go)
 - [/Users/shavakan/workspace/runs-fleet/pkg/cost/pricing.go](../../pkg/cost/pricing.go)
+- [/Users/shavakan/workspace/runs-fleet/pkg/pools/manager.go](../../pkg/pools/manager.go)
+- [/Users/shavakan/workspace/runs-fleet/pkg/db/pool_config.go](../../pkg/db/pool_config.go)
+- [/Users/shavakan/workspace/runs-fleet/pkg/db/instance_claims.go](../../pkg/db/instance_claims.go)
+- [/Users/shavakan/workspace/runs-fleet/pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)
