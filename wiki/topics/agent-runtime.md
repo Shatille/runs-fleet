@@ -214,9 +214,9 @@ const TelemetryTimeout = 30 * time.Second
 
 ## Sources [coverage: high]
 
-- [`pkg/agent/config.go`](/Users/shavakan/workspace/runs-fleet/pkg/agent/config.go)
-- [`pkg/agent/downloader.go`](/Users/shavakan/workspace/runs-fleet/pkg/agent/downloader.go)
-- [`pkg/agent/executor.go`](/Users/shavakan/workspace/runs-fleet/pkg/agent/executor.go)
-- [`pkg/agent/safety.go`](/Users/shavakan/workspace/runs-fleet/pkg/agent/safety.go)
-- [`pkg/agent/telemetry.go`](/Users/shavakan/workspace/runs-fleet/pkg/agent/telemetry.go)
-- [`pkg/agent/termination.go`](/Users/shavakan/workspace/runs-fleet/pkg/agent/termination.go)
+- [`pkg/agent/config.go`](../../pkg/agent/config.go)
+- [`pkg/agent/downloader.go`](../../pkg/agent/downloader.go)
+- [`pkg/agent/executor.go`](../../pkg/agent/executor.go)
+- [`pkg/agent/safety.go`](../../pkg/agent/safety.go)
+- [`pkg/agent/telemetry.go`](../../pkg/agent/telemetry.go)
+- [`pkg/agent/termination.go`](../../pkg/agent/termination.go)

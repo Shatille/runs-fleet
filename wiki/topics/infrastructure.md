@@ -220,7 +220,7 @@ max runtime minutes (default 360 = 6 hours), key name, and a free-form
   static agents. Dev shell pins Go 1.25, golangci-lint, delve, awscli2,
   ssm-session-manager-plugin, packer.
 - **Helm chart for K8s mode only.** EC2 mode does not deploy via Helm —
-  the orchestrator runs on Fargate (Terraform in `shavakan-terraform`).
+  the orchestrator runs on Fargate (Terraform in a separate IaC repository).
   Helm exists to package the same orchestrator image for K8s clusters that
   want to self-host the control plane and use Karpenter-provisioned runner
   pods (`mode: k8s`).
@@ -282,13 +282,13 @@ max runtime minutes (default 360 = 6 hours), key name, and a free-form
 
 ## Sources [coverage: high]
 
-- [/Users/shavakan/workspace/runs-fleet/Dockerfile](/Users/shavakan/workspace/runs-fleet/Dockerfile)
-- [/Users/shavakan/workspace/runs-fleet/docker/runner/Dockerfile](/Users/shavakan/workspace/runs-fleet/docker/runner/Dockerfile)
-- [/Users/shavakan/workspace/runs-fleet/docker/runner/entrypoint.sh](/Users/shavakan/workspace/runs-fleet/docker/runner/entrypoint.sh)
-- [/Users/shavakan/workspace/runs-fleet/Makefile](/Users/shavakan/workspace/runs-fleet/Makefile)
-- [/Users/shavakan/workspace/runs-fleet/flake.nix](/Users/shavakan/workspace/runs-fleet/flake.nix)
-- [/Users/shavakan/workspace/runs-fleet/packer/provision-base.sh](/Users/shavakan/workspace/runs-fleet/packer/provision-base.sh)
-- [/Users/shavakan/workspace/runs-fleet/packer/provision-runs-fleet.sh](/Users/shavakan/workspace/runs-fleet/packer/provision-runs-fleet.sh)
-- [/Users/shavakan/workspace/runs-fleet/packer/runs-fleet-runner-arm64.pkr.hcl](/Users/shavakan/workspace/runs-fleet/packer/runs-fleet-runner-arm64.pkr.hcl)
-- [/Users/shavakan/workspace/runs-fleet/deploy/helm/runs-fleet/Chart.yaml](/Users/shavakan/workspace/runs-fleet/deploy/helm/runs-fleet/Chart.yaml)
-- [/Users/shavakan/workspace/runs-fleet/deploy/helm/runs-fleet/values.yaml](/Users/shavakan/workspace/runs-fleet/deploy/helm/runs-fleet/values.yaml)
+- [Dockerfile](../../Dockerfile)
+- [docker/runner/Dockerfile](../../docker/runner/Dockerfile)
+- [docker/runner/entrypoint.sh](../../docker/runner/entrypoint.sh)
+- [Makefile](../../Makefile)
+- [flake.nix](../../flake.nix)
+- [packer/provision-base.sh](../../packer/provision-base.sh)
+- [packer/provision-runs-fleet.sh](../../packer/provision-runs-fleet.sh)
+- [packer/runs-fleet-runner-arm64.pkr.hcl](../../packer/runs-fleet-runner-arm64.pkr.hcl)
+- [deploy/helm/runs-fleet/Chart.yaml](../../deploy/helm/runs-fleet/Chart.yaml)
+- [deploy/helm/runs-fleet/values.yaml](../../deploy/helm/runs-fleet/values.yaml)
