@@ -56,10 +56,26 @@ type PoolConfig struct {
 	MultiSpec bool `dynamodbav:"multi_spec,omitempty"`
 }
 
-// GetPoolConfig retrieves pool configuration from DynamoDB.
+// IsReservedPoolKey reports whether a pools-table partition key is an internal
+// reserved record — a housekeeping task lock or an instance claim — rather than
+// a real pool configuration. These records share the pools table but are keyed
+// by a sentinel prefix, so every path that enumerates or resolves pools must
+// exclude them; otherwise they get reconciled as phantom pools and inflate
+// per-pool CloudWatch metric cardinality (one zero-valued series per ephemeral
+// instance ID).
+func IsReservedPoolKey(poolName string) bool {
+	return strings.HasPrefix(poolName, taskLockPrefix) ||
+		strings.HasPrefix(poolName, instanceClaimPrefix)
+}
+
+// GetPoolConfig retrieves pool configuration from DynamoDB. Reserved keys (task
+// locks, instance claims) are not pools and resolve to (nil, nil).
 func (c *Client) GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error) {
 	if poolName == "" {
 		return nil, fmt.Errorf("pool name cannot be empty")
+	}
+	if IsReservedPoolKey(poolName) {
+		return nil, nil
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
@@ -112,7 +128,7 @@ func (c *Client) ListPools(ctx context.Context) ([]string, error) {
 			if err := attributevalue.Unmarshal(name, &poolName); err != nil {
 				continue
 			}
-			if strings.HasPrefix(poolName, taskLockPrefix) {
+			if IsReservedPoolKey(poolName) {
 				continue
 			}
 			pools = append(pools, poolName)

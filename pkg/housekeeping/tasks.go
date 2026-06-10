@@ -636,6 +636,9 @@ func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
 		if v, ok := item["pool_name"].(*types.AttributeValueMemberS); ok {
 			poolName = v.Value
 		}
+		if db.IsReservedPoolKey(poolName) {
+			continue
+		}
 		if v, ok := item["desired_running"].(*types.AttributeValueMemberN); ok {
 			_, _ = fmt.Sscanf(v.Value, "%d", &desiredRunning)
 		}
