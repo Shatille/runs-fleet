@@ -48,6 +48,7 @@ type MetricsAPI interface {
 	PublishPoolDesired(ctx context.Context, pool, kind string, n int) error
 	PublishJobRequeued(ctx context.Context, reason string) error
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
+	PublishQueueDepth(ctx context.Context, queue string, depth float64) error
 }
 
 // JobRequeuer re-enqueues a job onto the main job queue. Satisfied by the SQS
@@ -65,7 +66,12 @@ const (
 	housekeepingActionOrphanedJobs      = "orphaned_jobs"
 	housekeepingActionStaleJobs         = "stale_jobs"
 	housekeepingActionUnconfirmedRunner = "unconfirmed_runners"
+	housekeepingActionDLQRedrive        = "dlq_redrive"
 )
+
+// dlqQueueName labels the main queue's dead-letter queue for depth metrics,
+// using the same "<queue>-dlq" convention the admin queues handler reports under.
+const dlqQueueName = "main-dlq"
 
 // CostReporter generates cost reports.
 type CostReporter interface {
@@ -688,6 +694,12 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 	}
 
 	msgCount := attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]
+	// Publish DLQ depth every tick (including 0) so the gauge tracks a draining DLQ;
+	// a non-numeric attribute (never expected from SQS) just skips the emit.
+	depth, depthErr := strconv.ParseFloat(msgCount, 64)
+	if t.metrics != nil && depthErr == nil {
+		_ = t.metrics.PublishQueueDepth(ctx, dlqQueueName, depth)
+	}
 	if msgCount == "0" {
 		return nil
 	}
@@ -730,6 +742,13 @@ func (t *Tasks) ExecuteDLQRedrive(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start message move task: %w", err)
+	}
+
+	// Count the (approximate) messages handed to the move task, reusing the same
+	// parsed depth as the gauge above. A non-numeric ApproximateNumberOfMessages
+	// (never expected from SQS) skips the count, like it skips the gauge.
+	if t.metrics != nil && depthErr == nil {
+		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionDLQRedrive, int(depth))
 	}
 
 	t.logger().Info(ctx, "dlq redrive started",

@@ -186,10 +186,12 @@ type mockTaskMetricsAPI struct {
 	orphanedJobsCount  int
 	staleJobsCount     int
 	unconfirmedCount   int
+	dlqRedriveCount    int
 	requeuedReasons    []string
 	schedulingFailures []string
 	poolRunning        map[string]int
 	poolDesired        map[string]int
+	queueDepths        map[string]float64
 	err                error
 }
 
@@ -207,6 +209,8 @@ func (m *mockTaskMetricsAPI) PublishHousekeepingAction(_ context.Context, action
 		m.staleJobsCount = count
 	case housekeepingActionUnconfirmedRunner:
 		m.unconfirmedCount = count
+	case housekeepingActionDLQRedrive:
+		m.dlqRedriveCount = count
 	}
 	return m.err
 }
@@ -234,6 +238,14 @@ func (m *mockTaskMetricsAPI) PublishPoolDesired(_ context.Context, pool, _ strin
 		m.poolDesired = make(map[string]int)
 	}
 	m.poolDesired[pool] = n
+	return m.err
+}
+
+func (m *mockTaskMetricsAPI) PublishQueueDepth(_ context.Context, queue string, depth float64) error {
+	if m.queueDepths == nil {
+		m.queueDepths = make(map[string]float64)
+	}
+	m.queueDepths[queue] = depth
 	return m.err
 }
 
@@ -1188,8 +1200,10 @@ func TestExecuteDLQRedrive_EmptyDLQ(t *testing.T) {
 		},
 	}
 
+	metrics := &mockTaskMetricsAPI{}
 	tasks := &Tasks{
 		sqsClient: sqsClient,
+		metrics:   metrics,
 		config: &config.Config{
 			QueueDLQURL: "https://sqs.example.com/dlq",
 			QueueURL:    "https://sqs.example.com/main-queue",
@@ -1206,6 +1220,15 @@ func TestExecuteDLQRedrive_EmptyDLQ(t *testing.T) {
 	}
 	if sqsClient.startMoveTaskCalls != 0 {
 		t.Errorf("expected 0 start move task calls for empty DLQ, got %d", sqsClient.startMoveTaskCalls)
+	}
+	// An empty DLQ still publishes depth 0 so the gauge tracks drain-to-zero, but
+	// performs no redrive action.
+	got, ok := metrics.queueDepths[dlqQueueName]
+	if !ok || got != 0 {
+		t.Errorf("expected %s depth gauge = 0, got %v (published=%v)", dlqQueueName, got, ok)
+	}
+	if metrics.dlqRedriveCount != 0 {
+		t.Errorf("empty DLQ must not emit a redrive action, got %d", metrics.dlqRedriveCount)
 	}
 }
 
@@ -1233,8 +1256,10 @@ func TestExecuteDLQRedrive_SkipsWhenMoveTaskRunning(t *testing.T) {
 		},
 	}
 
+	metrics := &mockTaskMetricsAPI{}
 	tasks := &Tasks{
 		sqsClient: sqsClient,
+		metrics:   metrics,
 		config: &config.Config{
 			QueueDLQURL: "https://sqs.example.com/dlq",
 			QueueURL:    "https://sqs.example.com/main-queue",
@@ -1249,6 +1274,14 @@ func TestExecuteDLQRedrive_SkipsWhenMoveTaskRunning(t *testing.T) {
 	}
 	if sqsClient.listMoveTasksCalls != 1 {
 		t.Errorf("expected 1 list move tasks call, got %d", sqsClient.listMoveTasksCalls)
+	}
+	// The skip path still publishes the (non-zero) depth gauge — so a backed-up DLQ
+	// with a move task already running stays observable — but emits no redrive action.
+	if got := metrics.queueDepths[dlqQueueName]; got != 5 {
+		t.Errorf("expected %s depth gauge = 5 on skip, got %v", dlqQueueName, got)
+	}
+	if metrics.dlqRedriveCount != 0 {
+		t.Errorf("skip path must not emit a redrive action, got %d", metrics.dlqRedriveCount)
 	}
 }
 
@@ -1276,8 +1309,10 @@ func TestExecuteDLQRedrive_Success(t *testing.T) {
 		},
 	}
 
+	metrics := &mockTaskMetricsAPI{}
 	tasks := &Tasks{
 		sqsClient: sqsClient,
+		metrics:   metrics,
 		config: &config.Config{
 			QueueDLQURL: "https://sqs.example.com/dlq",
 			QueueURL:    "https://sqs.example.com/main-queue",
@@ -1291,6 +1326,14 @@ func TestExecuteDLQRedrive_Success(t *testing.T) {
 
 	if sqsClient.startMoveTaskCalls != 1 {
 		t.Errorf("expected 1 start move task call, got %d", sqsClient.startMoveTaskCalls)
+	}
+	// The non-empty DLQ depth is published as a gauge and the redriven message
+	// count as a housekeeping action.
+	if got := metrics.queueDepths[dlqQueueName]; got != 5 {
+		t.Errorf("expected %s depth gauge = 5, got %v", dlqQueueName, got)
+	}
+	if metrics.dlqRedriveCount != 5 {
+		t.Errorf("expected dlq_redrive action count = 5, got %d", metrics.dlqRedriveCount)
 	}
 }
 

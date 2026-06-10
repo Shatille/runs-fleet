@@ -114,6 +114,10 @@ func (m *mockRequeueMetrics) PublishPoolDesired(_ context.Context, _, _ string, 
 	return nil
 }
 
+func (m *mockRequeueMetrics) PublishQueueDepth(_ context.Context, _ string, _ float64) error {
+	return nil
+}
+
 func requeueAdminItem(jobID int64, instanceID string, runID int64, retry int, status string) map[string]types.AttributeValue {
 	item := map[string]types.AttributeValue{
 		"job_id":        &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
