@@ -92,6 +92,34 @@ runs-on: "runs-fleet/cpu=4/arch=arm64/disk=200"
 
 > **Cost note:** gp3 EBS storage costs ~$0.08/GB-month. Large disks add up quickly (e.g., 1TB = $80/month).
 
+## Build Cache
+
+runs-fleet ships a drop-in, S3-backed implementation of the GitHub Actions cache. **You don't need to change your workflow** — `actions/cache` and the cache-enabled setup actions work exactly as they do on GitHub-hosted runners. No tokens, URLs, or extra configuration are required:
+
+```yaml
+steps:
+  # actions/cache works unchanged
+  - uses: actions/cache@v4
+    with:
+      path: ~/.cache/go-build
+      key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+  # setup-* actions with built-in caching also just work
+  - uses: actions/setup-go@v5
+    with:
+      go-version: "1.25"
+      cache: true
+```
+
+Behind the scenes runs-fleet transparently serves both cache protocols — the legacy `ACTIONS_CACHE_URL` API and the newer protocol used by `actions/cache@v4`+ — from its own S3 bucket.
+
+What to know:
+
+- **Isolation:** Cache entries are scoped per repository (`owner/repo`). Repositories cannot read each other's caches.
+- **Eviction:** Entries expire 30 days after upload. Unlike GitHub-hosted runners there is no ~10 GB per-repo size cap — but treat caching as an optimization, not guaranteed storage.
+- **Architecture:** `arm64` and `amd64` runners keep separate caches (the runner OS/arch folds into the cache key), so a `arch=arm64`/`arch=amd64` matrix won't cross-contaminate — same as GitHub-hosted behavior.
+- **Best-effort:** Caching is fail-open. If the cache backend is unreachable the job still runs (just without a cache hit); it never fails the build.
+
 ## Examples
 
 ### Basic CI workflow

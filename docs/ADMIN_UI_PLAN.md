@@ -1,218 +1,64 @@
-# Admin UI Enhancement Plan
+# Admin UI Plan
 
-This document outlines the plan to enhance the runs-fleet admin UI from basic pool CRUD to a full operational dashboard.
+Status and remaining work for the runs-fleet admin UI. The original plan tracked a build-out from basic pool CRUD to a full operational dashboard; most of Phase 1 and the auth migration have since shipped. This document is re-scoped around what is left.
 
-## Context
+## Status (as of 2026-06-10)
 
-- **Current state**: Pool configuration management only (list, create, edit, delete)
-- **Target state**: Full operational visibility and control
-- **Auth**: Keycloak gatekeeper proxy handles authentication; admin UI trusts authenticated requests
+- **Auth**: ✅ Migrated to Keycloak gatekeeper header trust; legacy Bearer-token auth fully removed.
+- **Phase 1 (read dashboards)**: 🟡 Mostly built. Jobs, Pool status, and Circuit breaker are complete; Instances/Queues/Cost have their list/summary endpoints but not the planned detail/breakdown sub-endpoints; Metrics summary and the Audit viewer are not built.
+- **Phase 2 (write actions)**: 🟡 Essentially unbuilt — one divergent housekeeping endpoint exists.
+- **Phase 3 (advanced)**: ❌ Not started.
 
-## Architecture Changes
-
-### Authentication Simplification
-
-Remove Bearer token authentication from admin handlers. Keycloak gatekeeper proxy will:
-- Authenticate users via OIDC
-- Forward authenticated requests with user identity headers
-- Admin UI backend trusts `X-Auth-Request-User` and `X-Auth-Request-Groups` headers
-
-**Files to modify:**
-- `pkg/admin/auth.go` - Replace token validation with header extraction
-- `pkg/admin/ui/lib/api.ts` - Remove token management
-- `pkg/admin/ui/components/auth-wrapper.tsx` - Remove login form
-
-### Audit Logging
-
-Audit logging is mandatory and non-configurable. All admin actions are logged with:
-- User identity (from Keycloak headers)
-- Action performed
-- Target resource
-- Timestamp
-- Result (success/failure)
-- Client IP
-
-**Current state**: Already implemented in `handler.go:auditLog()`, needs user identity from headers.
+The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedded via `//go:embed` in `pkg/admin/ui.go`. Backend handlers live in `pkg/admin/handler_*.go`, wired in `cmd/server/main.go`.
 
 ---
 
-## Feature Additions
+## Shipped
 
-### Phase 1: Visibility (Read-only dashboards)
+| Area | Endpoint(s) / change | Evidence |
+|------|----------------------|----------|
+| Keycloak header auth | Trusts `X-Auth-Request-User` / `-Email` / `-Groups`; no token path | `pkg/admin/auth.go:25-102` |
+| Pool CRUD | `GET/POST /api/pools`, `GET/PUT/DELETE /api/pools/{name}` | `handler.go:118-122` |
+| Pool status enhancement | `current_running` / `current_stopped` / `busy_instances` in pool response | `handler.go:59-61,148,391` |
+| Jobs dashboard | `GET /api/jobs`, `/api/jobs/stats`, `/api/jobs/{id}` | `handler_jobs.go:76-78` |
+| Instances list | `GET /api/instances` (EC2 `tag:runs-fleet:managed`, busy cross-ref) | `handler_instances.go:59` |
+| Queues list | `GET /api/queues` (visible/in-flight/delayed + main DLQ) | `handler_queues.go:62` |
+| Circuit breaker status | `GET /api/circuit` | `handler_circuit.go:62` |
+| Cost summary | `GET /api/cost/summary` (MTD, spot/on-demand split, per-family) | `handler_cost.go:64` |
+| Audit logging | `auditLog()` on pool CRUD, with user identity + client IP | `handler.go:484-512` |
 
-#### 1.1 Jobs Dashboard
+### Built but not in the original plan
 
-**Purpose**: View running and historical jobs.
+- **Per-IP rate limiter** wrapping the whole `/api/` mux — `pkg/admin/ratelimit.go`, wired at `cmd/server/main.go:454`. (`RUNS_FLEET_ADMIN_RATE_LIMIT`, default 60/min.)
+- **Trace-UI link endpoint** `GET /api/config/trace-url` + `trace_id` on job responses — `handler_jobs.go:79`. (`RUNS_FLEET_TRACE_UI_URL`.)
+- **Dark-mode toggle** in the UI.
 
-**API endpoints:**
-```
-GET /api/jobs                    - List jobs with filters
-GET /api/jobs/{job_id}           - Job details
-GET /api/jobs/stats              - Aggregate statistics
-```
+### Corrections vs. the original plan
 
-**Query parameters:**
-- `status` - running, completed, failed, terminating, requeued
-- `pool` - Filter by pool name
-- `since` - ISO8601 timestamp
-- `limit`, `offset` - Pagination
-
-**Data source**: `runs-fleet-jobs` DynamoDB table
-
-**UI components:**
-- Jobs table with sortable columns
-- Status filters (tabs or dropdown)
-- Job detail modal/page
-- Real-time updates via polling (30s interval)
-
-**Backend changes:**
-- New `ListJobs` handler in `pkg/admin/handler.go`
-- Add GSI on `(status, created_at)` for efficient queries (optional, scan acceptable at current scale)
+- Endpoint paths differ from the original draft: it's `/api/circuit` (not `/api/circuit-breaker`) and `/api/jobs/{id}` (not `{job_id}`).
+- The UI is a **top-nav** layout (`ui/app/layout.tsx`), not a sidebar. The root page `ui/app/page.tsx` is the **Pools list**, not a separate metrics dashboard home. There is no `sidebar.tsx` / `metric-card.tsx` / `queue-card.tsx`; dashboard cards are ad hoc inside `components/job-stats.tsx`.
 
 ---
 
-#### 1.2 Instances Dashboard
+## Remaining Work
 
-**Purpose**: View EC2 instances managed by runs-fleet.
+### Phase 1 — finish read dashboards
 
-**API endpoints:**
-```
-GET /api/instances               - List instances with filters
-GET /api/instances/{instance_id} - Instance details
-```
+#### Instance detail
+`GET /api/instances/{instance_id}` — single-instance view. Only the list endpoint exists today.
 
-**Query parameters:**
-- `pool` - Filter by pool name
-- `state` - running, stopped, pending, terminating
-- `busy` - true/false (has active job)
+#### Queue detail
+`GET /api/queues/{queue_name}` — single-queue view. Only the list endpoint exists today.
 
-**Data source**: EC2 DescribeInstances API with `runs-fleet:managed=true` tag
+#### Cost breakdowns
+`GET /api/cost/daily` and `GET /api/cost/by-pool` — only `/api/cost/summary` exists. UI: daily cost chart + per-pool breakdown table.
 
-**UI components:**
-- Instances table grouped by pool
-- State badges (running/stopped/busy)
-- Instance type, launch time, uptime
-- Link to AWS console
+#### Metrics summary
+`GET /api/metrics/summary` — not built. `GET /api/jobs/stats` already covers job counts + warm-pool hit rate; the remaining gap is avg startup time, spot-interruption rate, and cost MTD in one aggregate.
 
-**Backend changes:**
-- New `ListInstances` handler using EC2 API
-- Cross-reference with jobs table for busy status
-
----
-
-#### 1.3 Pool Status Enhancement
-
-**Purpose**: Show actual vs desired state for each pool.
-
-**API changes:**
-- Extend `GET /api/pools` response to include:
-  ```json
-  {
-    "current_running": 3,
-    "current_stopped": 5,
-    "busy_instances": 2,
-    "last_reconcile": "2024-01-15T10:30:00Z"
-  }
-  ```
-
-**Data source**:
-- `current_running`/`current_stopped` from pools DynamoDB table
-- `busy_instances` from jobs table scan
-- `last_reconcile` - add to pool reconciler
-
-**UI changes:**
-- Add columns for current counts
-- Visual diff indicator when actual != desired
-- Last reconcile timestamp
-
----
-
-#### 1.4 Queue Dashboard
-
-**Purpose**: Monitor SQS queue health.
-
-**API endpoints:**
-```
-GET /api/queues                  - All queue metrics
-GET /api/queues/{queue_name}     - Single queue details
-```
-
-**Response:**
 ```json
 {
-  "queues": [
-    {
-      "name": "main",
-      "url": "https://sqs...",
-      "messages_visible": 5,
-      "messages_in_flight": 2,
-      "messages_delayed": 0,
-      "dlq_messages": 0
-    }
-  ]
-}
-```
-
-**Data source**: SQS GetQueueAttributes API
-
-**UI components:**
-- Queue cards with message counts
-- DLQ warning indicator
-- Link to AWS console
-
----
-
-#### 1.5 Circuit Breaker Status
-
-**Purpose**: View instance type availability.
-
-**API endpoints:**
-```
-GET /api/circuit-breaker         - All circuit states
-```
-
-**Response:**
-```json
-{
-  "circuits": [
-    {
-      "instance_type": "c7g.xlarge",
-      "state": "open",
-      "failure_count": 5,
-      "last_failure": "2024-01-15T10:00:00Z",
-      "reset_at": "2024-01-15T10:30:00Z"
-    }
-  ]
-}
-```
-
-**Data source**: `runs-fleet-circuit-state` DynamoDB table
-
-**UI components:**
-- Circuit breaker table
-- State badges (closed/open/half-open)
-- Manual reset button (Phase 2)
-
----
-
-#### 1.6 Metrics Dashboard
-
-**Purpose**: Key operational metrics at a glance.
-
-**API endpoints:**
-```
-GET /api/metrics/summary         - Aggregated metrics
-```
-
-**Response:**
-```json
-{
-  "jobs_24h": {
-    "total": 150,
-    "completed": 140,
-    "failed": 5,
-    "in_progress": 5
-  },
+  "jobs_24h": { "total": 150, "completed": 140, "failed": 5, "in_progress": 5 },
   "warm_pool_hit_rate": 0.85,
   "avg_startup_time_seconds": 45,
   "spot_interruption_rate": 0.02,
@@ -220,328 +66,78 @@ GET /api/metrics/summary         - Aggregated metrics
 }
 ```
 
-**Data source**:
-- Jobs table aggregation
-- CloudWatch metrics (if enabled)
-- Cost reporter
+#### Audit persistence + viewer
+Audit is currently **log-only** (`handler.go:auditLog()` → slog). To make it queryable, add a store and a viewer:
 
-**UI components:**
-- Metric cards with sparklines
-- Trend indicators (up/down arrows)
+- **Persistence** (recommended: DynamoDB with 90-day TTL):
+  ```
+  Table: runs-fleet-audit
+  Key: timestamp (S) + id (S)
+  GSI: user-index (user, timestamp)
+  Attrs: id(ULID), timestamp, user, action, target, result, details(map), client_ip, ttl
+  ```
+- **Coverage gap**: only pool CRUD calls `auditLog()`. The existing `POST /api/housekeeping/orphaned-jobs` write does **not** — add it there (and to all future write actions).
+- **Viewer**: `GET /api/audit-logs` with `user` / `action` / `since` / `until` / `limit` / `offset` filters; UI table with expandable rows.
 
----
+#### Pool reconcile timestamp
+Add `last_reconcile_at` (+ `last_reconcile_result`) to the pools table and surface it in the pool status response/UI. Not yet present anywhere.
 
-#### 1.7 Cost Dashboard
+### Phase 2 — write actions (mostly unbuilt)
 
-**Purpose**: View cost data and trends.
+All require audit logging once persistence lands.
 
-**API endpoints:**
-```
-GET /api/cost/summary            - Current period summary
-GET /api/cost/daily              - Daily breakdown
-GET /api/cost/by-pool            - Per-pool breakdown
-```
+| Action | Endpoint | Notes |
+|--------|----------|-------|
+| Manual instance termination | `DELETE /api/instances/{instance_id}` | Confirm runs-fleet-managed; warn if instance has an active job; UI confirmation |
+| Circuit breaker reset | `POST /api/circuit/{instance_type}/reset` | Reset a tripped breaker |
+| Force pool reconciliation | `POST /api/pools/{name}/reconcile` | Enqueue to pool queue or invoke reconciler |
+| DLQ redrive | `POST /api/queues/{queue_name}/redrive` | SQS `StartMessageMoveTask` |
+| Housekeeping trigger | `POST /api/housekeeping/run` | Generalize the existing single-task `POST /api/housekeeping/orphaned-jobs` (which takes `threshold_minutes` / `dry_run`) toward a multi-task `{"tasks":[...]}` body covering orphaned instances, stale SSM, old jobs |
 
-**Data source**: `pkg/cost/` reporter output
+### Phase 3 — advanced
 
-**UI components:**
-- Cost summary cards
-- Daily cost chart
-- Per-pool breakdown table
-
----
-
-#### 1.8 Audit Log Viewer
-
-**Purpose**: View admin action history.
-
-**API endpoints:**
-```
-GET /api/audit-logs              - List audit entries
-```
-
-**Query parameters:**
-- `user` - Filter by user
-- `action` - Filter by action type
-- `since`, `until` - Time range
-- `limit`, `offset` - Pagination
-
-**Implementation options:**
-1. CloudWatch Logs Insights query (if logs go to CloudWatch)
-2. Dedicated DynamoDB table for audit entries
-3. S3 + Athena for long-term storage
-
-**Recommendation**: Option 2 (DynamoDB) for simplicity, with TTL for 90-day retention.
-
-**UI components:**
-- Audit log table with filters
-- User, action, target, result, timestamp columns
-- Expandable rows for details
+- **SSE real-time updates** `GET /api/events` — replace the current polling (`hooks/use-auto-refresh.ts`) for job/instance/queue changes.
+- **Spot interruption history** `GET /api/spot-interruptions` — store EventBridge interruptions in DynamoDB for capacity planning.
+- **Cache metrics** `GET /api/cache/stats` — S3 cache hit/miss rates (the cache subsystem at `pkg/cache/` currently exposes no admin stats).
 
 ---
 
-### Phase 2: Actions (Write operations)
+## Suggested Order
 
-#### 2.1 Manual Instance Termination
+| Priority | Item | Effort |
+|----------|------|--------|
+| 1 | Audit persistence (DynamoDB) + add audit to housekeeping write | M |
+| 2 | Audit log viewer | M |
+| 3 | Pool `last_reconcile_at` | S |
+| 4 | Instance detail + Queue detail endpoints | S |
+| 5 | Cost `daily` + `by-pool` | M |
+| 6 | Metrics summary | M |
+| 7 | Manual instance termination | S |
+| 8 | Force reconciliation | S |
+| 9 | Circuit breaker reset | S |
+| 10 | DLQ redrive | S |
+| 11 | Generalized housekeeping trigger | S |
+| 12 | SSE real-time updates | L |
+| 13 | Spot interruption history | M |
+| 14 | Cache metrics | S |
 
-**Purpose**: Terminate stuck or orphaned instances.
-
-**API endpoints:**
-```
-DELETE /api/instances/{instance_id}
-```
-
-**Safety checks:**
-- Confirm instance is runs-fleet managed
-- Warn if instance has active job
-- Require confirmation in UI
-
----
-
-#### 2.2 Circuit Breaker Reset
-
-**Purpose**: Manually reset tripped circuit breakers.
-
-**API endpoints:**
-```
-POST /api/circuit-breaker/{instance_type}/reset
-```
+**Effort**: S = 1-2 days, M = 3-5 days, L = 1+ week.
 
 ---
 
-#### 2.3 Force Pool Reconciliation
+## Cross-cutting notes
 
-**Purpose**: Trigger immediate pool reconciliation.
+- **Trust boundary**: Keycloak gatekeeper authenticates; the backend trusts forwarded identity headers and rejects requests without them when `RUNS_FLEET_ADMIN_SECRET` is set (the value is a toggle, not a validated secret).
+- **Rate limiting**: already enforced per-IP across `/api/`; expensive new endpoints inherit it.
+- **RBAC (future)**: `X-Auth-Request-Groups` is already parsed into context and can gate write actions by group.
+- **Testing**: unit tests with mocked AWS clients; integration tests against test DynamoDB/SQS; Playwright for critical UI flows.
 
-**API endpoints:**
-```
-POST /api/pools/{name}/reconcile
-```
-
-**Implementation**: Send message to pool queue or invoke reconciler directly.
-
----
-
-#### 2.4 DLQ Redrive
-
-**Purpose**: Move messages from DLQ back to main queue.
-
-**API endpoints:**
-```
-POST /api/queues/{queue_name}/redrive
-```
-
-**Implementation**: SQS StartMessageMoveTask API
-
----
-
-#### 2.5 Housekeeping Trigger
-
-**Purpose**: Manually trigger housekeeping tasks.
-
-**API endpoints:**
-```
-POST /api/housekeeping/run
-```
-
-**Request body:**
-```json
-{
-  "tasks": ["orphaned_instances", "stale_ssm", "old_jobs"]
-}
-```
-
----
-
-### Phase 3: Advanced Features
-
-#### 3.1 Real-time Updates
-
-Replace polling with Server-Sent Events (SSE) for:
-- Job status changes
-- Instance state changes
-- Queue depth updates
-
-**API endpoints:**
-```
-GET /api/events                  - SSE stream
-```
-
----
-
-#### 3.2 Spot Interruption History
-
-**Purpose**: Track spot interruption patterns for capacity planning.
-
-**API endpoints:**
-```
-GET /api/spot-interruptions      - Interruption history
-```
-
-**Data source**: EventBridge events stored in DynamoDB
-
----
-
-#### 3.3 Cache Metrics
-
-**Purpose**: S3 cache hit/miss rates.
-
-**API endpoints:**
-```
-GET /api/cache/stats             - Cache statistics
-```
-
----
-
-## Implementation Order
-
-| Priority | Feature | Effort | Value |
-|----------|---------|--------|-------|
-| 1 | Auth simplification (Keycloak) | S | High |
-| 2 | Jobs dashboard | M | High |
-| 3 | Pool status enhancement | S | High |
-| 4 | Instances dashboard | M | High |
-| 5 | Queue dashboard | S | Medium |
-| 6 | Circuit breaker status | S | Medium |
-| 7 | Audit log viewer + DynamoDB storage | M | Medium |
-| 8 | Metrics summary | M | Medium |
-| 9 | Cost dashboard | M | Medium |
-| 10 | Manual instance termination | S | Medium |
-| 11 | Force reconciliation | S | Low |
-| 12 | Circuit breaker reset | S | Low |
-| 13 | DLQ redrive | S | Low |
-| 14 | Housekeeping trigger | S | Low |
-| 15 | SSE real-time updates | L | Low |
-
-**Effort**: S = Small (1-2 days), M = Medium (3-5 days), L = Large (1+ week)
-
----
-
-## UI Layout
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  runs-fleet Admin                              [User] [Logout] │
-├─────────┬───────────────────────────────────────────────────┤
-│         │                                                     │
-│ Dashboard│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐  │
-│ Jobs     │  │ Jobs 24h│ │ Warm Hit│ │ Cost MTD│ │ Queued  │  │
-│ Instances│  │   150   │ │   85%   │ │  $52.30 │ │    3    │  │
-│ Pools    │  └─────────┘ └─────────┘ └─────────┘ └─────────┘  │
-│ Queues   │                                                    │
-│ Circuit  │  Recent Jobs                                       │
-│ Cost     │  ┌─────────────────────────────────────────────┐  │
-│ Audit    │  │ ID    │ Repo      │ Pool   │ Status │ Time  │  │
-│          │  │ 12345 │ org/repo  │ default│ ✓ done │ 5m ago│  │
-│          │  │ 12344 │ org/repo2 │ arm64  │ ⟳ run  │ 2m ago│  │
-│          │  └─────────────────────────────────────────────┘  │
-│          │                                                    │
-└─────────┴───────────────────────────────────────────────────┘
-```
-
----
-
-## File Structure
+## New backend files (as Phase 2/remaining lands)
 
 ```
 pkg/admin/
-├── auth.go              # Keycloak header extraction
-├── handler.go           # Pool CRUD (existing)
-├── handler_jobs.go      # Jobs endpoints
-├── handler_instances.go # Instances endpoints
-├── handler_queues.go    # Queue endpoints
-├── handler_circuit.go   # Circuit breaker endpoints
-├── handler_metrics.go   # Metrics endpoints
-├── handler_cost.go      # Cost endpoints
-├── handler_audit.go     # Audit log endpoints
-├── handler_actions.go   # Write operations (Phase 2)
-└── ui/
-    ├── app/
-    │   ├── page.tsx           # Dashboard (new home)
-    │   ├── jobs/
-    │   │   └── page.tsx       # Jobs list
-    │   ├── instances/
-    │   │   └── page.tsx       # Instances list
-    │   ├── pools/
-    │   │   ├── page.tsx       # Pools list (move from root)
-    │   │   ├── new/
-    │   │   └── edit/
-    │   ├── queues/
-    │   │   └── page.tsx       # Queue status
-    │   ├── circuit/
-    │   │   └── page.tsx       # Circuit breaker status
-    │   ├── cost/
-    │   │   └── page.tsx       # Cost dashboard
-    │   └── audit/
-    │       └── page.tsx       # Audit logs
-    ├── components/
-    │   ├── sidebar.tsx        # Navigation sidebar
-    │   ├── metric-card.tsx    # Dashboard metric cards
-    │   ├── jobs-table.tsx
-    │   ├── instances-table.tsx
-    │   ├── queue-card.tsx
-    │   └── ...
-    └── lib/
-        ├── api.ts             # API client (simplified)
-        └── types.ts           # TypeScript types
+├── handler_audit.go     # audit store + GET /api/audit-logs
+├── handler_metrics.go   # GET /api/metrics/summary
+├── handler_actions.go   # instance terminate, circuit reset, force reconcile, DLQ redrive
+└── ui/app/audit/page.tsx
 ```
-
----
-
-## Database Changes
-
-### New: Audit Log Table
-
-```
-Table: runs-fleet-audit
-Primary Key: timestamp (S) + id (S) (composite)
-GSI: user-index (user, timestamp)
-
-Attributes:
-- id: ULID
-- timestamp: ISO8601
-- user: string (from Keycloak)
-- action: string (pool.create, pool.update, instance.terminate, etc.)
-- target: string (pool name, instance ID, etc.)
-- result: string (success, denied, error)
-- details: map (request body, error message, etc.)
-- client_ip: string
-- ttl: number (90-day expiry)
-```
-
-### Pools Table: Add Fields
-
-```
-- last_reconcile_at: ISO8601 timestamp
-- last_reconcile_result: string (success, error)
-```
-
----
-
-## Security Considerations
-
-1. **Trust boundary**: Keycloak gatekeeper is the trust boundary. Backend trusts forwarded headers.
-2. **Header validation**: Verify required headers present; reject requests without identity.
-3. **Audit logging**: All write operations logged with user identity.
-4. **Rate limiting**: Consider adding rate limits for expensive operations (instance list, job queries).
-5. **RBAC future**: Headers can include groups for future role-based access.
-
----
-
-## Testing Strategy
-
-1. **Unit tests**: Handler logic with mocked AWS clients
-2. **Integration tests**: API endpoints with test DynamoDB/SQS
-3. **E2E tests**: Playwright tests for critical UI flows
-4. **Load tests**: Ensure dashboard queries don't impact production
-
----
-
-## Rollout Plan
-
-1. Deploy auth changes with feature flag (accept both token and Keycloak headers)
-2. Enable Keycloak gatekeeper in staging
-3. Verify auth flow works
-4. Deploy Phase 1 features incrementally
-5. Remove legacy token auth
-6. Deploy Phase 2 features

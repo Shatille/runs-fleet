@@ -1,6 +1,6 @@
 # Configuration
 
-All configuration is via environment variables. See `.envrc.example` for a template.
+All configuration is via environment variables, set on the orchestrator's runtime environment (the Fargate task definition in production; see the Terraform repo). The repository's `.envrc.example` only loads the Nix dev shell (`use flake`) — it is **not** a config template.
 
 ## Core (Required)
 
@@ -27,6 +27,8 @@ All configuration is via environment variables. See `.envrc.example` for a templ
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNS_FLEET_JOBS_TABLE` | | Job state tracking |
+| `RUNS_FLEET_JOBS_POOL_STATUS_GSI` | | Optional GSI on the jobs table for pool+status queries (busy-instance lookups). Falls back to a table scan if unset |
+| `RUNS_FLEET_JOBS_INSTANCE_ID_GSI` | | Optional GSI on the jobs table for `instance_id` lookups. Falls back to a table scan if unset |
 | `RUNS_FLEET_POOLS_TABLE` | | Pool configurations (includes per-pool reconciliation locks) |
 | `RUNS_FLEET_CIRCUIT_BREAKER_TABLE` | `runs-fleet-circuit-state` | Circuit breaker state |
 
@@ -81,6 +83,18 @@ metric-name collisions across deployments that share a metrics backend.
 | `RUNS_FLEET_METRICS_DATADOG_WORKERS_COUNT` | `0` | DogStatsD worker count |
 | `RUNS_FLEET_METRICS_DATADOG_MAX_MSGS_PER_PAYLOAD` | `0` | DogStatsD max messages per payload |
 
+## Tracing
+
+OpenTelemetry tracing is disabled by default (noop provider, zero overhead). When enabled, spans are exported over OTLP gRPC.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_TRACING_ENABLED` | `false` | Enable OpenTelemetry tracing |
+| `RUNS_FLEET_OTEL_ENDPOINT` | | OTLP gRPC collector endpoint (required when tracing is enabled) |
+| `RUNS_FLEET_OTEL_INSECURE` | `true` | Use an insecure gRPC connection to the collector |
+| `RUNS_FLEET_OTEL_SERVICE_NAME` | `runs-fleet` | Service name reported on spans |
+| `RUNS_FLEET_ENV` | | Deployment environment tag attached to spans (e.g. `production`) |
+
 ## Secrets Backend
 
 Runner configuration secrets can be stored in SSM Parameter Store (default) or HashiCorp Vault.
@@ -118,4 +132,6 @@ Required when `RUNS_FLEET_SECRETS_BACKEND=vault`.
 |----------|---------|-------------|
 | `RUNS_FLEET_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `RUNS_FLEET_LOG_FORMAT` | `json` | Log format: `json` or `text` |
-| `RUNS_FLEET_ADMIN_SECRET` | | Admin UI authentication secret |
+| `RUNS_FLEET_ADMIN_RATE_LIMIT` | `60` | Admin API rate limit (per-IP requests/minute) |
+| `RUNS_FLEET_TRACE_UI_URL` | | Base URL for trace links shown in the admin jobs view (e.g. Jaeger UI) |
+| `RUNS_FLEET_ADMIN_SECRET` | | Enables admin API auth: any non-empty value requires authenticated Keycloak gatekeeper headers on `/api/` requests; leave empty to disable auth (local dev). The value is a toggle only — it is not validated as a secret |
