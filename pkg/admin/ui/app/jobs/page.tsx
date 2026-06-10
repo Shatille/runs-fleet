@@ -17,6 +17,14 @@ interface CleanupResult {
   message: string;
 }
 
+interface RequeueResult {
+  requeued: number;
+  candidates: number;
+  skipped_exhausted: number;
+  job_ids?: number[];
+  message: string;
+}
+
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [stats, setStats] = useState<JobStats | null>(null);
@@ -36,6 +44,9 @@ export default function JobsPage() {
   const [cleanupLoading, setCleanupLoading] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
+  const [requeueLoading, setRequeueLoading] = useState(false);
+  const [requeueResult, setRequeueResult] = useState<RequeueResult | null>(null);
+  const [showRequeueConfirm, setShowRequeueConfirm] = useState(false);
   const [traceURL, setTraceURL] = useState<string>('');
   const { toast } = useToast();
 
@@ -153,6 +164,35 @@ export default function JobsPage() {
     }
   };
 
+  const handleRequeueHungJobs = async (dryRun: boolean = false) => {
+    try {
+      setRequeueLoading(true);
+      setRequeueResult(null);
+      const params = new URLSearchParams();
+      if (dryRun) params.set('dry_run', 'true');
+
+      const res = await apiFetch(`/api/housekeeping/requeue-hung-jobs?${params}`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to requeue hung jobs: ${res.statusText}`);
+      }
+      const data = await res.json();
+      setRequeueResult(data);
+      if (!dryRun && data?.requeued > 0) {
+        toast('success', `Requeued ${data.requeued} hung job(s)`);
+        fetchJobs();
+        fetchStats();
+      } else if (!dryRun) {
+        toast('info', 'No hung jobs to requeue');
+      }
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : 'Failed to requeue hung jobs');
+    } finally {
+      setRequeueLoading(false);
+    }
+  };
+
   if (error) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
@@ -227,6 +267,42 @@ export default function JobsPage() {
             <p>{cleanupResult.message}</p>
             {cleanupResult.job_ids && cleanupResult.job_ids.length > 0 && (
               <p className="mt-1 text-xs">Job IDs: {cleanupResult.job_ids.join(', ')}</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="mb-4 p-4 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Requeue Hung Jobs</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Re-dispatch a fresh runner for jobs whose instance launched but whose runner died or never registered. The GitHub job is preserved; only the runner is re-driven.</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleRequeueHungJobs(true)}
+              disabled={requeueLoading}
+              className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-1.5 text-sm rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+            >
+              {requeueLoading ? 'Checking...' : 'Dry Run'}
+            </button>
+            <button
+              onClick={() => setShowRequeueConfirm(true)}
+              disabled={requeueLoading}
+              className="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {requeueLoading ? 'Requeuing...' : 'Requeue'}
+            </button>
+          </div>
+        </div>
+        {requeueResult && (
+          <div className={`mt-3 p-3 rounded-md text-sm ${requeueResult.requeued > 0 ? 'bg-green-50 dark:bg-green-900/30 text-green-800 dark:text-green-300' : 'bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
+            <p>{requeueResult.message}</p>
+            {requeueResult.job_ids && requeueResult.job_ids.length > 0 && (
+              <p className="mt-1 text-xs">Job IDs: {requeueResult.job_ids.join(', ')}</p>
+            )}
+            {requeueResult.skipped_exhausted > 0 && (
+              <p className="mt-1 text-xs">Skipped (retries exhausted): {requeueResult.skipped_exhausted}</p>
             )}
           </div>
         )}
@@ -319,6 +395,19 @@ export default function JobsPage() {
           handleCleanupOrphanedJobs(false);
         }}
         onCancel={() => setShowCleanupConfirm(false)}
+      />
+
+      <ConfirmDialog
+        open={showRequeueConfirm}
+        title="Requeue Hung Jobs"
+        message="This re-dispatches a fresh runner for hung jobs by re-enqueuing into the runs-fleet queue. The GitHub job is not cancelled or re-run. Run a dry run first to preview affected jobs. Continue?"
+        confirmLabel="Requeue"
+        variant="default"
+        onConfirm={() => {
+          setShowRequeueConfirm(false);
+          handleRequeueHungJobs(false);
+        }}
+        onCancel={() => setShowRequeueConfirm(false)}
       />
     </div>
   );
