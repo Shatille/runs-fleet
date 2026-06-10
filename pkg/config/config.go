@@ -48,7 +48,6 @@ type Config struct {
 
 	SpotEnabled        bool
 	MaxRuntimeMinutes  int
-	LogLevel           string
 	LaunchTemplateName string
 	RunnerImage        string            // Container image for EC2 runners (ECR URL)
 	Tags               map[string]string // Custom tags for EC2 resources
@@ -143,7 +142,6 @@ func Load() (*Config, error) {
 		KeyName:            getEnv("RUNS_FLEET_KEY_NAME", ""),
 		SpotEnabled:        getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
 		MaxRuntimeMinutes:  maxRuntimeMinutes,
-		LogLevel:           getEnv("RUNS_FLEET_LOG_LEVEL", "info"),
 		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:               make(map[string]string),
