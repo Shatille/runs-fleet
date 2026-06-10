@@ -360,10 +360,15 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		if err := h.metrics.PublishJobCompleted(ctx, pool, result, repo); err != nil {
 			termLog.Warn(ctx, "job completed metric publish failed", slog.String("error", err.Error()))
 		}
+		// Record execution duration only when the agent reported one (>0); a zero
+		// would skew the latency histogram for jobs that never ran (e.g. an early
+		// failure before the workflow started).
+		if msg.DurationSeconds > 0 {
+			if err := h.metrics.PublishJobExecutionSeconds(ctx, pool, result, float64(msg.DurationSeconds)); err != nil {
+				termLog.Warn(ctx, "job execution seconds metric publish failed", slog.String("error", err.Error()))
+			}
+		}
 	}
-	// TODO(metrics): emit job execution latency via PublishJobExecutionSeconds(ctx,
-	// pool, result, msg.DurationSeconds). Data is in hand (msg.DurationSeconds);
-	// out of scope for this latency-histogram pass, wire in a follow-up.
 
 	// Clean up runner config from secrets store
 	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {

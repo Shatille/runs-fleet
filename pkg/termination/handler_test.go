@@ -126,6 +126,11 @@ type mockMetricsAPI struct {
 	completedErr      error
 	confirmedErr      error
 
+	execSecondsCalls   int
+	lastExecSeconds    float64
+	lastExecResult     string
+	lastExecPool       string
+
 	processingMu          sync.Mutex
 	processingCalls       int
 	lastProcessingQueue   string
@@ -152,7 +157,11 @@ func (m *mockMetricsAPI) PublishRunnerConfirmed(_ context.Context, pool string) 
 	return m.confirmedErr
 }
 
-func (m *mockMetricsAPI) PublishJobExecutionSeconds(_ context.Context, _, _ string, _ float64) error {
+func (m *mockMetricsAPI) PublishJobExecutionSeconds(_ context.Context, pool, result string, seconds float64) error {
+	m.execSecondsCalls++
+	m.lastExecSeconds = seconds
+	m.lastExecResult = result
+	m.lastExecPool = pool
 	return nil
 }
 
@@ -270,6 +279,14 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	}
 	if metrics.lastResult != testResultServed {
 		t.Errorf("expected result 'served', got %q", metrics.lastResult)
+	}
+	// The reported duration is published as the execution-latency histogram with the
+	// same pool/result labels as the completion counter.
+	if metrics.execSecondsCalls != 1 || metrics.lastExecSeconds != 120 {
+		t.Errorf("expected 1 execution-seconds call with 120s, got calls=%d seconds=%v", metrics.execSecondsCalls, metrics.lastExecSeconds)
+	}
+	if metrics.lastExecResult != testResultServed {
+		t.Errorf("expected execution-seconds result 'served', got %q", metrics.lastExecResult)
 	}
 
 	if q.deleteCalls != 1 {
@@ -943,10 +960,13 @@ func TestHandler_processTermination_NoDuration(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The completion counter is emitted regardless of duration (execution-latency
-	// emission is a follow-up).
+	// The completion counter is emitted regardless of duration, but a zero duration
+	// must NOT feed the execution-latency histogram (it would skew jobs that never ran).
 	if metrics.completedCalls != 1 {
 		t.Errorf("expected 1 completed call when duration is 0, got %d", metrics.completedCalls)
+	}
+	if metrics.execSecondsCalls != 0 {
+		t.Errorf("zero duration must not emit an execution-seconds sample, got %d", metrics.execSecondsCalls)
 	}
 }
 

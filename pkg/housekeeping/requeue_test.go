@@ -3,6 +3,7 @@ package housekeeping
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -105,6 +106,12 @@ func newRequeueDeps(ec2 *mockEC2API, dyn *mockTaskDynamoDBAPI, rq JobRequeuer) R
 	}
 }
 
+func newRequeueDepsWithMetrics(ec2 *mockEC2API, dyn *mockTaskDynamoDBAPI, rq JobRequeuer, m MetricsAPI) RequeueDeps {
+	deps := newRequeueDeps(ec2, dyn, rq)
+	deps.Metrics = m
+	return deps
+}
+
 // A launched job whose instance is still alive but whose runner never confirmed is
 // terminated and requeued on-demand, and the record is flipped to requeued.
 func TestRequeueHungJobs_RecoversAliveInstance(t *testing.T) {
@@ -113,8 +120,9 @@ func TestRequeueHungJobs_RecoversAliveInstance(t *testing.T) {
 		requeueJobItem(42, "i-stuck", 7, 0, db.JobStatusLaunched),
 	}}
 	rq := &mockJobRequeuer{}
+	metrics := &mockTaskMetricsAPI{}
 
-	res, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+	res, err := RequeueHungJobs(context.Background(), newRequeueDepsWithMetrics(ec2, dyn, rq, metrics), RequeueOptions{
 		Threshold: 15 * time.Minute,
 		Statuses:  []db.JobStatus{db.JobStatusLaunched},
 	})
@@ -132,6 +140,12 @@ func TestRequeueHungJobs_RecoversAliveInstance(t *testing.T) {
 	}
 	if dyn.updateCalls != 1 {
 		t.Errorf("expected record flipped to requeued (1 update), got %d", dyn.updateCalls)
+	}
+	if want := []string{requeueReasonOperator}; !slices.Equal(metrics.requeuedReasons, want) {
+		t.Errorf("expected requeued reasons %v, got %v", want, metrics.requeuedReasons)
+	}
+	if len(metrics.schedulingFailures) != 0 {
+		t.Errorf("a successful requeue must not emit a scheduling failure, got %v", metrics.schedulingFailures)
 	}
 }
 
@@ -223,8 +237,9 @@ func TestRequeueHungJobs_ExhaustedSkipped(t *testing.T) {
 		requeueJobItem(42, "i-stuck", 7, MaxRequeueRetries, db.JobStatusLaunched),
 	}}
 	rq := &mockJobRequeuer{}
+	metrics := &mockTaskMetricsAPI{}
 
-	res, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+	res, err := RequeueHungJobs(context.Background(), newRequeueDepsWithMetrics(ec2, dyn, rq, metrics), RequeueOptions{
 		Threshold: 15 * time.Minute,
 		Statuses:  []db.JobStatus{db.JobStatusLaunched},
 	})
@@ -242,6 +257,12 @@ func TestRequeueHungJobs_ExhaustedSkipped(t *testing.T) {
 	}
 	if ec2.terminateCalls != 0 {
 		t.Errorf("exhausted job instance must not be terminated, got %d", ec2.terminateCalls)
+	}
+	if want := []string{requeueReasonOperator}; !slices.Equal(metrics.schedulingFailures, want) {
+		t.Errorf("expected scheduling failures %v, got %v", want, metrics.schedulingFailures)
+	}
+	if len(metrics.requeuedReasons) != 0 {
+		t.Errorf("exhausted job must not emit a requeue metric, got %v", metrics.requeuedReasons)
 	}
 }
 
@@ -274,11 +295,12 @@ func TestRequeueHungJobs_DryRun(t *testing.T) {
 	ec2 := &mockEC2API{instances: nil}
 	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
 		requeueJobItem(42, "i-gone", 7, 0, db.JobStatusLaunched),
-		requeueJobItem(43, "i-gone2", 8, 0, db.JobStatusLaunched),
+		requeueJobItem(43, "i-gone2", 8, MaxRequeueRetries, db.JobStatusLaunched),
 	}}
 	rq := &mockJobRequeuer{}
+	metrics := &mockTaskMetricsAPI{}
 
-	res, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+	res, err := RequeueHungJobs(context.Background(), newRequeueDepsWithMetrics(ec2, dyn, rq, metrics), RequeueOptions{
 		Threshold: 15 * time.Minute,
 		Statuses:  []db.JobStatus{db.JobStatusLaunched},
 		DryRun:    true,
@@ -286,14 +308,20 @@ func TestRequeueHungJobs_DryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequeueHungJobs() error = %v", err)
 	}
-	if res.Candidates != 2 || res.Requeued != 0 {
-		t.Errorf("dry run: expected candidates=2 requeued=0, got %+v", res)
+	if res.Candidates != 2 || res.Requeued != 0 || res.SkippedExhausted != 1 {
+		t.Errorf("dry run: expected candidates=2 requeued=0 skipped_exhausted=1, got %+v", res)
 	}
-	if len(res.JobIDs) != 2 {
-		t.Errorf("dry run should report candidate job IDs, got %v", res.JobIDs)
+	// Only the non-exhausted candidate is a would-requeue; the exhausted one is
+	// reported as skipped but never as a JobID.
+	if len(res.JobIDs) != 1 || res.JobIDs[0] != 42 {
+		t.Errorf("dry run should report only requeue-able candidate ids, got %v", res.JobIDs)
 	}
 	if len(rq.sent) != 0 || dyn.updateCalls != 0 || ec2.terminateCalls != 0 {
 		t.Errorf("dry run must not mutate; sent=%d updates=%d terminate=%d", len(rq.sent), dyn.updateCalls, ec2.terminateCalls)
+	}
+	// A dry run reports but must emit nothing — not even for the exhausted candidate.
+	if len(metrics.requeuedReasons) != 0 || len(metrics.schedulingFailures) != 0 {
+		t.Errorf("dry run must not emit metrics; requeued=%v failures=%v", metrics.requeuedReasons, metrics.schedulingFailures)
 	}
 }
 

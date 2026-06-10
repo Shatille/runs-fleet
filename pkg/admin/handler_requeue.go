@@ -26,17 +26,20 @@ type RequeueHandler struct {
 	ec2Client     housekeeping.EC2API
 	dynamoClient  housekeeping.OrphanScanAPI
 	requeuer      housekeeping.JobRequeuer
+	metrics       housekeeping.MetricsAPI
 	jobsTableName string
 	auth          *AuthMiddleware
 	log           *logging.Logger
 }
 
-// NewRequeueHandler creates a requeue admin handler.
-func NewRequeueHandler(ec2Client housekeeping.EC2API, dynamoClient housekeeping.OrphanScanAPI, requeuer housekeeping.JobRequeuer, jobsTableName string, auth *AuthMiddleware) *RequeueHandler {
+// NewRequeueHandler creates a requeue admin handler. metrics is optional (nil-safe)
+// and, when set, emits operator_requeue counters for the sweep's outcomes.
+func NewRequeueHandler(ec2Client housekeeping.EC2API, dynamoClient housekeeping.OrphanScanAPI, requeuer housekeeping.JobRequeuer, metrics housekeeping.MetricsAPI, jobsTableName string, auth *AuthMiddleware) *RequeueHandler {
 	return &RequeueHandler{
 		ec2Client:     ec2Client,
 		dynamoClient:  dynamoClient,
 		requeuer:      requeuer,
+		metrics:       metrics,
 		jobsTableName: jobsTableName,
 		auth:          auth,
 		log:           logging.WithComponent(logging.LogTypeAdmin, "requeue"),
@@ -93,6 +96,7 @@ func (h *RequeueHandler) RequeueHungJobs(w http.ResponseWriter, r *http.Request)
 		EC2:          h.ec2Client,
 		TerminateEC2: h.ec2Client,
 		Requeuer:     h.requeuer,
+		Metrics:      h.metrics,
 		JobsTable:    h.jobsTableName,
 		Log:          h.log,
 	}, housekeeping.RequeueOptions{
