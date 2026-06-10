@@ -179,7 +179,7 @@ export default function JobsPage() {
       }
       const data = await res.json();
       setRequeueResult(data);
-      if (!dryRun && data.requeued > 0) {
+      if (!dryRun && data?.requeued > 0) {
         toast('success', `Requeued ${data.requeued} hung job(s)`);
         fetchJobs();
         fetchStats();

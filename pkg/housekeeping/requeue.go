@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 // MaxRequeueRetries bounds how many times a runner-less job may be requeued, mirroring
@@ -299,8 +300,15 @@ func instanceStillExists(ctx context.Context, ec2Client OrphanEC2API, instanceID
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		// A definitive "not found" means gone; any other (transient) error assumes
-		// the instance exists so we never requeue on the strength of an EC2 outage.
+		// A definitive "instance ID invalid/not found" means gone; any other
+		// (transient) error assumes the instance exists so we never requeue on the
+		// strength of an EC2 outage. Prefer the typed smithy code, falling back to a
+		// message match for errors that don't surface a code.
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			code := apiErr.ErrorCode()
+			return code != "InvalidInstanceID.NotFound" && code != "InvalidInstanceID.Malformed"
+		}
 		return !strings.Contains(err.Error(), "InvalidInstanceID")
 	}
 	for _, reservation := range output.Reservations {
