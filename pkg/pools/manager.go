@@ -818,6 +818,9 @@ func (m *Manager) stopInstances(ctx context.Context, poolName string, instanceID
 		}); err != nil {
 			if !isInstanceGoneErr(err) {
 				errs = append(errs, fmt.Errorf("failed to stop instance %s: %w", id, err))
+				// Keep idle tracking: the instance is still running and idle,
+				// and deleting the entry would reset its idle clock on the next
+				// listing, deferring the retry by a full idle-timeout window.
 				continue
 			}
 			poolLog.Info(ctx, "instance no longer stoppable, skipping",
