@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 )
 
@@ -448,12 +449,15 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			for i := 0; i < canStop; i++ {
 				instanceIDs[i] = candidateInstances[i].InstanceID
 			}
-			if err := m.stopInstances(ctx, poolName, instanceIDs, "excess_ready"); err != nil {
+			stoppedNow, err := m.stopInstances(ctx, poolName, instanceIDs, "excess_ready")
+			if err != nil {
 				poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
-			} else {
-				stoppedCount += canStop
 			}
+			stoppedCount += stoppedNow
 			excess -= canStop
+			// Advance past the stop batch so the terminate overflow below
+			// never re-targets instances that were just stopped.
+			candidateInstances = candidateInstances[canStop:]
 		}
 
 		if excess > 0 {
@@ -800,32 +804,57 @@ func (m *Manager) publishPoolAction(ctx context.Context, poolName, action, reaso
 	}
 }
 
-func (m *Manager) stopInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {
-	if len(instanceIDs) == 0 {
-		return nil
-	}
-
-	_, err := m.ec2Client.StopInstances(ctx, &ec2.StopInstancesInput{
-		InstanceIds: instanceIDs,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to stop instances: %w", err)
-	}
-
-	// Remove from idle tracking
-	m.idleMu.Lock()
+// stopInstances stops each instance with its own EC2 call: a batch StopInstances
+// is all-or-nothing, so one instance that left the stoppable state (e.g. its agent
+// self-terminated after the reconcile snapshot) would block stopping the rest.
+// Already-gone instances are skipped without error; the count of instances
+// actually stopped is returned alongside any real failures.
+func (m *Manager) stopInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) (int, error) {
+	var stoppedIDs []string
+	var errs []error
 	for _, id := range instanceIDs {
+		if _, err := m.ec2Client.StopInstances(ctx, &ec2.StopInstancesInput{
+			InstanceIds: []string{id},
+		}); err != nil {
+			if !isInstanceGoneErr(err) {
+				errs = append(errs, fmt.Errorf("failed to stop instance %s: %w", id, err))
+				// Keep idle tracking: the instance is still running and idle,
+				// and deleting the entry would reset its idle clock on the next
+				// listing, deferring the retry by a full idle-timeout window.
+				continue
+			}
+			poolLog.Info(ctx, "instance no longer stoppable, skipping",
+				slog.String(logging.KeyInstanceID, id),
+				slog.String("reason", reason))
+		} else {
+			stoppedIDs = append(stoppedIDs, id)
+		}
+
+		m.idleMu.Lock()
 		delete(m.instanceIdle, id)
+		m.idleMu.Unlock()
 	}
-	m.idleMu.Unlock()
 
-	m.publishPoolAction(ctx, poolName, poolActionStop, reason, len(instanceIDs))
+	if len(stoppedIDs) > 0 {
+		m.publishPoolAction(ctx, poolName, poolActionStop, reason, len(stoppedIDs))
 
-	poolLog.Info(ctx, "instances stopped",
-		slog.Int(logging.KeyCount, len(instanceIDs)),
-		slog.String("reason", reason),
-		slog.Any("instance_ids", instanceIDs))
-	return nil
+		poolLog.Info(ctx, "instances stopped",
+			slog.Int(logging.KeyCount, len(stoppedIDs)),
+			slog.String("reason", reason),
+			slog.Any("instance_ids", stoppedIDs))
+	}
+	return len(stoppedIDs), errors.Join(errs...)
+}
+
+// isInstanceGoneErr reports whether an EC2 stop failed because the instance is
+// no longer in a stoppable state — terminating, terminated, or already deleted.
+func isInstanceGoneErr(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	code := apiErr.ErrorCode()
+	return code == "IncorrectInstanceState" || code == "InvalidInstanceID.NotFound"
 }
 
 func (m *Manager) terminateInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {

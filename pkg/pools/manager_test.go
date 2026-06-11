@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 // Test constants to satisfy goconst
@@ -515,7 +516,6 @@ func TestStartInstances(t *testing.T) {
 	}
 }
 
-//nolint:dupl // Test functions have similar structure but test different EC2 operations - intentional pattern
 func TestStopInstances(t *testing.T) {
 	t.Parallel()
 
@@ -523,26 +523,27 @@ func TestStopInstances(t *testing.T) {
 		name        string
 		instanceIDs []string
 		mock        *MockEC2API
+		wantStopped int
 		wantErr     bool
+		wantTracked []string
 	}{
 		{
 			name:        "success",
 			instanceIDs: []string{"i-123", "i-456"},
 			mock: &MockEC2API{
 				StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
-					if len(params.InstanceIds) != 2 {
-						t.Errorf("StopInstances got %d instances, want 2", len(params.InstanceIds))
+					if len(params.InstanceIds) != 1 {
+						t.Errorf("StopInstances got %d instances, want 1 per call", len(params.InstanceIds))
 					}
 					return &ec2.StopInstancesOutput{}, nil
 				},
 			},
-			wantErr: false,
+			wantStopped: 2,
 		},
 		{
 			name:        "empty list",
 			instanceIDs: []string{},
 			mock:        &MockEC2API{},
-			wantErr:     false,
 		},
 		{
 			name:        "ec2 error",
@@ -552,7 +553,45 @@ func TestStopInstances(t *testing.T) {
 					return nil, errors.New("ec2 error")
 				},
 			},
-			wantErr: true,
+			wantErr:     true,
+			wantTracked: []string{"i-error"},
+		},
+		{
+			name:        "skips instance already shutting down",
+			instanceIDs: []string{"i-gone", "i-123"},
+			mock: &MockEC2API{
+				StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+					if params.InstanceIds[0] == "i-gone" {
+						return nil, &smithy.GenericAPIError{Code: "IncorrectInstanceState", Message: "This instance 'i-gone' is not in a state from which it can be stopped."}
+					}
+					return &ec2.StopInstancesOutput{}, nil
+				},
+			},
+			wantStopped: 1,
+		},
+		{
+			name:        "skips instance no longer found",
+			instanceIDs: []string{"i-gone"},
+			mock: &MockEC2API{
+				StopInstancesFunc: func(_ context.Context, _ *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+					return nil, &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound", Message: "The instance ID 'i-gone' does not exist"}
+				},
+			},
+		},
+		{
+			name:        "continues past real error",
+			instanceIDs: []string{"i-error", "i-123"},
+			mock: &MockEC2API{
+				StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+					if params.InstanceIds[0] == "i-error" {
+						return nil, errors.New("ec2 error")
+					}
+					return &ec2.StopInstancesOutput{}, nil
+				},
+			},
+			wantStopped: 1,
+			wantErr:     true,
+			wantTracked: []string{"i-error"},
 		},
 	}
 
@@ -562,21 +601,26 @@ func TestStopInstances(t *testing.T) {
 
 			manager := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
 			manager.SetEC2Client(tt.mock)
-			// Pre-populate idle tracking to verify cleanup
-			manager.instanceIdle["i-123"] = time.Now()
-			manager.instanceIdle["i-456"] = time.Now()
+			for _, id := range tt.instanceIDs {
+				manager.instanceIdle[id] = time.Now()
+			}
 
-			err := manager.stopInstances(context.Background(), "default", tt.instanceIDs, "excess_ready")
+			stopped, err := manager.stopInstances(context.Background(), "default", tt.instanceIDs, "excess_ready")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("stopInstances() error = %v, wantErr %v", err, tt.wantErr)
 			}
+			if stopped != tt.wantStopped {
+				t.Errorf("stopInstances() stopped = %d, want %d", stopped, tt.wantStopped)
+			}
 
-			// Verify idle tracking cleanup on success
-			if !tt.wantErr && len(tt.instanceIDs) > 0 {
-				for _, id := range tt.instanceIDs {
-					if _, ok := manager.instanceIdle[id]; ok {
-						t.Errorf("instance %s should be removed from idle tracking after stop", id)
-					}
+			wantTracked := make(map[string]struct{}, len(tt.wantTracked))
+			for _, id := range tt.wantTracked {
+				wantTracked[id] = struct{}{}
+			}
+			for _, id := range tt.instanceIDs {
+				_, tracked := manager.instanceIdle[id]
+				if _, want := wantTracked[id]; want != tracked {
+					t.Errorf("instance %s idle tracking = %v, want %v", id, tracked, want)
 				}
 			}
 		})
@@ -1857,6 +1901,142 @@ func TestReconcilePoolStopInstancesError(_ *testing.T) {
 
 	// Should not panic
 	manager.reconcile(context.Background())
+}
+
+func TestReconcilePoolStopSkipsTerminatingInstance(t *testing.T) {
+	t.Parallel()
+
+	// A pool instance whose agent self-terminated after the reconcile snapshot
+	// must not block stopping the rest, and must be replaced via stopped_replenish.
+	var stopAttempts []string
+	var createdCount int
+	var mu sync.Mutex
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"warm-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 3, InstanceType: "t3.medium"}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{InstanceId: aws.String("i-gone"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-ok1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-ok2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			mu.Lock()
+			stopAttempts = append(stopAttempts, input.InstanceIds...)
+			mu.Unlock()
+			if input.InstanceIds[0] == "i-gone" {
+				return nil, &smithy.GenericAPIError{Code: "IncorrectInstanceState", Message: "This instance 'i-gone' is not in a state from which it can be stopped."}
+			}
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			mu.Lock()
+			createdCount++
+			mu.Unlock()
+			return testInstanceNewID, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	if len(stopAttempts) != 3 {
+		t.Errorf("expected stop attempts on all 3 instances, got %d: %v", len(stopAttempts), stopAttempts)
+	}
+	// stopped=0, stoppedCount=2 (i-gone skipped) -> deficit 3-0-2=1 replacement
+	if createdCount != 1 {
+		t.Errorf("expected 1 replacement instance created, got %d", createdCount)
+	}
+
+	manager.idleMu.Lock()
+	_, tracked := manager.instanceIdle["i-gone"]
+	manager.idleMu.Unlock()
+	if tracked {
+		t.Error("terminating instance i-gone should be removed from idle tracking")
+	}
+}
+
+func TestReconcilePoolStopThenTerminateDoesNotOverlap(t *testing.T) {
+	t.Parallel()
+
+	// When excess exceeds stop capacity, the terminate overflow must target
+	// instances beyond the stop batch, never the instances just stopped.
+	var stoppedIDs, terminatedIDs []string
+	var mu sync.Mutex
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"hot-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 1, DesiredStopped: 1, InstanceType: "t3.medium", IdleTimeoutMinutes: 1}, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle4"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, input *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			mu.Lock()
+			stoppedIDs = append(stoppedIDs, input.InstanceIds...)
+			mu.Unlock()
+			return &ec2.StopInstancesOutput{}, nil
+		},
+		TerminateInstancesFunc: func(_ context.Context, input *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			mu.Lock()
+			terminatedIDs = append(terminatedIDs, input.InstanceIds...)
+			mu.Unlock()
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+	for _, id := range []string{"i-idle1", "i-idle2", "i-idle3", "i-idle4"} {
+		manager.instanceIdle[id] = time.Now().Add(-10 * time.Minute)
+	}
+
+	manager.reconcile(context.Background())
+
+	// ready=4, desiredRunning=1 -> excess=3; canStop=1 stops the first candidate,
+	// remaining excess=2 must terminate the next two candidates.
+	if len(stoppedIDs) != 1 {
+		t.Fatalf("expected 1 instance stopped, got %d: %v", len(stoppedIDs), stoppedIDs)
+	}
+	if len(terminatedIDs) != 2 {
+		t.Fatalf("expected 2 instances terminated, got %d: %v", len(terminatedIDs), terminatedIDs)
+	}
+	for _, terminated := range terminatedIDs {
+		if terminated == stoppedIDs[0] {
+			t.Errorf("instance %s was stopped and then terminated in the same pass", terminated)
+		}
+	}
 }
 
 func TestReconcilePoolTerminateInstancesError(_ *testing.T) {
