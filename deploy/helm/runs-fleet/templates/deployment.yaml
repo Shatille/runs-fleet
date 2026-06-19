@@ -193,6 +193,10 @@ spec:
             {{- end }}
             - name: RUNS_FLEET_GITHUB_APP_ID
               value: {{ .Values.github.appId | quote }}
+            {{- if .Values.labelAliases }}
+            - name: RUNS_FLEET_LABEL_ALIASES
+              value: {{ .Values.labelAliases | quote }}
+            {{- end }}
             - name: RUNS_FLEET_LOG_LEVEL
               value: {{ .Values.logging.level }}
             - name: RUNS_FLEET_LOG_FORMAT
