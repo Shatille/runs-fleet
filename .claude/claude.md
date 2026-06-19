@@ -111,9 +111,21 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 
 ### Routing labels
 
-- `runs-fleet` - Runner marker (required). Legacy `runs-fleet=<run-id>/...` still works; run_id is sourced from the webhook
+- `runs-fleet` - Runner marker (required unless a custom label alias matches). Legacy `runs-fleet=<run-id>/...` still works; run_id is sourced from the webhook
 - `pool=<name>` - Warm pool name (routes to pool queue)
 - `spot=false` - Force on-demand (skip spot)
+
+### Custom label aliases
+
+To serve jobs that target an externally-defined custom label (e.g. an ARC
+scale-set label like `shared-8cpu-arm64`) **without changing the workflow**,
+configure `RUNS_FLEET_LABEL_ALIASES` (see Environment Config). When no
+`runs-fleet` marker is present, each `runs-on` label is matched against the
+configured alias rules; the first match expands to a normal spec (the values
+above) and the runner registers under the original label so GitHub dispatches
+the job to it. This enables transparent migration off existing runners. The
+alias vocabulary is deployment-specific and lives only in config, never in
+source.
 
 ## Key Flows
 
@@ -155,6 +167,7 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 - `AWS_REGION` - AWS region (default: ap-northeast-1)
 - `RUNS_FLEET_GITHUB_APP_ID`, `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` - GitHub App auth
 - `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` - HMAC signature validation
+- `RUNS_FLEET_LABEL_ALIASES` - JSON array of custom-label alias rules (see Custom label aliases). Maps externally-defined `runs-on` labels to runs-fleet specs. Validated at startup; unset = disabled. Example: `[{"match":"^shared-(\\d+)cpu-(x64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]`
 
 ### Fleet
 - `RUNS_FLEET_QUEUE_URL` - Main SQS queue (required)

@@ -57,6 +57,61 @@ All configuration is via environment variables, set on the orchestrator's runtim
 | `RUNS_FLEET_TAG_KEY_APPLICATION` | `Application` | Tag key for the fixed `runs-fleet` cost-attribution value |
 | `RUNS_FLEET_TAG_KEY_SERVICE` | `Service` | Tag key for the fixed `runner` cost-attribution value |
 
+## Label Aliases (custom runner labels)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_LABEL_ALIASES` | | JSON array of alias rules. Empty/unset = disabled. Validated at startup. |
+
+Maps externally-defined `runs-on` labels onto runs-fleet specs so runs-fleet can
+serve jobs that target your *existing* runners (e.g. an ARC scale-set label like
+`shared-8cpu-arm64`) **without editing any workflow manifest**. When a job has no
+`runs-fleet` marker, each of its `runs-on` labels is matched against the rules in
+order; the first match expands to a spec, and the runner registers under the
+original label so GitHub dispatches the job to it.
+
+Each rule:
+
+| Field | Description |
+|-------|-------------|
+| `match` | Label to match. A literal string, or a regular expression when `regex` is true. |
+| `regex` | When true, `match` is a regex; `spec` may reference captures with `${1}` / `${name}`. |
+| `spec`  | A runs-fleet label spec (`cpu=8+8/arch=arm64/disk=100/...`), parsed exactly like the native marker. |
+
+Arch synonyms are normalized: `x64`/`x86_64` → `amd64`, `aarch64` → `arm64`.
+Write `cpu=N+N` to pin vCPUs exactly (parity with a fixed-size runner) or `cpu=N`
+for runs-fleet's default 2× range.
+
+Example — one regex rule covering an entire `shared-<N>cpu-<arch>` family and any
+future size:
+
+```json
+[
+  { "match": "^shared-(\\d+)cpu-(x64|arm64)$", "regex": true, "spec": "cpu=${1}+${1}/arch=${2}" },
+  { "match": "gpu-trainer", "spec": "cpu=16/arch=amd64/disk=200" }
+]
+```
+
+**Matching & validation notes.**
+
+- Rules are evaluated in order; the **first** match wins. The native `runs-fleet`
+  marker always takes precedence over any alias.
+- A regex `match` uses partial-match semantics — the pattern is **not**
+  auto-anchored. **Anchor patterns with `^…$`** unless you intend substring
+  matching — e.g. an unanchored `shared-(\d+)cpu` would also match
+  `my-shared-8cpu-x`.
+- Literal-rule specs are fully validated at startup (parsed and resolved to
+  instance types); a typo or an unsupported `family=` fails the boot. **Regex-rule
+  specs that use captures can only be validated when a job matches**, so a bad
+  capture template surfaces at job time (the job is then treated as unmatched).
+  Test regex rules against representative labels before deploying.
+
+**Migration note.** This enables a transparent cutover from existing self-hosted
+runners. While both fleets run, they **compete** for queued jobs (whichever
+claims a runner first wins; the loser's ephemeral runner self-terminates). Once
+runs-fleet is proven to serve the jobs, **scale down the old runners**, then
+remove them.
+
 ## Cache
 
 | Variable | Description |

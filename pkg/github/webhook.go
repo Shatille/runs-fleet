@@ -23,6 +23,21 @@ const (
 	ArchAMD64 = "amd64"
 )
 
+// normalizeArch maps an architecture token to runs-fleet's canonical form,
+// accepting common synonyms (x64/x86_64 for amd64, aarch64 for arm64) so alias
+// specs and labels written in other ecosystems' vocabulary resolve correctly.
+// ok is false for unrecognized values, which the caller leaves unset.
+func normalizeArch(value string) (arch string, ok bool) {
+	switch value {
+	case ArchARM64, "aarch64":
+		return ArchARM64, true
+	case ArchAMD64, "x64", "x86_64":
+		return ArchAMD64, true
+	default:
+		return "", false
+	}
+}
+
 // ValidateSignature verifies GitHub webhook HMAC-SHA256 signature against the expected secret.
 func ValidateSignature(payload []byte, signatureHeader string, secret string) error {
 	if secret == "" {
@@ -117,22 +132,34 @@ const markerPrefix = "runs-fleet"
 // CPU and RAM ranges (min+max) enable spot diversification for better availability.
 // Multiple instance families can be specified with + separator.
 func ParseLabels(labels []string) (*JobConfig, error) {
+	return ParseLabelsWithAliases(labels, nil)
+}
+
+// ParseLabelsWithAliases is ParseLabels with a configured alias resolver. The
+// native runs-fleet marker always takes precedence; only when no marker is
+// present is the resolver consulted, letting a job that targets an
+// externally-defined custom label (e.g. an ARC scale-set label) be claimed and
+// served by runs-fleet. The matched custom label is preserved as OriginalLabel
+// so the booted runner registers under it and GitHub dispatches the job to it.
+// A nil resolver disables aliasing, so behavior matches ParseLabels.
+func ParseLabelsWithAliases(labels []string, resolver *AliasResolver) (*JobConfig, error) {
 	cfg := &JobConfig{
 		Spot: true,
 		Arch: "", // Empty = arch doesn't matter, uses non-suffixed launch template
 	}
 
-	runsFleetLabel, ok := findMarkerLabel(labels)
-	if !ok {
+	if runsFleetLabel, ok := findMarkerLabel(labels); ok {
+		cfg.OriginalLabel = runsFleetLabel
+		if err := parseLabelParts(cfg, labelSpecParts(cfg, runsFleetLabel)); err != nil {
+			return nil, err
+		}
+	} else if aliasLabel, spec, ok := resolveAlias(labels, resolver); ok {
+		cfg.OriginalLabel = aliasLabel
+		if err := parseLabelParts(cfg, strings.Split(spec, "/")); err != nil {
+			return nil, fmt.Errorf("invalid alias spec for label %q: %w", aliasLabel, err)
+		}
+	} else {
 		return nil, errors.New("no runs-fleet label found")
-	}
-
-	cfg.OriginalLabel = runsFleetLabel
-
-	specParts := labelSpecParts(cfg, runsFleetLabel)
-
-	if err := parseLabelParts(cfg, specParts); err != nil {
-		return nil, err
 	}
 
 	if err := ResolveFlexibleSpec(cfg); err != nil {
@@ -140,6 +167,20 @@ func ParseLabels(labels []string) (*JobConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// resolveAlias returns the first runs-on label that matches a configured alias
+// rule along with its resolved spec.
+func resolveAlias(labels []string, resolver *AliasResolver) (label, spec string, ok bool) {
+	if resolver == nil {
+		return "", "", false
+	}
+	for _, l := range labels {
+		if spec, matched := resolver.Resolve(l); matched {
+			return l, spec, true
+		}
+	}
+	return "", "", false
 }
 
 // findMarkerLabel returns the runs-fleet marker label from the label set. It
@@ -213,8 +254,8 @@ func parseLabelParts(cfg *JobConfig, parts []string) error {
 			cfg.Gen = gen
 
 		case "arch":
-			if value == ArchARM64 || value == ArchAMD64 {
-				cfg.Arch = value
+			if arch, ok := normalizeArch(value); ok {
+				cfg.Arch = arch
 			}
 
 		case "pool":

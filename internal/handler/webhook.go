@@ -39,7 +39,7 @@ type PoolDBClient interface {
 // the durable work (label parse, ephemeral pool ensure, SQS enqueue) so the
 // webhook can be acked before best-effort observability runs; see
 // PublishJobQueuedMetrics for the deferred metrics.
-func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client) (*queue.JobMessage, error) {
+func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, resolver *gh.AliasResolver) (*queue.JobMessage, error) {
 	ctx, span := tracing.Tracer().Start(ctx, "webhook.process",
 		trace.WithAttributes(
 			attribute.String("github.event_type", "workflow_job"),
@@ -48,7 +48,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		))
 	defer span.End()
 
-	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
+	jobConfig, err := gh.ParseLabelsWithAliases(event.GetWorkflowJob().Labels, resolver)
 	if err != nil {
 		webhookLog.Debug(ctx, "skipping job no labels",
 			slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
@@ -192,7 +192,7 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 }
 
 // HandleJobFailure processes workflow_job completed events with failure conclusion.
-func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client) (bool, error) {
+func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, resolver *gh.AliasResolver) (bool, error) {
 	job := event.GetWorkflowJob()
 	runnerName := job.GetRunnerName()
 
@@ -204,7 +204,7 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		return false, nil
 	}
 
-	_, err := gh.ParseLabels(job.Labels)
+	_, err := gh.ParseLabelsWithAliases(job.Labels, resolver)
 	if err != nil {
 		return false, nil
 	}

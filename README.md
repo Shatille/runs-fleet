@@ -40,6 +40,12 @@ The `runs-fleet` marker is all that is required; run_id is read from the webhook
 payload. The legacy `runs-fleet=${{ github.run_id }}/...` form remains fully
 supported.
 
+**Migrating from existing runners?** runs-fleet can also serve jobs that target
+your *current* custom labels (e.g. an ARC scale-set label like
+`shared-8cpu-arm64`) **without editing any workflow**. Map those labels to specs
+in the `RUNS_FLEET_LABEL_ALIASES` config and runs-fleet will claim and register
+for them. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 See [docs/USAGE.md](docs/USAGE.md) for full label reference and examples. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for environment variables.
 
 ## Architecture

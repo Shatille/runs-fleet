@@ -56,7 +56,7 @@ func TestJobEnqueuedLogCarriesRequestedSpec(t *testing.T) {
 	}
 
 	mockQueue := &MockQueue{}
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Fatalf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}

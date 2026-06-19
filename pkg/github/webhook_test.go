@@ -937,3 +937,160 @@ func TestParseLabels_OriginalLabel(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLabelsWithAliases(t *testing.T) {
+	t.Parallel()
+
+	const aliasJSON = `[
+		{"match":"^shared-(\\d+)cpu-(x64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"},
+		{"match":"gpu-trainer","spec":"cpu=16/arch=amd64/disk=200"}
+	]`
+	resolver, err := ParseAliasRules(aliasJSON)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name              string
+		labels            []string
+		wantErr           bool
+		wantOriginalLabel string
+		wantCPUMin        int
+		wantCPUMax        int
+		wantArch          string
+		wantStorageGiB    int
+	}{
+		{
+			name:              "bare regex alias expands and pins cpu",
+			labels:            []string{"shared-8cpu-arm64"},
+			wantOriginalLabel: "shared-8cpu-arm64",
+			wantCPUMin:        8,
+			wantCPUMax:        8,
+			wantArch:          ArchARM64,
+		},
+		{
+			name:              "x64 alias normalizes to amd64",
+			labels:            []string{"shared-16cpu-x64"},
+			wantOriginalLabel: "shared-16cpu-x64",
+			wantCPUMin:        16,
+			wantCPUMax:        16,
+			wantArch:          ArchAMD64,
+		},
+		{
+			name:              "alias matched within array ignores github default labels",
+			labels:            []string{"self-hosted", "linux", "shared-4cpu-arm64"},
+			wantOriginalLabel: "shared-4cpu-arm64",
+			wantCPUMin:        4,
+			wantCPUMax:        4,
+			wantArch:          ArchARM64,
+		},
+		{
+			name:              "literal alias resolves spec",
+			labels:            []string{"gpu-trainer"},
+			wantOriginalLabel: "gpu-trainer",
+			wantCPUMin:        16,
+			wantCPUMax:        32,
+			wantArch:          ArchAMD64,
+			wantStorageGiB:    200,
+		},
+		{
+			name:              "runs-fleet marker takes precedence over alias",
+			labels:            []string{"shared-8cpu-arm64", "runs-fleet/cpu=2/arch=amd64"},
+			wantOriginalLabel: "runs-fleet/cpu=2/arch=amd64",
+			wantCPUMin:        2,
+			wantCPUMax:        4,
+			wantArch:          ArchAMD64,
+		},
+		{
+			name:    "no marker and no alias match is rejected",
+			labels:  []string{"self-hosted", "ubuntu-latest"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseLabelsWithAliases(tt.labels, resolver)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseLabelsWithAliases() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if got.OriginalLabel != tt.wantOriginalLabel {
+				t.Errorf("OriginalLabel = %q, want %q", got.OriginalLabel, tt.wantOriginalLabel)
+			}
+			if got.CPUMin != tt.wantCPUMin {
+				t.Errorf("CPUMin = %d, want %d", got.CPUMin, tt.wantCPUMin)
+			}
+			if got.CPUMax != tt.wantCPUMax {
+				t.Errorf("CPUMax = %d, want %d", got.CPUMax, tt.wantCPUMax)
+			}
+			if got.Arch != tt.wantArch {
+				t.Errorf("Arch = %q, want %q", got.Arch, tt.wantArch)
+			}
+			if got.StorageGiB != tt.wantStorageGiB {
+				t.Errorf("StorageGiB = %d, want %d", got.StorageGiB, tt.wantStorageGiB)
+			}
+			if len(got.InstanceTypes) == 0 {
+				t.Error("InstanceTypes is empty; alias spec did not resolve instance types")
+			}
+		})
+	}
+}
+
+func TestParseLabelsWithAliases_InvalidExpansion(t *testing.T) {
+	t.Parallel()
+
+	// A regex rule passes startup validation (capture specs are validated
+	// lazily), but a matching label can expand to an out-of-range spec. Parsing
+	// must fail at job time rather than silently mis-sizing the runner.
+	resolver, err := ParseAliasRules(`[{"match":"^bigdisk-(\\d+)$","regex":true,"spec":"disk=${1}/arch=arm64"}]`)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	if _, err := ParseLabelsWithAliases([]string{"bigdisk-99999"}, resolver); err == nil {
+		t.Error("ParseLabelsWithAliases() should error when an alias expands to an out-of-range spec")
+	}
+}
+
+func TestParseLabelsWithAliases_NilResolverMatchesParseLabels(t *testing.T) {
+	t.Parallel()
+
+	labels := []string{"shared-8cpu-arm64"}
+	if _, err := ParseLabelsWithAliases(labels, nil); err == nil {
+		t.Error("ParseLabelsWithAliases() with nil resolver should reject a non-marker label")
+	}
+}
+
+func TestParseLabels_ArchSynonyms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		label    string
+		wantArch string
+	}{
+		{name: "x64 maps to amd64", label: "runs-fleet/cpu=2/arch=x64", wantArch: ArchAMD64},
+		{name: "x86_64 maps to amd64", label: "runs-fleet/cpu=2/arch=x86_64", wantArch: ArchAMD64},
+		{name: "aarch64 maps to arm64", label: "runs-fleet/cpu=2/arch=aarch64", wantArch: ArchARM64},
+		{name: "unknown arch left unset", label: "runs-fleet/cpu=2/arch=sparc", wantArch: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseLabels([]string{tt.label})
+			if err != nil {
+				t.Fatalf("ParseLabels() error = %v", err)
+			}
+			if got.Arch != tt.wantArch {
+				t.Errorf("Arch = %q, want %q", got.Arch, tt.wantArch)
+			}
+		})
+	}
+}

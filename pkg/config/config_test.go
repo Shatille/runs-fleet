@@ -151,6 +151,45 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadLabelAliases(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	const aliasJSON = `[{"match":"^shared-(\d+)cpu-(x64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]`
+
+	os.Clearenv()
+	env := map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
+		"RUNS_FLEET_LABEL_ALIASES":          aliasJSON,
+	}
+	for k, v := range env {
+		_ = os.Setenv(k, v)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if cfg.LabelAliasesJSON != aliasJSON {
+		t.Errorf("LabelAliasesJSON = %q, want %q", cfg.LabelAliasesJSON, aliasJSON)
+	}
+}
+
 func TestLoadCostAttributionTagKeys(t *testing.T) {
 	originalEnv := os.Environ()
 	t.Cleanup(func() {

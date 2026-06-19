@@ -19,7 +19,7 @@ Start here for codebase navigation. Each topic article synthesizes a related pac
 | [queue-processing](topics/queue-processing.md) | SQS FIFO, Valkey Streams, message group ID | 3 | 2026-04-30 | active |
 | [job-state-machine](topics/job-state-machine.md) | runner manager, JIT token mint, lifecycle | 3 | 2026-04-30 | active |
 | [state-storage](topics/state-storage.md) | DynamoDB, circuit breaker, SSM/Vault secrets | 7 | 2026-04-30 | active |
-| [github-integration](topics/github-integration.md) | webhook, HMAC, GitHub App, label parser | 2 | 2026-04-30 | active |
+| [github-integration](topics/github-integration.md) | webhook, HMAC, GitHub App, label parser, label aliases | 3 | 2026-06-19 | active |
 | [cache-service](topics/cache-service.md) | Actions cache, S3, pre-signed URLs, ACTIONS_CACHE_URL | 3 | 2026-04-30 | active |
 | [events-and-termination](topics/events-and-termination.md) | EventBridge, spot warning, termination queue, re-queue | 2 | 2026-04-30 | active |
 | [observability](topics/observability.md) | metrics, CloudWatch, Datadog, Prometheus, slog, cost | 8 | 2026-04-30 | active |
@@ -38,6 +38,7 @@ Start here for codebase navigation. Each topic article synthesizes a related pac
 | [idempotent-retry-over-rollback](concepts/idempotent-retry-over-rollback.md) | fleet-orchestration, events-and-termination, internal-services, housekeeping, github-integration | 2026-04-30 |
 
 ## Recent Changes
+- 2026-06-19: Added config-driven custom label aliases (`RUNS_FLEET_LABEL_ALIASES`) for transparent migration of existing runners (e.g. ARC) without workflow changes. See [github-integration](topics/github-integration.md#custom-label-aliases-transparent-runner-migration).
 - 2026-04-30: Initial compilation. 19 topic articles + 4 concept articles synthesized from project source. Codebase-mode first compile.
 
 ## Quick navigation by task
@@ -47,6 +48,7 @@ Start here for codebase navigation. Each topic article synthesizes a related pac
 - **Spot strategy, instance type selection:** [fleet-orchestration](topics/fleet-orchestration.md), [two-track-reliability](concepts/two-track-reliability.md)
 - **Pool config or reconciler bug:** [warm-pools](topics/warm-pools.md), [per-resource-locking](concepts/per-resource-locking.md)
 - **Webhook / GitHub auth:** [github-integration](topics/github-integration.md)
+- **Migrating from ARC / serving custom runner labels:** [github-integration › custom label aliases](topics/github-integration.md#custom-label-aliases-transparent-runner-migration)
 - **Cost or metrics question:** [observability](topics/observability.md)
 - **Failure handling:** [events-and-termination](topics/events-and-termination.md), [housekeeping](topics/housekeeping.md), [idempotent-retry-over-rollback](concepts/idempotent-retry-over-rollback.md)
 - **Building/packaging the system:** [infrastructure](topics/infrastructure.md)

@@ -33,6 +33,8 @@ authoritative).
 
 > **Asymmetry note:** `cpu=N` automatically expands to a `N..2N` range to enable spot diversification. `ram=N` does **not** — it's interpreted as a minimum only, with no upper bound. If you want a bounded RAM range, use `ram=min+max` explicitly.
 
+> **Arch synonyms:** `arch=` also accepts `x64`/`x86_64` (normalized to `amd64`) and `aarch64` (normalized to `arm64`), so labels written in other ecosystems' vocabulary resolve correctly.
+
 ## Instance Selection
 
 runs-fleet uses flexible specs to select instances dynamically via EC2 Fleet:
@@ -91,6 +93,28 @@ runs-on: "runs-fleet/cpu=4/arch=arm64/disk=200"
 ```
 
 > **Cost note:** gp3 EBS storage costs ~$0.08/GB-month. Large disks add up quickly (e.g., 1TB = $80/month).
+
+## Custom Runner Labels (migrating without workflow changes)
+
+If your workflows already target custom labels from another runner system — for
+example an [ARC](https://github.com/actions/actions-runner-controller) scale-set
+label like `shared-8cpu-arm64` — runs-fleet can serve those jobs **without you
+editing a single `runs-on:`**. The operator maps each custom label to a runs-fleet
+spec via the `RUNS_FLEET_LABEL_ALIASES` config (see
+[CONFIGURATION.md](CONFIGURATION.md)); jobs keep using their existing label:
+
+```yaml
+# unchanged workflow — runs-fleet picks this up once the alias is configured
+runs-on: shared-8cpu-arm64
+
+# array form works too (GitHub auto-adds self-hosted/Linux/arch)
+runs-on: [self-hosted, shared-8cpu-arm64]
+```
+
+This lets you cut over from existing self-hosted runners transparently. **During
+the transition both fleets compete for queued jobs** — whichever claims a runner
+first wins. Once runs-fleet is proven to serve the jobs, scale down and remove
+the old runners.
 
 ## Build Cache
 
