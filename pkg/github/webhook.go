@@ -110,6 +110,12 @@ type JobConfig struct {
 	Gen           int      // Instance generation (from gen= label, e.g., gen=8). 0 = any generation
 	OriginalLabel string   // Original runs-fleet label from workflow (for GitHub matching)
 
+	// AliasLabel is the externally-defined custom label that matched a configured
+	// alias rule, or empty when the job used a native runs-fleet marker. It is the
+	// observability discriminator (OriginalLabel alone can't distinguish an alias
+	// from a marker, since it carries both) and records which alias was hit.
+	AliasLabel string
+
 	// Storage configuration
 	StorageGiB int // Disk storage in GiB (from disk= label, e.g., disk=100)
 }
@@ -155,6 +161,7 @@ func ParseLabelsWithAliases(labels []string, resolver *AliasResolver) (*JobConfi
 		}
 	} else if aliasLabel, spec, ok := resolveAlias(labels, resolver); ok {
 		cfg.OriginalLabel = aliasLabel
+		cfg.AliasLabel = aliasLabel
 		if err := parseLabelParts(cfg, strings.Split(spec, "/")); err != nil {
 			return nil, fmt.Errorf("invalid alias spec for label %q: %w", aliasLabel, err)
 		}

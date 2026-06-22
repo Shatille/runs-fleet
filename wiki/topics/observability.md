@@ -220,12 +220,12 @@ Lifecycle:
   package-level loggers.
 - `(*Logger).With(attrs ...any) *Logger`
 
-Attribute key constants: `KeyAction`, `KeyAudit`, `KeyBackend`,
-`KeyComponent`, `KeyCount`, `KeyDuration` (`"duration_ms"`), `KeyError`,
-`KeyHost`, `KeyInstanceID`, `KeyInstanceType`, `KeyJobID`, `KeyJobName`,
-`KeyLogType`, `KeyNamespace`, `KeyOwner`, `KeyPoolName`, `KeyQueueURL`,
-`KeyReason`, `KeyRemoteAddr`, `KeyResult`, `KeyRepo`, `KeyRunID`, `KeyTask`,
-`KeyUser`, `KeyWorkflowName`.
+Attribute key constants: `KeyAction`, `KeyAliasLabel` (`"alias_label"`),
+`KeyAudit`, `KeyBackend`, `KeyComponent`, `KeyCount`, `KeyDuration`
+(`"duration_ms"`), `KeyError`, `KeyHost`, `KeyInstanceID`, `KeyInstanceType`,
+`KeyJobID`, `KeyJobName`, `KeyLogType`, `KeyNamespace`, `KeyOwner`,
+`KeyPoolName`, `KeyQueueURL`, `KeyReason`, `KeyRemoteAddr`, `KeyResult`,
+`KeyRepo`, `KeyRunID`, `KeyTask`, `KeyUser`, `KeyWorkflowName`.
 
 Log-type constants: `LogTypeServer`, `LogTypeWebhook`, `LogTypeQueue`,
 `LogTypePool`, `LogTypeHousekeep`, `LogTypeTermination`, `LogTypeEvents`,
@@ -297,12 +297,15 @@ JSON lines emitted to stdout look like:
 }
 ```
 
-Common fields used across the codebase: `action`, `audit`, `backend`,
-`component`, `count`, `duration_ms`, `error`, `host`, `instance_id`,
+Common fields used across the codebase: `action`, `alias_label`, `audit`,
+`backend`, `component`, `count`, `duration_ms`, `error`, `host`, `instance_id`,
 `instance_type`, `job_id`, `job_name`, `log_type`, `namespace`, `owner`,
 `pool_name`, `queue_url`, `reason`, `remote_addr`, `result`, `repo`,
 `run_id`, `task`, `user`, `workflow_name`. Stdlib `log.Print*` calls are
-forwarded as `level=WARN` with `log_type=stdlib`.
+forwarded as `level=WARN` with `log_type=stdlib`. `alias_label` is set on the
+webhook "job enqueued" line — non-empty with the matched custom label when the
+job was resolved via a config-driven alias, empty for a native `runs-fleet`
+marker.
 
 ### Cost report shape
 

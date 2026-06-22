@@ -112,6 +112,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		slog.Int("gen", jobConfig.Gen),
 		slog.Int("disk", jobConfig.StorageGiB),
 		slog.Bool("spot", jobConfig.Spot),
+		slog.String(logging.KeyAliasLabel, jobConfig.AliasLabel),
 		slog.String("original_label", jobConfig.OriginalLabel))
 	return msg, nil
 }

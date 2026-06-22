@@ -177,6 +177,10 @@ How it works:
   `--no-default-labels`) and GitHub dispatches the job to it. Both
   `runs-on: gpu-large` and `runs-on: [self-hosted, gpu-large]` match, because
   GitHub auto-adds `self-hosted`/`Linux`/`ARM64`.
+- For observability, `JobConfig.AliasLabel` records the matched custom label
+  (empty for native markers) and is emitted on the webhook "job enqueued" log
+  line as `alias_label` — so aliased jobs are distinguishable in logs and you
+  can see which alias each came in through (useful while watching a migration).
 
 **Caveat — competition during migration.** While both fleets are live, the
 original runners (e.g. ARC) and runs-fleet **compete** for the same queued jobs;

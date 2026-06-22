@@ -107,6 +107,7 @@ func (w *slogWriter) Write(p []byte) (n int, err error) {
 // Common attribute keys for consistent field naming.
 const (
 	KeyAction       = "action"
+	KeyAliasLabel   = "alias_label"
 	KeyAudit        = "audit"
 	KeyBackend      = "backend"
 	KeyComponent    = "component"

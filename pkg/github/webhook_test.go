@@ -966,6 +966,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 		wantArch          string
 		wantStorageGiB    int
 		wantSpot          bool
+		wantAliasLabel    string // empty when the job used a native marker
 	}{
 		{
 			name:              "regex numeric capture pins cpu range",
@@ -975,6 +976,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantCPUMax:        8,
 			wantArch:          ArchARM64,
 			wantSpot:          true,
+			wantAliasLabel:    "ci-8x-arm64",
 		},
 		{
 			name:              "regex named captures",
@@ -984,6 +986,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantCPUMax:        32, // cpu=16 with no max defaults to 2x
 			wantArch:          ArchAMD64,
 			wantSpot:          true,
+			wantAliasLabel:    "builder-amd64-16",
 		},
 		{
 			name:              "alias spec emitting x64 normalizes to amd64",
@@ -993,6 +996,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantCPUMax:        8,
 			wantArch:          ArchAMD64,
 			wantSpot:          true,
+			wantAliasLabel:    "amd-4",
 		},
 		{
 			name:              "alias matched within array ignores github default labels",
@@ -1002,6 +1006,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantCPUMax:        4,
 			wantArch:          ArchARM64,
 			wantSpot:          true,
+			wantAliasLabel:    "ci-4x-arm64",
 		},
 		{
 			name:              "literal alias resolves spec with disk",
@@ -1012,6 +1017,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantArch:          ArchAMD64,
 			wantStorageGiB:    200,
 			wantSpot:          true,
+			wantAliasLabel:    "gpu-large",
 		},
 		{
 			name:              "literal alias can force on-demand",
@@ -1021,6 +1027,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantCPUMax:        16, // cpu=8 with no max defaults to 2x
 			wantArch:          ArchARM64,
 			wantSpot:          false,
+			wantAliasLabel:    "release-runner",
 		},
 		{
 			name:              "runs-fleet marker takes precedence over alias",
@@ -1030,6 +1037,7 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			wantCPUMax:        4,
 			wantArch:          ArchAMD64,
 			wantSpot:          true,
+			wantAliasLabel:    "", // native marker: not aliased
 		},
 		{
 			name:    "no marker and no alias match is rejected",
@@ -1066,6 +1074,9 @@ func TestParseLabelsWithAliases(t *testing.T) {
 			}
 			if got.Spot != tt.wantSpot {
 				t.Errorf("Spot = %v, want %v", got.Spot, tt.wantSpot)
+			}
+			if got.AliasLabel != tt.wantAliasLabel {
+				t.Errorf("AliasLabel = %q, want %q", got.AliasLabel, tt.wantAliasLabel)
 			}
 			if len(got.InstanceTypes) == 0 {
 				t.Error("InstanceTypes is empty; alias spec did not resolve instance types")
