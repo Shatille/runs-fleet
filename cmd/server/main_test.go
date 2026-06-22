@@ -494,7 +494,7 @@ func TestHandleJobFailure_NoRunnerName(t *testing.T) {
 		},
 	}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -512,7 +512,7 @@ func TestHandleJobFailure_NonRunsFleetRunner(t *testing.T) {
 		},
 	}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -530,7 +530,7 @@ func TestHandleJobFailure_NoRunsFleetLabels(t *testing.T) {
 		},
 	}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}
@@ -550,7 +550,7 @@ func TestHandleJobFailure_NoJobsTable(t *testing.T) {
 
 	wrapper := &db.Client{}
 
-	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, wrapper)
+	requeued, err := handler.HandleJobFailure(context.Background(), event, nil, wrapper, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() error = %v, want nil", err)
 	}

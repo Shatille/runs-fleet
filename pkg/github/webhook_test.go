@@ -937,3 +937,193 @@ func TestParseLabels_OriginalLabel(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLabelsWithAliases(t *testing.T) {
+	t.Parallel()
+
+	// Heterogeneous rules: distinct vocabularies, capture styles (${n}, named),
+	// arch synonyms, range/disk/spot specs — the engine is general, not tied to
+	// any one runner system's naming convention.
+	const aliasJSON = `[
+		{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"},
+		{"match":"^builder-(?P<arch>amd64|arm64)-(?P<size>\\d+)$","regex":true,"spec":"cpu=${size}/arch=${arch}"},
+		{"match":"^amd-(\\d+)$","regex":true,"spec":"cpu=${1}/arch=x64"},
+		{"match":"gpu-large","spec":"cpu=16/arch=amd64/disk=200"},
+		{"match":"release-runner","spec":"cpu=8/arch=arm64/spot=false"}
+	]`
+	resolver, err := ParseAliasRules(aliasJSON)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name              string
+		labels            []string
+		wantErr           bool
+		wantOriginalLabel string
+		wantCPUMin        int
+		wantCPUMax        int
+		wantArch          string
+		wantStorageGiB    int
+		wantSpot          bool
+	}{
+		{
+			name:              "regex numeric capture pins cpu range",
+			labels:            []string{"ci-8x-arm64"},
+			wantOriginalLabel: "ci-8x-arm64",
+			wantCPUMin:        8,
+			wantCPUMax:        8,
+			wantArch:          ArchARM64,
+			wantSpot:          true,
+		},
+		{
+			name:              "regex named captures",
+			labels:            []string{"builder-amd64-16"},
+			wantOriginalLabel: "builder-amd64-16",
+			wantCPUMin:        16,
+			wantCPUMax:        32, // cpu=16 with no max defaults to 2x
+			wantArch:          ArchAMD64,
+			wantSpot:          true,
+		},
+		{
+			name:              "alias spec emitting x64 normalizes to amd64",
+			labels:            []string{"amd-4"},
+			wantOriginalLabel: "amd-4",
+			wantCPUMin:        4,
+			wantCPUMax:        8,
+			wantArch:          ArchAMD64,
+			wantSpot:          true,
+		},
+		{
+			name:              "alias matched within array ignores github default labels",
+			labels:            []string{"self-hosted", "linux", "ci-4x-arm64"},
+			wantOriginalLabel: "ci-4x-arm64",
+			wantCPUMin:        4,
+			wantCPUMax:        4,
+			wantArch:          ArchARM64,
+			wantSpot:          true,
+		},
+		{
+			name:              "literal alias resolves spec with disk",
+			labels:            []string{"gpu-large"},
+			wantOriginalLabel: "gpu-large",
+			wantCPUMin:        16,
+			wantCPUMax:        32,
+			wantArch:          ArchAMD64,
+			wantStorageGiB:    200,
+			wantSpot:          true,
+		},
+		{
+			name:              "literal alias can force on-demand",
+			labels:            []string{"release-runner"},
+			wantOriginalLabel: "release-runner",
+			wantCPUMin:        8,
+			wantCPUMax:        16, // cpu=8 with no max defaults to 2x
+			wantArch:          ArchARM64,
+			wantSpot:          false,
+		},
+		{
+			name:              "runs-fleet marker takes precedence over alias",
+			labels:            []string{"ci-8x-arm64", "runs-fleet/cpu=2/arch=amd64"},
+			wantOriginalLabel: "runs-fleet/cpu=2/arch=amd64",
+			wantCPUMin:        2,
+			wantCPUMax:        4,
+			wantArch:          ArchAMD64,
+			wantSpot:          true,
+		},
+		{
+			name:    "no marker and no alias match is rejected",
+			labels:  []string{"self-hosted", "ubuntu-latest"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseLabelsWithAliases(tt.labels, resolver)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseLabelsWithAliases() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if got.OriginalLabel != tt.wantOriginalLabel {
+				t.Errorf("OriginalLabel = %q, want %q", got.OriginalLabel, tt.wantOriginalLabel)
+			}
+			if got.CPUMin != tt.wantCPUMin {
+				t.Errorf("CPUMin = %d, want %d", got.CPUMin, tt.wantCPUMin)
+			}
+			if got.CPUMax != tt.wantCPUMax {
+				t.Errorf("CPUMax = %d, want %d", got.CPUMax, tt.wantCPUMax)
+			}
+			if got.Arch != tt.wantArch {
+				t.Errorf("Arch = %q, want %q", got.Arch, tt.wantArch)
+			}
+			if got.StorageGiB != tt.wantStorageGiB {
+				t.Errorf("StorageGiB = %d, want %d", got.StorageGiB, tt.wantStorageGiB)
+			}
+			if got.Spot != tt.wantSpot {
+				t.Errorf("Spot = %v, want %v", got.Spot, tt.wantSpot)
+			}
+			if len(got.InstanceTypes) == 0 {
+				t.Error("InstanceTypes is empty; alias spec did not resolve instance types")
+			}
+		})
+	}
+}
+
+func TestParseLabelsWithAliases_InvalidExpansion(t *testing.T) {
+	t.Parallel()
+
+	// A regex rule passes startup validation (capture specs are validated
+	// lazily), but a matching label can expand to an out-of-range spec. Parsing
+	// must fail at job time rather than silently mis-sizing the runner.
+	resolver, err := ParseAliasRules(`[{"match":"^bigdisk-(\\d+)$","regex":true,"spec":"disk=${1}/arch=arm64"}]`)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	if _, err := ParseLabelsWithAliases([]string{"bigdisk-99999"}, resolver); err == nil {
+		t.Error("ParseLabelsWithAliases() should error when an alias expands to an out-of-range spec")
+	}
+}
+
+func TestParseLabelsWithAliases_NilResolverMatchesParseLabels(t *testing.T) {
+	t.Parallel()
+
+	labels := []string{"gpu-large"}
+	if _, err := ParseLabelsWithAliases(labels, nil); err == nil {
+		t.Error("ParseLabelsWithAliases() with nil resolver should reject a non-marker label")
+	}
+}
+
+func TestParseLabels_ArchSynonyms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		label    string
+		wantArch string
+	}{
+		{name: "x64 maps to amd64", label: "runs-fleet/cpu=2/arch=x64", wantArch: ArchAMD64},
+		{name: "x86_64 maps to amd64", label: "runs-fleet/cpu=2/arch=x86_64", wantArch: ArchAMD64},
+		{name: "aarch64 maps to arm64", label: "runs-fleet/cpu=2/arch=aarch64", wantArch: ArchARM64},
+		{name: "unknown arch left unset", label: "runs-fleet/cpu=2/arch=sparc", wantArch: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseLabels([]string{tt.label})
+			if err != nil {
+				t.Fatalf("ParseLabels() error = %v", err)
+			}
+			if got.Arch != tt.wantArch {
+				t.Errorf("Arch = %q, want %q", got.Arch, tt.wantArch)
+			}
+		})
+	}
+}

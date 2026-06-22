@@ -24,6 +24,10 @@ type Config struct {
 	GitHubAppID         string
 	GitHubAppPrivateKey string
 
+	// LabelAliasesJSON is a JSON array of label alias rules mapping custom
+	// runs-on labels to runs-fleet specs. Parsed and validated at startup.
+	LabelAliasesJSON string
+
 	QueueURL             string
 	QueueDLQURL          string
 	PoolQueueURL         string
@@ -119,6 +123,7 @@ func Load() (*Config, error) {
 		GitHubWebhookSecret:  getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),
 		GitHubAppID:          getEnv("RUNS_FLEET_GITHUB_APP_ID", ""),
 		GitHubAppPrivateKey:  getEnv("RUNS_FLEET_GITHUB_APP_PRIVATE_KEY", ""),
+		LabelAliasesJSON:     getEnv("RUNS_FLEET_LABEL_ALIASES", ""),
 		QueueURL:             getEnv("RUNS_FLEET_QUEUE_URL", ""),
 		QueueDLQURL:          getEnv("RUNS_FLEET_QUEUE_DLQ_URL", ""),
 		PoolQueueURL:         getEnv("RUNS_FLEET_POOL_QUEUE_URL", ""),

@@ -1,7 +1,7 @@
 ---
 topic: GitHub Integration (Webhooks + JIT Tokens)
 last_compiled: 2026-04-30
-sources_count: 2
+sources_count: 3
 ---
 
 # GitHub Integration (Webhooks + JIT Tokens)
@@ -35,7 +35,8 @@ ParseWebhook (pkg/github)
         │
         ▼
 HandleWorkflowJobQueued (internal/handler)
-  ├─ ParseLabels → JobConfig
+  ├─ ParseLabelsWithAliases → JobConfig
+  │    (runs-fleet marker, else config-driven custom-label alias)
   ├─ EnsureEphemeralPool (if pool= label set)
   ├─ build queue.JobMessage
   ├─ q.SendMessage (SQS)
@@ -49,9 +50,9 @@ HandleJobFailure (internal/handler)
 
 Validation is intentionally separated from event handling: `pkg/github`
 exports pure functions (`ValidateSignature`, `ParseWebhook`, `ParseLabels`,
-`ResolveFlexibleSpec`) so they are reusable from the HTTP layer, the admin
-API, and tests. `internal/handler` owns the side effects (DynamoDB,
-SQS, metrics).
+`ParseLabelsWithAliases`, `ResolveFlexibleSpec`, `ParseAliasRules`) so they are
+reusable from the HTTP layer, the admin API, and tests. `internal/handler` owns
+the side effects (DynamoDB, SQS, metrics).
 
 ## Talks To [coverage: high -- 2 sources]
 
@@ -78,7 +79,10 @@ SQS, metrics).
 - `ValidateSignature(payload []byte, signatureHeader string, secret string) error`
 - `ParseWebhook(r *http.Request, secret string) (interface{}, error)`
 - `ParseLabels(labels []string) (*JobConfig, error)`
+- `ParseLabelsWithAliases(labels []string, resolver *AliasResolver) (*JobConfig, error)`
 - `ResolveFlexibleSpec(cfg *JobConfig) error`
+- `ParseAliasRules(jsonStr string) (*AliasResolver, error)` (`alias.go`)
+- Type `AliasResolver` with `Resolve(label string) (spec string, ok bool)` and `Len() int`; type `AliasRule` (`Match`, `Regex`, `Spec`).
 - Constants: `ArchARM64 = "arm64"`, `ArchAMD64 = "amd64"`
 - Type: `JobConfig` — fields include `RunID`, `InstanceType`,
   `InstanceTypes`, `Pool`, `Spot`, `Region`, `Environment`, `OS`, `Arch`,
@@ -87,8 +91,8 @@ SQS, metrics).
 
 **Package `internal/handler` (`webhook.go`):**
 
-- `HandleWorkflowJobQueued(ctx, *github.WorkflowJobEvent, queue.Queue, *db.Client, metrics.Publisher) (*queue.JobMessage, error)`
-- `HandleJobFailure(ctx, *github.WorkflowJobEvent, queue.Queue, *db.Client, metrics.Publisher) (bool, error)`
+- `HandleWorkflowJobQueued(ctx, *github.WorkflowJobEvent, queue.Queue, *db.Client, *gh.AliasResolver) (*queue.JobMessage, error)`
+- `HandleJobFailure(ctx, *github.WorkflowJobEvent, queue.Queue, *db.Client, *gh.AliasResolver) (bool, error)`
 - `EnsureEphemeralPool(ctx, PoolDBClient, *gh.JobConfig) error`
 - `BuildRunnerLabel(*queue.JobMessage) string`
 - Interface `PoolDBClient` — `GetPoolConfig`, `CreateEphemeralPool`,
@@ -141,6 +145,54 @@ are silently ignored. Defaults: `Spot=true`, `OS="linux"`,
 `InstanceTypes`, `Pool`, `Spot`, `OriginalLabel`, `Region`, `Environment`,
 `OS`, `Arch`, `StorageGiB`, `PublicIP`, plus the flexible spec
 (`CPUMin`/`CPUMax`/`RAMMin`/`RAMMax`/`Families`/`Gen`).
+
+## Custom label aliases (transparent runner migration) [coverage: high -- 1 source]
+
+`ParseLabelsWithAliases` lets runs-fleet claim jobs whose `runs-on:` carries an
+**externally-defined custom label** — e.g. a label inherited from another
+self-hosted runner system such as Actions Runner Controller (ARC) —
+**without changing the workflow**.
+
+**Intent.** This feature exists to support *transparent transfer of existing
+self-hosted runners* (such as ARC) onto runs-fleet. Teams keep their current
+`runs-on:` labels verbatim; runs-fleet learns to recognize and serve them, so
+the original runners can be sunset without touching any workflow manifest.
+
+How it works:
+
+- Operators supply a JSON array of alias rules via `RUNS_FLEET_LABEL_ALIASES`,
+  parsed and validated once at startup by `gh.ParseAliasRules` (an
+  uncompilable regex or unparsable literal spec fails the boot). The custom
+  label vocabulary is deployment-specific, so it lives in config, **never in
+  source** — an empty/unset value reproduces pre-alias behavior exactly.
+- Each rule maps a label (literal, or `regex:true` with `${1}`/`${name}`
+  capture substitution) to an ordinary runs-fleet spec string
+  (e.g. `cpu=8+8/arch=arm64`), reusing the same
+  `parseLabelParts`/`ResolveFlexibleSpec` path as the native marker. Arch
+  synonyms are normalized (`x64`/`x86_64`→`amd64`, `aarch64`→`arm64`).
+- The native `runs-fleet` marker always takes precedence; the resolver is only
+  consulted when no marker is present, and the first matching rule wins.
+- The matched custom label is preserved as `OriginalLabel`, so the booted
+  runner registers under that exact label (`config.sh --labels`, no
+  `--no-default-labels`) and GitHub dispatches the job to it. Both
+  `runs-on: gpu-large` and `runs-on: [self-hosted, gpu-large]` match, because
+  GitHub auto-adds `self-hosted`/`Linux`/`ARM64`.
+
+**Caveat — competition during migration.** While both fleets are live, the
+original runners (e.g. ARC) and runs-fleet **compete** for the same queued jobs;
+whichever registers/claims a runner first wins, and the loser's ephemeral runner
+self-terminates.
+
+**Advice.** Once runs-fleet is proven to be serving the jobs correctly,
+**scale down the original runners** to stop the duplicate provisioning, then
+remove them entirely.
+
+Example — one regex rule deriving the spec for a whole family of labels
+(`ci-<N>x-<arch>`) from its captures, pinning vCPU exactly for parity:
+
+```json
+[{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]
+```
 
 ## Key Decisions [coverage: high -- 2 sources]
 
@@ -210,4 +262,5 @@ are silently ignored. Defaults: `Spot=true`, `OS="linux"`,
 ## Sources [coverage: high]
 
 - [pkg/github/webhook.go](../../pkg/github/webhook.go)
+- [pkg/github/alias.go](../../pkg/github/alias.go)
 - [internal/handler/webhook.go](../../internal/handler/webhook.go)

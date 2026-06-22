@@ -9,8 +9,43 @@ import (
 	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/google/go-github/v57/github"
 )
+
+// fakeDynamoForFailure is a minimal db.DynamoDBAPI for exercising the
+// HandleJobFailure requeue path. Only GetItem/UpdateItem carry behavior; the
+// rest satisfy the interface.
+type fakeDynamoForFailure struct {
+	getItem     func() (*dynamodb.GetItemOutput, error)
+	getItemSeen bool
+}
+
+func (f *fakeDynamoForFailure) GetItem(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	f.getItemSeen = true
+	return f.getItem()
+}
+
+func (f *fakeDynamoForFailure) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func (f *fakeDynamoForFailure) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	return &dynamodb.ScanOutput{}, nil
+}
+
+func (f *fakeDynamoForFailure) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	return &dynamodb.QueryOutput{}, nil
+}
+
+func (f *fakeDynamoForFailure) PutItem(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	return &dynamodb.PutItemOutput{}, nil
+}
+
+func (f *fakeDynamoForFailure) DeleteItem(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+	return &dynamodb.DeleteItemOutput{}, nil
+}
 
 // MockQueue implements queue.Queue for testing.
 type MockQueue struct {
@@ -353,7 +388,7 @@ func TestHandleWorkflowJobQueued(t *testing.T) {
 			}
 			mockMetrics := &MockMetrics{}
 
-			msg, err := HandleWorkflowJobQueued(context.Background(), tt.event, mockQueue, nil)
+			msg, err := HandleWorkflowJobQueued(context.Background(), tt.event, mockQueue, nil, nil)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("HandleWorkflowJobQueued() error = %v, wantErr %v", err, tt.wantErr)
@@ -434,7 +469,7 @@ func TestHandleWorkflowJobQueued_RunIDFromWebhook(t *testing.T) {
 
 			mockQueue := &MockQueue{}
 
-			msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+			msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 			if err != nil {
 				t.Fatalf("HandleWorkflowJobQueued() unexpected error: %v", err)
 			}
@@ -533,7 +568,7 @@ func TestHandleWorkflowJobQueued_MetricsPublishErrors(t *testing.T) {
 		},
 	}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() should not fail: %v", err)
 	}
@@ -561,7 +596,7 @@ func TestHandleWorkflowJobQueued_MultipleInstanceTypes(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
@@ -571,6 +606,128 @@ func TestHandleWorkflowJobQueued_MultipleInstanceTypes(t *testing.T) {
 	}
 	if len(msg.InstanceTypes) == 0 {
 		t.Error("Expected multiple instance types for flexible spec")
+	}
+}
+
+func TestHandleWorkflowJobQueued_LabelAlias(t *testing.T) {
+	const customLabel = "ci-8x-arm64"
+	resolver, err := gh.ParseAliasRules(`[{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]`)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:     github.Int64(12345),
+			Name:   github.String("test-job"),
+			Labels: []string{"self-hosted", customLabel},
+		},
+		Repo: &github.Repository{FullName: github.String("owner/repo")},
+	}
+
+	// Without a resolver the aliased label is not claimed.
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, &MockQueue{}, nil, nil)
+	if err != nil {
+		t.Fatalf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	if msg != nil {
+		t.Fatal("HandleWorkflowJobQueued() should not claim aliased label without a resolver")
+	}
+
+	// With the resolver the job is claimed and registered under the original label.
+	msg, err = HandleWorkflowJobQueued(context.Background(), event, &MockQueue{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("HandleWorkflowJobQueued() expected message for aliased label, got nil")
+	}
+	if msg.OriginalLabel != customLabel {
+		t.Errorf("OriginalLabel = %q, want %q (runner must register under the requested label)", msg.OriginalLabel, customLabel)
+	}
+	if msg.Arch != gh.ArchARM64 {
+		t.Errorf("Arch = %q, want %q", msg.Arch, gh.ArchARM64)
+	}
+	if msg.CPUMin != 8 || msg.CPUMax != 8 {
+		t.Errorf("CPU range = [%d,%d], want [8,8]", msg.CPUMin, msg.CPUMax)
+	}
+	if len(msg.InstanceTypes) == 0 {
+		t.Error("InstanceTypes is empty; alias spec did not resolve instance types")
+	}
+}
+
+func TestHandleJobFailure_LabelAliasRequeues(t *testing.T) {
+	resolver, err := gh.ParseAliasRules(`[{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]`)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	item, err := attributevalue.MarshalMap(map[string]any{
+		"job_id":      int64(12345),
+		"run_id":      int64(67890),
+		"repo":        "owner/repo",
+		"retry_count": 0,
+		"status":      "running",
+	})
+	if err != nil {
+		t.Fatalf("MarshalMap() unexpected error: %v", err)
+	}
+
+	newFake := func() *fakeDynamoForFailure {
+		return &fakeDynamoForFailure{
+			getItem: func() (*dynamodb.GetItemOutput, error) {
+				return &dynamodb.GetItemOutput{Item: item}, nil
+			},
+		}
+	}
+
+	event := &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         github.Int64(12345),
+			RunnerName: github.String("runs-fleet-i-1234567890abcdef0"),
+			Labels:     []string{"self-hosted", "ci-8x-arm64"},
+		},
+	}
+
+	// With a resolver the aliased label passes the parse gate, reaches the DB,
+	// and the job is re-queued onto an on-demand instance.
+	fake := newFake()
+	dbc := db.NewClientWithAPI(fake, "pools", "jobs")
+	var sent *queue.JobMessage
+	mockQueue := &MockQueue{
+		SendMessageFunc: func(_ context.Context, m *queue.JobMessage) error {
+			sent = m
+			return nil
+		},
+	}
+
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, dbc, resolver)
+	if err != nil {
+		t.Fatalf("HandleJobFailure() unexpected error: %v", err)
+	}
+	if !requeued {
+		t.Fatal("HandleJobFailure() should requeue an aliased job when a resolver is configured")
+	}
+	if !fake.getItemSeen {
+		t.Error("HandleJobFailure() should reach the DB lookup for an aliased job")
+	}
+	if sent == nil || sent.RunID != 67890 || sent.Repo != "owner/repo" || !sent.ForceOnDemand {
+		t.Errorf("requeue message = %+v, want RunID=67890, Repo=owner/repo, ForceOnDemand=true", sent)
+	}
+
+	// Without a resolver the same aliased label is rejected at the parse gate,
+	// before the DB is ever consulted.
+	fakeNil := newFake()
+	dbcNil := db.NewClientWithAPI(fakeNil, "pools", "jobs")
+	requeued, err = HandleJobFailure(context.Background(), event, &MockQueue{}, dbcNil, nil)
+	if err != nil {
+		t.Fatalf("HandleJobFailure() unexpected error: %v", err)
+	}
+	if requeued {
+		t.Error("HandleJobFailure() should not requeue an aliased job without a resolver")
+	}
+	if fakeNil.getItemSeen {
+		t.Error("HandleJobFailure() should reject the aliased label before the DB lookup when no resolver is set")
 	}
 }
 
@@ -588,7 +745,7 @@ func TestHandleWorkflowJobQueued_EmptyLabels(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
@@ -608,7 +765,7 @@ func TestHandleJobFailure_NoRunner(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -628,7 +785,7 @@ func TestHandleJobFailure_NonRunsFleetRunner(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -649,7 +806,7 @@ func TestHandleJobFailure_ShortRunnerName(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -669,7 +826,7 @@ func TestHandleJobFailure_NoDBClient(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -690,7 +847,7 @@ func TestHandleJobFailure_NonRunsFleetLabels(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil)
+	requeued, err := HandleJobFailure(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleJobFailure() unexpected error: %v", err)
 	}
@@ -713,7 +870,7 @@ func TestHandleWorkflowJobQueued_DiskStorage(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
@@ -740,7 +897,7 @@ func TestHandleWorkflowJobQueued_InvalidDisk(t *testing.T) {
 
 	mockQueue := &MockQueue{}
 
-	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil)
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, mockQueue, nil, nil)
 	if err != nil {
 		t.Errorf("HandleWorkflowJobQueued() unexpected error: %v", err)
 	}
