@@ -48,17 +48,23 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		))
 	defer span.End()
 
-	jobConfig, err := gh.ParseLabelsWithAliases(event.GetWorkflowJob().Labels, resolver)
+	job := event.GetWorkflowJob()
+	if job == nil {
+		webhookLog.Debug(ctx, "skipping event with no workflow_job")
+		return nil, nil
+	}
+
+	jobConfig, err := gh.ParseLabelsWithAliases(job.Labels, resolver)
 	if err != nil {
 		webhookLog.Debug(ctx, "skipping job no labels",
-			slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
+			slog.Int64(logging.KeyJobID, job.GetID()),
 			slog.String("error", err.Error()))
 		return nil, nil
 	}
 
 	// run_id is sourced from the webhook payload, not the label. The label's
 	// run_id (legacy runs-fleet=<run-id> form) is optional and ignored here.
-	runID := event.GetWorkflowJob().GetRunID()
+	runID := job.GetRunID()
 
 	if jobConfig.Pool != "" && dbc != nil {
 		if err := EnsureEphemeralPool(ctx, dbc, jobConfig); err != nil {
@@ -69,7 +75,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 	}
 
 	msg := &queue.JobMessage{
-		JobID:         event.GetWorkflowJob().GetID(),
+		JobID:         job.GetID(),
 		RunID:         runID,
 		Repo:          event.GetRepo().GetFullName(),
 		InstanceType:  jobConfig.InstanceType,

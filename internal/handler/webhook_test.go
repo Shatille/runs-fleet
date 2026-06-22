@@ -731,6 +731,20 @@ func TestHandleJobFailure_LabelAliasRequeues(t *testing.T) {
 	}
 }
 
+func TestHandleWorkflowJobQueued_NilWorkflowJob(t *testing.T) {
+	// A malformed (but HMAC-valid) workflow_job payload can deserialize to an
+	// event whose WorkflowJob is nil; the handler must skip it, not panic.
+	event := &github.WorkflowJobEvent{Repo: &github.Repository{FullName: github.String("owner/repo")}}
+
+	msg, err := HandleWorkflowJobQueued(context.Background(), event, &MockQueue{}, nil, nil)
+	if err != nil {
+		t.Fatalf("HandleWorkflowJobQueued() unexpected error: %v", err)
+	}
+	if msg != nil {
+		t.Errorf("HandleWorkflowJobQueued() = %v, want nil for event with no workflow_job", msg)
+	}
+}
+
 func TestHandleWorkflowJobQueued_EmptyLabels(t *testing.T) {
 	event := &github.WorkflowJobEvent{
 		WorkflowJob: &github.WorkflowJob{
