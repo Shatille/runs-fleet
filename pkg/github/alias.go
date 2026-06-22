@@ -64,6 +64,10 @@ func ParseAliasRules(jsonStr string) (*AliasResolver, error) {
 
 		compiled := compiledAliasRule{rule: rule}
 		if rule.Regex {
+			// No regex-complexity guard is needed: patterns come only from
+			// operator config (RUNS_FLEET_LABEL_ALIASES, parsed once at startup),
+			// never from request data, and Go's RE2 engine matches in linear time
+			// with no backtracking, so untrusted labels cannot trigger ReDoS.
 			re, err := regexp.Compile(rule.Match)
 			if err != nil {
 				return nil, fmt.Errorf("label alias rule %d (%q): invalid regex: %w", i, rule.Match, err)
