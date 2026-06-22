@@ -39,7 +39,7 @@ type PoolDBClient interface {
 // the durable work (label parse, ephemeral pool ensure, SQS enqueue) so the
 // webhook can be acked before best-effort observability runs; see
 // PublishJobQueuedMetrics for the deferred metrics.
-func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client) (*queue.JobMessage, error) {
+func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, resolver *gh.AliasResolver) (*queue.JobMessage, error) {
 	ctx, span := tracing.Tracer().Start(ctx, "webhook.process",
 		trace.WithAttributes(
 			attribute.String("github.event_type", "workflow_job"),
@@ -48,17 +48,23 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		))
 	defer span.End()
 
-	jobConfig, err := gh.ParseLabels(event.GetWorkflowJob().Labels)
+	job := event.GetWorkflowJob()
+	if job == nil {
+		webhookLog.Debug(ctx, "skipping event with no workflow_job")
+		return nil, nil
+	}
+
+	jobConfig, err := gh.ParseLabelsWithAliases(job.Labels, resolver)
 	if err != nil {
 		webhookLog.Debug(ctx, "skipping job no labels",
-			slog.Int64(logging.KeyJobID, event.GetWorkflowJob().GetID()),
+			slog.Int64(logging.KeyJobID, job.GetID()),
 			slog.String("error", err.Error()))
 		return nil, nil
 	}
 
 	// run_id is sourced from the webhook payload, not the label. The label's
 	// run_id (legacy runs-fleet=<run-id> form) is optional and ignored here.
-	runID := event.GetWorkflowJob().GetRunID()
+	runID := job.GetRunID()
 
 	if jobConfig.Pool != "" && dbc != nil {
 		if err := EnsureEphemeralPool(ctx, dbc, jobConfig); err != nil {
@@ -69,7 +75,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 	}
 
 	msg := &queue.JobMessage{
-		JobID:         event.GetWorkflowJob().GetID(),
+		JobID:         job.GetID(),
 		RunID:         runID,
 		Repo:          event.GetRepo().GetFullName(),
 		InstanceType:  jobConfig.InstanceType,
@@ -112,6 +118,7 @@ func HandleWorkflowJobQueued(ctx context.Context, event *github.WorkflowJobEvent
 		slog.Int("gen", jobConfig.Gen),
 		slog.Int("disk", jobConfig.StorageGiB),
 		slog.Bool("spot", jobConfig.Spot),
+		slog.String(logging.KeyAliasLabel, jobConfig.AliasLabel),
 		slog.String("original_label", jobConfig.OriginalLabel))
 	return msg, nil
 }
@@ -192,7 +199,7 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 }
 
 // HandleJobFailure processes workflow_job completed events with failure conclusion.
-func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client) (bool, error) {
+func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, resolver *gh.AliasResolver) (bool, error) {
 	job := event.GetWorkflowJob()
 	runnerName := job.GetRunnerName()
 
@@ -204,7 +211,7 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		return false, nil
 	}
 
-	_, err := gh.ParseLabels(job.Labels)
+	_, err := gh.ParseLabelsWithAliases(job.Labels, resolver)
 	if err != nil {
 		return false, nil
 	}

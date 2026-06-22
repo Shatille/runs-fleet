@@ -121,6 +121,14 @@ github:
   webhookSecret: "" # Required: Webhook secret (ignored if existingSecret is set)
   existingSecret: "" # Use existing secret instead of creating one (e.g., from VaultSecretMap)
 
+# Custom runner-label aliases (sets RUNS_FLEET_LABEL_ALIASES).
+# JSON array of rules mapping externally-defined runs-on labels (e.g. labels
+# inherited from another runner system you are migrating off) to runs-fleet
+# specs, so jobs keep their existing runs-on and runs-fleet serves them without
+# workflow changes. Empty = disabled. See docs/CONFIGURATION.md.
+# Example: '[{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]'
+labelAliases: ""
+
 # Secrets backend configuration
 secrets:
   # Backend selection: "ssm" (default) or "vault"

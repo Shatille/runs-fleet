@@ -64,6 +64,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	labelAliasResolver, err := gh.ParseAliasRules(cfg.LabelAliasesJSON)
+	if err != nil {
+		log.Error(ctx, "label alias config invalid", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	if n := labelAliasResolver.Len(); n > 0 {
+		log.Info(ctx, "label aliases loaded", slog.Int("rules", n))
+	}
+
 	tp, err := tracing.Setup(ctx, cfg.Tracing)
 	if err != nil {
 		log.Error(ctx, "tracing setup failed", slog.String("error", err.Error()))
@@ -160,6 +169,7 @@ func main() {
 		directProcessor:    directProcessor,
 		directProcessorSem: directProcessorSem,
 		poolNotifier:       poolManager,
+		labelAliasResolver: labelAliasResolver,
 	}
 	mux := ws.setupHTTPRoutes(cacheServer, prometheusHandler)
 
@@ -430,6 +440,7 @@ type webhookServer struct {
 	directProcessor    *worker.DirectProcessor
 	directProcessorSem chan struct{}
 	poolNotifier       PoolReconcileNotifier
+	labelAliasResolver *gh.AliasResolver
 }
 
 func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHandler http.Handler) *http.ServeMux {
@@ -568,7 +579,7 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 
 	switch event.GetAction() {
 	case "queued":
-		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, ws.jobQueue, ws.dbClient)
+		jobMsg, err := handler.HandleWorkflowJobQueued(ctx, event, ws.jobQueue, ws.dbClient, ws.labelAliasResolver)
 		if err != nil || jobMsg == nil {
 			return false, "", nil
 		}
@@ -585,7 +596,7 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		if event.GetWorkflowJob().GetConclusion() != "failure" {
 			return false, "", nil
 		}
-		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient)
+		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient, ws.labelAliasResolver)
 		if err != nil {
 			failCtx := logging.ContextWithJob(ctx, event.GetWorkflowJob().GetID(), 0, event.GetRepo().GetFullName())
 			webhookLog.Error(failCtx, "job failure handling failed",
