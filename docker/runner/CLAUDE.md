@@ -1,6 +1,6 @@
 # Runner image — agent guide
 
-This image runs untrusted workflow code via the GitHub Actions runner. CI has a Trivy gate that blocks merge on any HIGH or CRITICAL finding. Follow these rules before changing anything in this directory.
+This image runs untrusted workflow code via the GitHub Actions runner. CI has a Trivy gate that blocks merge on HIGH/CRITICAL findings **we can remediate** (OS/apt packages, our own agent binary); CVEs vendored only in third-party prebuilt binaries we install but don't build are reported but non-blocking — see "The gate is scoped to what we can remediate" below. Follow these rules before changing anything in this directory.
 
 ## Base image policy
 
