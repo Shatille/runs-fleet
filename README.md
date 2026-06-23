@@ -149,6 +149,15 @@ make scan-runner
 
 Changes to the runner image (`docker/runner/`) follow conventions documented in `docker/runner/CLAUDE.md` — base-image policy, package-install preferences, and OpenVEX usage for upstream-blocked CVEs.
 
+### CVE gate (image and AMI)
+
+runs-fleet refuses to ship an artifact that carries a known HIGH/CRITICAL CVE:
+
+- **Runner image** — `build-runner.yml` Trivy-scans the built image and, on any HIGH/CRITICAL finding, **deletes the unverified image and fails the build instead of promoting `:latest`**. `make scan-runner` reproduces the gate locally.
+- **Runner AMI** — `packer/provision-trivy-scan.sh` scans the provisioned filesystem **before the snapshot is taken**; an unfixed HIGH/CRITICAL aborts the Packer build, so no vulnerable AMI is ever registered.
+
+Both gates share `.trivy/trivy.yaml` and `.trivy/vex.json`. Findings are suppressed only via per-CVE, PURL-pinned OpenVEX statements (never `.trivyignore`), so a fixed rebuild re-surfaces them for review. See `docker/runner/CLAUDE.md` and `packer/README.md`.
+
 ## License
 
 MIT
