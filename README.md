@@ -151,12 +151,12 @@ Changes to the runner image (`docker/runner/`) follow conventions documented in 
 
 ### CVE gate (image and AMI)
 
-runs-fleet refuses to ship an artifact that carries a known HIGH/CRITICAL CVE:
+runs-fleet refuses to ship an artifact that carries a HIGH/CRITICAL CVE **it can remediate**:
 
-- **Runner image** — `build-runner.yml` Trivy-scans the built image and, on any HIGH/CRITICAL finding, **deletes the unverified image and fails the build instead of promoting `:latest`**. `make scan-runner` reproduces the gate locally.
-- **Runner AMI** — `packer/provision-trivy-scan.sh` scans the provisioned filesystem **before the snapshot is taken**; an unfixed HIGH/CRITICAL aborts the Packer build, so no vulnerable AMI is ever registered.
+- **Runner image** — `build-runner.yml` Trivy-scans the built image; on a blocking finding it **deletes the unverified image and fails the build instead of promoting `:latest`**. `make scan-runner` reproduces the gate locally.
+- **Runner AMI** — `packer/provision-trivy-scan.sh` scans the provisioned filesystem **before the snapshot is taken**; a blocking finding aborts the Packer build, so no vulnerable AMI is ever registered.
 
-Both gates share `.trivy/trivy.yaml` and `.trivy/vex.json`. Findings are suppressed only via per-CVE, PURL-pinned OpenVEX statements (never `.trivyignore`), so a fixed rebuild re-surfaces them for review. See `docker/runner/CLAUDE.md` and `packer/README.md`.
+Both gates share `.trivy/trivy.yaml`, `.trivy/vex.json`, and `.trivy/gate.sh`. The gate fails only on findings we control — OS/apt packages and our own `runs-fleet-agent` binary. CVEs that live only in third-party prebuilt binaries we install but don't build (Docker/containerd cli-plugins) or in upstream-bundled `node_modules` are **reported but non-blocking** (we can't rebuild them; they clear when upstream republishes). Genuinely-unreachable CVEs are suppressed only via per-CVE, PURL-pinned OpenVEX (never `.trivyignore`). See `docker/runner/CLAUDE.md` and `packer/README.md`.
 
 ## License
 

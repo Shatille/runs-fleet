@@ -41,18 +41,25 @@ sudo chmod 0755 /usr/local/bin/trivy
 [ -f /tmp/trivy.yaml ] || { echo "Missing /tmp/trivy.yaml (Packer file provisioner)"; exit 1; }
 [ -f /tmp/vex.json ]   || { echo "Missing /tmp/vex.json (Packer file provisioner)"; exit 1; }
 
+[ -f /tmp/gate.sh ] || { echo "Missing /tmp/gate.sh (Packer file provisioner)"; exit 1; }
+
 echo "==> Scanning filesystem for HIGH/CRITICAL CVEs (severity / pkg types from .trivy/trivy.yaml)"
 # --ignore-unfixed: don't fail on CVEs with no upstream fix available
 # --scanners vuln: skip secrets/misconfig (those would need separate baselines)
 # --skip-dirs: avoid noise from runtime/cache directories that don't represent
 #   packages baked into the AMI
+# No --exit-code here: the report is emitted as JSON and gate.sh decides
+# pass/fail, failing only on findings we can remediate (OS/apt packages, our
+# own agent binary). CVEs that live only in third-party prebuilt binaries
+# (Docker/containerd, npm-bundled libs) are reported but non-blocking.
 sudo trivy filesystem \
   --config /tmp/trivy.yaml \
   --vex /tmp/vex.json \
   --ignore-unfixed \
   --no-progress \
   --scanners vuln \
-  --exit-code 1 \
+  --format json \
+  --output /tmp/trivy-report.json \
   --skip-dirs /proc \
   --skip-dirs /sys \
   --skip-dirs /dev \
@@ -62,11 +69,16 @@ sudo trivy filesystem \
   --skip-dirs /home/ec2-user/.cache \
   /
 
+echo "==> Applying CVE gate (/tmp/gate.sh)"
+sudo bash /tmp/gate.sh /tmp/trivy-report.json
+
 echo "==> Removing Trivy and uploaded config files to keep AMI lean"
 sudo rm -rf /usr/local/bin/trivy \
             /root/.cache/trivy \
             /home/ec2-user/.cache/trivy \
             /tmp/trivy.yaml \
-            /tmp/vex.json
+            /tmp/vex.json \
+            /tmp/gate.sh \
+            /tmp/trivy-report.json
 
-echo "==> Trivy scan passed; AMI is clear of HIGH/CRITICAL CVEs"
+echo "==> Trivy gate passed; AMI has no remediable HIGH/CRITICAL CVEs"

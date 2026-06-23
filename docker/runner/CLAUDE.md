@@ -52,12 +52,25 @@ The `node20/` directory is deleted in the Dockerfile, and `FORCE_JAVASCRIPT_ACTI
 
 **Never add `.trivyignore` entries.** We removed the previous one because it was hiding future CVEs in the same packages without any audit trail. VEX is per-CVE and per-PURL; new CVEs in the same package surface immediately.
 
+## The gate is scoped to what we can remediate
+
+The scan does not fail on every HIGH/CRITICAL. `.trivy/gate.sh` post-processes the Trivy JSON and **fails only on findings we can act on**:
+
+- **OS / apt packages** (`Class == os-pkgs`) — fixed by `apt-get upgrade` on rebuild.
+- **our own `runs-fleet-agent` binary** (`Target ~ runs-fleet-agent`) — fixed by a `go.mod` bump.
+
+Findings that live **only** in third-party prebuilt binaries we install but do not build — Docker/containerd's `dockerd` and the `buildx`/`compose` cli-plugins — or in upstream-bundled `node_modules` (npm's vendored libs, e.g. `undici`) are **reported but non-blocking**. We cannot rebuild those binaries (see the base-image policy above), so failing on them would perpetually block image promotion and the AMI rebuild until the upstream project republishes on patched libraries. They clear on their own when upstream ships a fixed build, and `--ignore-unfixed` already drops anything with no fix.
+
+This is **target-scoped, not CVE-id-scoped**: a new CVE in our agent or an OS package still fails the gate. It is not a `.trivyignore`. The same `gate.sh` runs in `make scan-runner`, the `build-runner.yml` image scan, and the Packer AMI scan (`packer/provision-trivy-scan.sh`), so all three agree.
+
+For a genuinely-unreachable CVE in one of those third-party binaries, still prefer a precise OpenVEX statement (it documents *why* it can't affect us and keeps the report clean); the gate is the backstop for reachable-but-unfixable-by-us findings, not a substitute for that analysis.
+
 ## Verification workflow
 
 Before pushing any change to this directory:
 
 ```bash
-make scan-runner   # must exit 0 with no findings
+make scan-runner   # must exit 0 (gate PASS); third-party non-blocking findings may be listed
 ```
 
 CI uses the same Trivy version (`aquasec/trivy:0.70.0`), the same `.trivy/trivy.yaml` config, and the same `--vex .trivy/vex.json` flag. If local passes, CI passes. Iterating via CI burns time and runner-cost.

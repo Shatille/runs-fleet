@@ -270,6 +270,11 @@ jobs:
       - name: Scan image for vulnerabilities
         id: scan
         run: |
+          # Emit a JSON report (no --exit-code); .trivy/gate.sh decides pass/fail,
+          # failing only on findings we can remediate (OS/apt packages, our agent
+          # binary). CVEs that live only in third-party prebuilt binaries
+          # (Docker/containerd cli-plugins, npm-bundled libs) are reported but
+          # non-blocking — see docker/runner/CLAUDE.md.
           docker run --rm \
             -v "${PWD}:/work:ro" \
             -v "${PWD}/.trivy:/trivy:ro" \
@@ -277,9 +282,10 @@ jobs:
               --config /trivy/trivy.yaml \
               --vex /trivy/vex.json \
               --ignore-unfixed \
-              --exit-code 1 \
               --no-progress \
-              --input /work/runner-image.tar
+              --format json \
+              --input /work/runner-image.tar > runner-trivy-report.json
+          ./.trivy/gate.sh runner-trivy-report.json
 
       - name: Delete images on scan failure
         if: failure() && steps.scan.outcome == 'failure'
