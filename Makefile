@@ -133,6 +133,10 @@ scan-runner: docker-build-runner
 	@echo "Saving image to $(RUNNER_TAR)..."
 	$(CONTAINER_CLI) save $(RUNNER_IMAGE):$(RUNNER_TAG) -o $(RUNNER_TAR)
 	@echo "Scanning with Trivy via $(TRIVY_IMAGE) using .trivy/trivy.yaml + VEX..."
+	@# No --exit-code: emit JSON and let .trivy/gate.sh decide. The gate fails
+	@# only on remediable findings (OS/apt packages, our runs-fleet-agent binary);
+	@# CVEs that live only in third-party prebuilt binaries (Docker cli-plugins)
+	@# or npm-bundled libs are reported but non-blocking. See docker/runner/CLAUDE.md.
 	$(CONTAINER_CLI) run --rm \
 		-v $(PWD)/bin:/work:ro \
 		-v $(PWD)/.trivy:/trivy:ro \
@@ -140,9 +144,10 @@ scan-runner: docker-build-runner
 			--config /trivy/trivy.yaml \
 			--vex /trivy/vex.json \
 			--ignore-unfixed \
-			--exit-code 1 \
 			--no-progress \
-			--input /work/runs-fleet-runner.tar
+			--format json \
+			--input /work/runs-fleet-runner.tar > bin/trivy-report.json
+	./.trivy/gate.sh bin/trivy-report.json
 
 # Generate a CycloneDX SBOM for the runner image. Output: bin/runs-fleet-runner.sbom.json
 sbom-runner: docker-build-runner

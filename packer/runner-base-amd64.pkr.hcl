@@ -134,6 +134,11 @@ build {
     destination = "/tmp/vex.json"
   }
 
+  provisioner "file" {
+    source      = "${path.root}/../.trivy/gate.sh"
+    destination = "/tmp/gate.sh"
+  }
+
   provisioner "shell" {
     script = "${path.root}/provision-trivy-scan.sh"
   }
