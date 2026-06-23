@@ -2,7 +2,7 @@
 # Built on the official GitHub Actions runner image. Multi-arch (amd64/arm64).
 
 ARG TARGETARCH
-ARG RUNNER_BASE_TAG=2.334.0
+ARG RUNNER_BASE_TAG=2.335.1
 
 # Stage 1: Build the runs-fleet agent binary
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder

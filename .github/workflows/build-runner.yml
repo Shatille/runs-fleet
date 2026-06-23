@@ -55,7 +55,7 @@ concurrency:
 
 env:
   AWS_REGION: ap-northeast-1
-  RUNNER_BASE_TAG: ${{ vars.RUNNER_BASE_TAG || '2.334.0' }}
+  RUNNER_BASE_TAG: ${{ vars.RUNNER_BASE_TAG || '2.335.1' }}
 
 jobs:
   # Decide whether to build (runner files changed since last tag) and, if so,
