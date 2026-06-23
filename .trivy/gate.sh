@@ -19,14 +19,19 @@
 # package still fails the gate. It is not a .trivyignore.
 set -euo pipefail
 
-report="$(cat "${1:-/dev/stdin}")"
+# Buffer the report to a temp file (jq reads it directly, twice) rather than
+# slurping it into a shell variable — reports can be large, and this also lets
+# the stdin form be read more than once.
+report_file="$(mktemp)"
+trap 'rm -f "$report_file"' EXIT
+cat "${1:-/dev/stdin}" > "$report_file"
 
 # Print "  <target>: <CVE> <severity> <pkg>@<version> (fixed: <fix>)" for every
 # vulnerability in Results matching the jq selector passed as $1.
 findings() {
   local prog
   prog="$(printf '.Results[] | select(.Vulnerabilities) | %s | .Target as $t | .Vulnerabilities[] | "  \\($t): \\(.VulnerabilityID) \\(.Severity) \\(.PkgName)@\\(.InstalledVersion) (fixed: \\(.FixedVersion // "n/a"))"' "$1")"
-  printf '%s' "$report" | jq -r "$prog"
+  jq -r "$prog" "$report_file"
 }
 
 controlled='select(.Class == "os-pkgs" or (.Target | test("runs-fleet-agent")))'
