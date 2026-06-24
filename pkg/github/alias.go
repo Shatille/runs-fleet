@@ -110,6 +110,16 @@ func (r *AliasResolver) Len() int {
 	return len(r.rules)
 }
 
+// poolNameRe mirrors the orchestrator's pool-name validation
+// (validPoolName in cmd/server/main.go) so an alias label can double as a
+// warm-pool name without the webhook later rejecting it.
+var poolNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// isValidPoolName reports whether s is usable as a warm-pool name.
+func isValidPoolName(s string) bool {
+	return len(s) <= 63 && poolNameRe.MatchString(s)
+}
+
 // validateSpec checks that a literal spec parses and resolves to at least one
 // instance type, so typos (cpu=abc, disk out of range) and impossible specs
 // (unknown family, no matching instance type) fail at config load rather than

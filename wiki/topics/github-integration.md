@@ -177,6 +177,12 @@ How it works:
   `--no-default-labels`) and GitHub dispatches the job to it. Both
   `runs-on: gpu-large` and `runs-on: [self-hosted, gpu-large]` match, because
   GitHub auto-adds `self-hosted`/`Linux`/`ARM64`.
+- An aliased label also becomes its own **warm pool**: unless the rule's spec
+  sets an explicit `pool=`, the matched label (when it's a legal pool name) is
+  set as `cfg.Pool`, so `HandleWorkflowJobQueued` auto-creates an ephemeral pool
+  for it (`DesiredRunning=0, DesiredStopped=1`). Migrated workloads (e.g. each
+  `shared-Ncpu-arch`) get their own warm pool and fast restarts with no idle
+  cost; a label that isn't a valid pool name just cold-starts.
 - For observability, `JobConfig.AliasLabel` records the matched custom label
   (empty for native markers) and is emitted on the webhook "job enqueued" log
   line as `alias_label` — so aliased jobs are distinguishable in logs and you

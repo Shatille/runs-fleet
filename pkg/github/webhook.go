@@ -165,6 +165,13 @@ func ParseLabelsWithAliases(labels []string, resolver *AliasResolver) (*JobConfi
 		if err := parseLabelParts(cfg, strings.Split(spec, "/")); err != nil {
 			return nil, fmt.Errorf("invalid alias spec for label %q: %w", aliasLabel, err)
 		}
+		// An aliased label doubles as its own warm pool so migrated workloads get
+		// fast restarts (the ephemeral pool is auto-created downstream). Only
+		// default it when the spec set no explicit pool and the label is a legal
+		// pool name; otherwise the job simply cold-starts.
+		if cfg.Pool == "" && isValidPoolName(aliasLabel) {
+			cfg.Pool = aliasLabel
+		}
 	} else {
 		return nil, errors.New("no runs-fleet label found")
 	}

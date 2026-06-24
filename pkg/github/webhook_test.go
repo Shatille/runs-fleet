@@ -1110,6 +1110,59 @@ func TestParseLabelsWithAliases_NilResolverMatchesParseLabels(t *testing.T) {
 	}
 }
 
+func TestParseLabelsWithAliases_WarmPool(t *testing.T) {
+	t.Parallel()
+
+	// "weird.label" matches literally but is not a valid pool name (the dot is
+	// disallowed), so it must fall back to cold-start.
+	resolver, err := ParseAliasRules(`[
+		{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}/arch=${2}"},
+		{"match":"with-pool","spec":"cpu=4/arch=arm64/pool=builds"},
+		{"match":"weird.label","spec":"cpu=2/arch=arm64"}
+	]`)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		labels   []string
+		wantPool string
+	}{
+		{"aliased label becomes its own warm pool", []string{"ci-8x-arm64"}, "ci-8x-arm64"},
+		{"matched within array still pools", []string{"self-hosted", "ci-4x-arm64"}, "ci-4x-arm64"},
+		{"explicit pool= in alias spec wins", []string{"with-pool"}, "builds"},
+		{"label invalid as a pool name falls back to cold-start", []string{"weird.label"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseLabelsWithAliases(tt.labels, resolver)
+			if err != nil {
+				t.Fatalf("ParseLabelsWithAliases() unexpected error: %v", err)
+			}
+			if got.Pool != tt.wantPool {
+				t.Errorf("Pool = %q, want %q", got.Pool, tt.wantPool)
+			}
+		})
+	}
+}
+
+// TestParseLabels_MarkerNoPoolDefault confirms the warm-pool default applies only
+// to aliased labels: a native runs-fleet marker without an explicit pool= still
+// cold-starts (Pool empty).
+func TestParseLabels_MarkerNoPoolDefault(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseLabels([]string{"runs-fleet/cpu=4/arch=arm64"})
+	if err != nil {
+		t.Fatalf("ParseLabels() unexpected error: %v", err)
+	}
+	if got.Pool != "" {
+		t.Errorf("Pool = %q, want empty for a marker without pool=", got.Pool)
+	}
+}
+
 func TestParseLabels_ArchSynonyms(t *testing.T) {
 	t.Parallel()
 
