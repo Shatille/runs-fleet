@@ -78,6 +78,14 @@ type mockDBAPI struct {
 	lastStatus       string
 	completeRecord   *events.JobInfo
 	startedRecord    *events.JobInfo
+
+	getByInstanceCalls int
+	getByInstanceErr   error
+	jobByInstance      *events.JobInfo
+	requeueCalls       int
+	lastRequeueJobID   int64
+	markRequeuedErr    error
+	markRequeuedResult bool
 }
 
 func (m *mockDBAPI) MarkJobStarted(_ context.Context, jobID int64, _ time.Time) (*events.JobInfo, error) {
@@ -111,6 +119,36 @@ func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status strin
 func (m *mockDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.Time) error {
 	m.metricsCalls++
 	return m.updateMetricsErr
+}
+
+func (m *mockDBAPI) GetJobByInstance(_ context.Context, _ string) (*events.JobInfo, error) {
+	m.getByInstanceCalls++
+	if m.getByInstanceErr != nil {
+		return nil, m.getByInstanceErr
+	}
+	return m.jobByInstance, nil
+}
+
+func (m *mockDBAPI) MarkJobRequeuedByJobID(_ context.Context, jobID int64) (bool, error) {
+	m.requeueCalls++
+	m.lastRequeueJobID = jobID
+	if m.markRequeuedErr != nil {
+		return false, m.markRequeuedErr
+	}
+	return m.markRequeuedResult, nil
+}
+
+// mockJobQueue implements JobQueueAPI for testing.
+type mockJobQueue struct {
+	sendCalls int
+	lastMsg   *queue.JobMessage
+	sendErr   error
+}
+
+func (m *mockJobQueue) SendMessage(_ context.Context, job *queue.JobMessage) error {
+	m.sendCalls++
+	m.lastMsg = job
+	return m.sendErr
 }
 
 // mockMetricsAPI implements MetricsAPI for testing.
@@ -213,7 +251,7 @@ func TestNewHandler(t *testing.T) {
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
 
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	if handler.queueClient != q {
 		t.Error("expected queueClient to be set")
@@ -238,7 +276,7 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := Message{
 		InstanceID:      "i-12345",
@@ -304,7 +342,7 @@ func TestHandler_processMessage_OperationalFailure(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := Message{
 		InstanceID:      "i-12345",
@@ -347,7 +385,7 @@ func TestHandler_processMessage_ServedDespiteFailedWorkflow(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	// Runner ran the job to completion and exited cleanly: the agent reports
 	// "success" regardless of the (failed) workflow steps.
@@ -385,7 +423,7 @@ func TestHandler_processMessage_Started(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := Message{
 		InstanceID: "i-12345",
@@ -429,7 +467,7 @@ func TestHandler_processMessage_StartedLateNoOp(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{startedNoOp: true} // already past launched => no-op transition
 	metrics := &mockMetricsAPI{}
-	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, &config.Config{})
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
 
 	msg := Message{InstanceID: "i-12345", JobID: "12345678901", Status: "started"}
 	body, _ := json.Marshal(msg)
@@ -456,7 +494,7 @@ func TestHandler_processMessage_StartedDBErrorRetries(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{markStartedErr: errors.New("transient db error")}
 	metrics := &mockMetricsAPI{}
-	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, &config.Config{})
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
 
 	msg := Message{InstanceID: "i-12345", JobID: "12345678901", Status: "started"}
 	body, _ := json.Marshal(msg)
@@ -476,16 +514,20 @@ func TestHandler_processMessage_EmptyBody(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	queueMsg := queue.Message{
 		Body:   "",
 		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), queueMsg)
-	if err == nil {
-		t.Fatal("expected error for empty body")
+	// Empty body is non-retryable: it must be acked (deleted), not returned as an
+	// error that would redeliver for the full retention window.
+	if err := handler.processMessage(context.Background(), queueMsg); err != nil {
+		t.Fatalf("expected empty body to be acked, got error: %v", err)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected empty-body message to be deleted (acked), got %d delete calls", q.deleteCalls)
 	}
 }
 
@@ -495,16 +537,118 @@ func TestHandler_processMessage_InvalidJSON(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	queueMsg := queue.Message{
 		Body:   "invalid json",
 		Handle: testReceiptTermination,
 	}
 
-	err := handler.processMessage(context.Background(), queueMsg)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
+	// Unparseable JSON is non-retryable: ack (delete), don't redeliver.
+	if err := handler.processMessage(context.Background(), queueMsg); err != nil {
+		t.Fatalf("expected invalid JSON to be acked, got error: %v", err)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected invalid-JSON message to be deleted (acked), got %d delete calls", q.deleteCalls)
+	}
+}
+
+func bootstrapFailedBody(t *testing.T, instanceID string) string {
+	t.Helper()
+	body, err := json.Marshal(Message{InstanceID: instanceID, Status: "bootstrap_failed", Error: "agent bootstrap failed on boot"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
+func TestHandler_processMessage_BootstrapFailed_RequeuesAndAcks(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		jobByInstance:      &events.JobInfo{JobID: 555, RunID: 777, Repo: testRepo, InstanceType: "c7g.large", Pool: "default", RetryCount: 1},
+		markRequeuedResult: true,
+	}
+	secretsStore := &mockSecretsStore{}
+	jq := &mockJobQueue{}
+	handler := NewHandler(q, db, &mockMetricsAPI{}, secretsStore, jq, &config.Config{})
+
+	msg := queue.Message{Body: bootstrapFailedBody(t, "i-abc"), Handle: testReceiptTermination}
+	if err := handler.processMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if jq.sendCalls != 1 {
+		t.Fatalf("expected 1 requeue send, got %d", jq.sendCalls)
+	}
+	if jq.lastMsg.JobID != 555 || jq.lastMsg.RunID != 777 || !jq.lastMsg.ForceOnDemand || jq.lastMsg.Spot {
+		t.Errorf("requeue msg = %+v, want JobID=555 RunID=777 ForceOnDemand=true Spot=false", jq.lastMsg)
+	}
+	if jq.lastMsg.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, want 2 (job.RetryCount+1)", jq.lastMsg.RetryCount)
+	}
+	if secretsStore.deleteCalls != 1 {
+		t.Errorf("expected runner config deleted, got %d delete calls", secretsStore.deleteCalls)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected message acked, got %d delete calls", q.deleteCalls)
+	}
+}
+
+func TestHandler_processMessage_BootstrapFailed_NoJob_Acks(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{jobByInstance: nil}
+	jq := &mockJobQueue{}
+	handler := NewHandler(q, db, &mockMetricsAPI{}, &mockSecretsStore{}, jq, &config.Config{})
+
+	msg := queue.Message{Body: bootstrapFailedBody(t, "i-prewarm"), Handle: testReceiptTermination}
+	if err := handler.processMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if jq.sendCalls != 0 {
+		t.Errorf("expected no requeue for instance with no job, got %d", jq.sendCalls)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected message acked, got %d delete calls", q.deleteCalls)
+	}
+}
+
+func TestHandler_processMessage_BootstrapFailed_AlreadyRequeued_NoDoubleEnqueue(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		jobByInstance:      &events.JobInfo{JobID: 555, RunID: 777, Repo: testRepo},
+		markRequeuedResult: false, // already requeued (watchdog or redelivery)
+	}
+	jq := &mockJobQueue{}
+	handler := NewHandler(q, db, &mockMetricsAPI{}, &mockSecretsStore{}, jq, &config.Config{})
+
+	msg := queue.Message{Body: bootstrapFailedBody(t, "i-abc"), Handle: testReceiptTermination}
+	if err := handler.processMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if jq.sendCalls != 0 {
+		t.Errorf("expected no double requeue when MarkJobRequeued returns false, got %d", jq.sendCalls)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected message acked, got %d delete calls", q.deleteCalls)
+	}
+}
+
+func TestHandler_processMessage_BootstrapFailed_NoInstanceID_Acks(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	jq := &mockJobQueue{}
+	handler := NewHandler(q, db, &mockMetricsAPI{}, &mockSecretsStore{}, jq, &config.Config{})
+
+	body, _ := json.Marshal(Message{Status: "bootstrap_failed", Error: "x"})
+	msg := queue.Message{Body: string(body), Handle: testReceiptTermination}
+	if err := handler.processMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if db.getByInstanceCalls != 0 {
+		t.Errorf("expected no job lookup without instance_id, got %d", db.getByInstanceCalls)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected message acked, got %d delete calls", q.deleteCalls)
 	}
 }
 
@@ -573,7 +717,7 @@ func TestHandler_processTermination_MarkCompleteError(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -593,7 +737,7 @@ func TestHandler_processTermination_DeleteRunnerConfig(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -659,7 +803,7 @@ func TestHandler_processMessage_DeleteError(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := Message{
 		InstanceID: "i-12345",
@@ -688,7 +832,7 @@ func TestHandler_Run_Cancellation(t *testing.T) {
 		metrics := &mockMetricsAPI{}
 		secretsStore := &mockSecretsStore{}
 		cfg := &config.Config{}
-		handler := NewHandler(q, db, metrics, secretsStore, cfg)
+		handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 		ctx, cancel := context.WithCancel(context.Background())
 
@@ -734,6 +878,14 @@ func (m *blockingDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.T
 	return nil
 }
 
+func (m *blockingDBAPI) GetJobByInstance(_ context.Context, _ string) (*events.JobInfo, error) {
+	return nil, nil
+}
+
+func (m *blockingDBAPI) MarkJobRequeuedByJobID(_ context.Context, _ int64) (bool, error) {
+	return false, nil
+}
+
 // TestHandler_Run_InflightProcessorRunsToCompletionAfterCancel simulates a
 // SIGTERM landing while a termination message is being processed: the parent
 // context is cancelled mid-flight. The in-flight processor must run to
@@ -757,7 +909,7 @@ func TestHandler_Run_InflightProcessorRunsToCompletionAfterCancel(t *testing.T) 
 		// re-dispatch it.
 		q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: testReceiptTermination}}}
 		db := &blockingDBAPI{started: make(chan struct{}), release: make(chan struct{})}
-		handler := NewHandler(&onceQueueAPI{inner: q, dispatched: &dispatched}, db, &mockMetricsAPI{}, &mockSecretsStore{}, &config.Config{})
+		handler := NewHandler(&onceQueueAPI{inner: q, dispatched: &dispatched}, db, &mockMetricsAPI{}, &mockSecretsStore{}, nil, &config.Config{})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -946,7 +1098,7 @@ func TestHandler_processTermination_NoDuration(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID:      "i-12345",
@@ -976,7 +1128,7 @@ func TestHandler_processTermination_NoTimestamps(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -1020,7 +1172,7 @@ func TestHandler_Run_WithMessages(t *testing.T) {
 		metrics := &mockMetricsAPI{}
 		secretsStore := &mockSecretsStore{}
 		cfg := &config.Config{}
-		handler := NewHandler(q, db, metrics, secretsStore, cfg)
+		handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 		ctx, cancel := context.WithCancel(context.Background())
 
@@ -1058,7 +1210,7 @@ func TestHandler_Run_EmitsMessageProcessingSeconds(t *testing.T) {
 
 		q := &mockQueueAPI{messages: []queue.Message{{Body: string(body), Handle: "r1"}}}
 		metrics := &mockMetricsAPI{}
-		handler := NewHandler(q, &mockDBAPI{}, metrics, &mockSecretsStore{}, &config.Config{})
+		handler := NewHandler(q, &mockDBAPI{}, metrics, &mockSecretsStore{}, nil, &config.Config{})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -1106,7 +1258,7 @@ func TestHandler_Run_ReceiveError(t *testing.T) {
 		metrics := &mockMetricsAPI{}
 		secretsStore := &mockSecretsStore{}
 		cfg := &config.Config{}
-		handler := NewHandler(q, db, metrics, secretsStore, cfg)
+		handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 		ctx, cancel := context.WithCancel(context.Background())
 
@@ -1142,7 +1294,7 @@ func TestHandler_processTermination_MetricsErrors(t *testing.T) {
 	}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID:      "i-12345",
@@ -1166,7 +1318,7 @@ func TestHandler_processTermination_FailureMetricsError(t *testing.T) {
 	}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -1189,7 +1341,7 @@ func TestHandler_processTermination_UpdateMetricsError(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	now := time.Now()
 	msg := &Message{
@@ -1213,7 +1365,7 @@ func TestHandler_processMessage_NoHandle(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := Message{
 		InstanceID: "i-12345",
@@ -1244,7 +1396,7 @@ func TestHandler_processTermination_Timeout(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",
@@ -1272,7 +1424,7 @@ func TestHandler_processTermination_Interrupted(t *testing.T) {
 	metrics := &mockMetricsAPI{}
 	secretsStore := &mockSecretsStore{}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID:    "i-12345",
@@ -1304,7 +1456,7 @@ func TestHandler_processTermination_SecretsDeleteError(t *testing.T) {
 		deleteErr: errors.New("access denied"),
 	}
 	cfg := &config.Config{}
-	handler := NewHandler(q, db, metrics, secretsStore, cfg)
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
 
 	msg := &Message{
 		InstanceID: "i-12345",

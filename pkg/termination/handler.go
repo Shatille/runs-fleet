@@ -37,6 +37,14 @@ type DBAPI interface {
 	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) (*events.JobInfo, error)
 	MarkJobStarted(ctx context.Context, jobID int64, startedAt time.Time) (*events.JobInfo, error)
 	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
+	GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error)
+	MarkJobRequeuedByJobID(ctx context.Context, jobID int64) (bool, error)
+}
+
+// JobQueueAPI enqueues job re-queue messages (used to recover a job whose
+// instance failed to bootstrap).
+type JobQueueAPI interface {
+	SendMessage(ctx context.Context, job *queue.JobMessage) error
 }
 
 // MetricsAPI provides metrics publishing for job completion.
@@ -123,16 +131,20 @@ type Handler struct {
 	dbClient     DBAPI
 	metrics      MetricsAPI
 	secretsStore secrets.Store
+	jobQueue     JobQueueAPI
 	config       *config.Config
 }
 
-// NewHandler creates a new termination handler.
-func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, secretsStore secrets.Store, cfg *config.Config) *Handler {
+// NewHandler creates a new termination handler. jobQueue may be nil (re-queue
+// on bootstrap failure is then skipped; the unconfirmed-runner watchdog still
+// recovers the job).
+func NewHandler(q QueueAPI, db DBAPI, m MetricsAPI, secretsStore secrets.Store, jobQueue JobQueueAPI, cfg *config.Config) *Handler {
 	return &Handler{
 		queueClient:  q,
 		dbClient:     db,
 		metrics:      m,
 		secretsStore: secretsStore,
+		jobQueue:     jobQueue,
 		config:       cfg,
 	}
 }
@@ -205,52 +217,134 @@ func (h *Handler) Run(ctx context.Context) {
 // processMessage processes a single termination message.
 func (h *Handler) processMessage(ctx context.Context, msg queue.Message) error {
 	if msg.Body == "" {
-		return fmt.Errorf("message body is empty")
+		// Non-retryable: an empty body never becomes valid, so ack it instead of
+		// returning an error (the termination queue has no DLQ; a returned error
+		// would redeliver for the full retention window).
+		termLog.Warn(ctx, "dropping termination message with empty body")
+		return h.ackMessage(ctx, msg)
 	}
 
 	var termMsg Message
 	if err := json.Unmarshal([]byte(msg.Body), &termMsg); err != nil {
-		return fmt.Errorf("failed to unmarshal message: %w", err)
+		termLog.Warn(ctx, "dropping unparseable termination message", slog.String("error", err.Error()))
+		return h.ackMessage(ctx, msg)
 	}
 
 	ctx = logging.ContextWith(ctx,
 		slog.String(logging.KeyInstanceID, termMsg.InstanceID),
 		slog.String(logging.KeyJobID, termMsg.JobID))
 
+	// "bootstrap_failed" is emitted by the boot shim (scripts/cloud-init-boot.sh)
+	// when the agent fails to start before the Go agent runs, so it carries only
+	// instance_id (no job_id). Handle it as an instance-scoped signal: recover the
+	// job by instance and ack. It must be handled before the job_id-requiring
+	// validation below.
+	if termMsg.Status == "bootstrap_failed" {
+		if termMsg.InstanceID == "" {
+			termLog.Warn(ctx, "dropping bootstrap_failed message with no instance_id")
+			return h.ackMessage(ctx, msg)
+		}
+		if err := h.processBootstrapFailure(ctx, &termMsg); err != nil {
+			return err // transient (DB/queue) — let SQS redeliver
+		}
+		return h.ackMessage(ctx, msg)
+	}
+
 	// A "started" event announces the runner registered and began executing; it
 	// carries no completion, so it confirms the job (launched -> running) rather
-	// than going through processTermination. A failed confirmation is retried via
-	// SQS redelivery so the watchdog does not later mistake a healthy job for a
-	// never-confirmed one.
+	// than going through processTermination. A DB error during confirmation is
+	// retried via SQS redelivery so the watchdog does not later mistake a healthy
+	// job for a never-confirmed one; a malformed message is non-retryable and acked.
 	if termMsg.Status == "started" {
 		if err := h.validateMessage(&termMsg); err != nil {
-			return fmt.Errorf("invalid message: %w", err)
+			termLog.Warn(ctx, "dropping invalid started message",
+				slog.String("error", err.Error()))
+			return h.ackMessage(ctx, msg)
 		}
 		if err := h.confirmRunnerStarted(ctx, &termMsg); err != nil {
 			return err
 		}
-		if msg.Handle != "" {
-			if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
-				return fmt.Errorf("failed to delete message: %w", err)
-			}
-		}
-		return nil
+		return h.ackMessage(ctx, msg)
 	}
 
 	if err := h.validateMessage(&termMsg); err != nil {
-		return fmt.Errorf("invalid message: %w", err)
+		// Non-retryable: a message missing required fields never becomes valid.
+		termLog.Warn(ctx, "dropping invalid termination message",
+			slog.String("error", err.Error()), slog.String("status", termMsg.Status))
+		return h.ackMessage(ctx, msg)
 	}
 
 	if err := h.processTermination(ctx, &termMsg); err != nil {
 		return fmt.Errorf("failed to process termination: %w", err)
 	}
 
-	if msg.Handle != "" {
-		if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
-			return fmt.Errorf("failed to delete message: %w", err)
+	return h.ackMessage(ctx, msg)
+}
+
+// ackMessage deletes a message from the queue (no-op when there is no handle,
+// e.g. in tests).
+func (h *Handler) ackMessage(ctx context.Context, msg queue.Message) error {
+	if msg.Handle == "" {
+		return nil
+	}
+	if err := h.queueClient.DeleteMessage(ctx, msg.Handle); err != nil {
+		return fmt.Errorf("failed to delete message: %w", err)
+	}
+	return nil
+}
+
+// processBootstrapFailure recovers a job whose instance failed to start the
+// agent on boot. The boot shim has only the instance id, so we resolve the job
+// by instance, re-queue it onto a fresh on-demand instance (idempotent via
+// MarkJobRequeuedByJobID, so a redelivery or the unconfirmed-runner watchdog
+// cannot double-enqueue), and delete the dead instance's runner config. Returns
+// an error only for transient DB/queue failures (so the message is retried);
+// nil means the caller should ack.
+func (h *Handler) processBootstrapFailure(ctx context.Context, msg *Message) error {
+	ctx, span := tracing.Tracer().Start(ctx, "termination.bootstrap_failed",
+		trace.WithAttributes(attribute.String("instance.id", msg.InstanceID)))
+	defer span.End()
+
+	termLog.Warn(ctx, "agent bootstrap failed on boot", slog.String("error", msg.Error))
+
+	job, err := h.dbClient.GetJobByInstance(ctx, msg.InstanceID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return fmt.Errorf("failed to get job for instance %s: %w", msg.InstanceID, err)
+	}
+
+	if job != nil && job.JobID != 0 && job.RunID != 0 && h.jobQueue != nil {
+		marked, err := h.dbClient.MarkJobRequeuedByJobID(ctx, job.JobID)
+		if err != nil {
+			return fmt.Errorf("failed to mark job %d requeued: %w", job.JobID, err)
+		}
+		if marked {
+			ctx = logging.ContextWithJob(ctx, job.JobID, job.RunID, job.Repo)
+			requeueMsg := &queue.JobMessage{
+				JobID:         job.JobID,
+				RunID:         job.RunID,
+				Repo:          job.Repo,
+				InstanceType:  job.InstanceType,
+				Pool:          job.Pool,
+				Spot:          false,
+				RetryCount:    job.RetryCount + 1,
+				ForceOnDemand: true,
+			}
+			if err := h.jobQueue.SendMessage(ctx, requeueMsg); err != nil {
+				return fmt.Errorf("failed to re-queue job %d after bootstrap failure: %w", job.JobID, err)
+			}
+			termLog.Info(ctx, "job re-queued after bootstrap failure",
+				slog.Int("retry_count", requeueMsg.RetryCount))
 		}
 	}
 
+	// Best-effort cleanup of the dead instance's runner config; the instance
+	// self-terminates via the boot shim, so a failure here is not fatal.
+	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {
+		termLog.Warn(ctx, "runner config cleanup failed after bootstrap failure",
+			slog.String("error", err.Error()))
+	}
 	return nil
 }
 
