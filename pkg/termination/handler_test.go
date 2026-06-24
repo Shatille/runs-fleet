@@ -174,6 +174,11 @@ type mockMetricsAPI struct {
 	lastProcessingQueue   string
 	lastProcessingResult  string
 	lastProcessingSeconds float64
+
+	requeuedCalls      int
+	lastRequeuedReason string
+	schedFailCalls     int
+	lastSchedFailType  string
 }
 
 func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, repo string) error {
@@ -217,6 +222,18 @@ func (m *mockMetricsAPI) processingSnapshot() (int, string, string) {
 	m.processingMu.Lock()
 	defer m.processingMu.Unlock()
 	return m.processingCalls, m.lastProcessingQueue, m.lastProcessingResult
+}
+
+func (m *mockMetricsAPI) PublishJobRequeued(_ context.Context, reason string) error {
+	m.requeuedCalls++
+	m.lastRequeuedReason = reason
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishSchedulingFailure(_ context.Context, taskType string) error {
+	m.schedFailCalls++
+	m.lastSchedFailType = taskType
+	return nil
 }
 
 // mockSecretsStore implements secrets.Store for testing.
@@ -570,7 +587,8 @@ func TestHandler_processMessage_BootstrapFailed_RequeuesAndAcks(t *testing.T) {
 	}
 	secretsStore := &mockSecretsStore{}
 	jq := &mockJobQueue{}
-	handler := NewHandler(q, db, &mockMetricsAPI{}, secretsStore, jq, &config.Config{})
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, secretsStore, jq, &config.Config{})
 
 	msg := queue.Message{Body: bootstrapFailedBody(t, "i-abc"), Handle: testReceiptTermination}
 	if err := handler.processMessage(context.Background(), msg); err != nil {
@@ -586,8 +604,44 @@ func TestHandler_processMessage_BootstrapFailed_RequeuesAndAcks(t *testing.T) {
 	if jq.lastMsg.RetryCount != 2 {
 		t.Errorf("RetryCount = %d, want 2 (job.RetryCount+1)", jq.lastMsg.RetryCount)
 	}
+	if metrics.requeuedCalls != 1 || metrics.lastRequeuedReason != reasonBootstrapFailed {
+		t.Errorf("expected 1 requeue metric with reason %q, got calls=%d reason=%q",
+			reasonBootstrapFailed, metrics.requeuedCalls, metrics.lastRequeuedReason)
+	}
 	if secretsStore.deleteCalls != 1 {
 		t.Errorf("expected runner config deleted, got %d delete calls", secretsStore.deleteCalls)
+	}
+	if q.deleteCalls != 1 {
+		t.Errorf("expected message acked, got %d delete calls", q.deleteCalls)
+	}
+}
+
+func TestHandler_processMessage_BootstrapFailed_ExhaustedRetries_GivesUp(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		// RetryCount at the cap: must not re-queue again.
+		jobByInstance:      &events.JobInfo{JobID: 555, RunID: 777, Repo: testRepo, RetryCount: maxBootstrapRequeues},
+		markRequeuedResult: true,
+	}
+	secretsStore := &mockSecretsStore{}
+	jq := &mockJobQueue{}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, secretsStore, jq, &config.Config{})
+
+	msg := queue.Message{Body: bootstrapFailedBody(t, "i-loop"), Handle: testReceiptTermination}
+	if err := handler.processMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if jq.sendCalls != 0 {
+		t.Errorf("expected NO requeue once retries are exhausted, got %d", jq.sendCalls)
+	}
+	if db.requeueCalls != 0 {
+		t.Errorf("expected MarkJobRequeued NOT called at the cap, got %d", db.requeueCalls)
+	}
+	if metrics.schedFailCalls != 1 || metrics.lastSchedFailType != reasonBootstrapFailed {
+		t.Errorf("expected 1 scheduling-failure metric with type %q, got calls=%d type=%q",
+			reasonBootstrapFailed, metrics.schedFailCalls, metrics.lastSchedFailType)
 	}
 	if q.deleteCalls != 1 {
 		t.Errorf("expected message acked, got %d delete calls", q.deleteCalls)
