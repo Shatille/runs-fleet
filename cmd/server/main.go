@@ -140,7 +140,7 @@ func main() {
 	var terminationHandler *termination.Handler
 	if cfg.TerminationQueueURL != "" {
 		terminationQueueClient := queue.NewClient(sqsCfg, cfg.TerminationQueueURL)
-		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, cfg)
+		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, jobQueue, cfg)
 	}
 	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, jobQueue)
 

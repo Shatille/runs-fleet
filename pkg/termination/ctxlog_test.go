@@ -51,7 +51,7 @@ func TestProcessMessageLogsCarryStashedIdentity(t *testing.T) {
 		jobID      = "12345678901"
 	)
 
-	handler := NewHandler(&mockQueueAPI{}, &mockDBAPI{}, &mockMetricsAPI{}, &mockSecretsStore{}, &config.Config{})
+	handler := NewHandler(&mockQueueAPI{}, &mockDBAPI{}, &mockMetricsAPI{}, &mockSecretsStore{}, nil, &config.Config{})
 
 	msg := Message{
 		InstanceID:      instanceID,
@@ -112,7 +112,7 @@ func TestStartedEventDoesNotLogProcessing(t *testing.T) {
 	var buf bytes.Buffer
 	captureCtxLogs(t, &buf)
 
-	handler := NewHandler(&mockQueueAPI{}, &mockDBAPI{}, &mockMetricsAPI{}, &mockSecretsStore{}, &config.Config{})
+	handler := NewHandler(&mockQueueAPI{}, &mockDBAPI{}, &mockMetricsAPI{}, &mockSecretsStore{}, nil, &config.Config{})
 
 	msg := Message{InstanceID: "i-started", JobID: "777", Status: "started"}
 	body, _ := json.Marshal(msg)
