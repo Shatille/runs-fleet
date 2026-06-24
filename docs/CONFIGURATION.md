@@ -70,6 +70,13 @@ When a job has no `runs-fleet` marker, each of its `runs-on` labels is matched
 against the rules in order; the first match expands to a spec, and the runner
 registers under the original label so GitHub dispatches the job to it.
 
+**Warm pools.** An aliased label also becomes its own warm pool (named after the
+label) so migrated workloads get fast restarts: unless the rule's spec sets an
+explicit `pool=`, the matched label is used as the pool name and an ephemeral
+pool is auto-created (`DesiredRunning=0, DesiredStopped=1`) — first job
+cold-starts, then a stopped replacement stays ready. Bump warm counts per-pool
+via the admin API. (A label that isn't a legal pool name simply cold-starts.)
+
 Each rule:
 
 | Field | Description |
