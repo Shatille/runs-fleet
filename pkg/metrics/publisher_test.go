@@ -58,6 +58,7 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 		{"PublishEvent", func() error { return pub.PublishEvent(ctx, "t", "x", "info", nil) }},
 		{"PublishInstanceHours", func() error { return pub.PublishInstanceHours(ctx, "4", "c7g", 2) }},
 		{"PublishEstimatedCost", func() error { return pub.PublishEstimatedCost(ctx, 12.5) }},
+		{"PublishRunnerExecutionSeconds", func() error { return pub.PublishRunnerExecutionSeconds(ctx, "arm64", 4, false, "served", 120) }},
 	}
 
 	for _, tt := range tests {
@@ -69,5 +70,22 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 				t.Errorf("%s() error = %v, want nil", tt.name, err)
 			}
 		})
+	}
+}
+
+func TestSpotLabel(t *testing.T) {
+	t.Parallel()
+	if got := spotLabel(true); got != "spot" {
+		t.Errorf("spotLabel(true) = %q, want spot", got)
+	}
+	if got := spotLabel(false); got != "ondemand" {
+		t.Errorf("spotLabel(false) = %q, want ondemand", got)
+	}
+}
+
+func TestVcpuLabel(t *testing.T) {
+	t.Parallel()
+	if got := vcpuLabel(4); got != "4" {
+		t.Errorf("vcpuLabel(4) = %q, want 4", got)
 	}
 }

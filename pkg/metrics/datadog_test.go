@@ -129,6 +129,7 @@ func TestDatadogPublisher_PublishMethods(t *testing.T) {
 		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx, "events") }},
 		{"PublishInstanceHours", func() error { return pub.PublishInstanceHours(ctx, "4", "c7g", 2) }},
 		{"PublishEstimatedCost", func() error { return pub.PublishEstimatedCost(ctx, 12.5) }},
+		{"PublishRunnerExecutionSeconds", func() error { return pub.PublishRunnerExecutionSeconds(ctx, "arm64", 4, true, "served", 120) }},
 		{"PublishServiceCheck_OK", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckOK, "all good") }},
 		{"PublishServiceCheck_Warning", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckWarning, "degraded") }},
 		{"PublishServiceCheck_Critical", func() error { return pub.PublishServiceCheck(ctx, "health", ServiceCheckCritical, "down") }},

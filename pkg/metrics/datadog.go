@@ -314,3 +314,8 @@ func (p *DatadogPublisher) PublishInstanceHours(_ context.Context, capacity, fam
 func (p *DatadogPublisher) PublishEstimatedCost(_ context.Context, usd float64) error { //nolint:revive
 	return p.client.Gauge("estimated_cost_usd", usd, nil, 1)
 }
+
+func (p *DatadogPublisher) PublishRunnerExecutionSeconds(_ context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error { //nolint:revive
+	tags := ddTag(ddTag(ddTag(ddTag(nil, "arch", arch), "vcpu", vcpuLabel(vcpu)), "spot", spotLabel(spot)), "result", result)
+	return p.client.Distribution("runner_execution_seconds", seconds, tags, 1)
+}

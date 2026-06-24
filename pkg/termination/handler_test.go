@@ -169,6 +169,13 @@ type mockMetricsAPI struct {
 	lastExecResult     string
 	lastExecPool       string
 
+	runnerExecCalls   int
+	lastRunnerArch    string
+	lastRunnerVcpu    int
+	lastRunnerSpot    bool
+	lastRunnerResult  string
+	lastRunnerSeconds float64
+
 	processingMu          sync.Mutex
 	processingCalls       int
 	lastProcessingQueue   string
@@ -233,6 +240,16 @@ func (m *mockMetricsAPI) PublishJobRequeued(_ context.Context, reason string) er
 func (m *mockMetricsAPI) PublishSchedulingFailure(_ context.Context, taskType string) error {
 	m.schedFailCalls++
 	m.lastSchedFailType = taskType
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishRunnerExecutionSeconds(_ context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error {
+	m.runnerExecCalls++
+	m.lastRunnerArch = arch
+	m.lastRunnerVcpu = vcpu
+	m.lastRunnerSpot = spot
+	m.lastRunnerResult = result
+	m.lastRunnerSeconds = seconds
 	return nil
 }
 
@@ -343,9 +360,99 @@ func TestHandler_processMessage_Success(t *testing.T) {
 	if metrics.lastExecResult != testResultServed {
 		t.Errorf("expected execution-seconds result 'served', got %q", metrics.lastExecResult)
 	}
+	// The job record carries no instance type, so the billable runner-seconds
+	// metric (which needs arch/vCPU) is skipped rather than emitted with blanks.
+	if metrics.runnerExecCalls != 0 {
+		t.Errorf("expected no runner-execution-seconds call without an instance type, got %d", metrics.runnerExecCalls)
+	}
 
 	if q.deleteCalls != 1 {
 		t.Errorf("expected 1 delete call, got %d", q.deleteCalls)
+	}
+}
+
+// When the job record carries a known instance type, termination emits the
+// billable runner-seconds metric dimensioned by arch + vCPU + spot — the axis
+// competitors bill runner-minutes on.
+func TestHandler_processMessage_RunnerExecutionSeconds(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{
+		JobID:        12345678901,
+		RunID:        99,
+		Repo:         testRepo,
+		InstanceType: "c7g.xlarge", // arm64, 4 vCPU
+		Spot:         true,
+	}}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	handler := NewHandler(q, db, metrics, secretsStore, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          "success",
+		ExitCode:        0,
+		DurationSeconds: 120,
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.runnerExecCalls != 1 {
+		t.Fatalf("expected 1 runner-execution-seconds call, got %d", metrics.runnerExecCalls)
+	}
+	if metrics.lastRunnerArch != "arm64" {
+		t.Errorf("expected arch arm64, got %q", metrics.lastRunnerArch)
+	}
+	if metrics.lastRunnerVcpu != 4 {
+		t.Errorf("expected vcpu 4, got %d", metrics.lastRunnerVcpu)
+	}
+	if !metrics.lastRunnerSpot {
+		t.Errorf("expected spot true, got false")
+	}
+	if metrics.lastRunnerResult != testResultServed {
+		t.Errorf("expected result %q, got %q", testResultServed, metrics.lastRunnerResult)
+	}
+	if metrics.lastRunnerSeconds != 120 {
+		t.Errorf("expected 120 seconds, got %v", metrics.lastRunnerSeconds)
+	}
+}
+
+// An unrecognized instance type (not in the catalog) yields no arch/vCPU, so the
+// billable runner-seconds metric is skipped rather than emitted with guesses.
+func TestHandler_processMessage_RunnerExecutionSeconds_UnknownInstanceType(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{
+		JobID:        12345678901,
+		RunID:        99,
+		Repo:         testRepo,
+		InstanceType: "made-up.instance",
+	}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          "success",
+		DurationSeconds: 120,
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.runnerExecCalls != 0 {
+		t.Errorf("expected no runner-execution-seconds call for unknown instance type, got %d", metrics.runnerExecCalls)
 	}
 }
 

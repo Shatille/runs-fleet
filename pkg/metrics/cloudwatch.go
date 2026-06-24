@@ -280,6 +280,14 @@ func (p *CloudWatchPublisher) PublishEstimatedCost(ctx context.Context, usd floa
 	return p.putGauge(ctx, "EstimatedCost", usd, types.StandardUnitNone, nil)
 }
 
+// PublishRunnerExecutionSeconds records billable runner seconds by arch, vCPU,
+// spot/on-demand, and result (a counter; sum -> per-(arch,vCPU) minutes).
+func (p *CloudWatchPublisher) PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error {
+	return p.putCounterValue(ctx, "RunnerExecutionSeconds", seconds, dims(
+		"Arch", arch, "Vcpu", vcpuLabel(vcpu), "Spot", spotLabel(spot), "Result", result,
+	))
+}
+
 // --- helpers ---
 
 // dims builds a CloudWatch dimension list from name/value pairs. Empty values are

@@ -303,6 +303,83 @@ func TestCostBreakdown_Calculations(t *testing.T) {
 	}
 }
 
+func TestReporter_BlacksmithCounterfactual(t *testing.T) {
+	// getCostMetrics issues two GetMetricData calls: the main cost queries, then
+	// the runner-execution (rxs_*) queries for the Blacksmith counterfactual.
+	// Distinguish them by the first query ID.
+	cwClient := &mockCloudWatchClient{
+		getMetricDataFunc: func(_ context.Context, params *cloudwatch.GetMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error) {
+			if len(params.MetricDataQueries) > 0 && strings.HasPrefix(*params.MetricDataQueries[0].Id, "rxs_") {
+				return &cloudwatch.GetMetricDataOutput{
+					MetricDataResults: []cwtypes.MetricDataResult{
+						// arm64 / 4 vCPU ran 7200s => 120 min => 480 vCPU-min => $0.60
+						{Id: aws.String("rxs_arm64_4"), Values: []float64{3600, 3600}},
+					},
+				}, nil
+			}
+			return &cloudwatch.GetMetricDataOutput{
+				MetricDataResults: []cwtypes.MetricDataResult{
+					{Id: aws.String("fleet_size_increment"), Values: []float64{100}},
+					{Id: aws.String("job_success"), Values: []float64{95}},
+					{Id: aws.String("job_failure"), Values: []float64{5}},
+					{Id: aws.String("job_duration"), Values: []float64{36000}},
+				},
+			}, nil
+		},
+	}
+
+	var capturedBody string
+	s3Client := &mockS3Client{
+		putObjectFunc: func(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			body, _ := io.ReadAll(params.Body)
+			capturedBody = string(body)
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	reporter := cost.NewReporterWithClients(
+		cwClient, s3Client, &mockSNSClient{}, &mockPriceFetcher{}, &config.Config{}, "", "test-bucket",
+	)
+
+	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
+		t.Fatalf("GenerateDailyReport() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Comparison: Blacksmith Counterfactual",
+		"480 vCPU-minutes",
+		"$0.60",
+	} {
+		if !strings.Contains(capturedBody, want) {
+			t.Errorf("report missing %q\n---\n%s", want, capturedBody)
+		}
+	}
+}
+
+func TestReporter_BlacksmithCounterfactualOmittedWithoutData(t *testing.T) {
+	// The default mock returns no rxs_* results, so the counterfactual section is
+	// omitted rather than printed as $0.00.
+	var capturedBody string
+	s3Client := &mockS3Client{
+		putObjectFunc: func(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+			body, _ := io.ReadAll(params.Body)
+			capturedBody = string(body)
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	reporter := cost.NewReporterWithClients(
+		&mockCloudWatchClient{}, s3Client, &mockSNSClient{}, &mockPriceFetcher{}, &config.Config{}, "", "test-bucket",
+	)
+
+	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
+		t.Fatalf("GenerateDailyReport() error = %v", err)
+	}
+	if strings.Contains(capturedBody, "Blacksmith Counterfactual") {
+		t.Errorf("counterfactual section should be omitted without metric data\n---\n%s", capturedBody)
+	}
+}
+
 func TestReporter_S3KeyFormat(t *testing.T) {
 	now := time.Now()
 	expectedPath := "cost/" + now.Add(-24*time.Hour).Format("2006") + "/" +

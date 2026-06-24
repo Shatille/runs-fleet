@@ -99,6 +99,12 @@ type Breakdown struct {
 	JobsCompleted     int
 	SpotInterruptions int
 	CacheHitRate      float64
+
+	// BlacksmithVcpuMinutes is the total billable vCPU-minutes this workload ran
+	// (Σ runner-minutes × vCPU), and BlacksmithCost is what that usage would have
+	// cost on Blacksmith's per-minute pricing — a relative comparison only.
+	BlacksmithVcpuMinutes float64
+	BlacksmithCost        float64
 }
 
 // Reporter generates daily cost reports.
@@ -348,6 +354,16 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	breakdown.JobsCompleted = int(totalJobs)
 	breakdown.SpotInterruptions = int(spotInterruptions)
 
+	// Best-effort: a counterfactual query failure is logged, not returned, so it
+	// can't sink the whole cost report.
+	vcpuMinutes, blacksmithCost, err := r.blacksmithCounterfactual(ctx, startTime, endTime)
+	if err != nil {
+		costLog.Warn(ctx, "blacksmith counterfactual unavailable", slog.String("error", err.Error()))
+	} else {
+		breakdown.BlacksmithVcpuMinutes = vcpuMinutes
+		breakdown.BlacksmithCost = blacksmithCost
+	}
+
 	return breakdown, nil
 }
 
@@ -377,6 +393,16 @@ func (r *Reporter) generateMarkdownReport(b *Breakdown) string {
 	if b.JobsCompleted > 0 {
 		costPerJob := b.TotalCost / float64(b.JobsCompleted)
 		buf.WriteString(fmt.Sprintf("- Cost per job: $%.4f\n", costPerJob))
+	}
+
+	if b.BlacksmithCost > 0 {
+		buf.WriteString("\n## Comparison: Blacksmith Counterfactual\n\n")
+		buf.WriteString(fmt.Sprintf("- Billable runner usage: %.0f vCPU-minutes\n", b.BlacksmithVcpuMinutes))
+		buf.WriteString(fmt.Sprintf("- Blacksmith per-minute equivalent: $%.2f\n", b.BlacksmithCost))
+		ec2Cost := b.EC2SpotCost + b.EC2OnDemandCost
+		if ec2Cost > 0 {
+			buf.WriteString(fmt.Sprintf("- runs-fleet EC2 compute: $%.2f (%.1fx cheaper)\n", ec2Cost, b.BlacksmithCost/ec2Cost))
+		}
 	}
 
 	buf.WriteString("\n---\n")
