@@ -53,7 +53,21 @@ type MetricsAPI interface {
 	PublishRunnerConfirmed(ctx context.Context, pool string) error
 	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
 	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
+	PublishJobRequeued(ctx context.Context, reason string) error
+	PublishSchedulingFailure(ctx context.Context, taskType string) error
 }
+
+// maxBootstrapRequeues bounds how many times a job whose instance fails to boot
+// is re-queued before we give up and let it fail. Mirrors the webhook's
+// maxJobRetries and housekeeping's MaxRequeueRetries (both 2): a systemic
+// bootstrap failure (e.g. a bad AMI/agent rollout) must fail fast and loudly
+// rather than loop forever burning instances.
+const maxBootstrapRequeues = 2
+
+// reasonBootstrapFailed labels the requeue / scheduling-failure metrics emitted
+// when an instance fails to start the agent on boot, so operators can alert on
+// a spike (a bad rollout) distinctly from spot interruptions.
+const reasonBootstrapFailed = "bootstrap_failed"
 
 // queueTermination is the queue label for the termination worker's
 // message-processing latency metric.
@@ -315,27 +329,48 @@ func (h *Handler) processBootstrapFailure(ctx context.Context, msg *Message) err
 	}
 
 	if job != nil && job.JobID != 0 && job.RunID != 0 && h.jobQueue != nil {
-		marked, err := h.dbClient.MarkJobRequeuedByJobID(ctx, job.JobID)
-		if err != nil {
-			return fmt.Errorf("failed to mark job %d requeued: %w", job.JobID, err)
-		}
-		if marked {
-			ctx = logging.ContextWithJob(ctx, job.JobID, job.RunID, job.Repo)
-			requeueMsg := &queue.JobMessage{
-				JobID:         job.JobID,
-				RunID:         job.RunID,
-				Repo:          job.Repo,
-				InstanceType:  job.InstanceType,
-				Pool:          job.Pool,
-				Spot:          false,
-				RetryCount:    job.RetryCount + 1,
-				ForceOnDemand: true,
+		ctx = logging.ContextWithJob(ctx, job.JobID, job.RunID, job.Repo)
+
+		if job.RetryCount >= maxBootstrapRequeues {
+			// Give up rather than loop forever: a job whose instances keep failing
+			// to boot is almost always a systemic problem (bad AMI/agent rollout).
+			// Stop re-queuing and emit a scheduling-failure metric so operators can
+			// alert; the unconfirmed-runner watchdog marks the launched record
+			// terminal once its window elapses.
+			termLog.Error(ctx, "exhausted bootstrap re-queue retries; giving up",
+				slog.Int("retry_count", job.RetryCount), slog.Int("max", maxBootstrapRequeues))
+			if h.metrics != nil {
+				if err := h.metrics.PublishSchedulingFailure(ctx, reasonBootstrapFailed); err != nil {
+					termLog.Warn(ctx, "scheduling-failure metric failed", slog.String("error", err.Error()))
+				}
 			}
-			if err := h.jobQueue.SendMessage(ctx, requeueMsg); err != nil {
-				return fmt.Errorf("failed to re-queue job %d after bootstrap failure: %w", job.JobID, err)
+		} else {
+			marked, err := h.dbClient.MarkJobRequeuedByJobID(ctx, job.JobID)
+			if err != nil {
+				return fmt.Errorf("failed to mark job %d requeued: %w", job.JobID, err)
 			}
-			termLog.Info(ctx, "job re-queued after bootstrap failure",
-				slog.Int("retry_count", requeueMsg.RetryCount))
+			if marked {
+				requeueMsg := &queue.JobMessage{
+					JobID:         job.JobID,
+					RunID:         job.RunID,
+					Repo:          job.Repo,
+					InstanceType:  job.InstanceType,
+					Pool:          job.Pool,
+					Spot:          false,
+					RetryCount:    job.RetryCount + 1,
+					ForceOnDemand: true,
+				}
+				if err := h.jobQueue.SendMessage(ctx, requeueMsg); err != nil {
+					return fmt.Errorf("failed to re-queue job %d after bootstrap failure: %w", job.JobID, err)
+				}
+				termLog.Info(ctx, "job re-queued after bootstrap failure",
+					slog.Int("retry_count", requeueMsg.RetryCount))
+				if h.metrics != nil {
+					if err := h.metrics.PublishJobRequeued(ctx, reasonBootstrapFailed); err != nil {
+						termLog.Warn(ctx, "job requeued metric failed", slog.String("error", err.Error()))
+					}
+				}
+			}
 		}
 	}
 
