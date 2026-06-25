@@ -253,6 +253,24 @@ func TestCloudWatchPublisher_CacheBytesStoredUsesValue(t *testing.T) {
 	assertDimMap(t, got.dimensions, map[string]string{})
 }
 
+func TestCloudWatchPublisher_RunnerExecutionSeconds(t *testing.T) {
+	t.Parallel()
+	var got capturedDatum
+	p := capturingPublisher(t, &got)
+	if err := p.PublishRunnerExecutionSeconds(context.Background(), "arm64", 4, true, "served", 120); err != nil {
+		t.Fatalf("publish error = %v", err)
+	}
+	if got.name != "RunnerExecutionSeconds" {
+		t.Errorf("name = %s, want RunnerExecutionSeconds", got.name)
+	}
+	if !got.hasValue || got.value != 120 {
+		t.Errorf("value = %v (hasValue=%v), want 120", got.value, got.hasValue)
+	}
+	assertDimMap(t, got.dimensions, map[string]string{
+		"Arch": "arm64", "Vcpu": "4", "Spot": "spot", "Result": "served",
+	})
+}
+
 func TestCloudWatchPublisher_GaugeMetrics(t *testing.T) {
 	t.Parallel()
 

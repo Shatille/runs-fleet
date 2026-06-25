@@ -1,7 +1,21 @@
 // Package metrics provides metrics publishing abstractions and implementations.
 package metrics
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
+
+// spotLabel renders the spot/on-demand dimension consistently across backends.
+func spotLabel(spot bool) string {
+	if spot {
+		return "spot"
+	}
+	return "ondemand"
+}
+
+// vcpuLabel renders the vCPU-count dimension.
+func vcpuLabel(vcpu int) string { return strconv.Itoa(vcpu) }
 
 // Publisher defines the interface for publishing metrics to various backends.
 //
@@ -187,6 +201,12 @@ type Publisher interface {
 
 	// PublishEstimatedCost sets the estimated cost gauge in USD.
 	PublishEstimatedCost(ctx context.Context, usd float64) error
+
+	// PublishRunnerExecutionSeconds records billable runner execution time,
+	// dimensioned by architecture, vCPU count, spot/on-demand, and job result —
+	// the same axis competitors (e.g. Blacksmith) bill runner-minutes on, so the
+	// sum reconstructs a comparable per-(arch,vCPU) usage breakdown.
+	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -327,6 +347,11 @@ func (NoopPublisher) PublishInstanceHours(context.Context, string, string, float
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishEstimatedCost(context.Context, float64) error { return nil }
+
+// PublishRunnerExecutionSeconds is a no-op.
+func (NoopPublisher) PublishRunnerExecutionSeconds(context.Context, string, int, bool, string, float64) error {
+	return nil
+}
 
 // Ensure NoopPublisher implements Publisher.
 var _ Publisher = NoopPublisher{}

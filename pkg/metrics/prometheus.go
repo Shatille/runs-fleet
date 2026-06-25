@@ -70,8 +70,9 @@ type PrometheusPublisher struct {
 	messageDeletionFailures *prometheus.CounterVec
 
 	// Cost
-	instanceHours *prometheus.CounterVec
-	estimatedCost prometheus.Gauge
+	instanceHours          *prometheus.CounterVec
+	estimatedCost          prometheus.Gauge
+	runnerExecutionSeconds *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -240,6 +241,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "estimated_cost_usd",
 			Help: "Estimated cost in USD",
 		}),
+		runnerExecutionSeconds: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_execution_seconds_total",
+			Help: "Total billable runner execution seconds by arch, vCPU, spot, and result",
+		}, []string{"arch", "vcpu", "spot", "result"}),
 	}
 
 	registry.MustRegister(
@@ -252,7 +257,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.queueDepth, p.queueReceive, p.awsCallDuration, p.awsCallFailures,
 		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
-		p.instanceHours, p.estimatedCost,
+		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds,
 	)
 
 	return p
@@ -458,6 +463,11 @@ func (p *PrometheusPublisher) PublishEvent(_ context.Context, _, _, _ string, _ 
 
 func (p *PrometheusPublisher) PublishInstanceHours(_ context.Context, capacity, family string, hours float64) error { //nolint:revive
 	p.instanceHours.WithLabelValues(capacity, family).Add(hours)
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerExecutionSeconds(_ context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error { //nolint:revive
+	p.runnerExecutionSeconds.WithLabelValues(arch, vcpuLabel(vcpu), spotLabel(spot), result).Add(seconds)
 	return nil
 }
 

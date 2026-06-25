@@ -122,6 +122,7 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx, "events") }},
 		{"PublishInstanceHours", func() error { return pub.PublishInstanceHours(ctx, "4", "c7g", 1.5) }},
 		{"PublishEstimatedCost", func() error { return pub.PublishEstimatedCost(ctx, 12.5) }},
+		{"PublishRunnerExecutionSeconds", func() error { return pub.PublishRunnerExecutionSeconds(ctx, "arm64", 4, true, "served", 120) }},
 	}
 
 	for _, tt := range tests {

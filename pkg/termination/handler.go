@@ -15,6 +15,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/events"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
@@ -55,6 +56,7 @@ type MetricsAPI interface {
 	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
 	PublishJobRequeued(ctx context.Context, reason string) error
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
+	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
 }
 
 // maxBootstrapRequeues bounds how many times a job whose instance fails to boot
@@ -495,6 +497,15 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		if msg.DurationSeconds > 0 {
 			if err := h.metrics.PublishJobExecutionSeconds(ctx, pool, result, float64(msg.DurationSeconds)); err != nil {
 				termLog.Warn(ctx, "job execution seconds metric publish failed", slog.String("error", err.Error()))
+			}
+			// Billable runner seconds keyed by arch+vCPU+spot — the axis per-minute
+			// competitors bill on; skipped when the instance type isn't in the catalog.
+			if rec != nil && rec.InstanceType != "" {
+				if spec, ok := fleet.GetInstanceSpec(rec.InstanceType); ok {
+					if err := h.metrics.PublishRunnerExecutionSeconds(ctx, spec.Arch, spec.CPU, rec.Spot, result, float64(msg.DurationSeconds)); err != nil {
+						termLog.Warn(ctx, "runner execution seconds metric publish failed", slog.String("error", err.Error()))
+					}
+				}
 			}
 		}
 	}

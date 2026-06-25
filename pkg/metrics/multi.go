@@ -313,3 +313,9 @@ func (m *MultiPublisher) PublishEstimatedCost(ctx context.Context, usd float64) 
 		return p.PublishEstimatedCost(ctx, usd)
 	})
 }
+
+func (m *MultiPublisher) PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishRunnerExecutionSeconds(ctx, arch, vcpu, spot, result, seconds)
+	})
+}
