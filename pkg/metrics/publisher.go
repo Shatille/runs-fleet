@@ -204,8 +204,8 @@ type Publisher interface {
 
 	// PublishRunnerExecutionSeconds records billable runner execution time,
 	// dimensioned by architecture, vCPU count, spot/on-demand, and job result —
-	// the same axis competitors (e.g. Blacksmith) bill runner-minutes on, so the
-	// sum reconstructs a comparable per-(arch,vCPU) usage breakdown.
+	// the standard axis hosted runners bill runner-minutes on, so the sum
+	// reconstructs a comparable per-(arch,vCPU) usage breakdown.
 	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
 }
 

@@ -303,9 +303,9 @@ func TestCostBreakdown_Calculations(t *testing.T) {
 	}
 }
 
-func TestReporter_BlacksmithCounterfactual(t *testing.T) {
+func TestReporter_RunnerMinuteCost(t *testing.T) {
 	// getCostMetrics issues two GetMetricData calls: the main cost queries, then
-	// the runner-execution (rxs_*) queries for the Blacksmith counterfactual.
+	// the runner-execution (rxs_*) queries for the runner-minute cost.
 	// Distinguish them by the first query ID.
 	cwClient := &mockCloudWatchClient{
 		getMetricDataFunc: func(_ context.Context, params *cloudwatch.GetMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error) {
@@ -346,7 +346,7 @@ func TestReporter_BlacksmithCounterfactual(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"## Comparison: Blacksmith Counterfactual",
+		"## Runner-Minute Cost (standard per-vCPU-minute pricing)",
 		"480 vCPU-minutes",
 		"$0.60",
 	} {
@@ -356,8 +356,8 @@ func TestReporter_BlacksmithCounterfactual(t *testing.T) {
 	}
 }
 
-func TestReporter_BlacksmithCounterfactualOmittedWithoutData(t *testing.T) {
-	// The default mock returns no rxs_* results, so the counterfactual section is
+func TestReporter_RunnerMinuteCostOmittedWithoutData(t *testing.T) {
+	// The default mock returns no rxs_* results, so the runner-minute section is
 	// omitted rather than printed as $0.00.
 	var capturedBody string
 	s3Client := &mockS3Client{
@@ -375,8 +375,8 @@ func TestReporter_BlacksmithCounterfactualOmittedWithoutData(t *testing.T) {
 	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
 		t.Fatalf("GenerateDailyReport() error = %v", err)
 	}
-	if strings.Contains(capturedBody, "Blacksmith Counterfactual") {
-		t.Errorf("counterfactual section should be omitted without metric data\n---\n%s", capturedBody)
+	if strings.Contains(capturedBody, "Runner-Minute Cost") {
+		t.Errorf("runner-minute section should be omitted without metric data\n---\n%s", capturedBody)
 	}
 }
 

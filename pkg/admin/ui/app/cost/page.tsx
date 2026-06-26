@@ -149,9 +149,48 @@ export default function CostPage() {
             </div>
           )}
 
+          {summary.runner_minute_breakdown.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 overflow-hidden mb-6">
+              <div className="px-4 py-3 border-b dark:border-gray-700 flex justify-between items-center">
+                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  Runner-Minute Cost (standard per-vCPU-minute pricing)
+                </h3>
+                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  ${summary.runner_minute_cost.toFixed(2)}
+                </span>
+              </div>
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700" aria-label="Runner-minute cost breakdown by architecture and vCPU">
+                <thead className="bg-gray-50 dark:bg-gray-700">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Arch</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">vCPU</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Runner-min</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">vCPU-min</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                  {summary.runner_minute_breakdown.map((entry) => (
+                    <tr key={`${entry.arch}-${entry.vcpu}`} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                      <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{entry.arch}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.vcpu}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.runner_minutes.toFixed(0)}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.vcpu_minutes.toFixed(0)}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.cost.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="px-4 py-2 border-t dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+                rate: {formatRates(summary.runner_minute_rates)} per vCPU-minute
+              </div>
+            </div>
+          )}
+
           <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-4 text-sm text-yellow-800 dark:text-yellow-300">
-            Estimates based on list pricing. Actual AWS costs may vary due to regional pricing, data transfer,
-            and ancillary service charges. See CLAUDE.md for limitations.
+            Estimates based on list pricing. Runner-minute cost expresses usage in the standard hosted-runner unit
+            (vCPU-minutes × a configurable per-vCPU-minute rate) for comparison. Actual AWS costs may vary due to
+            regional pricing, data transfer, and ancillary service charges. See CLAUDE.md for limitations.
           </div>
         </>
       ) : (
@@ -171,6 +210,12 @@ function SummaryCard({ title, value, subtitle }: { title: string; value: string;
       <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">{subtitle}</dd>
     </div>
   );
+}
+
+function formatRates(rates: Record<string, number>): string {
+  const entries = Object.entries(rates).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return '-';
+  return entries.map(([arch, rate]) => `${arch} $${rate}`).join(' / ');
 }
 
 function formatPeriod(start: string, end: string): string {
