@@ -842,7 +842,8 @@ func (m *Manager) getAverageSpotPrice(ctx context.Context, instanceTypes []strin
 	}
 
 	// Cache miss or expired - fetch from API
-	return m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+	avg, _ := m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+	return avg
 }
 
 // SpotPrice returns the current market spot price for a single instance type,
@@ -869,12 +870,15 @@ func (m *Manager) SpotPrice(ctx context.Context, instanceType string) (float64, 
 		return price, ok
 	}
 
-	m.fetchAndCacheSpotPrices(ctx, []string{instanceType})
+	_, queried := m.fetchAndCacheSpotPrices(ctx, []string{instanceType})
 
 	m.spotCache.mu.Lock()
 	defer m.spotCache.mu.Unlock()
 	price, ok := m.spotCache.prices[instanceType]
-	if !ok {
+	// Negatively cache only a confirmed absence (the query succeeded but returned
+	// no price). A transient fetch failure is left uncached so the next call
+	// retries within the TTL window rather than serving fallback for the full TTL.
+	if !ok && queried {
 		if m.spotCache.checked == nil {
 			m.spotCache.checked = make(map[string]bool)
 		}
@@ -904,7 +908,10 @@ func (m *Manager) spotPriceFromCache(instanceType string) (price float64, ok, re
 }
 
 // fetchAndCacheSpotPrices fetches spot prices from AWS and updates the cache.
-func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []string) float64 {
+// The bool reports whether the query itself succeeded (no API error), so callers
+// can distinguish "confirmed no price" from "transient fetch failure" — only the
+// former should be negatively cached.
+func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []string) (float64, bool) {
 	// Limit to first 10 instance types to avoid API throttling
 	queryTypes := instanceTypes
 	if len(queryTypes) > 10 {
@@ -923,11 +930,11 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 	})
 	if err != nil {
 		fleetLog.Warn(ctx, "spot price query failed", slog.String("error", err.Error()))
-		return 0
+		return 0, false
 	}
 
 	if len(output.SpotPriceHistory) == 0 {
-		return 0
+		return 0, true
 	}
 
 	// Calculate average price (most recent price per instance type)
@@ -948,7 +955,7 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 	}
 
 	if len(latestPrices) == 0 {
-		return 0
+		return 0, true
 	}
 
 	// Update cache
@@ -971,7 +978,7 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 	for _, price := range latestPrices {
 		total += price
 	}
-	return total / float64(len(latestPrices))
+	return total / float64(len(latestPrices)), true
 }
 
 // RankInstanceTypesByPrice returns an interleaved sequence weighted by inverse spot price.

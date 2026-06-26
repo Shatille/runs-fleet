@@ -1258,6 +1258,35 @@ func TestManager_SpotPrice(t *testing.T) {
 	}
 }
 
+func TestManager_SpotPrice_TransientErrorNotNegativelyCached(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	mock := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			if fail.Load() {
+				return nil, errors.New("throttled")
+			}
+			prices := make([]types.SpotPrice, 0, len(params.InstanceTypes))
+			for _, it := range params.InstanceTypes {
+				prices = append(prices, types.SpotPrice{InstanceType: it, SpotPrice: aws.String("0.042")})
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+	m := &Manager{ec2Client: mock}
+
+	// API error → not found, and must NOT be negatively cached.
+	if _, ok := m.SpotPrice(context.Background(), "c7g.xlarge"); ok {
+		t.Fatal("expected not-found while the API is erroring")
+	}
+	// Once the API recovers, the next lookup must retry rather than serve the
+	// negative cache.
+	fail.Store(false)
+	if price, ok := m.SpotPrice(context.Background(), "c7g.xlarge"); !ok || price != 0.042 {
+		t.Errorf("after recovery SpotPrice = %v, %v; want 0.042, true", price, ok)
+	}
+}
+
 func TestManager_SpotPrice_ConcurrentSingleFetch(t *testing.T) {
 	var calls int32
 	mock := &mockEC2Client{
