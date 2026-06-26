@@ -1216,6 +1216,46 @@ func TestGetPrimaryInstanceType(t *testing.T) {
 	}
 }
 
+func TestManager_SpotPrice(t *testing.T) {
+	var calls int
+	mock := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			calls++
+			prices := make([]types.SpotPrice, 0, len(params.InstanceTypes))
+			for _, it := range params.InstanceTypes {
+				if string(it) == "c7g.xlarge" {
+					prices = append(prices, types.SpotPrice{InstanceType: it, SpotPrice: aws.String("0.042")})
+				}
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+	m := &Manager{ec2Client: mock}
+
+	price, ok := m.SpotPrice(context.Background(), "c7g.xlarge")
+	if !ok || price != 0.042 {
+		t.Fatalf("SpotPrice(c7g.xlarge) = %v, %v; want 0.042, true", price, ok)
+	}
+
+	// Second lookup of a cached type must not hit the API again.
+	if _, _ = m.SpotPrice(context.Background(), "c7g.xlarge"); calls != 1 {
+		t.Errorf("expected 1 API call (cached), got %d", calls)
+	}
+
+	// A type with no spot history returns not-found so callers can fall back.
+	callsBefore := calls
+	if price, ok := m.SpotPrice(context.Background(), "x9z.unknown"); ok || price != 0 {
+		t.Errorf("SpotPrice(unknown) = %v, %v; want 0, false", price, ok)
+	}
+	if calls != callsBefore+1 {
+		t.Errorf("expected exactly one API call for the unknown type, got %d", calls-callsBefore)
+	}
+	// Within the same window the absent type is negatively cached and not re-queried.
+	if _, _ = m.SpotPrice(context.Background(), "x9z.unknown"); calls != callsBefore+1 {
+		t.Errorf("expected no re-query for negatively-cached type, got %d extra calls", calls-callsBefore-1)
+	}
+}
+
 func TestBuildLaunchTemplateConfigs(t *testing.T) {
 	// Mock EC2 client that returns arm64 as cheaper
 	mockClient := &mockEC2Client{

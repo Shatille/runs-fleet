@@ -57,6 +57,7 @@ type MetricsAPI interface {
 type spotPriceCache struct {
 	mu      sync.RWMutex
 	prices  map[string]float64
+	checked map[string]bool // types looked up this window that returned no price
 	expires time.Time
 }
 
@@ -841,6 +842,46 @@ func (m *Manager) getAverageSpotPrice(ctx context.Context, instanceTypes []strin
 
 	// Cache miss or expired - fetch from API
 	return m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+}
+
+// SpotPrice returns the current market spot price for a single instance type,
+// reusing the 5-minute cache. On a miss it queries once and negatively caches a
+// no-price result for the rest of the window, so a type with no spot history
+// isn't re-queried on every call. The second return is false when no price is
+// available (query failed or no recent spot history), so callers can fall back
+// to an estimate.
+func (m *Manager) SpotPrice(ctx context.Context, instanceType string) (float64, bool) {
+	m.spotCache.mu.RLock()
+	windowValid := time.Now().Before(m.spotCache.expires)
+	if windowValid {
+		if price, ok := m.spotCache.prices[instanceType]; ok {
+			m.spotCache.mu.RUnlock()
+			return price, true
+		}
+		if m.spotCache.checked[instanceType] {
+			m.spotCache.mu.RUnlock()
+			return 0, false
+		}
+	}
+	m.spotCache.mu.RUnlock()
+
+	m.fetchAndCacheSpotPrices(ctx, []string{instanceType})
+
+	m.spotCache.mu.Lock()
+	defer m.spotCache.mu.Unlock()
+	// A fresh window (the cache was expired when we entered) drops stale negative
+	// marks so absent types are re-checked at most once per TTL.
+	if !windowValid {
+		m.spotCache.checked = nil
+	}
+	price, ok := m.spotCache.prices[instanceType]
+	if !ok {
+		if m.spotCache.checked == nil {
+			m.spotCache.checked = make(map[string]bool)
+		}
+		m.spotCache.checked[instanceType] = true
+	}
+	return price, ok
 }
 
 // fetchAndCacheSpotPrices fetches spot prices from AWS and updates the cache.
