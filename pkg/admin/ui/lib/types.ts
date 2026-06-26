@@ -111,6 +111,17 @@ export interface CostSummary {
   spot_job_count: number;
   on_demand_count: number;
   family_breakdown: FamilyBreakdown[];
+  runner_minute_cost: number;
+  runner_minute_rates: Record<string, number>;
+  runner_minute_breakdown: RunnerMinuteEntry[];
+}
+
+export interface RunnerMinuteEntry {
+  arch: string;
+  vcpu: number;
+  runner_minutes: number;
+  vcpu_minutes: number;
+  cost: number;
 }
 
 export interface FamilyBreakdown {

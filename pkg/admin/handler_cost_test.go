@@ -12,6 +12,8 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/db"
 )
 
+const testArchARM64 = "arm64"
+
 type mockCostDB struct {
 	jobs []db.AdminJobEntry
 	err  error
@@ -110,6 +112,73 @@ func TestCostHandler_GetCostSummary_MixedInstances(t *testing.T) {
 	}
 	if len(resp.FamilyBreakdown) != 3 {
 		t.Errorf("expected 3 families (c7g, t4g, m7g), got %d", len(resp.FamilyBreakdown))
+	}
+
+	// Runner-minute matrix: all four jobs are arm64 (c7g/t4g/m7g), in two vCPU
+	// shapes — (arm64,2): c7g.large+t4g.medium+m7g.large, (arm64,4): c7g.xlarge.
+	if len(resp.RunnerMinuteBreakdown) != 2 {
+		t.Fatalf("expected 2 runner-minute shapes, got %d: %+v", len(resp.RunnerMinuteBreakdown), resp.RunnerMinuteBreakdown)
+	}
+	if resp.RunnerMinuteCost <= 0 {
+		t.Error("expected positive runner-minute cost")
+	}
+	if len(resp.RunnerMinuteRates) == 0 {
+		t.Error("expected runner-minute rates in response")
+	}
+	// arm64/4 row = c7g.xlarge, 300s = 5 min, 20 vCPU-min, 20*0.00125 = $0.025.
+	var arm4 *RunnerMinuteEntry
+	for i := range resp.RunnerMinuteBreakdown {
+		if resp.RunnerMinuteBreakdown[i].Arch == testArchARM64 && resp.RunnerMinuteBreakdown[i].Vcpu == 4 {
+			arm4 = &resp.RunnerMinuteBreakdown[i]
+		}
+	}
+	if arm4 == nil {
+		t.Fatal("expected an arm64/4 runner-minute row")
+	}
+	if arm4.VcpuMinutes != 20 {
+		t.Errorf("arm64/4 vcpu-minutes = %v, want 20", arm4.VcpuMinutes)
+	}
+	if d := arm4.Cost - 0.025; d > 1e-9 || d < -1e-9 {
+		t.Errorf("arm64/4 cost = %v, want 0.025", arm4.Cost)
+	}
+}
+
+func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &mockCostDB{
+		jobs: []db.AdminJobEntry{
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 600, Status: string(db.JobStatusCompleted)},
+			{JobID: 2, InstanceType: "made-up.type", Spot: false, DurationSeconds: 600, Status: string(db.JobStatusCompleted)},
+		},
+	}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	req := httptest.NewRequest("GET", "/api/cost/summary", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp CostSummaryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Only the catalogued c7g.xlarge contributes: arm64/4, 600s = 10 min,
+	// 40 vCPU-min, 40*0.00125 = $0.05. The made-up type is excluded.
+	if len(resp.RunnerMinuteBreakdown) != 1 {
+		t.Fatalf("expected 1 runner-minute shape, got %d", len(resp.RunnerMinuteBreakdown))
+	}
+	row := resp.RunnerMinuteBreakdown[0]
+	if row.Arch != testArchARM64 || row.Vcpu != 4 || row.RunnerMinutes != 10 || row.VcpuMinutes != 40 {
+		t.Errorf("unexpected row: %+v", row)
+	}
+	if d := resp.RunnerMinuteCost - 0.05; d > 1e-9 || d < -1e-9 {
+		t.Errorf("runner-minute cost = %v, want 0.05", resp.RunnerMinuteCost)
 	}
 }
 
@@ -216,6 +285,42 @@ func TestCostHandler_GetCostSummary_MissingInstanceType(t *testing.T) {
 	}
 	if resp.TotalCost <= 0 {
 		t.Error("expected positive total cost even with missing instance type")
+	}
+}
+
+func TestCostHandler_RunnerMinuteBreakdown_ZeroDurationExcluded(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &mockCostDB{
+		jobs: []db.AdminJobEntry{
+			// Zero duration: contributes to the EC2-cost fallback but must NOT
+			// fabricate runner-minutes in the matrix.
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 0, Status: string(db.JobStatusCompleted)},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 600, Status: string(db.JobStatusCompleted)},
+		},
+	}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	req := httptest.NewRequest("GET", "/api/cost/summary", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp CostSummaryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Only the 600s job counts: arm64/4, 10 min, 40 vCPU-min.
+	if len(resp.RunnerMinuteBreakdown) != 1 {
+		t.Fatalf("expected 1 runner-minute shape, got %d", len(resp.RunnerMinuteBreakdown))
+	}
+	if got := resp.RunnerMinuteBreakdown[0].VcpuMinutes; got != 40 {
+		t.Errorf("vcpu-minutes = %v, want 40 (zero-duration job excluded)", got)
 	}
 }
 
