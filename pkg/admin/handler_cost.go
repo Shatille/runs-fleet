@@ -178,7 +178,11 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 		if !ok {
 			onDemandHourly = cost.GetInstancePrice(instanceType)
 			if h.onDemand != nil {
-				if live, err := h.onDemand.GetPrice(ctx, instanceType); err == nil && live > 0 {
+				if live, err := h.onDemand.GetPrice(ctx, instanceType); err != nil {
+					h.log.Warn(ctx, "live on-demand price unavailable, using fallback",
+						slog.String(logging.KeyInstanceType, instanceType),
+						slog.String(logging.KeyError, err.Error()))
+				} else if live > 0 {
 					onDemandHourly = live
 				}
 			}

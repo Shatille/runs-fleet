@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1253,6 +1255,36 @@ func TestManager_SpotPrice(t *testing.T) {
 	// Within the same window the absent type is negatively cached and not re-queried.
 	if _, _ = m.SpotPrice(context.Background(), "x9z.unknown"); calls != callsBefore+1 {
 		t.Errorf("expected no re-query for negatively-cached type, got %d extra calls", calls-callsBefore-1)
+	}
+}
+
+func TestManager_SpotPrice_ConcurrentSingleFetch(t *testing.T) {
+	var calls int32
+	mock := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			atomic.AddInt32(&calls, 1)
+			prices := make([]types.SpotPrice, 0, len(params.InstanceTypes))
+			for _, it := range params.InstanceTypes {
+				prices = append(prices, types.SpotPrice{InstanceType: it, SpotPrice: aws.String("0.042")})
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+	m := &Manager{ec2Client: mock}
+
+	// Concurrent lookups of the same cold type must coalesce to a single API call.
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			if price, ok := m.SpotPrice(context.Background(), "c7g.xlarge"); !ok || price != 0.042 {
+				t.Errorf("SpotPrice = %v, %v; want 0.042, true", price, ok)
+			}
+		})
+	}
+	wg.Wait()
+
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("expected exactly 1 API call for concurrent same-type lookups, got %d", n)
 	}
 }
 
