@@ -129,17 +129,18 @@ price lookups. `GenerateDailyReport` is the entry point. Flow:
 6. Estimate Fargate ($1.20/day flat), SQS ($0.40/M reqs), DynamoDB ($1.25/M
    writes + $0.25/M reads), CloudWatch logs ($0.50/GB), and S3 ($0.05
    flat).
-7. `blacksmithCounterfactual` (in `pkg/cost/blacksmith.go`) issues a second
+7. `runnerMinuteCost` (in `pkg/cost/runnerminutes.go`) issues a second
    `GetMetricData` call — one metric-math `SUM(SEARCH(...))` query per distinct
    `(arch, vCPU)` shape in `fleet.InstanceCatalog` — to total
    `RunnerExecutionSeconds` (emitted at job termination, dimensioned by
    `Arch`/`Vcpu`/`Spot`/`Result`). It converts seconds to billable vCPU-minutes
-   and multiplies by `BlacksmithRatePerVcpuMinute` (amd64 $0.002, arm64
-   $0.00125) to produce the "what this would have cost on Blacksmith" figure. A
-   query failure is logged and skipped (counterfactual stays zero).
+   and multiplies by the default per-vCPU-minute rates
+   (`cost.DefaultRunnerMinuteRates()`: amd64 $0.002, arm64 $0.00125) to produce
+   the standard hosted-runner-equivalent cost. A query failure is logged and
+   skipped (the figure stays zero).
 8. `generateMarkdownReport` formats a markdown report with a disclaimer
-   block; the Blacksmith comparison section is included only when the
-   counterfactual is non-zero.
+   block; the runner-minute cost section is included only when the figure is
+   non-zero.
 9. Upload to S3 at `cost/<YYYY>/<MM>/<DD>.md` (skipped if `reportsBucket`
    is empty); publish to SNS with subject `runs-fleet Daily Cost Report -
    <date>` (skipped if `snsTopicARN` is empty).
@@ -190,7 +191,7 @@ Counters with dimensions:
 - `PublishCircuitBreakerTriggered(ctx, instanceType)`
 - `PublishRunnerExecutionSeconds(ctx, arch, vcpu, spot, result, seconds)` — billable
   runner seconds, dimensioned `Arch`/`Vcpu`/`Spot`/`Result`; sum reconstructs
-  per-(arch,vCPU) usage for the Blacksmith cost comparison
+  per-(arch,vCPU) usage for the standard runner-minute cost
 
 Gauges:
 - `PublishQueueDepth(ctx, depth float64)`
@@ -341,8 +342,8 @@ type Breakdown struct {
     SpotInterruptions int
     CacheHitRate      float64
 
-    BlacksmithVcpuMinutes float64 // billable vCPU-minutes (Σ runner-minutes × vCPU)
-    BlacksmithCost        float64 // per-minute competitor counterfactual
+    RunnerVcpuMinutes float64 // billable vCPU-minutes (Σ runner-minutes × vCPU)
+    RunnerMinuteCost  float64 // standard hosted-runner-equivalent cost
 }
 ```
 

@@ -34,18 +34,18 @@ func TestRunnerArchVcpuCombos(t *testing.T) {
 	}
 }
 
-func TestBlacksmithQueryID(t *testing.T) {
+func TestRunnerSecondsQueryID(t *testing.T) {
 	t.Parallel()
-	got := blacksmithQueryID(archVcpu{arch: "arm64", vcpu: 4})
+	got := runnerSecondsQueryID(archVcpu{arch: "arm64", vcpu: 4})
 	if got != "rxs_arm64_4" {
 		t.Errorf("query ID = %q, want rxs_arm64_4", got)
 	}
 }
 
-func TestBlacksmithQueries(t *testing.T) {
+func TestRunnerSecondsQueries(t *testing.T) {
 	t.Parallel()
 	combos := []archVcpu{{arch: "arm64", vcpu: 4}, {arch: "amd64", vcpu: 8}}
-	queries := blacksmithQueries(combos)
+	queries := runnerSecondsQueries(combos)
 	if len(queries) != len(combos) {
 		t.Fatalf("got %d queries, want %d", len(queries), len(combos))
 	}
@@ -63,12 +63,17 @@ func TestBlacksmithQueries(t *testing.T) {
 	}
 }
 
-func TestBlacksmithRates(t *testing.T) {
+func TestDefaultRunnerMinuteRates(t *testing.T) {
 	t.Parallel()
-	// arm64 must be cheaper than amd64 per vCPU-minute, matching Blacksmith's
-	// published pricing.
-	if BlacksmithRatePerVcpuMinute["arm64"] >= BlacksmithRatePerVcpuMinute["amd64"] {
-		t.Errorf("arm64 rate %v should be below amd64 rate %v",
-			BlacksmithRatePerVcpuMinute["arm64"], BlacksmithRatePerVcpuMinute["amd64"])
+	rates := DefaultRunnerMinuteRates()
+	// arm64 must be cheaper than amd64 per vCPU-minute, matching typical
+	// hosted-runner pricing.
+	if rates["arm64"] >= rates["amd64"] {
+		t.Errorf("arm64 rate %v should be below amd64 rate %v", rates["arm64"], rates["amd64"])
+	}
+	// The accessor must return a copy: mutating it must not corrupt the canonical map.
+	rates["arm64"] = 999
+	if defaultRunnerMinuteRates["arm64"] == 999 {
+		t.Error("DefaultRunnerMinuteRates() returned an alias to the package global, not a copy")
 	}
 }
