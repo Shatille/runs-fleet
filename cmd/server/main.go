@@ -170,6 +170,7 @@ func main() {
 		directProcessorSem: directProcessorSem,
 		poolNotifier:       poolManager,
 		labelAliasResolver: labelAliasResolver,
+		fleetManager:       fleetManager,
 	}
 	mux := ws.setupHTTPRoutes(cacheServer, prometheusHandler)
 
@@ -441,6 +442,7 @@ type webhookServer struct {
 	directProcessorSem chan struct{}
 	poolNotifier       PoolReconcileNotifier
 	labelAliasResolver *gh.AliasResolver
+	fleetManager       *fleet.Manager
 }
 
 func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHandler http.Handler) *http.ServeMux {
@@ -497,7 +499,8 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	requeueHandler := admin.NewRequeueHandler(ec2Client, dynamoClient, ws.jobQueue, ws.metricsPublisher, ws.cfg.JobsTableName, adminAuth)
 	requeueHandler.RegisterRoutes(adminMux)
 
-	costAdminHandler := admin.NewCostHandler(ws.dbClient, adminAuth)
+	costPriceFetcher := cost.NewPriceFetcher(ws.awsCfg, ws.awsCfg.Region)
+	costAdminHandler := admin.NewCostHandler(ws.dbClient, adminAuth, costPriceFetcher, ws.fleetManager)
 	costAdminHandler.RegisterRoutes(adminMux)
 
 	mux.Handle("/api/", adminRateLimiter.Wrap(adminMux))

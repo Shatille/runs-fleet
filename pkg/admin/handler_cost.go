@@ -21,6 +21,20 @@ type CostDB interface {
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
 }
 
+// onDemandPricer supplies live on-demand hourly prices by instance type
+// (satisfied by *cost.PriceFetcher). Nil-safe: the handler falls back to the
+// hard-coded table when absent.
+type onDemandPricer interface {
+	GetPrice(ctx context.Context, instanceType string) (float64, error)
+}
+
+// spotPricer supplies the current market spot hourly price by instance type
+// (satisfied by *fleet.Manager). The bool is false when no price is available,
+// so the handler falls back to the fixed spot-discount estimate.
+type spotPricer interface {
+	SpotPrice(ctx context.Context, instanceType string) (float64, bool)
+}
+
 // CostSummaryResponse represents the cost summary API response.
 type CostSummaryResponse struct {
 	PeriodStart    string                `json:"period_start"`
@@ -62,17 +76,23 @@ type FamilyBreakdownEntry struct {
 
 // CostHandler provides HTTP endpoints for cost reporting.
 type CostHandler struct {
-	db    CostDB
-	auth  *AuthMiddleware
-	rates map[string]float64
-	log   *logging.Logger
+	db       CostDB
+	auth     *AuthMiddleware
+	onDemand onDemandPricer
+	spot     spotPricer
+	rates    map[string]float64
+	log      *logging.Logger
 }
 
-// NewCostHandler creates a new cost handler.
-func NewCostHandler(db CostDB, auth *AuthMiddleware) *CostHandler {
+// NewCostHandler creates a new cost handler. onDemand and spot supply live
+// AWS prices; both may be nil, in which case pricing falls back to the
+// hard-coded on-demand table and fixed spot discount.
+func NewCostHandler(db CostDB, auth *AuthMiddleware, onDemand onDemandPricer, spot spotPricer) *CostHandler {
 	return &CostHandler{
-		db:   db,
-		auth: auth,
+		db:       db,
+		auth:     auth,
+		onDemand: onDemand,
+		spot:     spot,
 		// A fresh copy — h.rates is exposed in the JSON response and must never
 		// become a handle to the package default map.
 		rates: cost.DefaultRunnerMinuteRates(),
@@ -103,7 +123,7 @@ func (h *CostHandler) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary := h.computeCostSummary(jobs, periodStart, periodEnd)
+	summary := h.computeCostSummary(ctx, jobs, periodStart, periodEnd)
 	h.writeJSON(w, http.StatusOK, summary)
 }
 
@@ -113,7 +133,7 @@ type archVcpuKey struct {
 	vcpu int
 }
 
-func (h *CostHandler) computeCostSummary(jobs []db.AdminJobEntry, start, end time.Time) *CostSummaryResponse {
+func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostSummaryResponse {
 	type familyAccum struct {
 		jobCount  int
 		hours     float64
@@ -134,6 +154,15 @@ func (h *CostHandler) computeCostSummary(jobs []db.AdminJobEntry, start, end tim
 	var totalCost, spotCost, onDemandCost, spotSavings, runnerMinuteCost float64
 	var spotJobCount, onDemandCount int
 
+	// Per-request memoization so each distinct instance type is priced once,
+	// even though the underlying fetchers also cache across requests.
+	odMemo := make(map[string]float64)
+	type spotResult struct {
+		price float64
+		live  bool
+	}
+	spotMemo := make(map[string]spotResult)
+
 	for _, job := range jobs {
 		instanceType := job.InstanceType
 		if instanceType == "" {
@@ -145,16 +174,45 @@ func (h *CostHandler) computeCostSummary(jobs []db.AdminJobEntry, start, end tim
 			durationHours = 0.5
 		}
 
-		hourlyPrice := cost.GetInstancePrice(instanceType)
+		onDemandHourly, ok := odMemo[instanceType]
+		if !ok {
+			onDemandHourly = cost.GetInstancePrice(instanceType)
+			if h.onDemand != nil {
+				if live, err := h.onDemand.GetPrice(ctx, instanceType); err != nil {
+					h.log.Warn(ctx, "live on-demand price unavailable, using fallback",
+						slog.String(logging.KeyInstanceType, instanceType),
+						slog.String(logging.KeyError, err.Error()))
+				} else if live > 0 {
+					onDemandHourly = live
+				}
+			}
+			odMemo[instanceType] = onDemandHourly
+		}
 
 		var jobCost float64
 		if job.Spot {
-			jobCost = durationHours * hourlyPrice * (1 - cost.SpotDiscount)
+			sr, seen := spotMemo[instanceType]
+			if !seen {
+				if h.spot != nil {
+					if sp, found := h.spot.SpotPrice(ctx, instanceType); found && sp > 0 {
+						sr = spotResult{price: sp, live: true}
+					}
+				}
+				spotMemo[instanceType] = sr
+			}
+			if sr.live {
+				jobCost = durationHours * sr.price
+				if saving := durationHours * (onDemandHourly - sr.price); saving > 0 {
+					spotSavings += saving
+				}
+			} else {
+				jobCost = durationHours * onDemandHourly * (1 - cost.SpotDiscount)
+				spotSavings += durationHours * onDemandHourly * cost.SpotDiscount
+			}
 			spotCost += jobCost
-			spotSavings += durationHours * hourlyPrice * cost.SpotDiscount
 			spotJobCount++
 		} else {
-			jobCost = durationHours * hourlyPrice
+			jobCost = durationHours * onDemandHourly
 			onDemandCost += jobCost
 			onDemandCount++
 		}

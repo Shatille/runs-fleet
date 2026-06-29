@@ -188,9 +188,11 @@ export default function CostPage() {
           )}
 
           <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-4 text-sm text-yellow-800 dark:text-yellow-300">
-            Estimates based on list pricing. Runner-minute cost expresses usage in the standard hosted-runner unit
-            (vCPU-minutes × a configurable per-vCPU-minute rate) for comparison. Actual AWS costs may vary due to
-            regional pricing, data transfer, and ancillary service charges. See CLAUDE.md for limitations.
+            runs-fleet cost uses live AWS prices — region-correct on-demand (AWS Pricing API) and current
+            spot-market rates — falling back to list pricing if a lookup is unavailable. Runner-minute cost
+            expresses usage in the standard hosted-runner unit (vCPU-minutes × a fixed per-vCPU-minute rate) for
+            comparison. Spot is priced at current market (not each job&apos;s run-time price), and costs exclude
+            data transfer, EBS, and ancillary charges. Estimates only — see CLAUDE.md for limitations.
           </div>
         </>
       ) : (

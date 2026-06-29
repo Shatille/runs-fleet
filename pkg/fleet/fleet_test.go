@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1213,6 +1215,105 @@ func TestGetPrimaryInstanceType(t *testing.T) {
 				t.Errorf("getPrimaryInstanceType() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestManager_SpotPrice(t *testing.T) {
+	var calls int
+	mock := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			calls++
+			prices := make([]types.SpotPrice, 0, len(params.InstanceTypes))
+			for _, it := range params.InstanceTypes {
+				if string(it) == "c7g.xlarge" {
+					prices = append(prices, types.SpotPrice{InstanceType: it, SpotPrice: aws.String("0.042")})
+				}
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+	m := &Manager{ec2Client: mock}
+
+	price, ok := m.SpotPrice(context.Background(), "c7g.xlarge")
+	if !ok || price != 0.042 {
+		t.Fatalf("SpotPrice(c7g.xlarge) = %v, %v; want 0.042, true", price, ok)
+	}
+
+	// Second lookup of a cached type must not hit the API again.
+	if _, _ = m.SpotPrice(context.Background(), "c7g.xlarge"); calls != 1 {
+		t.Errorf("expected 1 API call (cached), got %d", calls)
+	}
+
+	// A type with no spot history returns not-found so callers can fall back.
+	callsBefore := calls
+	if price, ok := m.SpotPrice(context.Background(), "x9z.unknown"); ok || price != 0 {
+		t.Errorf("SpotPrice(unknown) = %v, %v; want 0, false", price, ok)
+	}
+	if calls != callsBefore+1 {
+		t.Errorf("expected exactly one API call for the unknown type, got %d", calls-callsBefore)
+	}
+	// Within the same window the absent type is negatively cached and not re-queried.
+	if _, _ = m.SpotPrice(context.Background(), "x9z.unknown"); calls != callsBefore+1 {
+		t.Errorf("expected no re-query for negatively-cached type, got %d extra calls", calls-callsBefore-1)
+	}
+}
+
+func TestManager_SpotPrice_TransientErrorNotNegativelyCached(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	mock := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			if fail.Load() {
+				return nil, errors.New("throttled")
+			}
+			prices := make([]types.SpotPrice, 0, len(params.InstanceTypes))
+			for _, it := range params.InstanceTypes {
+				prices = append(prices, types.SpotPrice{InstanceType: it, SpotPrice: aws.String("0.042")})
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+	m := &Manager{ec2Client: mock}
+
+	// API error → not found, and must NOT be negatively cached.
+	if _, ok := m.SpotPrice(context.Background(), "c7g.xlarge"); ok {
+		t.Fatal("expected not-found while the API is erroring")
+	}
+	// Once the API recovers, the next lookup must retry rather than serve the
+	// negative cache.
+	fail.Store(false)
+	if price, ok := m.SpotPrice(context.Background(), "c7g.xlarge"); !ok || price != 0.042 {
+		t.Errorf("after recovery SpotPrice = %v, %v; want 0.042, true", price, ok)
+	}
+}
+
+func TestManager_SpotPrice_ConcurrentSingleFetch(t *testing.T) {
+	var calls int32
+	mock := &mockEC2Client{
+		DescribeSpotPriceHistoryFunc: func(_ context.Context, params *ec2.DescribeSpotPriceHistoryInput, _ ...func(*ec2.Options)) (*ec2.DescribeSpotPriceHistoryOutput, error) {
+			atomic.AddInt32(&calls, 1)
+			prices := make([]types.SpotPrice, 0, len(params.InstanceTypes))
+			for _, it := range params.InstanceTypes {
+				prices = append(prices, types.SpotPrice{InstanceType: it, SpotPrice: aws.String("0.042")})
+			}
+			return &ec2.DescribeSpotPriceHistoryOutput{SpotPriceHistory: prices}, nil
+		},
+	}
+	m := &Manager{ec2Client: mock}
+
+	// Concurrent lookups of the same cold type must coalesce to a single API call.
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			if price, ok := m.SpotPrice(context.Background(), "c7g.xlarge"); !ok || price != 0.042 {
+				t.Errorf("SpotPrice = %v, %v; want 0.042, true", price, ok)
+			}
+		})
+	}
+	wg.Wait()
+
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("expected exactly 1 API call for concurrent same-type lookups, got %d", n)
 	}
 }
 

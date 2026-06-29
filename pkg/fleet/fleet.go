@@ -56,7 +56,9 @@ type MetricsAPI interface {
 // spotPriceCache caches spot prices with TTL.
 type spotPriceCache struct {
 	mu      sync.RWMutex
+	fetchMu sync.Mutex // serializes SpotPrice fetches so concurrent callers don't issue redundant API calls
 	prices  map[string]float64
+	checked map[string]bool // types looked up this window that returned no price
 	expires time.Time
 }
 
@@ -840,11 +842,76 @@ func (m *Manager) getAverageSpotPrice(ctx context.Context, instanceTypes []strin
 	}
 
 	// Cache miss or expired - fetch from API
-	return m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+	avg, _ := m.fetchAndCacheSpotPrices(ctx, instanceTypes)
+	return avg
+}
+
+// SpotPrice returns the current market spot price for a single instance type,
+// reusing the 5-minute cache. On a miss it queries once and negatively caches a
+// no-price result for the rest of the window, so a type with no spot history
+// isn't re-queried on every call. The second return is false when no price is
+// available (query failed or no recent spot history), so callers can fall back
+// to an estimate.
+func (m *Manager) SpotPrice(ctx context.Context, instanceType string) (float64, bool) {
+	if price, ok, resolved := m.spotPriceFromCache(instanceType); resolved {
+		return price, ok
+	}
+
+	// Serialize the fetch path so concurrent callers don't issue redundant API
+	// calls for the same type. fetchMu is held across the fetch, but the cache
+	// RWMutex is NOT — fetchAndCacheSpotPrices acquires it internally, and
+	// readers stay unblocked during the API call.
+	m.spotCache.fetchMu.Lock()
+	defer m.spotCache.fetchMu.Unlock()
+
+	// Re-check: another caller may have populated/negatively-marked this type
+	// while we waited for fetchMu.
+	if price, ok, resolved := m.spotPriceFromCache(instanceType); resolved {
+		return price, ok
+	}
+
+	_, queried := m.fetchAndCacheSpotPrices(ctx, []string{instanceType})
+
+	m.spotCache.mu.Lock()
+	defer m.spotCache.mu.Unlock()
+	price, ok := m.spotCache.prices[instanceType]
+	// Negatively cache only a confirmed absence (the query succeeded but returned
+	// no price). A transient fetch failure is left uncached so the next call
+	// retries within the TTL window rather than serving fallback for the full TTL.
+	if !ok && queried {
+		if m.spotCache.checked == nil {
+			m.spotCache.checked = make(map[string]bool)
+		}
+		m.spotCache.checked[instanceType] = true
+	}
+	return price, ok
+}
+
+// spotPriceFromCache reads a single type from the cache. resolved is true only
+// when the window is valid and the type is either priced (ok=true) or
+// negatively cached as having no price (ok=false); resolved is false when a
+// fetch is needed. Negative marks are honored only within the valid window —
+// fetchAndCacheSpotPrices clears them when a fresh window opens.
+func (m *Manager) spotPriceFromCache(instanceType string) (price float64, ok, resolved bool) {
+	m.spotCache.mu.RLock()
+	defer m.spotCache.mu.RUnlock()
+	if !time.Now().Before(m.spotCache.expires) {
+		return 0, false, false
+	}
+	if p, found := m.spotCache.prices[instanceType]; found {
+		return p, true, true
+	}
+	if m.spotCache.checked[instanceType] {
+		return 0, false, true
+	}
+	return 0, false, false
 }
 
 // fetchAndCacheSpotPrices fetches spot prices from AWS and updates the cache.
-func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []string) float64 {
+// The bool reports whether the query itself succeeded (no API error), so callers
+// can distinguish "confirmed no price" from "transient fetch failure" — only the
+// former should be negatively cached.
+func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []string) (float64, bool) {
 	// Limit to first 10 instance types to avoid API throttling
 	queryTypes := instanceTypes
 	if len(queryTypes) > 10 {
@@ -863,11 +930,11 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 	})
 	if err != nil {
 		fleetLog.Warn(ctx, "spot price query failed", slog.String("error", err.Error()))
-		return 0
+		return 0, false
 	}
 
 	if len(output.SpotPriceHistory) == 0 {
-		return 0
+		return 0, true
 	}
 
 	// Calculate average price (most recent price per instance type)
@@ -888,11 +955,16 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 	}
 
 	if len(latestPrices) == 0 {
-		return 0
+		return 0, true
 	}
 
 	// Update cache
 	m.spotCache.mu.Lock()
+	// A fresh window (the prior one had expired) drops stale negative marks so a
+	// type absent in an old window is re-checked at most once per TTL.
+	if !time.Now().Before(m.spotCache.expires) {
+		m.spotCache.checked = nil
+	}
 	if m.spotCache.prices == nil {
 		m.spotCache.prices = make(map[string]float64)
 	}
@@ -906,7 +978,7 @@ func (m *Manager) fetchAndCacheSpotPrices(ctx context.Context, instanceTypes []s
 	for _, price := range latestPrices {
 		total += price
 	}
-	return total / float64(len(latestPrices))
+	return total / float64(len(latestPrices)), true
 }
 
 // RankInstanceTypesByPrice returns an interleaved sequence weighted by inverse spot price.
