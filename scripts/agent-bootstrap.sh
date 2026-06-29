@@ -1,28 +1,20 @@
 #!/bin/bash
 set -e
 export PATH="/usr/local/bin:$PATH"
+# shellcheck source-path=SCRIPTDIR source=boot-lib.sh
+source /opt/runs-fleet/boot-lib.sh
 
-TOKEN=$(curl -sfX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300") || { echo "ERROR: Failed to fetch IMDSv2 token"; exit 1; }
-INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id) || { echo "ERROR: Failed to fetch instance-id"; exit 1; }
-REGION=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region) || { echo "ERROR: Failed to fetch region"; exit 1; }
+TOKEN=$(imds_token) || { echo "ERROR: Failed to fetch IMDSv2 token"; exit 1; }
+INSTANCE_ID=$(imds_get meta-data/instance-id "$TOKEN") || { echo "ERROR: Failed to fetch instance-id"; exit 1; }
+REGION=$(imds_get meta-data/placement/region "$TOKEN") || { echo "ERROR: Failed to fetch region"; exit 1; }
 
-get_tag() {
-  local tag_name="$1"
-  local result
-  if ! result=$(aws ec2 describe-tags \
-    --region "${REGION}" \
-    --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=${tag_name}" \
-    --query 'Tags[0].Value' \
-    --output text 2>/tmp/get-tag-err-$$); then
-    [ -s /tmp/get-tag-err-$$ ] && echo "WARN: Failed to fetch tag ${tag_name}: $(cat /tmp/get-tag-err-$$)" >&2
-    rm -f /tmp/get-tag-err-$$
-    return 0
-  fi
-  rm -f /tmp/get-tag-err-$$
-  echo "$result" | grep -v "^None$" || true
-}
-
-SECRETS_BACKEND=$(get_tag "runs-fleet:secrets-backend")
+# Fail closed: a failed DescribeTags must not be read as "no backend tag" and
+# silently fall through to the SSM default, booting the agent on the wrong
+# backend. A genuinely absent tag (empty value) legitimately means "use SSM".
+if ! SECRETS_BACKEND=$(get_tag "runs-fleet:secrets-backend"); then
+  echo "ERROR: Failed to read secrets-backend tag (DescribeTags failed)"
+  exit 1
+fi
 
 # The agent reads its full runner config directly from the configured secrets
 # backend (Vault via AWS-IMDS auth, or SSM directly). The bootstrap only provides
@@ -33,20 +25,33 @@ SECRETS_BACKEND=$(get_tag "runs-fleet:secrets-backend")
 if [ "$SECRETS_BACKEND" = "vault" ]; then
   echo "Using Vault secrets backend"
 
-  VAULT_ADDR=$(get_tag "runs-fleet:vault-addr")
-  VAULT_KV_MOUNT=$(get_tag "runs-fleet:vault-kv-mount" | tr -cd 'a-zA-Z0-9/_-')
+  # Required Vault params fail closed on a DescribeTags error (a genuinely empty
+  # value is caught by the validation below); optional params tolerate a read
+  # failure and let the agent fall back to its defaults.
+  if ! VAULT_ADDR=$(get_tag "runs-fleet:vault-addr"); then
+    echo "ERROR: Failed to read vault-addr tag (DescribeTags failed)"; exit 1
+  fi
+  if ! VAULT_KV_MOUNT=$(get_tag "runs-fleet:vault-kv-mount"); then
+    echo "ERROR: Failed to read vault-kv-mount tag (DescribeTags failed)"; exit 1
+  fi
+  VAULT_KV_MOUNT=$(printf '%s' "$VAULT_KV_MOUNT" | tr -cd 'a-zA-Z0-9/_-')
   if [[ "$VAULT_KV_MOUNT" =~ \.\. ]]; then
     echo "ERROR: Invalid VAULT_KV_MOUNT: contains path traversal"
     exit 1
   fi
-  VAULT_KV_VERSION=$(get_tag "runs-fleet:vault-kv-version")
-  VAULT_BASE_PATH=$(get_tag "runs-fleet:vault-base-path" | tr -cd 'a-zA-Z0-9/_-')
+  if ! VAULT_BASE_PATH=$(get_tag "runs-fleet:vault-base-path"); then
+    echo "ERROR: Failed to read vault-base-path tag (DescribeTags failed)"; exit 1
+  fi
+  VAULT_BASE_PATH=$(printf '%s' "$VAULT_BASE_PATH" | tr -cd 'a-zA-Z0-9/_-')
   if [[ "$VAULT_BASE_PATH" =~ \.\. ]]; then
     echo "ERROR: Invalid VAULT_BASE_PATH: contains path traversal"
     exit 1
   fi
-  VAULT_AUTH_METHOD=$(get_tag "runs-fleet:vault-auth-method")
-  VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role")
+  if ! VAULT_AWS_ROLE=$(get_tag "runs-fleet:vault-aws-role"); then
+    echo "ERROR: Failed to read vault-aws-role tag (DescribeTags failed)"; exit 1
+  fi
+  VAULT_KV_VERSION=$(get_tag "runs-fleet:vault-kv-version" || true)
+  VAULT_AUTH_METHOD=$(get_tag "runs-fleet:vault-auth-method" || true)
 
   if [ -z "$VAULT_ADDR" ] || [[ ! "$VAULT_ADDR" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
     echo "ERROR: Invalid or missing VAULT_ADDR (must be https://hostname or https://hostname:port)"
