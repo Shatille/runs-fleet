@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/logging"
@@ -32,7 +33,10 @@ type PriceFetcher struct {
 	cacheMu    sync.RWMutex
 	cacheTime  time.Time
 	cacheTTL   time.Duration
-	useFallback bool
+	// useFallback is read/written from concurrent GetPrice callers (the admin
+	// cost page prices jobs per request against a shared fetcher), so it is
+	// atomic rather than guarded by cacheMu.
+	useFallback atomic.Bool
 }
 
 // NewPriceFetcher creates a new price fetcher.
@@ -43,22 +47,20 @@ func NewPriceFetcher(cfg aws.Config, region string) *PriceFetcher {
 	pricingCfg.Region = "us-east-1"
 
 	return &PriceFetcher{
-		client:      pricing.NewFromConfig(pricingCfg),
-		region:      region,
-		cache:       make(map[string]float64),
-		cacheTTL:    24 * time.Hour, // Cache prices for 24 hours
-		useFallback: false,
+		client:   pricing.NewFromConfig(pricingCfg),
+		region:   region,
+		cache:    make(map[string]float64),
+		cacheTTL: 24 * time.Hour, // Cache prices for 24 hours
 	}
 }
 
 // NewPriceFetcherWithClient creates a new price fetcher with an injected client for testing.
 func NewPriceFetcherWithClient(client PricingAPI, region string) *PriceFetcher {
 	return &PriceFetcher{
-		client:      client,
-		region:      region,
-		cache:       make(map[string]float64),
-		cacheTTL:    24 * time.Hour,
-		useFallback: false,
+		client:   client,
+		region:   region,
+		cache:    make(map[string]float64),
+		cacheTTL: 24 * time.Hour,
 	}
 }
 
@@ -74,7 +76,7 @@ func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float
 	p.cacheMu.RUnlock()
 
 	// If we've already failed to use the API, use fallback immediately
-	if p.useFallback {
+	if p.useFallback.Load() {
 		return p.getFallbackPrice(instanceType), nil
 	}
 
@@ -83,7 +85,7 @@ func (p *PriceFetcher) GetPrice(ctx context.Context, instanceType string) (float
 		pricingLog.Warn(ctx, "pricing api fetch failed, using fallback",
 			slog.String(logging.KeyInstanceType, instanceType),
 			slog.String("error", err.Error()))
-		p.useFallback = true
+		p.useFallback.Store(true)
 		return p.getFallbackPrice(instanceType), nil
 	}
 
@@ -114,7 +116,7 @@ func (p *PriceFetcher) RefreshCache(ctx context.Context) error {
 		"m7g.medium", "m7g.large", "m7g.xlarge", "m7g.2xlarge",
 	}
 
-	p.useFallback = false // Reset fallback flag to try API again
+	p.useFallback.Store(false) // Reset fallback flag to try API again
 
 	for _, instanceType := range knownTypes {
 		_, err := p.GetPrice(ctx, instanceType)

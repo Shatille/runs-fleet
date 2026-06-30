@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/cost"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 )
 
@@ -24,6 +25,134 @@ func (m *mockCostDB) ListJobsForAdmin(_ context.Context, _ db.AdminJobFilter) ([
 		return nil, 0, m.err
 	}
 	return m.jobs, len(m.jobs), nil
+}
+
+type fakeOnDemandPricer struct{ prices map[string]float64 }
+
+func (f *fakeOnDemandPricer) GetPrice(_ context.Context, instanceType string) (float64, error) {
+	if p, ok := f.prices[instanceType]; ok {
+		return p, nil
+	}
+	return 0, errors.New("no price")
+}
+
+type fakeSpotPricer struct{ prices map[string]float64 }
+
+func (f *fakeSpotPricer) SpotPrice(_ context.Context, instanceType string) (float64, bool) {
+	p, ok := f.prices[instanceType]
+	return p, ok
+}
+
+func approx(got, want float64) bool {
+	d := got - want
+	return d < 1e-9 && d > -1e-9
+}
+
+func TestCostHandler_LivePricing(t *testing.T) {
+	t.Parallel()
+
+	// Live prices differ from the hard-coded table (c7g.xlarge = $0.145), proving
+	// the live values are used.
+	od := &fakeOnDemandPricer{prices: map[string]float64{"c7g.xlarge": 0.10}}
+	sp := &fakeSpotPricer{prices: map[string]float64{"c7g.xlarge": 0.03}}
+	mockDB := &mockCostDB{
+		jobs: []db.AdminJobEntry{
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+		},
+	}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), od, sp)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/cost/summary", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp CostSummaryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Spot job: 1h × $0.03 = $0.03. On-demand job: 1h × $0.10 = $0.10.
+	// Savings = 1h × ($0.10 − $0.03) = $0.07.
+	if !approx(resp.SpotCost, 0.03) {
+		t.Errorf("spot cost = %v, want 0.03 (live spot rate)", resp.SpotCost)
+	}
+	if !approx(resp.OnDemandCost, 0.10) {
+		t.Errorf("on-demand cost = %v, want 0.10 (live on-demand rate)", resp.OnDemandCost)
+	}
+	if !approx(resp.SpotSavings, 0.07) {
+		t.Errorf("spot savings = %v, want 0.07 (on-demand − spot)", resp.SpotSavings)
+	}
+	if !approx(resp.TotalCost, 0.13) {
+		t.Errorf("total cost = %v, want 0.13", resp.TotalCost)
+	}
+}
+
+func TestCostHandler_NilPricersUseHardcodedFallback(t *testing.T) {
+	t.Parallel()
+
+	// With nil pricers the handler must reproduce the pre-live-pricing math:
+	// the hard-coded on-demand table + fixed spot discount.
+	mockDB := &mockCostDB{
+		jobs: []db.AdminJobEntry{
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+		},
+	}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/cost/summary", nil))
+
+	var resp CostSummaryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	od := cost.GetInstancePrice("c7g.xlarge")
+	if !approx(resp.OnDemandCost, od) {
+		t.Errorf("on-demand cost = %v, want hard-coded %v", resp.OnDemandCost, od)
+	}
+	if !approx(resp.SpotCost, od*(1-cost.SpotDiscount)) {
+		t.Errorf("spot cost = %v, want hard-coded discount %v", resp.SpotCost, od*(1-cost.SpotDiscount))
+	}
+}
+
+func TestCostHandler_SpotFallsBackToDiscountWhenNoLiveSpotPrice(t *testing.T) {
+	t.Parallel()
+
+	// On-demand price is live; no spot price available → fall back to the fixed
+	// spot discount applied to the live on-demand rate.
+	od := &fakeOnDemandPricer{prices: map[string]float64{"c7g.xlarge": 0.20}}
+	sp := &fakeSpotPricer{prices: map[string]float64{}}
+	mockDB := &mockCostDB{
+		jobs: []db.AdminJobEntry{
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+		},
+	}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), od, sp)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/cost/summary", nil))
+
+	var resp CostSummaryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// 1h × $0.20 × (1 − 0.7) = $0.06; savings = 1h × $0.20 × 0.7 = $0.14.
+	if !approx(resp.SpotCost, 0.06) {
+		t.Errorf("spot cost = %v, want 0.06 (live on-demand × discount)", resp.SpotCost)
+	}
+	if !approx(resp.SpotSavings, 0.14) {
+		t.Errorf("spot savings = %v, want 0.14", resp.SpotSavings)
+	}
 }
 
 func TestCostHandler_GetCostSummary_MixedInstances(t *testing.T) {
@@ -68,7 +197,7 @@ func TestCostHandler_GetCostSummary_MixedInstances(t *testing.T) {
 	}
 
 	auth := NewAuthMiddleware("")
-	handler := NewCostHandler(mockDB, auth)
+	handler := NewCostHandler(mockDB, auth, nil, nil)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -153,7 +282,7 @@ func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testin
 		},
 	}
 
-	handler := NewCostHandler(mockDB, NewAuthMiddleware(""))
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	req := httptest.NewRequest("GET", "/api/cost/summary", nil)
@@ -188,7 +317,7 @@ func TestCostHandler_GetCostSummary_Empty(t *testing.T) {
 	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{}}
 
 	auth := NewAuthMiddleware("")
-	handler := NewCostHandler(mockDB, auth)
+	handler := NewCostHandler(mockDB, auth, nil, nil)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -223,7 +352,7 @@ func TestCostHandler_GetCostSummary_DBError(t *testing.T) {
 	mockDB := &mockCostDB{err: errors.New("database unavailable")}
 
 	auth := NewAuthMiddleware("")
-	handler := NewCostHandler(mockDB, auth)
+	handler := NewCostHandler(mockDB, auth, nil, nil)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -262,7 +391,7 @@ func TestCostHandler_GetCostSummary_MissingInstanceType(t *testing.T) {
 	}
 
 	auth := NewAuthMiddleware("")
-	handler := NewCostHandler(mockDB, auth)
+	handler := NewCostHandler(mockDB, auth, nil, nil)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -300,7 +429,7 @@ func TestCostHandler_RunnerMinuteBreakdown_ZeroDurationExcluded(t *testing.T) {
 		},
 	}
 
-	handler := NewCostHandler(mockDB, NewAuthMiddleware(""))
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	req := httptest.NewRequest("GET", "/api/cost/summary", nil)
