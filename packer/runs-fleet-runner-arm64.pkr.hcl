@@ -112,6 +112,11 @@ build {
   sources = ["source.amazon-ebs.runs_fleet_runner_arm64"]
 
   provisioner "file" {
+    source      = "${path.root}/../scripts/boot-lib.sh"
+    destination = "/tmp/boot-lib.sh"
+  }
+
+  provisioner "file" {
     source      = "${path.root}/../scripts/agent-bootstrap.sh"
     destination = "/tmp/agent-bootstrap.sh"
   }

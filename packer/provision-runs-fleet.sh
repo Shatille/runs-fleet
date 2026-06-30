@@ -83,6 +83,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+echo "==> Installing boot helper library"
+sudo cp /tmp/boot-lib.sh /opt/runs-fleet/boot-lib.sh
+sudo chmod 0644 /opt/runs-fleet/boot-lib.sh
+sudo chown ec2-user:ec2-user /opt/runs-fleet/boot-lib.sh
+
 echo "==> Installing agent bootstrap script"
 sudo cp /tmp/agent-bootstrap.sh /opt/runs-fleet/agent-bootstrap.sh
 sudo chmod +x /opt/runs-fleet/agent-bootstrap.sh

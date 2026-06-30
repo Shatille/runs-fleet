@@ -32,6 +32,12 @@ echo "$out" | grep -qi "exec format error" \
   && fail "agent binary cannot be exec'd on $ARCH: $out"
 echo "  OK: $(file -b "$AGENT")"
 
+echo "==> Validating boot helper library"
+LIB=/opt/runs-fleet/boot-lib.sh
+[ -s "$LIB" ] || fail "$LIB missing or empty"
+bash -n "$LIB" || fail "$LIB has a shell syntax error"
+echo "  OK: $LIB"
+
 echo "==> Validating bootstrap script"
 BOOT=/opt/runs-fleet/agent-bootstrap.sh
 [ -x "$BOOT" ] || fail "$BOOT missing or not executable"
