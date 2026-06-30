@@ -98,6 +98,7 @@ type PoolInstance struct {
 	State        string
 	LaunchTime   time.Time
 	InstanceType string
+	Spot         bool      // one-time spot instance (cold-start overflow); cannot be stopped
 	IdleSince    time.Time // When the instance became idle (no job assigned)
 
 	// Spec from InstanceCatalog lookup (populated for multi-spec pool matching)
@@ -441,28 +442,44 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 			candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
 		}
 
-		toStop := min(excess, len(candidateInstances))
+		// One-time spot instances (cold-start overflow that got pool-tagged) cannot
+		// be stopped — StopInstances rejects them — so only on-demand spares are
+		// stoppable. Spot excess falls through to the terminate path below.
+		var stoppable, spotExcess []PoolInstance
+		for _, ci := range candidateInstances {
+			if ci.Spot {
+				spotExcess = append(spotExcess, ci)
+			} else {
+				stoppable = append(stoppable, ci)
+			}
+		}
+
+		stoppedNow := 0
+		toStop := min(excess, len(stoppable))
 		if toStop > 0 && stopped < desiredStopped {
 			canStop := min(toStop, desiredStopped-stopped)
 			instanceIDs := make([]string, canStop)
 			for i := 0; i < canStop; i++ {
-				instanceIDs[i] = candidateInstances[i].InstanceID
+				instanceIDs[i] = stoppable[i].InstanceID
 			}
 			if err := m.stopInstances(ctx, poolName, instanceIDs, "excess_ready"); err != nil {
 				poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
 			} else {
 				stoppedCount += canStop
+				stoppedNow = canStop
 			}
 			excess -= canStop
 		}
 
 		if excess > 0 {
-			// Sort by launch time (oldest first)
-			toTerminate := min(excess, len(candidateInstances))
+			// Terminate the remaining excess: spot candidates (can't be stopped
+			// spares) plus any on-demand not already stopped this pass.
+			terminable := append(spotExcess, stoppable[stoppedNow:]...)
+			toTerminate := min(excess, len(terminable))
 			if toTerminate > 0 {
 				instanceIDs := make([]string, toTerminate)
 				for i := 0; i < toTerminate; i++ {
-					instanceIDs[i] = candidateInstances[i].InstanceID
+					instanceIDs[i] = terminable[i].InstanceID
 				}
 				if err := m.terminateInstances(ctx, poolName, instanceIDs, "excess_idle"); err != nil {
 					poolLog.Error(ctx, "instances terminate failed", slog.String("error", err.Error()))
@@ -671,6 +688,7 @@ func (m *Manager) getPoolInstances(ctx context.Context, poolName string) ([]Pool
 				InstanceID:   aws.ToString(inst.InstanceId),
 				State:        string(inst.State.Name),
 				InstanceType: instanceType,
+				Spot:         inst.InstanceLifecycle == types.InstanceLifecycleTypeSpot,
 			}
 			if inst.LaunchTime != nil {
 				instance.LaunchTime = *inst.LaunchTime
