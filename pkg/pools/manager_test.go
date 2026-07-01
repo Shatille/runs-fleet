@@ -27,8 +27,9 @@ const (
 	testInstanceTypeC7gXL = "c7g.xlarge"
 )
 
-//nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
 // MockDBClient implements DBClient interface
+//
+//nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
 type MockDBClient struct {
 	GetPoolConfigFunc            func(ctx context.Context, poolName string) (*db.PoolConfig, error)
 	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
@@ -284,12 +285,13 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
-//nolint:dupl // Mock struct mirrors EC2API interface - intentional pattern
 // MockEC2API implements EC2API interface
+//
+//nolint:dupl // Mock struct mirrors EC2API interface - intentional pattern
 type MockEC2API struct {
-	DescribeInstancesFunc          func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
-	StartInstancesFunc             func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
-	StopInstancesFunc              func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	DescribeInstancesFunc  func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	StartInstancesFunc     func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
+	StopInstancesFunc      func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	TerminateInstancesFunc func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 	CreateTagsFunc         func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
@@ -1180,6 +1182,72 @@ func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
 	// ready=1 (3 running - 2 busy), desired_ready=1 -> no scale-down needed
 	if terminateCalled || stopCalled {
 		t.Error("Should not scale down when ready == desired_ready (busy instances protected)")
+	}
+}
+
+func TestReconcileWarmPoolSkipsStoppingSpotInstances(t *testing.T) {
+	t.Parallel()
+
+	// Warm pool (desiredRunning=0, desiredStopped=1) with 2 ready instances: one
+	// on-demand, one a cold-start-overflow spot. Only the on-demand one is
+	// stoppable; the spot one must be terminated, never passed to StopInstances
+	// (one-time spot requests can't be stopped).
+	var stoppedIDs, terminatedIDs []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{"shared-4cpu-x64"}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+
+	launchTime := time.Now().Add(-2 * time.Hour)
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{
+						InstanceId:   aws.String("i-ondemand"),
+						InstanceType: ec2types.InstanceTypeT3Medium,
+						State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+						LaunchTime:   &launchTime,
+					},
+					{
+						InstanceId:        aws.String("i-spot"),
+						InstanceType:      ec2types.InstanceTypeT3Medium,
+						State:             &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+						LaunchTime:        &launchTime,
+						InstanceLifecycle: ec2types.InstanceLifecycleTypeSpot,
+					},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedIDs = append(stoppedIDs, params.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+		TerminateInstancesFunc: func(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			terminatedIDs = append(terminatedIDs, params.InstanceIds...)
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
+	manager.SetEC2Client(mockEC2)
+	manager.reconcile(context.Background())
+
+	for _, id := range stoppedIDs {
+		if id == "i-spot" {
+			t.Fatalf("spot instance must never be passed to StopInstances; stopped=%v", stoppedIDs)
+		}
+	}
+	if len(stoppedIDs) != 1 || stoppedIDs[0] != "i-ondemand" {
+		t.Errorf("expected only the on-demand instance stopped, got %v", stoppedIDs)
+	}
+	if len(terminatedIDs) != 1 || terminatedIDs[0] != "i-spot" {
+		t.Errorf("expected the spot instance terminated, got %v", terminatedIDs)
 	}
 }
 
@@ -3204,7 +3272,7 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
 			// 2 real busy + 3 orphaned
 			return []string{
-				"i-busy1", "i-busy2",                   // real - match running instances
+				"i-busy1", "i-busy2", // real - match running instances
 				"i-orphan1", "i-orphan2", "i-orphan3", // orphaned - instances don't exist
 			}, nil
 		},
@@ -3266,7 +3334,6 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 		}
 	}
 }
-
 
 func TestCreatePoolFleetInstances_PartialSuccess(t *testing.T) {
 	t.Parallel()
@@ -3477,11 +3544,11 @@ func TestClaimAndStartPoolInstance_WithSpec(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name             string
-		instances        []ec2types.Instance
-		spec             *fleet.FlexibleSpec
-		wantInstanceID   string
-		wantNoInstance   bool
+		name           string
+		instances      []ec2types.Instance
+		spec           *fleet.FlexibleSpec
+		wantInstanceID string
+		wantNoInstance bool
 	}{
 		{
 			name: "spec filters by arch - ARM64",
