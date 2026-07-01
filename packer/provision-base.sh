@@ -342,9 +342,9 @@ echo "==> Installing Python (3.11, 3.12, 3.13) + pipx"
 # left untouched. Install the newer namespaced interpreters CI needs, and expose an
 # unversioned `python`/`pip` (default 3.12) via /usr/local/bin, which precedes
 # /usr/bin on PATH — so `python` resolves (jobs were hitting "command not found").
-PYTHON_VERSIONS="3.11 3.12 3.13"
+PYTHON_VERSIONS=("3.11" "3.12" "3.13")
 PYTHON_DEFAULT="3.12"
-for v in $PYTHON_VERSIONS; do
+for v in "${PYTHON_VERSIONS[@]}"; do
   sudo dnf install -y "python${v}" "python${v}-pip" \
     || { echo "Python ${v} installation failed"; exit 1; }
 done
@@ -370,7 +370,7 @@ if [ "$ARCH" = "x86_64" ]; then
 else
   TOOLCACHE_PLATFORM="arm64"
 fi
-for v in $PYTHON_VERSIONS; do
+for v in "${PYTHON_VERSIONS[@]}"; do
   full=$("/usr/bin/python${v}" -c 'import platform; print(platform.python_version())') \
     || { echo "Python ${v} version probe failed"; exit 1; }
   dest="/opt/hostedtoolcache/Python/${full}/${TOOLCACHE_PLATFORM}"
@@ -393,9 +393,9 @@ echo "==> Installing Ruby (3.2, 3.4) + bundler"
 # are only wired via `alternatives`, which can be null). Expose an unversioned
 # ruby/gem/bundle (default 3.4) via /usr/local/bin so direct calls resolve without
 # depending on alternatives state.
-RUBY_VERSIONS="3.2 3.4"
+RUBY_VERSIONS=("3.2" "3.4")
 RUBY_DEFAULT="3.4"
-for v in $RUBY_VERSIONS; do
+for v in "${RUBY_VERSIONS[@]}"; do
   sudo dnf install -y "ruby${v}" "ruby${v}-rubygems" "ruby${v}-rubygem-bundler" \
     || { echo "Ruby ${v} installation failed"; exit 1; }
 done
@@ -409,7 +409,7 @@ echo "==> Pre-populating the Actions Ruby tool cache"
 # the installed interpreters at $AGENT_TOOLSDIRECTORY/Ruby/<x.y.z>/<platform>/ with a
 # .complete marker. Entries symlink the versioned dnf binaries (their embedded /usr
 # prefix stays valid when run via the symlink). TOOLCACHE_PLATFORM is set above.
-for v in $RUBY_VERSIONS; do
+for v in "${RUBY_VERSIONS[@]}"; do
   full=$("/usr/bin/ruby${v}" -e 'print RUBY_VERSION') \
     || { echo "Ruby ${v} version probe failed"; exit 1; }
   dest="/opt/hostedtoolcache/Ruby/${full}/${TOOLCACHE_PLATFORM}"
@@ -472,7 +472,7 @@ echo "    - Session Manager Plugin: $(session-manager-plugin --version)"
 echo "    - CloudWatch Agent: enabled"
 echo "    - Java: $(java -version 2>&1 | head -1)"
 echo "    - sbt: v${SBT_VERSION}"
-echo "    - Python: $(python --version 2>&1) (default); versions ${PYTHON_VERSIONS} in tool cache"
+echo "    - Python: $(python --version 2>&1) (default); versions ${PYTHON_VERSIONS[*]} in tool cache"
 echo "    - pipx: $(pipx --version 2>&1)"
-echo "    - Ruby: $(ruby --version 2>&1) (default); versions ${RUBY_VERSIONS} in tool cache"
+echo "    - Ruby: $(ruby --version 2>&1) (default); versions ${RUBY_VERSIONS[*]} in tool cache"
 echo "    - GitHub Actions runner: v${RUNNER_VERSION} (linux-${RUNNER_PLATFORM})"
