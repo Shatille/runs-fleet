@@ -75,7 +75,7 @@ func TestReconcileStopLogCarriesReason(t *testing.T) {
 						InstanceId:   aws.String("i-running1"),
 						InstanceType: ec2types.InstanceTypeT3Medium,
 						State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
-						LaunchTime:   aws.Time(time.Now()),
+						LaunchTime:   aws.Time(time.Now().Add(-5 * time.Minute)),
 					}}},
 				},
 			}, nil
