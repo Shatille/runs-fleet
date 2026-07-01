@@ -106,6 +106,14 @@ spec:
             # DynamoDB tables
             - name: RUNS_FLEET_JOBS_TABLE
               value: {{ .Values.aws.jobsTable | quote }}
+            {{- if .Values.aws.jobsInstanceIdGsi }}
+            - name: RUNS_FLEET_JOBS_INSTANCE_ID_GSI
+              value: {{ .Values.aws.jobsInstanceIdGsi | quote }}
+            {{- end }}
+            {{- if .Values.aws.jobsPoolStatusGsi }}
+            - name: RUNS_FLEET_JOBS_POOL_STATUS_GSI
+              value: {{ .Values.aws.jobsPoolStatusGsi | quote }}
+            {{- end }}
             {{- if .Values.aws.poolsTable }}
             - name: RUNS_FLEET_POOLS_TABLE
               value: {{ .Values.aws.poolsTable | quote }}

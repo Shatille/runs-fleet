@@ -32,6 +32,13 @@ aws:
   jobsTable: "runs-fleet-jobs"
   poolsTable: "runs-fleet-pools"
   circuitBreakerTable: "runs-fleet-circuit-state"
+  # Standard names of the jobs-table GSIs — part of the runs-fleet schema, not
+  # per-deployment settings. The orchestrator queries these instead of a
+  # full-table Scan: instance-id for GetJobByInstance (spot-interruption +
+  # bootstrap_failed), pool-status for GetPoolBusyInstanceIDs (per-pool
+  # reconcile). Override to "" for a deployment that hasn't provisioned an index.
+  jobsInstanceIdGsi: "instance-id-index"
+  jobsPoolStatusGsi: "pool-status-index"
 
   # S3 buckets
   cacheBucket: ""

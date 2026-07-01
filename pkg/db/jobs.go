@@ -54,7 +54,12 @@ type jobRecord struct {
 	Spot           bool   `dynamodbav:"spot"`
 	RetryCount     int    `dynamodbav:"retry_count"`
 	WarmPoolHit    bool   `dynamodbav:"warm_pool_hit"`
-	Status         string `dynamodbav:"status"`
+	// omitempty so an (unexpected) empty status is dropped rather than written as
+	// S:"" — the pool-status GSI is keyed on status, and DynamoDB rejects a
+	// PutItem with an empty-string index-key attribute. Mirrors instance_id (#276)
+	// and pool (#227). All writers set a non-empty status today; this guards the
+	// GSI against a future one that doesn't.
+	Status         string `dynamodbav:"status,omitempty"`
 	CreatedAt      string `dynamodbav:"created_at"`
 	SpotRequestID  string `dynamodbav:"spot_request_id,omitempty"`
 	PersistentSpot bool   `dynamodbav:"persistent_spot,omitempty"`
