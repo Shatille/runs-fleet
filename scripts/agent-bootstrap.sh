@@ -93,6 +93,15 @@ fi
 # host resolves to the real GitHub IP on this fresh boot, not loopback.
 sed -i '/# runs-fleet-cache/d' /etc/hosts
 
+# If a stop is already in progress (a warm-pool spare being banked), starting the
+# agent now would collide with the queued shutdown (systemd destructive
+# transaction). Bow out cleanly so the boot shim doesn't read it as a failure; any
+# stop that begins after this check is caught by the shim's own guard.
+if system_is_stopping; then
+  echo "System is shutting down; skipping agent service start"
+  exit 0
+fi
+
 systemctl start runs-fleet-agent
 if systemctl is-failed --quiet runs-fleet-agent; then
   echo "ERROR: runs-fleet-agent service failed to start"
