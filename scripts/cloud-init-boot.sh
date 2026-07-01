@@ -23,6 +23,19 @@ if /opt/runs-fleet/agent-bootstrap.sh >"$BOOT_LOG" 2>&1; then
   exit 0
 fi
 
+# A stop that lands mid-bootstrap (e.g. a warm-pool spare being banked, or a spot
+# interruption during boot) shuts the OS down before the agent finishes starting;
+# the resulting non-zero exit is a benign casualty of the stop, not a bootstrap
+# failure. Recognize it and get out of the way — no failure notification, no
+# self-termination — so the instance completes its stop and becomes a banked warm
+# spare instead of being terminated (which churns the pool). Checked here, at the
+# decision point, so it also covers a shutdown that aborted an earlier boot step.
+if system_is_stopping; then
+  echo "[$(date)] System is shutting down mid-bootstrap; skipping failure notification and self-termination (instance will stop and become a warm spare)"
+  rm -f "$BOOT_LOG"
+  exit 0
+fi
+
 cat "$BOOT_LOG" 2>/dev/null || true
 echo "[$(date)] Bootstrap failed, notifying and self-terminating"
 

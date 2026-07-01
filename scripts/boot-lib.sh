@@ -71,3 +71,16 @@ get_tag() {
   [ "$value" = "None" ] && value=""
   printf '%s' "$value"
 }
+
+# system_is_stopping: return 0 if systemd has begun shutting the system down.
+# During an EC2 StopInstances the ACPI power event makes systemd queue stop jobs
+# for the shutdown targets and is-system-running reports "stopping" — the same
+# condition that makes `systemctl start` fail with a destructive-transaction error.
+# A boot step that fails then is a benign casualty of the stop, not a real
+# bootstrap failure, so callers use this to skip failure reporting/self-termination.
+# is-system-running exits non-zero for several states (incl. stopping and
+# degraded), so match on the string, not the exit code; the inner non-zero is
+# masked by the command substitution, keeping this safe under a caller's `set -e`.
+system_is_stopping() {
+  [ "$(systemctl is-system-running 2>/dev/null)" = "stopping" ]
+}
