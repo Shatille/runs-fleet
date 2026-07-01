@@ -1251,6 +1251,140 @@ func TestReconcileWarmPoolSkipsStoppingSpotInstances(t *testing.T) {
 	}
 }
 
+func TestReconcileWarmPoolDefersStoppingFreshSpares(t *testing.T) {
+	// Not parallel: overrides the package-global bootstrapGracePeriod, which other
+	// (parallel) tests read. Sequential tests never overlap the parallel batch, so
+	// the override + Cleanup restore is race-free.
+	restore := bootstrapGracePeriod
+	bootstrapGracePeriod = 10 * time.Minute
+	t.Cleanup(func() { bootstrapGracePeriod = restore })
+
+	// Warm pool (desiredRunning=0, desiredStopped=1) with a single ready spare that
+	// was just launched. Stopping it mid-boot would collide with agent-bootstrap and
+	// churn the pool, so it must be left running until past the bootstrap grace — and
+	// it counts against the deficit so no duplicate spare is created meanwhile.
+	var stoppedIDs, terminatedIDs, createdReasons []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{"warm-pool"}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+
+	launchTime := time.Now() // well within the 10m grace
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{
+						InstanceId:   aws.String("i-fresh"),
+						InstanceType: ec2types.InstanceTypeT3Medium,
+						State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+						LaunchTime:   &launchTime,
+					},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedIDs = append(stoppedIDs, params.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+		TerminateInstancesFunc: func(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			terminatedIDs = append(terminatedIDs, params.InstanceIds...)
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateOnDemandInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
+			createdReasons = append(createdReasons, spec.Reason)
+			return testInstanceNewID, nil
+		},
+	}
+	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+	manager.reconcile(context.Background())
+
+	if len(stoppedIDs) != 0 {
+		t.Errorf("a still-bootstrapping spare must not be stopped, got %v", stoppedIDs)
+	}
+	if len(terminatedIDs) != 0 {
+		t.Errorf("a still-bootstrapping spare must not be terminated, got %v", terminatedIDs)
+	}
+	if len(createdReasons) != 0 {
+		t.Errorf("within-grace spare must be credited against the deficit, but created %v", createdReasons)
+	}
+}
+
+func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
+	// Not parallel: see TestReconcileWarmPoolDefersStoppingFreshSpares.
+	restore := bootstrapGracePeriod
+	bootstrapGracePeriod = 10 * time.Minute
+	t.Cleanup(func() { bootstrapGracePeriod = restore })
+
+	// Warm pool with two ready on-demand spares: one past the bootstrap grace, one
+	// just launched. Only the aged one is stopped this cycle; the fresh one is left
+	// to finish bootstrapping (credited against the deficit) and gets banked on a
+	// later reconcile.
+	var stoppedIDs, createdReasons []string
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{"warm-pool"}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 2, InstanceType: "t3.medium"}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+
+	agedLaunch := time.Now().Add(-1 * time.Hour) // past the 10m grace
+	freshLaunch := time.Now()                     // within the 10m grace
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{
+				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+					{
+						InstanceId:   aws.String("i-aged"),
+						InstanceType: ec2types.InstanceTypeT3Medium,
+						State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+						LaunchTime:   &agedLaunch,
+					},
+					{
+						InstanceId:   aws.String("i-fresh"),
+						InstanceType: ec2types.InstanceTypeT3Medium,
+						State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+						LaunchTime:   &freshLaunch,
+					},
+				}}},
+			}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedIDs = append(stoppedIDs, params.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateOnDemandInstanceFunc: func(_ context.Context, spec *fleet.LaunchSpec) (string, error) {
+			createdReasons = append(createdReasons, spec.Reason)
+			return testInstanceNewID, nil
+		},
+	}
+	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+	manager.reconcile(context.Background())
+
+	if len(stoppedIDs) != 1 || stoppedIDs[0] != "i-aged" {
+		t.Errorf("expected only the aged spare stopped, got %v", stoppedIDs)
+	}
+	if len(createdReasons) != 0 {
+		t.Errorf("aged-stopped + within-grace fresh should meet the deficit, but created %v", createdReasons)
+	}
+}
+
 func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
 	t.Parallel()
 
@@ -1623,7 +1757,9 @@ func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
 
 	mockFleet := &MockFleetAPI{}
 
-	launchTime := time.Now() // Just launched - would NOT pass 30min idle timeout
+	// Past the bootstrap grace but well within the 30min idle timeout: proves warm
+	// pools stop a ready spare without waiting for the hot-pool idle timeout.
+	launchTime := time.Now().Add(-5 * time.Minute)
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 			return &ec2.DescribeInstancesOutput{
@@ -3079,12 +3215,14 @@ func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
 
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-			// 3 running (all idle - no matching busy IDs), 2 stopped
+			// 3 running (all idle - no matching busy IDs), 2 stopped.
+			// Running spares are aged past the bootstrap grace so they are stop-eligible.
+			aged := aws.Time(time.Now().Add(-time.Hour))
 			return &ec2.DescribeInstancesOutput{
 				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
-					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
 					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 					{InstanceId: aws.String("i-stopped2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 				}}},
@@ -3131,12 +3269,14 @@ func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
 
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-			// 3 running: 1 busy + 2 idle; 1 stopped
+			// 3 running: 1 busy + 2 idle; 1 stopped.
+			// Running spares are aged past the bootstrap grace so they are stop-eligible.
+			aged := aws.Time(time.Now().Add(-time.Hour))
 			return &ec2.DescribeInstancesOutput{
 				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
-					{InstanceId: aws.String("i-busy"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-busy"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
 					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 				}}},
 			}, nil
@@ -3208,13 +3348,14 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-			// 3 running instances: 1 busy (i-running1), 2 idle
-			// 2 stopped instances
+			// 3 running instances: 1 busy (i-running1), 2 idle; 2 stopped.
+			// Running spares are aged past the bootstrap grace so they are stop-eligible.
+			aged := aws.Time(time.Now().Add(-time.Hour))
 			return &ec2.DescribeInstancesOutput{
 				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
-					{InstanceId: aws.String("i-running1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-running2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-running3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-running1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-running2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-running3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
 					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 					{InstanceId: aws.String("i-stopped2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 				}}},
@@ -3289,14 +3430,16 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-			// 5 running: 2 busy + 3 idle; 3 stopped
+			// 5 running: 2 busy + 3 idle; 3 stopped.
+			// Running spares are aged past the bootstrap grace so they are stop-eligible.
+			aged := aws.Time(time.Now().Add(-time.Hour))
 			return &ec2.DescribeInstancesOutput{
 				Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
-					{InstanceId: aws.String("i-busy1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-busy2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
-					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}},
+					{InstanceId: aws.String("i-busy1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-busy2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
+					{InstanceId: aws.String("i-idle3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning}, LaunchTime: aged},
 					{InstanceId: aws.String("i-stopped1"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 					{InstanceId: aws.String("i-stopped2"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
 					{InstanceId: aws.String("i-stopped3"), InstanceType: ec2types.InstanceTypeT3Medium, State: &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}},
@@ -4197,12 +4340,16 @@ func TestNotifyPoolDemand_NonBlocking(t *testing.T) {
 // stoppedReplenishInstances builds a DescribeInstances snapshot with the given
 // number of running (ready, none busy) and stopped instances for a warm pool.
 func stoppedReplenishInstances(running, stopped int) *ec2.DescribeInstancesOutput {
+	// Running spares are past the bootstrap grace so they are stop-eligible; the
+	// deficit-credit behaviour under test is independent of the grace filter.
+	aged := time.Now().Add(-time.Hour)
 	instances := make([]ec2types.Instance, 0, running+stopped)
 	for i := 0; i < running; i++ {
 		instances = append(instances, ec2types.Instance{
 			InstanceId:   aws.String(fmt.Sprintf("i-running%d", i)),
 			InstanceType: ec2types.InstanceTypeT3Medium,
 			State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+			LaunchTime:   &aged,
 		})
 	}
 	for i := 0; i < stopped; i++ {
