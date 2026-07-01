@@ -31,13 +31,14 @@ const (
 	stateStopped = "stopped"
 )
 
-// bootstrapGracePeriod is how long after launch a warm-pool spare is left alone
-// before it may be stopped. Stopping a spare mid-boot begins an OS shutdown that
-// collides with agent-bootstrap's `systemctl start` (systemd "destructive
+// defaultBootstrapGracePeriod is how long after launch a warm-pool spare is left
+// alone before it may be stopped. Stopping a spare mid-boot begins an OS shutdown
+// that collides with agent-bootstrap's `systemctl start` (systemd "destructive
 // transaction"); the boot shim mistakes that for a bootstrap failure and
 // self-terminates the spare, churning the pool. This exceeds a baked-AMI boot
-// (~60-120s) so the spare finishes bootstrapping first. Overridable in tests.
-var bootstrapGracePeriod = 3 * time.Minute
+// (~60-120s) so the spare finishes bootstrapping first. Held per-Manager (settable
+// in tests) rather than as a mutable global.
+const defaultBootstrapGracePeriod = 3 * time.Minute
 
 // DBClient defines DynamoDB operations for pool configuration.
 //
@@ -167,6 +168,11 @@ type Manager struct {
 	metrics      MetricsAPI
 	instanceID   string // Unique identifier for this instance (for distributed locking)
 
+	// bootstrapGracePeriod gates how long a warm-pool spare is left running before
+	// it may be stopped (see defaultBootstrapGracePeriod). A field, not a global, so
+	// tests set it per-Manager without racing.
+	bootstrapGracePeriod time.Duration
+
 	idleMu       sync.Mutex           // Guards instanceIdle only
 	instanceIdle map[string]time.Time // Tracks when instances became idle
 
@@ -200,13 +206,14 @@ func (m *Manager) poolLockFor(poolName string) *poolLock {
 // Generates a unique instance ID for distributed locking.
 func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *Manager {
 	return &Manager{
-		dbClient:     dbClient,
-		fleetManager: fleetManager,
-		config:       cfg,
-		instanceID:   uuid.New().String(),
-		instanceIdle: make(map[string]time.Time),
-		randIntn:     rand.IntN,
-		demandCh:     make(chan string, 64),
+		dbClient:             dbClient,
+		fleetManager:         fleetManager,
+		config:               cfg,
+		instanceID:           uuid.New().String(),
+		instanceIdle:         make(map[string]time.Time),
+		randIntn:             rand.IntN,
+		demandCh:             make(chan string, 64),
+		bootstrapGracePeriod: defaultBootstrapGracePeriod,
 	}
 }
 
@@ -449,14 +456,14 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		if desiredRunning == 0 && desiredStopped > 0 {
 			// Warm pool: ready instances are candidates for stopping, but skip ones
 			// still within the bootstrap grace window — stopping mid-boot churns the
-			// pool (see bootstrapGracePeriod). They become candidates on a later pass.
+			// pool (see defaultBootstrapGracePeriod). They become candidates on a later pass.
 			readyInstances := m.filterReadyInstances(runningInstances, busyIDs)
 			candidateInstances = make([]PoolInstance, 0, len(readyInstances))
 			var deferredSpares int
 			for _, inst := range readyInstances {
 				// Treat an unknown launch time (zero value) as still-booting: acting on
 				// it could stop a spare mid-boot, the exact churn this guards against.
-				if inst.LaunchTime.IsZero() || time.Since(inst.LaunchTime) < bootstrapGracePeriod {
+				if inst.LaunchTime.IsZero() || time.Since(inst.LaunchTime) < m.bootstrapGracePeriod {
 					deferredSpares++
 					// Only on-demand spares become stopped spares, so only they may be
 					// credited against the replenish deficit below. A within-grace spot

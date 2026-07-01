@@ -1252,12 +1252,7 @@ func TestReconcileWarmPoolSkipsStoppingSpotInstances(t *testing.T) {
 }
 
 func TestReconcileWarmPoolDefersStoppingFreshSpares(t *testing.T) {
-	// Not parallel: overrides the package-global bootstrapGracePeriod, which other
-	// (parallel) tests read. Sequential tests never overlap the parallel batch, so
-	// the override + Cleanup restore is race-free.
-	restore := bootstrapGracePeriod
-	bootstrapGracePeriod = 10 * time.Minute
-	t.Cleanup(func() { bootstrapGracePeriod = restore })
+	t.Parallel()
 
 	// Warm pool (desiredRunning=0, desiredStopped=1) with a single ready spare that
 	// was just launched. Stopping it mid-boot would collide with agent-bootstrap and
@@ -1305,6 +1300,7 @@ func TestReconcileWarmPoolDefersStoppingFreshSpares(t *testing.T) {
 		},
 	}
 	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.bootstrapGracePeriod = 10 * time.Minute
 	manager.SetEC2Client(mockEC2)
 	manager.reconcile(context.Background())
 
@@ -1320,10 +1316,7 @@ func TestReconcileWarmPoolDefersStoppingFreshSpares(t *testing.T) {
 }
 
 func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
-	// Not parallel: see TestReconcileWarmPoolDefersStoppingFreshSpares.
-	restore := bootstrapGracePeriod
-	bootstrapGracePeriod = 10 * time.Minute
-	t.Cleanup(func() { bootstrapGracePeriod = restore })
+	t.Parallel()
 
 	// Warm pool with two ready on-demand spares: one past the bootstrap grace, one
 	// just launched. Only the aged one is stopped this cycle; the fresh one is left
@@ -1341,7 +1334,7 @@ func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
 	}
 
 	agedLaunch := time.Now().Add(-1 * time.Hour) // past the 10m grace
-	freshLaunch := time.Now()                     // within the 10m grace
+	freshLaunch := time.Now()                    // within the 10m grace
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 			return &ec2.DescribeInstancesOutput{
@@ -1374,6 +1367,7 @@ func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
 		},
 	}
 	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.bootstrapGracePeriod = 10 * time.Minute
 	manager.SetEC2Client(mockEC2)
 	manager.reconcile(context.Background())
 
