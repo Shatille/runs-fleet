@@ -504,7 +504,10 @@ for major in 17 21; do
   meta=$(dl "https://api.adoptium.net/v3/assets/feature_releases/${major}/ga?architecture=${ADOPT_ARCH}&image_type=jdk&jvm_impl=hotspot&os=linux&vendor=eclipse&page_size=1&sort_order=DESC") \
     || { echo "Temurin ${major} metadata fetch failed"; exit 1; }
   # jq exits 0 with empty output for a missing field, so check each value explicitly
-  # (a jq parse crash still aborts under set -e).
+  # (a jq parse crash still aborts under set -e). Confirm a binary exists for this
+  # arch/os filter before indexing binaries[0].
+  bin_count=$(printf '%s' "$meta" | jq '.[0].binaries | length // 0')
+  [ "$bin_count" -gt 0 ] || { echo "no Temurin ${major} binary for ${ADOPT_ARCH}/linux"; exit 1; }
   link=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.link // empty')
   [ -n "$link" ] || { echo "no Temurin ${major} download link in metadata"; exit 1; }
   jsha=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.checksum // empty')
