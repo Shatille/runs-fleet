@@ -433,10 +433,18 @@ sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
 # download. We resolve the latest patch of each pinned line at build (checksummed) rather
 # than hard-pinning a patch we can't hand-verify — setup-* matches by major.minor anyway.
 toolcache_extract() {
-  # toolcache_extract <tool> <version> <tarball>: unpack the tarball's top-level contents
-  # into $AGENT_TOOLSDIRECTORY/<tool>/<version>/<platform>/ and mark it complete.
+  # toolcache_extract <tool> <version> <tarball>: unpack the tarball's single top-level
+  # dir into $AGENT_TOOLSDIRECTORY/<tool>/<version>/<platform>/ and mark it complete.
   local tool="$1" version="$2" tarball="$3"
   local dest="/opt/hostedtoolcache/${tool}/${version}/${TOOLCACHE_PLATFORM}"
+  # All three upstream tarballs (node/go/temurin) have exactly one top-level dir that
+  # --strip-components=1 removes; bail rather than scatter files if that ever changes.
+  local tops
+  tops=$(tar -tf "$tarball" | awk -F/ '$1 != "" {print $1}' | sort -u | wc -l)
+  [ "$tops" -eq 1 ] \
+    || { echo "${tool} ${version}: expected 1 top-level dir in archive, got ${tops}"; exit 1; }
+  # Start from a clean dir so a partial dir from a prior failed run can't mix in.
+  sudo rm -rf "$dest"
   sudo mkdir -p "$dest"
   sudo tar -xf "$tarball" -C "$dest" --strip-components=1 \
     || { echo "${tool} ${version} extraction failed"; exit 1; }
@@ -495,9 +503,12 @@ if [ "$ARCH" = "x86_64" ]; then ADOPT_ARCH="x64"; else ADOPT_ARCH="aarch64"; fi
 for major in 17 21; do
   meta=$(dl "https://api.adoptium.net/v3/assets/feature_releases/${major}/ga?architecture=${ADOPT_ARCH}&image_type=jdk&jvm_impl=hotspot&os=linux&vendor=eclipse&page_size=1&sort_order=DESC") \
     || { echo "Temurin ${major} metadata fetch failed"; exit 1; }
-  link=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.link // empty')
-  jsha=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.checksum // empty')
-  semver=$(printf '%s' "$meta" | jq -r '.[0].version_data.semver // empty')
+  link=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.link // empty') \
+    || { echo "Temurin ${major} metadata parse failed"; exit 1; }
+  jsha=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.checksum // empty') \
+    || { echo "Temurin ${major} metadata parse failed"; exit 1; }
+  semver=$(printf '%s' "$meta" | jq -r '.[0].version_data.semver // empty') \
+    || { echo "Temurin ${major} metadata parse failed"; exit 1; }
   { [ -n "$link" ] && [ -n "$jsha" ] && [ -n "$semver" ]; } \
     || { echo "no Temurin ${major} GA release found"; exit 1; }
   # setup-java's dir uses the semver with '+' replaced by '-' (e.g. 21.0.4+7 -> 21.0.4-7).
