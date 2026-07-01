@@ -9,12 +9,30 @@ REGION=$(imds_get meta-data/placement/region "$TOKEN") || { echo "ERROR: Failed 
 
 echo "[$(date)] runs-fleet boot script starting for ${INSTANCE_ID}"
 
-if /opt/runs-fleet/agent-bootstrap.sh; then
+# Capture bootstrap output so a failure can report *why* (the orchestrator only
+# sees this SQS message; terminated instances retain no console log). Still echo
+# it to the console log for the success path and local debugging.
+BOOT_LOG="/tmp/agent-bootstrap-$$.log"
+# `|| true` on the reads: under `set -e` a failed cat/tail (e.g. the log file
+# couldn't be created on a full disk) must not abort the script before the
+# notification + self-termination below, which would leave a zombie instance.
+if /opt/runs-fleet/agent-bootstrap.sh >"$BOOT_LOG" 2>&1; then
+  cat "$BOOT_LOG" 2>/dev/null || true
+  rm -f "$BOOT_LOG"
   echo "[$(date)] Bootstrap completed"
   exit 0
 fi
 
+cat "$BOOT_LOG" 2>/dev/null || true
 echo "[$(date)] Bootstrap failed, notifying and self-terminating"
+
+# Use the tail of the bootstrap output as the failure reason. Bounded and
+# stripped to printable chars so the SQS message stays small/well-formed; jq
+# --arg JSON-escapes it. agent-bootstrap.sh prints backend selection + validation
+# errors only (secrets are written to a file, never stdout), so this is safe.
+REASON=$(tail -c 800 "$BOOT_LOG" 2>/dev/null | tr '\n' ' ' | tr -cd '[:print:]')
+[ -n "$REASON" ] || REASON="agent bootstrap failed on boot"
+rm -f "$BOOT_LOG"
 
 # Best-effort notification: if the queue tag can't be read we just skip it.
 TERMINATION_QUEUE_URL=$(get_tag "runs-fleet:termination-queue-url" || true)
@@ -24,7 +42,7 @@ if [ -n "$TERMINATION_QUEUE_URL" ]; then
   MESSAGE=$(jq -n \
     --arg id "$INSTANCE_ID" \
     --arg status "bootstrap_failed" \
-    --arg err "agent bootstrap failed on boot" \
+    --arg err "$REASON" \
     '{instance_id: $id, status: $status, error: $err}')
   SQS_ERR="/tmp/sqs-err-$$"
   if ! retry 3 2 aws sqs send-message \
