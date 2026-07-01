@@ -484,6 +484,9 @@ for minor in 1.24 1.25; do
   go_default_dir="/opt/hostedtoolcache/go/${gfull}/${TOOLCACHE_PLATFORM}"
 done
 # Host has no `go` on PATH; expose the newest baked one (setup-go adds its own per job).
+# Fail closed: the symlinks must point at a Go we actually extracted, never an empty path.
+{ [ -n "$go_default_dir" ] && [ -x "${go_default_dir}/bin/go" ]; } \
+  || { echo "Go tool-cache default not populated"; exit 1; }
 sudo ln -sf "${go_default_dir}/bin/go" /usr/local/bin/go
 sudo ln -sf "${go_default_dir}/bin/gofmt" /usr/local/bin/gofmt
 
