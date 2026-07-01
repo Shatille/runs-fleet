@@ -127,6 +127,36 @@ for v in 3.2 3.4; do
 done
 echo "  OK: ruby=$RBVER; tool cache 3.2/3.4 ($TOOLCACHE_PLATFORM)"
 
+echo "==> Validating native-build headers"
+# -devel packages must ship the headers, or jobs compiling C extensions / native gems
+# fail (gcc alone isn't enough).
+for v in 3.11 3.12 3.13; do
+  [ -f "/usr/include/python${v}/Python.h" ] \
+    || fail "Python.h missing for python${v} (python${v}-devel not installed?)"
+done
+for v in 3.2 3.4; do
+  "ruby${v}" -e 'require "rbconfig"; exit(File.exist?(File.join(RbConfig::CONFIG["rubyhdrdir"], "ruby.h")) ? 0 : 1)' \
+    || fail "ruby.h missing for ruby${v} (ruby${v}-devel not installed?)"
+done
+echo "  OK: Python/Ruby dev headers present"
+
+echo "==> Validating pre-baked Node/Go/Java tool cache"
+# <tool> <version-prefix> <relative-bin> <version-arg...>: assert a runnable entry with
+# a .complete marker exists, so setup-node/go/java resolve it offline.
+check_toolcache() {
+  local tool="$1" prefix="$2" relbin="$3"; shift 3
+  local entry
+  entry=$(newest_toolcache_dir "$tool" "$prefix")
+  [ -n "$entry" ] || fail "no tool-cache entry for ${tool} ${prefix} (${TOOLCACHE_PLATFORM})"
+  [ -f "${entry}.complete" ] || fail "missing ${TOOLCACHE_PLATFORM}.complete for ${tool} ${prefix}"
+  "${entry}/${relbin}" "$@" >/dev/null 2>&1 || fail "${tool} ${prefix} (${relbin}) not runnable"
+}
+for m in 20 22; do check_toolcache node "$m" bin/node --version; done
+for m in 1.24 1.25; do check_toolcache go "$m" bin/go version; done
+for m in 17 21; do check_toolcache Java_Temurin-Hotspot_jdk "$m" bin/java --version; done
+command -v go >/dev/null || fail "go not on PATH"
+echo "  OK: tool cache node 20/22, go 1.24/1.25, Temurin 17/21 ($TOOLCACHE_PLATFORM)"
+
 echo "==> Validating cache-engage helper"
 HELPER=/usr/local/sbin/runs-fleet-cache-engage
 HOST=results-receiver.actions.githubusercontent.com
