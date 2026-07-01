@@ -503,14 +503,21 @@ if [ "$ARCH" = "x86_64" ]; then ADOPT_ARCH="x64"; else ADOPT_ARCH="aarch64"; fi
 for major in 17 21; do
   meta=$(dl "https://api.adoptium.net/v3/assets/feature_releases/${major}/ga?architecture=${ADOPT_ARCH}&image_type=jdk&jvm_impl=hotspot&os=linux&vendor=eclipse&page_size=1&sort_order=DESC") \
     || { echo "Temurin ${major} metadata fetch failed"; exit 1; }
-  link=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.link // empty') \
-    || { echo "Temurin ${major} metadata parse failed"; exit 1; }
-  jsha=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.checksum // empty') \
-    || { echo "Temurin ${major} metadata parse failed"; exit 1; }
-  semver=$(printf '%s' "$meta" | jq -r '.[0].version_data.semver // empty') \
-    || { echo "Temurin ${major} metadata parse failed"; exit 1; }
-  { [ -n "$link" ] && [ -n "$jsha" ] && [ -n "$semver" ]; } \
-    || { echo "no Temurin ${major} GA release found"; exit 1; }
+  # jq exits 0 with empty output for a missing field, so check each value explicitly
+  # (a jq parse crash still aborts under set -e).
+  link=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.link // empty')
+  [ -n "$link" ] || { echo "no Temurin ${major} download link in metadata"; exit 1; }
+  jsha=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.checksum // empty')
+  [ -n "$jsha" ] || { echo "no Temurin ${major} checksum in metadata"; exit 1; }
+  semver=$(printf '%s' "$meta" | jq -r '.[0].version_data.semver // empty')
+  [ -n "$semver" ] || { echo "no Temurin ${major} semver in metadata"; exit 1; }
+  # Defense-in-depth: the link comes from the API response and the checksum comes from
+  # the same response, so the checksum can't be the only guard — pin the download to
+  # Adoptium's GitHub release host before fetching.
+  case "$link" in
+    https://github.com/adoptium/*) : ;;
+    *) echo "Temurin ${major} link has unexpected host: $link"; exit 1 ;;
+  esac
   # setup-java's dir uses the semver with '+' replaced by '-' (e.g. 21.0.4+7 -> 21.0.4-7).
   norm="${semver//+/-}"
   dl "$link" -o "/tmp/temurin-${major}.tar.gz" \
