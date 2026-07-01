@@ -337,6 +337,91 @@ sudo ln -sf /usr/local/sbt/bin/sbt /usr/local/bin/sbt \
   || { echo "sbt symlink creation failed"; exit 1; }
 rm /tmp/sbt.tgz
 
+echo "==> Installing Python (3.11, 3.12, 3.13) + pipx"
+# AL2023's system python3 is 3.9 and is used by dnf/OS tooling, so /usr/bin/python3 is
+# left untouched. Install the newer namespaced interpreters CI needs, and expose an
+# unversioned `python`/`pip` (default 3.12) via /usr/local/bin, which precedes
+# /usr/bin on PATH — so `python` resolves (jobs were hitting "command not found").
+PYTHON_VERSIONS=("3.11" "3.12" "3.13")
+PYTHON_DEFAULT="3.12"
+for v in "${PYTHON_VERSIONS[@]}"; do
+  sudo dnf install -y "python${v}" "python${v}-pip" \
+    || { echo "Python ${v} installation failed"; exit 1; }
+done
+sudo ln -sf "/usr/bin/python${PYTHON_DEFAULT}" /usr/local/bin/python
+sudo ln -sf "/usr/bin/pip${PYTHON_DEFAULT}" /usr/local/bin/pip
+
+echo "==> Installing pipx"
+# Prefer the distro package; fall back to pip. The system interpreter is marked
+# externally-managed (PEP 668), so the pip path needs --break-system-packages.
+sudo dnf install -y pipx \
+  || sudo "python${PYTHON_DEFAULT}" -m pip install --break-system-packages pipx \
+  || { echo "pipx installation failed"; exit 1; }
+
+echo "==> Pre-populating the Actions Python tool cache"
+# actions/setup-python can't fetch CPython for AL2023 (no build in its manifest and
+# GitHub won't add one), so expose the installed interpreters where the action looks:
+#   $AGENT_TOOLSDIRECTORY/Python/<x.y.z>/<platform>/  (+ a 0-byte <platform>.complete)
+# The runs-fleet-agent unit sets AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache. The cache
+# entries symlink the dnf interpreters, which run from their real /usr prefix, so no
+# relocation is needed — setup-python just prepends <platform>/bin to PATH.
+if [ "$ARCH" = "x86_64" ]; then
+  TOOLCACHE_PLATFORM="x64"
+else
+  TOOLCACHE_PLATFORM="arm64"
+fi
+for v in "${PYTHON_VERSIONS[@]}"; do
+  full=$("/usr/bin/python${v}" -c 'import platform; print(platform.python_version())') \
+    || { echo "Python ${v} version probe failed"; exit 1; }
+  dest="/opt/hostedtoolcache/Python/${full}/${TOOLCACHE_PLATFORM}"
+  sudo mkdir -p "${dest}/bin"
+  sudo ln -sf "/usr/bin/python${v}" "${dest}/bin/python${v}"
+  sudo ln -sf "/usr/bin/python${v}" "${dest}/bin/python3"
+  sudo ln -sf "/usr/bin/python${v}" "${dest}/bin/python"
+  if [ -x "/usr/bin/pip${v}" ]; then
+    sudo ln -sf "/usr/bin/pip${v}" "${dest}/bin/pip${v}"
+    sudo ln -sf "/usr/bin/pip${v}" "${dest}/bin/pip3"
+    sudo ln -sf "/usr/bin/pip${v}" "${dest}/bin/pip"
+  fi
+  sudo touch "/opt/hostedtoolcache/Python/${full}/${TOOLCACHE_PLATFORM}.complete"
+done
+sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
+
+echo "==> Installing Ruby (3.2, 3.4) + bundler"
+# AL2023 namespaces Ruby: ruby3.2/ruby3.4 install /usr/bin/ruby<ver> plus versioned
+# companions /usr/bin/ruby<ver>-gem, -bundle, -bundler (unversioned ruby/gem/bundle
+# are only wired via `alternatives`, which can be null). Expose an unversioned
+# ruby/gem/bundle (default 3.4) via /usr/local/bin so direct calls resolve without
+# depending on alternatives state.
+RUBY_VERSIONS=("3.2" "3.4")
+RUBY_DEFAULT="3.4"
+for v in "${RUBY_VERSIONS[@]}"; do
+  sudo dnf install -y "ruby${v}" "ruby${v}-rubygems" "ruby${v}-rubygem-bundler" \
+    || { echo "Ruby ${v} installation failed"; exit 1; }
+done
+sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}" /usr/local/bin/ruby
+sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}-gem" /usr/local/bin/gem
+sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}-bundle" /usr/local/bin/bundle
+sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}-bundler" /usr/local/bin/bundler
+
+echo "==> Pre-populating the Actions Ruby tool cache"
+# Same rationale as Python: ruby/setup-ruby can't fetch a Ruby for AL2023, so expose
+# the installed interpreters at $AGENT_TOOLSDIRECTORY/Ruby/<x.y.z>/<platform>/ with a
+# .complete marker. Entries symlink the versioned dnf binaries (their embedded /usr
+# prefix stays valid when run via the symlink). TOOLCACHE_PLATFORM is set above.
+for v in "${RUBY_VERSIONS[@]}"; do
+  full=$("/usr/bin/ruby${v}" -e 'print RUBY_VERSION') \
+    || { echo "Ruby ${v} version probe failed"; exit 1; }
+  dest="/opt/hostedtoolcache/Ruby/${full}/${TOOLCACHE_PLATFORM}"
+  sudo mkdir -p "${dest}/bin"
+  sudo ln -sf "/usr/bin/ruby${v}" "${dest}/bin/ruby"
+  sudo ln -sf "/usr/bin/ruby${v}-gem" "${dest}/bin/gem"
+  sudo ln -sf "/usr/bin/ruby${v}-bundle" "${dest}/bin/bundle"
+  sudo ln -sf "/usr/bin/ruby${v}-bundler" "${dest}/bin/bundler"
+  sudo touch "/opt/hostedtoolcache/Ruby/${full}/${TOOLCACHE_PLATFORM}.complete"
+done
+sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
+
 echo "==> Downloading GitHub Actions runner"
 RUNNER_VERSION="2.334.0"
 if [ "$ARCH" = "x86_64" ]; then
@@ -387,4 +472,7 @@ echo "    - Session Manager Plugin: $(session-manager-plugin --version)"
 echo "    - CloudWatch Agent: enabled"
 echo "    - Java: $(java -version 2>&1 | head -1)"
 echo "    - sbt: v${SBT_VERSION}"
+echo "    - Python: $(python --version 2>&1) (default); versions ${PYTHON_VERSIONS[*]} in tool cache"
+echo "    - pipx: $(pipx --version 2>&1)"
+echo "    - Ruby: $(ruby --version 2>&1) (default); versions ${RUBY_VERSIONS[*]} in tool cache"
 echo "    - GitHub Actions runner: v${RUNNER_VERSION} (linux-${RUNNER_PLATFORM})"

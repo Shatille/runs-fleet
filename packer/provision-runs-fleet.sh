@@ -74,6 +74,12 @@ User=ec2-user
 Group=ec2-user
 WorkingDirectory=/opt/runs-fleet
 EnvironmentFile=/opt/runs-fleet/env
+# Point the Actions runner at the pre-populated tool cache (see provision-base.sh)
+# so actions/setup-python resolves the baked interpreters offline instead of trying
+# to download CPython for AL2023 (which its manifest doesn't provide). The agent
+# passes its environment through to run.sh, so the runner derives RUNNER_TOOL_CACHE
+# from this.
+Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
 ExecStart=/opt/runs-fleet/runs-fleet-agent
 Restart=no
 StandardOutput=journal

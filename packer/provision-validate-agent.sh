@@ -14,6 +14,22 @@ esac
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# newest_toolcache_dir <tool> <minor> — echo the highest-versioned tool-cache dir
+# matching <tool>/<minor>.*/<platform> (empty if none). Uses shell globbing, not
+# ls-parsing, and picks the highest patch deterministically when several exist.
+newest_toolcache_dir() {
+  local tool="$1" minor="$2" best="" d
+  for d in "/opt/hostedtoolcache/${tool}/${minor}."*"/${TOOLCACHE_PLATFORM}"; do
+    [ -d "$d" ] || continue
+    if [ -z "$best" ]; then
+      best="$d"
+    else
+      best=$(printf '%s\n%s\n' "$best" "$d" | sort -V | tail -n1)
+    fi
+  done
+  printf '%s' "$best"
+}
+
 echo "==> Validating agent binary"
 AGENT=/opt/runs-fleet/runs-fleet-agent
 [ -x "$AGENT" ] || fail "$AGENT missing or not executable"
@@ -57,7 +73,59 @@ UNIT=/etc/systemd/system/runs-fleet-agent.service
 # systemd-analyze verify catches typos in [Unit]/[Service]/[Install] keys,
 # bad ExecStart paths, broken After=/Requires= references, etc.
 sudo systemd-analyze verify "$UNIT" || fail "$UNIT failed systemd verification"
+# The unit must point the runner at the pre-populated tool cache, or
+# actions/setup-python falls back to a download that 404s on AL2023.
+grep -qF "AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache" "$UNIT" \
+  || fail "$UNIT missing AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache"
 echo "  OK: $UNIT"
+
+echo "==> Validating Python toolchain"
+case "$ARCH" in
+  x86_64)  TOOLCACHE_PLATFORM="x64" ;;
+  aarch64) TOOLCACHE_PLATFORM="arm64" ;;
+esac
+# Unversioned python/pip must resolve (jobs were hitting "command not found") and
+# default to 3.12; pipx must be usable.
+command -v python >/dev/null || fail "python not on PATH"
+command -v pip >/dev/null || fail "pip not on PATH"
+command -v pipx >/dev/null || fail "pipx not on PATH"
+PYVER=$(python --version 2>&1)
+case "$PYVER" in
+  "Python 3.12."*) : ;;
+  *) fail "python default is not 3.12: $PYVER" ;;
+esac
+# Each baked version must be installed and present in the tool cache with its
+# .complete marker and a runnable interpreter, so actions/setup-python resolves it
+# offline instead of downloading.
+for v in 3.11 3.12 3.13; do
+  command -v "python${v}" >/dev/null || fail "python${v} not installed"
+  entry=$(newest_toolcache_dir Python "$v")
+  [ -n "$entry" ] || fail "no tool-cache entry for Python ${v} (${TOOLCACHE_PLATFORM})"
+  [ -f "${entry}.complete" ] || fail "missing ${TOOLCACHE_PLATFORM}.complete for Python ${v}"
+  "${entry}/bin/python" --version >/dev/null 2>&1 || fail "tool-cache Python ${v} interpreter not runnable"
+done
+echo "  OK: python=$PYVER; pipx=$(pipx --version 2>&1); tool cache 3.11/3.12/3.13 ($TOOLCACHE_PLATFORM)"
+
+echo "==> Validating Ruby toolchain"
+# Unversioned ruby/gem/bundle must resolve (default 3.4).
+command -v ruby >/dev/null || fail "ruby not on PATH"
+command -v gem >/dev/null || fail "gem not on PATH"
+command -v bundle >/dev/null || fail "bundle not on PATH"
+RBVER=$(ruby -e 'print RUBY_VERSION')
+case "$RBVER" in
+  3.4.*) : ;;
+  *) fail "ruby default is not 3.4: $RBVER" ;;
+esac
+# Each baked version present in the tool cache with its .complete marker and a
+# runnable interpreter, so ruby/setup-ruby resolves it offline instead of downloading.
+for v in 3.2 3.4; do
+  command -v "ruby${v}" >/dev/null || fail "ruby${v} not installed"
+  entry=$(newest_toolcache_dir Ruby "$v")
+  [ -n "$entry" ] || fail "no tool-cache entry for Ruby ${v} (${TOOLCACHE_PLATFORM})"
+  [ -f "${entry}.complete" ] || fail "missing ${TOOLCACHE_PLATFORM}.complete for Ruby ${v}"
+  "${entry}/bin/ruby" --version >/dev/null 2>&1 || fail "tool-cache Ruby ${v} interpreter not runnable"
+done
+echo "  OK: ruby=$RBVER; tool cache 3.2/3.4 ($TOOLCACHE_PLATFORM)"
 
 echo "==> Validating cache-engage helper"
 HELPER=/usr/local/sbin/runs-fleet-cache-engage
