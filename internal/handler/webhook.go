@@ -166,6 +166,10 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 		return dbc.TouchPoolActivity(ctx, jobConfig.Pool)
 	}
 
+	// InstanceType is intentionally NOT set: pinning jobConfig.InstanceType (the
+	// smallest resolved match) would lock a flexible-label pool to one type. The pool
+	// carries the flexible spec instead; resolvePoolInstanceTypes re-resolves and
+	// price-ranks per launch (it uses InstanceType only as an error fallback).
 	config := &db.PoolConfig{
 		PoolName:           jobConfig.Pool,
 		Ephemeral:          true,
@@ -173,7 +177,6 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 		DesiredStopped:     1,
 		IdleTimeoutMinutes: 30,
 		LastJobTime:        time.Now(),
-		InstanceType:       jobConfig.InstanceType,
 		Arch:               jobConfig.Arch,
 		CPUMin:             jobConfig.CPUMin,
 		CPUMax:             jobConfig.CPUMax,

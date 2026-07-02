@@ -186,6 +186,21 @@ func TestEnsureEphemeralPool_CreatesNewPool(t *testing.T) {
 	if cfg.Arch != "arm64" {
 		t.Errorf("Arch = %s, want arm64", cfg.Arch)
 	}
+	// The pool must NOT pin a single InstanceType, even though jobConfig carried one:
+	// a flexible-label pool stays flexible and re-resolves per launch.
+	if cfg.InstanceType != "" {
+		t.Errorf("InstanceType = %q, want empty (pool must not be pinned to one type)", cfg.InstanceType)
+	}
+	// The flexible spec must be carried so resolvePoolInstanceTypes can resolve it.
+	if cfg.CPUMin != 4 || cfg.CPUMax != 8 {
+		t.Errorf("CPU range = %d-%d, want 4-8", cfg.CPUMin, cfg.CPUMax)
+	}
+	if cfg.RAMMin != 8 || cfg.RAMMax != 16 {
+		t.Errorf("RAM range = %v-%v, want 8-16", cfg.RAMMin, cfg.RAMMax)
+	}
+	if len(cfg.Families) != 2 || cfg.Families[0] != "c7g" || cfg.Families[1] != "m7g" {
+		t.Errorf("Families = %v, want [c7g m7g]", cfg.Families)
+	}
 	if mockDB.TouchActivityCalled {
 		t.Error("TouchPoolActivity should NOT be called for new pool")
 	}

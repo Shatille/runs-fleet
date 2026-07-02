@@ -20,8 +20,9 @@ type InstanceSpec struct {
 // This catalog is used for flexible instance type selection based on CPU/RAM requirements.
 var InstanceCatalog = []InstanceSpec{
 	// ARM64 (Graviton2) - General Purpose (4th gen)
-	{Type: "t4g.micro", CPU: 2, RAM: 1, Arch: "arm64", Family: "t4g", Gen: 4},
-	{Type: "t4g.small", CPU: 2, RAM: 2, Arch: "arm64", Family: "t4g", Gen: 4},
+	// t4g.micro (1 GiB) and t4g.small (2 GiB) are intentionally excluded: they are
+	// too small for real CI (a cpu=2 job with no ram= would otherwise resolve to the
+	// cheapest match = 1 GiB and starve). Smallest selectable RAM is 4 GiB.
 	{Type: "t4g.medium", CPU: 2, RAM: 4, Arch: "arm64", Family: "t4g", Gen: 4},
 	{Type: "t4g.large", CPU: 2, RAM: 8, Arch: "arm64", Family: "t4g", Gen: 4},
 	{Type: "t4g.xlarge", CPU: 4, RAM: 16, Arch: "arm64", Family: "t4g", Gen: 4},
@@ -94,8 +95,9 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "r8g.48xlarge", CPU: 192, RAM: 1536, Arch: "arm64", Family: "r8g", Gen: 8},
 
 	// amd64 - Burstable (3rd gen)
-	{Type: "t3.micro", CPU: 2, RAM: 1, Arch: "amd64", Family: "t3", Gen: 3},
-	{Type: "t3.small", CPU: 2, RAM: 2, Arch: "amd64", Family: "t3", Gen: 3},
+	// t3.micro (1 GiB) and t3.small (2 GiB) excluded for the same reason as t4g above:
+	// too little RAM for CI, and being the cheapest match they'd win price-ranking for
+	// any unconstrained cpu=2 request. Smallest selectable RAM is 4 GiB.
 	{Type: "t3.medium", CPU: 2, RAM: 4, Arch: "amd64", Family: "t3", Gen: 3},
 	{Type: "t3.large", CPU: 2, RAM: 8, Arch: "amd64", Family: "t3", Gen: 3},
 	{Type: "t3.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "t3", Gen: 3},

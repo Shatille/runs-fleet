@@ -121,8 +121,10 @@ func TestResolveInstanceTypes(t *testing.T) {
 				Arch:     "amd64",
 				Families: []string{"t3"},
 			},
-			contains: []string{"t3.medium", "t3.small", "t3.micro", "t3.large"},
-			excludes: []string{"t3.xlarge"},
+			// t3.micro (1 GiB) and t3.small (2 GiB) are excluded from the catalog:
+			// smallest selectable is t3.medium (4 GiB).
+			contains: []string{"t3.medium", "t3.large"},
+			excludes: []string{"t3.micro", "t3.small", "t3.xlarge"},
 		},
 		{
 			name: "RAM filter - minimum 16GB",
@@ -202,6 +204,49 @@ func TestResolveInstanceTypes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRAMFloor_NoSubFourGiBSelectable asserts the sub-4 GiB burstable tiers were
+// pruned from the catalog: an unconstrained cpu=2 request (no ram=) can never resolve
+// to a 1-2 GiB instance, and no catalog entry is below 4 GiB. This is the RAM floor
+// that keeps CI jobs off t3.micro/t4g.micro-class boxes.
+func TestRAMFloor_NoSubFourGiBSelectable(t *testing.T) {
+	t.Parallel()
+
+	// Every 2-vCPU-or-larger entry is >= 4 GiB: this is the tier a cpu>=2 request
+	// selects, so it must never include a 1-2 GiB box. (1-vCPU *.medium entries like
+	// c7g.medium at 2 GiB remain — they only match explicit cpu=1 and are out of scope.)
+	for _, inst := range InstanceCatalog {
+		if inst.CPU >= 2 && inst.RAM < 4 {
+			t.Errorf("catalog contains sub-4GiB %d-vCPU type %q (%v GiB); RAM floor violated", inst.CPU, inst.Type, inst.RAM)
+		}
+	}
+
+	// Realistic cpu=2 request per arch (default families, RAMMin unset): smallest match >= 4 GiB.
+	for _, arch := range []string{"amd64", "arm64"} {
+		spec := FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: arch, Families: DefaultFlexibleFamilies(arch)}
+		types := ResolveInstanceTypes(spec)
+		if len(types) == 0 {
+			t.Fatalf("cpu=2 %s resolved no instance types", arch)
+		}
+		for _, typ := range types {
+			spec, ok := GetInstanceSpec(typ)
+			if !ok {
+				t.Errorf("resolved type %q not in catalog", typ)
+				continue
+			}
+			if spec.RAM < 4 {
+				t.Errorf("cpu=2 %s resolved sub-4GiB type %q (%v GiB)", arch, typ, spec.RAM)
+			}
+		}
+	}
+
+	// The dropped types must be gone.
+	for _, typ := range []string{"t3.micro", "t3.small", "t4g.micro", "t4g.small"} {
+		if _, ok := GetInstanceSpec(typ); ok {
+			t.Errorf("dropped type %q still present in catalog", typ)
+		}
 	}
 }
 
@@ -743,7 +788,7 @@ func TestInstanceSpec_MatchesFlexibleSpec(t *testing.T) {
 		},
 		{
 			name:     "fractional RAM comparison",
-			instance: InstanceSpec{Type: "t4g.micro", CPU: 2, RAM: 1, Arch: "arm64", Family: "t4g", Gen: 4},
+			instance: InstanceSpec{Type: "c7g.medium", CPU: 1, RAM: 2, Arch: "arm64", Family: "c7g", Gen: 7},
 			spec:     FlexibleSpec{RAMMin: 0.5, RAMMax: 2},
 			want:     true,
 		},

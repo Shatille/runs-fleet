@@ -1322,7 +1322,11 @@ func resolvePoolInstanceTypes(ctx context.Context, poolConfig *db.PoolConfig) ([
 		}
 		if err := github.ResolveFlexibleSpec(jobConfig); err != nil {
 			poolLog.Error(ctx, "flexible spec resolution failed", slog.String("error", err.Error()))
-			// Fall back to pool's InstanceType if resolution fails
+			// Fall back to a pinned InstanceType if one exists. Ephemeral pools no
+			// longer pin one (they carry only the flexible spec), so this only helps
+			// legacy admin-created pools; for ephemeral pools an unsatisfiable spec
+			// yields no launch this cycle (resolution is deterministic over a static
+			// catalog, so this effectively never triggers).
 			if poolConfig.InstanceType != "" {
 				return []string{poolConfig.InstanceType}, poolConfig.Arch
 			}
