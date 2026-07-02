@@ -80,6 +80,13 @@ EnvironmentFile=/opt/runs-fleet/env
 # passes its environment through to run.sh, so the runner derives RUNNER_TOOL_CACHE
 # from this.
 Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
+# Give pipx a global bin dir (see provision-base.sh) and put it on the job PATH so a
+# `pipx install <tool>` launcher (poetry, black, …) is found — matching GitHub-hosted.
+# The PATH here is the service default with /opt/pipx/bin prepended; the agent passes
+# its environment through to run.sh, so job steps inherit it.
+Environment=PIPX_HOME=/opt/pipx
+Environment=PIPX_BIN_DIR=/opt/pipx/bin
+Environment=PATH=/opt/pipx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=/opt/runs-fleet/runs-fleet-agent
 Restart=no
 StandardOutput=journal

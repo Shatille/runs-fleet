@@ -359,6 +359,12 @@ echo "==> Installing pipx"
 sudo dnf install -y pipx \
   || sudo "python${PYTHON_DEFAULT}" -m pip install --break-system-packages pipx \
   || { echo "pipx installation failed"; exit 1; }
+# Global pipx home/bin, writable by the job user. Jobs run `pipx install <tool>` and
+# expect the launcher on PATH (GitHub-hosted has pipx's bin dir on PATH); the
+# runs-fleet-agent unit sets PIPX_HOME/PIPX_BIN_DIR here and puts /opt/pipx/bin on the
+# job PATH. Pre-created (owned by ec2-user) since /opt is root-owned.
+sudo mkdir -p /opt/pipx/bin
+sudo chown -R ec2-user:ec2-user /opt/pipx
 
 echo "==> Pre-populating the Actions Python tool cache"
 # actions/setup-python can't fetch CPython for AL2023 (no build in its manifest and

@@ -77,7 +77,19 @@ sudo systemd-analyze verify "$UNIT" || fail "$UNIT failed systemd verification"
 # actions/setup-python falls back to a download that 404s on AL2023.
 grep -qF "AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache" "$UNIT" \
   || fail "$UNIT missing AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache"
+# The unit must set pipx's bin dir and put it on the job PATH, or `pipx install`
+# launchers (poetry, …) aren't found by later steps.
+grep -qF "PIPX_BIN_DIR=/opt/pipx/bin" "$UNIT" \
+  || fail "$UNIT missing PIPX_BIN_DIR=/opt/pipx/bin"
+grep -qE "^Environment=PATH=/opt/pipx/bin:" "$UNIT" \
+  || fail "$UNIT PATH does not prepend /opt/pipx/bin"
 echo "  OK: $UNIT"
+
+echo "==> Validating pipx bin dir"
+[ -d /opt/pipx/bin ] || fail "/opt/pipx/bin missing"
+# ec2-user runs `pipx install` during the job, so the dir must be writable by it.
+sudo -u ec2-user test -w /opt/pipx/bin || fail "/opt/pipx/bin not writable by ec2-user"
+echo "  OK: /opt/pipx/bin (ec2-user-writable)"
 
 echo "==> Validating Python toolchain"
 case "$ARCH" in

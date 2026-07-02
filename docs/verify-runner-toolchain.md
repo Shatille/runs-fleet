@@ -40,6 +40,10 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "21" }
 
+      # pipx-installed apps must be on PATH (poetry, etc.).
+      - run: pipx install poetry==2.2.1
+      - run: command -v poetry && poetry --version   # resolves via /opt/pipx/bin
+
       # Native builds exercise the -devel headers.
       - run: pip install --no-binary :all: --no-cache-dir markupsafe   # compiles a C ext
       - run: gem install --no-document json                            # native gem
@@ -49,6 +53,10 @@ If a `setup-*` step logs "Attempting to download" (a cache miss), that version i
 baked; either it's outside the baked set (expected — it still works via download) or
 the cache layout for that tool needs adjusting. For Java specifically, confirm the
 `distribution:` is `temurin` (the baked distribution).
+
+`pipx install <tool>` launchers land in `/opt/pipx/bin`, which the runner puts on the
+job PATH (via `PIPX_BIN_DIR` + `PATH` in the runs-fleet-agent unit) — matching
+GitHub-hosted, so `poetry`/`black`/etc. resolve without extra PATH wiring.
 
 Native-gem builds (`ruby.h`) are supported against the **default Ruby (3.4)** only:
 AL2023's `ruby<ver>-devel` packages share unversioned headers and can't co-install, so
