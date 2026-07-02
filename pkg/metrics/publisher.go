@@ -207,6 +207,11 @@ type Publisher interface {
 	// the standard axis hosted runners bill runner-minutes on, so the sum
 	// reconstructs a comparable per-(arch,vCPU) usage breakdown.
 	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
+
+	// PublishRunnerToolCacheMiss counts a GitHub Actions tool-cache entry that a job
+	// downloaded on-demand because it was not pre-baked into the AMI, dimensioned by
+	// tool, version (major.minor), and arch. Used to tune which tool versions to bake.
+	PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -350,6 +355,11 @@ func (NoopPublisher) PublishEstimatedCost(context.Context, float64) error { retu
 
 // PublishRunnerExecutionSeconds is a no-op.
 func (NoopPublisher) PublishRunnerExecutionSeconds(context.Context, string, int, bool, string, float64) error {
+	return nil
+}
+
+// PublishRunnerToolCacheMiss is a no-op.
+func (NoopPublisher) PublishRunnerToolCacheMiss(context.Context, string, string, string) error {
 	return nil
 }
 

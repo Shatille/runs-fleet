@@ -73,6 +73,7 @@ type PrometheusPublisher struct {
 	instanceHours          *prometheus.CounterVec
 	estimatedCost          prometheus.Gauge
 	runnerExecutionSeconds *prometheus.CounterVec
+	runnerToolCacheMiss    *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -245,6 +246,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "runner_execution_seconds_total",
 			Help: "Total billable runner execution seconds by arch, vCPU, spot, and result",
 		}, []string{"arch", "vcpu", "spot", "result"}),
+		runnerToolCacheMiss: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_tool_cache_miss_total",
+			Help: "On-demand tool downloads not pre-baked into the AMI, by tool, version (major.minor), and arch",
+		}, []string{"tool", "version", "arch"}),
 	}
 
 	registry.MustRegister(
@@ -257,7 +262,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.queueDepth, p.queueReceive, p.awsCallDuration, p.awsCallFailures,
 		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
-		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds,
+		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds, p.runnerToolCacheMiss,
 	)
 
 	return p
@@ -468,6 +473,11 @@ func (p *PrometheusPublisher) PublishInstanceHours(_ context.Context, capacity, 
 
 func (p *PrometheusPublisher) PublishRunnerExecutionSeconds(_ context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error { //nolint:revive
 	p.runnerExecutionSeconds.WithLabelValues(arch, vcpuLabel(vcpu), spotLabel(spot), result).Add(seconds)
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerToolCacheMiss(_ context.Context, tool, version, arch string) error { //nolint:revive
+	p.runnerToolCacheMiss.WithLabelValues(tool, version, arch).Inc()
 	return nil
 }
 

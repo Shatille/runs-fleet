@@ -57,6 +57,7 @@ type MetricsAPI interface {
 	PublishJobRequeued(ctx context.Context, reason string) error
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
 	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
+	PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error
 }
 
 // maxBootstrapRequeues bounds how many times a job whose instance fails to boot
@@ -135,6 +136,9 @@ type Message struct {
 	CompletedAt     time.Time `json:"completed_at"`
 	Error           string    `json:"error,omitempty"`
 	InterruptedBy   string    `json:"interrupted_by,omitempty"`
+	// ToolCacheMisses lists Actions tool-cache entries the job downloaded on-demand
+	// (not pre-baked), as "<Tool>/<version>/<platform>" keys, for the tool-cache-miss metric.
+	ToolCacheMisses []string `json:"tool_cache_misses,omitempty"`
 }
 
 // handlerTickInterval is the interval for the termination handler loop.
@@ -508,6 +512,18 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 				}
 			}
 		}
+		// Tool-cache misses: each is a tool version the job downloaded on-demand
+		// because it wasn't pre-baked. Emit one metric per (tool, major.minor, arch)
+		// so we can see which versions to bake. Best-effort, like the others.
+		for _, key := range msg.ToolCacheMisses {
+			tool, version, arch, ok := parseToolCacheMiss(key)
+			if !ok {
+				continue
+			}
+			if err := h.metrics.PublishRunnerToolCacheMiss(ctx, tool, version, arch); err != nil {
+				termLog.Warn(ctx, "tool cache miss metric publish failed", slog.String("error", err.Error()))
+			}
+		}
 	}
 
 	// Clean up runner config from secrets store
@@ -517,6 +533,35 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	}
 
 	return nil
+}
+
+// parseToolCacheMiss splits an agent tool-cache-miss key "<Tool>/<version>/<platform>"
+// into its metric dimensions: tool, version normalized to major.minor (bounding metric
+// cardinality — "3.10.14"->"3.10", "21.0.4-7"->"21.0"), and arch (the platform segment,
+// e.g. "x64"/"arm64"). Returns ok=false for a malformed key so the caller skips it.
+func parseToolCacheMiss(key string) (tool, version, arch string, ok bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
+	}
+	tool, arch = parts[0], parts[2]
+	// Normalize the platform to a bare arch: most setup-* actions write "x64"/"arm64",
+	// but some prefix the OS ("linux-x64"). Strip it so the Arch dimension is consistent.
+	for _, p := range []string{"linux-", "darwin-", "windows-"} {
+		arch = strings.TrimPrefix(arch, p)
+	}
+	// major.minor from the version (strip patch and any build suffix).
+	v := parts[1]
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	seg := strings.Split(v, ".")
+	if len(seg) >= 2 {
+		version = seg[0] + "." + seg[1]
+	} else {
+		version = seg[0]
+	}
+	return tool, version, arch, true
 }
 
 // deleteRunnerConfig deletes the runner configuration from the secrets store.

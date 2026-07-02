@@ -226,6 +226,14 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		}
 	}
 
+	// Snapshot the Actions tool cache so we can report which tool versions the job
+	// downloaded on-demand (not pre-baked). Best-effort telemetry; never gates the job.
+	toolCacheDir := os.Getenv("AGENT_TOOLSDIRECTORY")
+	if toolCacheDir == "" {
+		toolCacheDir = agent.DefaultToolCacheDir
+	}
+	toolCacheBefore := agent.SnapshotToolCache(toolCacheDir)
+
 	logger.Println("Phase 3: Executing job...")
 	result, err := executor.ExecuteJob(ctx, runnerPath)
 	if err != nil {
@@ -264,6 +272,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		CompletedAt:     result.CompletedAt,
 		DurationSeconds: int(result.Duration.Seconds()),
 		InterruptedBy:   result.InterruptedBy,
+		ToolCacheMisses: agent.DiffToolCache(toolCacheBefore, agent.SnapshotToolCache(toolCacheDir)),
 	}
 
 	if result.Error != nil {

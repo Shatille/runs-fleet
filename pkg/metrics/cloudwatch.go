@@ -288,6 +288,12 @@ func (p *CloudWatchPublisher) PublishRunnerExecutionSeconds(ctx context.Context,
 	))
 }
 
+// PublishRunnerToolCacheMiss counts an on-demand tool download (not pre-baked) by
+// tool, version (major.minor), and arch.
+func (p *CloudWatchPublisher) PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error {
+	return p.putCounter(ctx, "RunnerToolCacheMiss", dims("Tool", tool, "Version", version, "Arch", arch))
+}
+
 // --- helpers ---
 
 // dims builds a CloudWatch dimension list from name/value pairs. Empty values are

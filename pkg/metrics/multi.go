@@ -319,3 +319,9 @@ func (m *MultiPublisher) PublishRunnerExecutionSeconds(ctx context.Context, arch
 		return p.PublishRunnerExecutionSeconds(ctx, arch, vcpu, spot, result, seconds)
 	})
 }
+
+func (m *MultiPublisher) PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishRunnerToolCacheMiss(ctx, tool, version, arch)
+	})
+}
