@@ -37,7 +37,10 @@ func TestSnapshotToolCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := SnapshotToolCache(dir)
+	got, err := SnapshotToolCache(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := map[string]struct{}{
 		"Python/3.12.13/x64": {},
 		"node/22.13.1/x64":   {},
@@ -48,21 +51,26 @@ func TestSnapshotToolCache(t *testing.T) {
 }
 
 func TestSnapshotToolCache_MissingDir(t *testing.T) {
-	// A nonexistent tool cache must yield an empty set, not panic/error.
-	if got := SnapshotToolCache(filepath.Join(t.TempDir(), "nope")); len(got) != 0 {
+	// A nonexistent tool cache must yield an empty set and a (non-panicking) error —
+	// WalkDir returns the stat error, it does not crash.
+	got, err := SnapshotToolCache(filepath.Join(t.TempDir(), "nope"))
+	if len(got) != 0 {
 		t.Errorf("expected empty snapshot for missing dir, got %v", got)
+	}
+	if err == nil {
+		t.Error("expected a walk error for a missing dir")
 	}
 }
 
 func TestDiffToolCache(t *testing.T) {
 	dir := t.TempDir()
 	writeMarker(t, dir, "Python", "3.12.13", "x64") // pre-baked / already present
-	before := SnapshotToolCache(dir)
+	before, _ := SnapshotToolCache(dir)
 
 	// Simulate the job downloading two more versions on-demand.
 	writeMarker(t, dir, "Python", "3.10.14", "x64")
 	writeMarker(t, dir, "node", "18.20.4", "arm64")
-	after := SnapshotToolCache(dir)
+	after, _ := SnapshotToolCache(dir)
 
 	got := DiffToolCache(before, after)
 	want := []string{"Python/3.10.14/x64", "node/18.20.4/arm64"} // sorted, new-only

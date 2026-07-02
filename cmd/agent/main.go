@@ -232,7 +232,10 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	if toolCacheDir == "" {
 		toolCacheDir = agent.DefaultToolCacheDir
 	}
-	toolCacheBefore := agent.SnapshotToolCache(toolCacheDir)
+	toolCacheBefore, tcErr := agent.SnapshotToolCache(toolCacheDir)
+	if tcErr != nil {
+		logger.Printf("Warning: tool cache snapshot (pre-job) failed: %v", tcErr)
+	}
 
 	logger.Println("Phase 3: Executing job...")
 	result, err := executor.ExecuteJob(ctx, runnerPath)
@@ -264,6 +267,11 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		logger.Printf("Warning: cleanup failed: %v", cleanErr)
 	}
 
+	toolCacheAfter, tcErr := agent.SnapshotToolCache(toolCacheDir)
+	if tcErr != nil {
+		logger.Printf("Warning: tool cache snapshot (post-job) failed: %v", tcErr)
+	}
+
 	jobStatus := agent.JobStatus{
 		InstanceID:      instanceID,
 		JobID:           jobID,
@@ -272,7 +280,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		CompletedAt:     result.CompletedAt,
 		DurationSeconds: int(result.Duration.Seconds()),
 		InterruptedBy:   result.InterruptedBy,
-		ToolCacheMisses: agent.DiffToolCache(toolCacheBefore, agent.SnapshotToolCache(toolCacheDir)),
+		ToolCacheMisses: agent.DiffToolCache(toolCacheBefore, toolCacheAfter),
 	}
 
 	if result.Error != nil {
