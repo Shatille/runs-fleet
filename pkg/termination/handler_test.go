@@ -186,6 +186,9 @@ type mockMetricsAPI struct {
 	lastRequeuedReason string
 	schedFailCalls     int
 	lastSchedFailType  string
+
+	toolCacheMissCalls int
+	toolCacheMisses    [][3]string // {tool, version, arch}
 }
 
 func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, repo string) error {
@@ -250,6 +253,12 @@ func (m *mockMetricsAPI) PublishRunnerExecutionSeconds(_ context.Context, arch s
 	m.lastRunnerSpot = spot
 	m.lastRunnerResult = result
 	m.lastRunnerSeconds = seconds
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishRunnerToolCacheMiss(_ context.Context, tool, version, arch string) error {
+	m.toolCacheMissCalls++
+	m.toolCacheMisses = append(m.toolCacheMisses, [3]string{tool, version, arch})
 	return nil
 }
 
@@ -423,6 +432,54 @@ func TestHandler_processMessage_RunnerExecutionSeconds(t *testing.T) {
 	}
 }
 
+// Tool-cache misses on the completion message become one metric per entry, with the
+// version normalized to major.minor and the platform mapped to arch. A malformed key
+// is skipped.
+func TestHandler_processMessage_ToolCacheMisses(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          "success",
+		ExitCode:        0,
+		DurationSeconds: 120,
+		ToolCacheMisses: []string{
+			"Python/3.10.14/x64",
+			"Java_Temurin-Hotspot_jdk/17.0.19-10/x64", // build suffix → major.minor 17.0
+			"node/18.20.4/arm64",
+			"go/1.21.0/linux-x64", // OS-prefixed platform → arch normalized to x64
+			"garbage-key",         // malformed → skipped
+		},
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := [][3]string{
+		{"Python", "3.10", "x64"},
+		{"Java_Temurin-Hotspot_jdk", "17.0", "x64"},
+		{"node", "18.20", "arm64"},
+		{"go", "1.21", "x64"},
+	}
+	if metrics.toolCacheMissCalls != len(want) {
+		t.Fatalf("expected %d tool-cache-miss calls, got %d (%v)", len(want), metrics.toolCacheMissCalls, metrics.toolCacheMisses)
+	}
+	for i, w := range want {
+		if metrics.toolCacheMisses[i] != w {
+			t.Errorf("miss[%d] = %v, want %v", i, metrics.toolCacheMisses[i], w)
+		}
+	}
+}
+
 // An unrecognized instance type (not in the catalog) yields no arch/vCPU, so the
 // billable runner-seconds metric is skipped rather than emitted with guesses.
 func TestHandler_processMessage_RunnerExecutionSeconds_UnknownInstanceType(t *testing.T) {
@@ -553,6 +610,9 @@ func TestHandler_processMessage_Started(t *testing.T) {
 		InstanceID: "i-12345",
 		JobID:      "12345678901",
 		Status:     "started",
+		// A started message must not have misses (nothing ran yet); assert the
+		// completion-only tool-cache-miss path isn't reached even if one leaks in.
+		ToolCacheMisses: []string{"Python/3.10.14/x64"},
 	}
 	body, _ := json.Marshal(msg)
 
@@ -564,6 +624,10 @@ func TestHandler_processMessage_Started(t *testing.T) {
 	err := handler.processMessage(context.Background(), queueMsg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.toolCacheMissCalls != 0 {
+		t.Errorf("expected no tool-cache-miss metrics for 'started' status, got %d", metrics.toolCacheMissCalls)
 	}
 
 	// "started" confirms the job (launched -> running), not completion.

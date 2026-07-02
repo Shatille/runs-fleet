@@ -319,3 +319,8 @@ func (p *DatadogPublisher) PublishRunnerExecutionSeconds(_ context.Context, arch
 	tags := ddTag(ddTag(ddTag(ddTag(nil, "arch", arch), "vcpu", vcpuLabel(vcpu)), "spot", spotLabel(spot)), "result", result)
 	return p.client.Distribution("runner_execution_seconds", seconds, tags, 1)
 }
+
+func (p *DatadogPublisher) PublishRunnerToolCacheMiss(_ context.Context, tool, version, arch string) error { //nolint:revive
+	tags := ddTag(ddTag(ddTag(nil, "tool", tool), "version", version), "arch", arch)
+	return p.client.Incr("runner_tool_cache_miss", tags, 1)
+}

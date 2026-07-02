@@ -68,6 +68,10 @@ type JobStatus struct {
 	CompletedAt     time.Time `json:"completed_at"`
 	Error           string    `json:"error,omitempty"`
 	InterruptedBy   string    `json:"interrupted_by,omitempty"`
+	// ToolCacheMisses lists Actions tool-cache entries downloaded on-demand during
+	// the job (not pre-baked), as "<Tool>/<version>/<platform>" keys. The orchestrator
+	// turns these into a metric to tune the baked tool set. Best-effort, may be empty.
+	ToolCacheMisses []string `json:"tool_cache_misses,omitempty"`
 }
 
 // SQSTelemetry handles sending job status to SQS.

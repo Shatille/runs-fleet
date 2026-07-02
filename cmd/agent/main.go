@@ -226,6 +226,17 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		}
 	}
 
+	// Snapshot the Actions tool cache so we can report which tool versions the job
+	// downloaded on-demand (not pre-baked). Best-effort telemetry; never gates the job.
+	toolCacheDir := os.Getenv("AGENT_TOOLSDIRECTORY")
+	if toolCacheDir == "" {
+		toolCacheDir = agent.DefaultToolCacheDir
+	}
+	toolCacheBefore, beforeErr := agent.SnapshotToolCache(toolCacheDir)
+	if beforeErr != nil {
+		logger.Printf("Warning: tool cache snapshot (pre-job) failed: %v", beforeErr)
+	}
+
 	logger.Println("Phase 3: Executing job...")
 	result, err := executor.ExecuteJob(ctx, runnerPath)
 	if err != nil {
@@ -256,6 +267,17 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		logger.Printf("Warning: cleanup failed: %v", cleanErr)
 	}
 
+	toolCacheAfter, afterErr := agent.SnapshotToolCache(toolCacheDir)
+	if afterErr != nil {
+		logger.Printf("Warning: tool cache snapshot (post-job) failed: %v", afterErr)
+	}
+	// Only report misses when BOTH snapshots succeeded: a failed pre-job snapshot
+	// leaves an empty baseline, which would mis-report every pre-baked tool as a miss.
+	var toolCacheMisses []string
+	if beforeErr == nil && afterErr == nil {
+		toolCacheMisses = agent.DiffToolCache(toolCacheBefore, toolCacheAfter)
+	}
+
 	jobStatus := agent.JobStatus{
 		InstanceID:      instanceID,
 		JobID:           jobID,
@@ -264,6 +286,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		CompletedAt:     result.CompletedAt,
 		DurationSeconds: int(result.Duration.Seconds()),
 		InterruptedBy:   result.InterruptedBy,
+		ToolCacheMisses: toolCacheMisses,
 	}
 
 	if result.Error != nil {
