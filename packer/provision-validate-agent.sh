@@ -134,11 +134,11 @@ for v in 3.11 3.12 3.13; do
   [ -f "/usr/include/python${v}/Python.h" ] \
     || fail "Python.h missing for python${v} (python${v}-devel not installed?)"
 done
-for v in 3.2 3.4; do
-  "ruby${v}" -e 'require "rbconfig"; exit(File.exist?(File.join(RbConfig::CONFIG["rubyhdrdir"], "ruby.h")) ? 0 : 1)' \
-    || fail "ruby.h missing for ruby${v} (ruby${v}-devel not installed?)"
-done
-echo "  OK: Python/Ruby dev headers present"
+# Only the default Ruby has -devel: ruby<ver>-devel packages conflict on AL2023
+# (shared unversioned headers), so headers exist for `ruby` (3.4) only.
+ruby -e 'require "rbconfig"; exit(File.exist?(File.join(RbConfig::CONFIG["rubyhdrdir"], "ruby.h")) ? 0 : 1)' \
+  || fail "ruby.h missing for the default ruby (ruby-devel not installed?)"
+echo "  OK: Python (per-version) + default-Ruby dev headers present"
 
 echo "==> Validating pre-baked Node/Go/Java tool cache"
 # <tool> <version-prefix> <relative-bin> <version-arg...>: assert a runnable entry with

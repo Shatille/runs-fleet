@@ -398,10 +398,16 @@ echo "==> Installing Ruby (3.2, 3.4) + bundler"
 RUBY_VERSIONS=("3.2" "3.4")
 RUBY_DEFAULT="3.4"
 for v in "${RUBY_VERSIONS[@]}"; do
-  # -devel ships ruby.h etc. so jobs can build native gems (nokogiri, pg, …).
-  sudo dnf install -y "ruby${v}" "ruby${v}-rubygems" "ruby${v}-rubygem-bundler" "ruby${v}-devel" \
+  sudo dnf install -y "ruby${v}" "ruby${v}-rubygems" "ruby${v}-rubygem-bundler" \
     || { echo "Ruby ${v} installation failed"; exit 1; }
 done
+# ruby<ver>-devel are NOT co-installable on AL2023: unlike the namespaced runtimes
+# (and unlike python<ver>-devel), they all own the unversioned /usr/include/ruby
+# headers + /usr/lib64/libruby.so and conflict. Install headers for the default (3.4)
+# only, so native gems (nokogiri, pg, …) build against it; other versions stay
+# runtime-only.
+sudo dnf install -y "ruby${RUBY_DEFAULT}-devel" \
+  || { echo "Ruby ${RUBY_DEFAULT}-devel installation failed"; exit 1; }
 sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}" /usr/local/bin/ruby
 sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}-gem" /usr/local/bin/gem
 sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}-bundle" /usr/local/bin/bundle
