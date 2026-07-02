@@ -539,6 +539,10 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 // into its metric dimensions: tool, version normalized to major.minor (bounding metric
 // cardinality — "3.10.14"->"3.10", "21.0.4-7"->"21.0"), and arch (the platform segment,
 // e.g. "x64"/"arm64"). Returns ok=false for a malformed key so the caller skips it.
+//
+// Keys come from agent.SnapshotToolCache, which only emits paths with exactly two
+// separators, so the tool is a single segment (never contains "/"); Split + len==3 is
+// therefore an exact accept/reject (a tampered key with extra slashes is rejected).
 func parseToolCacheMiss(key string) (tool, version, arch string, ok bool) {
 	parts := strings.Split(key, "/")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
