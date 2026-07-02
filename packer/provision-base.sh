@@ -345,7 +345,9 @@ echo "==> Installing Python (3.11, 3.12, 3.13) + pipx"
 PYTHON_VERSIONS=("3.11" "3.12" "3.13")
 PYTHON_DEFAULT="3.12"
 for v in "${PYTHON_VERSIONS[@]}"; do
-  sudo dnf install -y "python${v}" "python${v}-pip" \
+  # -devel ships Python.h etc. so jobs can compile C extensions from sdist (numpy,
+  # psycopg2, …); gcc is already present via Development Tools.
+  sudo dnf install -y "python${v}" "python${v}-pip" "python${v}-devel" \
     || { echo "Python ${v} installation failed"; exit 1; }
 done
 sudo ln -sf "/usr/bin/python${PYTHON_DEFAULT}" /usr/local/bin/python
@@ -396,7 +398,8 @@ echo "==> Installing Ruby (3.2, 3.4) + bundler"
 RUBY_VERSIONS=("3.2" "3.4")
 RUBY_DEFAULT="3.4"
 for v in "${RUBY_VERSIONS[@]}"; do
-  sudo dnf install -y "ruby${v}" "ruby${v}-rubygems" "ruby${v}-rubygem-bundler" \
+  # -devel ships ruby.h etc. so jobs can build native gems (nokogiri, pg, …).
+  sudo dnf install -y "ruby${v}" "ruby${v}-rubygems" "ruby${v}-rubygem-bundler" "ruby${v}-devel" \
     || { echo "Ruby ${v} installation failed"; exit 1; }
 done
 sudo ln -sf "/usr/bin/ruby${RUBY_DEFAULT}" /usr/local/bin/ruby
@@ -420,6 +423,114 @@ for v in "${RUBY_VERSIONS[@]}"; do
   sudo ln -sf "/usr/bin/ruby${v}-bundler" "${dest}/bin/bundler"
   sudo touch "/opt/hostedtoolcache/Ruby/${full}/${TOOLCACHE_PLATFORM}.complete"
 done
+sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
+
+# Pre-bake Node/Go/Java into the Actions tool cache. Unlike Python/Ruby these already
+# work on AL2023 via setup-* (generic upstream downloads), so this is a pure speed/egress
+# optimization: on ephemeral runners the per-runner _work/_tool cache is fresh every
+# registration, so each job otherwise re-downloads its toolchain. Entries use the upstream
+# generic-Linux builds laid out where setup-* looks; a miss just falls back to a working
+# download. We resolve the latest patch of each pinned line at build (checksummed) rather
+# than hard-pinning a patch we can't hand-verify — setup-* matches by major.minor anyway.
+toolcache_extract() {
+  # toolcache_extract <tool> <version> <tarball>: unpack the tarball's single top-level
+  # dir into $AGENT_TOOLSDIRECTORY/<tool>/<version>/<platform>/ and mark it complete.
+  local tool="$1" version="$2" tarball="$3"
+  local dest="/opt/hostedtoolcache/${tool}/${version}/${TOOLCACHE_PLATFORM}"
+  # All three upstream tarballs (node/go/temurin) have exactly one top-level dir that
+  # --strip-components=1 removes; bail rather than scatter files if that ever changes.
+  local tops
+  tops=$(tar -tf "$tarball" | awk -F/ '$1 != "" {print $1}' | sort -u | wc -l)
+  [ "$tops" -eq 1 ] \
+    || { echo "${tool} ${version}: expected 1 top-level dir in archive, got ${tops}"; exit 1; }
+  # Start from a clean dir so a partial dir from a prior failed run can't mix in.
+  sudo rm -rf "$dest"
+  sudo mkdir -p "$dest"
+  sudo tar -xf "$tarball" -C "$dest" --strip-components=1 \
+    || { echo "${tool} ${version} extraction failed"; exit 1; }
+  sudo touch "/opt/hostedtoolcache/${tool}/${version}/${TOOLCACHE_PLATFORM}.complete"
+}
+
+echo "==> Pre-baking Node into the tool cache (20, 22)"
+NODE_TC_INDEX=$(dl https://nodejs.org/dist/index.json) \
+  || { echo "Node index download failed"; exit 1; }
+for major in 20 22; do
+  ver=$(printf '%s' "$NODE_TC_INDEX" | jq -r --arg m "v${major}." \
+    'map(.version) | map(select(startswith($m))) | first // empty')
+  [ -n "$ver" ] || { echo "no Node ${major}.x in index"; exit 1; }
+  dist="node-${ver}-linux-${NODE_ARCH}"
+  dl "https://nodejs.org/dist/${ver}/SHASUMS256.txt" -o /tmp/node-tc-sha.txt \
+    || { echo "Node ${ver} checksums download failed"; exit 1; }
+  dl "https://nodejs.org/dist/${ver}/${dist}.tar.xz" -o "/tmp/${dist}.tar.xz" \
+    || { echo "Node ${ver} download failed"; exit 1; }
+  sum=$(grep "${dist}.tar.xz" /tmp/node-tc-sha.txt | cut -d' ' -f1)
+  echo "${sum}  /tmp/${dist}.tar.xz" | sha256sum -c \
+    || { echo "Node ${ver} checksum mismatch"; exit 1; }
+  toolcache_extract node "${ver#v}" "/tmp/${dist}.tar.xz"
+  rm -f "/tmp/${dist}.tar.xz" /tmp/node-tc-sha.txt
+done
+
+echo "==> Pre-baking Go into the tool cache (1.24, 1.25)"
+if [ "$ARCH" = "x86_64" ]; then GO_ARCH="amd64"; else GO_ARCH="arm64"; fi
+GO_TC_INDEX=$(dl "https://go.dev/dl/?mode=json&include=all") \
+  || { echo "Go index download failed"; exit 1; }
+go_default_dir=""
+for minor in 1.24 1.25; do
+  file=$(printf '%s' "$GO_TC_INDEX" | jq -c --arg m "go${minor}." --arg a "$GO_ARCH" \
+    '[ .[] | select(.stable) | select(.version | startswith($m))
+       | .files[] | select(.os=="linux" and .arch==$a and .kind=="archive") ] | first // empty')
+  [ -n "$file" ] || { echo "no Go ${minor}.x archive found"; exit 1; }
+  gfn=$(printf '%s' "$file" | jq -r .filename)
+  gsha=$(printf '%s' "$file" | jq -r .sha256)
+  gfull=$(printf '%s' "$file" | jq -r '.version | ltrimstr("go")')
+  dl "https://go.dev/dl/${gfn}" -o "/tmp/${gfn}" \
+    || { echo "Go ${gfn} download failed"; exit 1; }
+  echo "${gsha}  /tmp/${gfn}" | sha256sum -c \
+    || { echo "Go ${gfn} checksum mismatch"; exit 1; }
+  toolcache_extract go "$gfull" "/tmp/${gfn}"
+  rm -f "/tmp/${gfn}"
+  go_default_dir="/opt/hostedtoolcache/go/${gfull}/${TOOLCACHE_PLATFORM}"
+done
+# Host has no `go` on PATH; expose the newest baked one (setup-go adds its own per job).
+# Fail closed: the symlinks must point at a Go we actually extracted, never an empty path.
+{ [ -n "$go_default_dir" ] && [ -x "${go_default_dir}/bin/go" ]; } \
+  || { echo "Go tool-cache default not populated"; exit 1; }
+sudo ln -sf "${go_default_dir}/bin/go" /usr/local/bin/go
+sudo ln -sf "${go_default_dir}/bin/gofmt" /usr/local/bin/gofmt
+
+echo "==> Pre-baking Temurin JDK into the tool cache (17, 21)"
+if [ "$ARCH" = "x86_64" ]; then ADOPT_ARCH="x64"; else ADOPT_ARCH="aarch64"; fi
+for major in 17 21; do
+  meta=$(dl "https://api.adoptium.net/v3/assets/feature_releases/${major}/ga?architecture=${ADOPT_ARCH}&image_type=jdk&jvm_impl=hotspot&os=linux&vendor=eclipse&page_size=1&sort_order=DESC") \
+    || { echo "Temurin ${major} metadata fetch failed"; exit 1; }
+  # jq exits 0 with empty output for a missing field, so check each value explicitly
+  # (a jq parse crash still aborts under set -e). Confirm a binary exists for this
+  # arch/os filter before indexing binaries[0].
+  bin_count=$(printf '%s' "$meta" | jq '.[0].binaries | length // 0')
+  [ "$bin_count" -gt 0 ] || { echo "no Temurin ${major} binary for ${ADOPT_ARCH}/linux"; exit 1; }
+  link=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.link // empty')
+  [ -n "$link" ] || { echo "no Temurin ${major} download link in metadata"; exit 1; }
+  jsha=$(printf '%s' "$meta" | jq -r '.[0].binaries[0].package.checksum // empty')
+  [ -n "$jsha" ] || { echo "no Temurin ${major} checksum in metadata"; exit 1; }
+  semver=$(printf '%s' "$meta" | jq -r '.[0].version_data.semver // empty')
+  [ -n "$semver" ] || { echo "no Temurin ${major} semver in metadata"; exit 1; }
+  # Defense-in-depth: the link comes from the API response and the checksum comes from
+  # the same response, so the checksum can't be the only guard — pin the download to
+  # Adoptium's GitHub release host before fetching.
+  case "$link" in
+    https://github.com/adoptium/*) : ;;
+    *) echo "Temurin ${major} link has unexpected host: $link"; exit 1 ;;
+  esac
+  # setup-java's dir uses the semver with '+' replaced by '-' (e.g. 21.0.4+7 -> 21.0.4-7).
+  norm="${semver//+/-}"
+  dl "$link" -o "/tmp/temurin-${major}.tar.gz" \
+    || { echo "Temurin ${major} download failed"; exit 1; }
+  echo "${jsha}  /tmp/temurin-${major}.tar.gz" | sha256sum -c \
+    || { echo "Temurin ${major} checksum mismatch"; exit 1; }
+  toolcache_extract "Java_Temurin-Hotspot_jdk" "$norm" "/tmp/temurin-${major}.tar.gz"
+  rm -f "/tmp/temurin-${major}.tar.gz"
+done
+
 sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
 
 echo "==> Downloading GitHub Actions runner"
@@ -475,4 +586,6 @@ echo "    - sbt: v${SBT_VERSION}"
 echo "    - Python: $(python --version 2>&1) (default); versions ${PYTHON_VERSIONS[*]} in tool cache"
 echo "    - pipx: $(pipx --version 2>&1)"
 echo "    - Ruby: $(ruby --version 2>&1) (default); versions ${RUBY_VERSIONS[*]} in tool cache"
+echo "    - Go: $(go version 2>&1) (default)"
+echo "    - Tool cache: Node 20/22, Go 1.24/1.25, Temurin JDK 17/21 (${TOOLCACHE_PLATFORM})"
 echo "    - GitHub Actions runner: v${RUNNER_VERSION} (linux-${RUNNER_PLATFORM})"
