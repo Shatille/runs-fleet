@@ -101,15 +101,24 @@ func parseTestRange(h string, total int64) (int64, int64) {
 
 func setup(t *testing.T) (*Handler, *fakeS3, *httptest.Server) {
 	t.Helper()
+	h, s3, up, _ := setupWithBytes(t)
+	return h, s3, up
+}
+
+// setupWithBytes is setup plus an atomic counter wired to the handler's onBytes
+// callback, so tests can assert how many bytes the shim reports as stored.
+func setupWithBytes(t *testing.T) (*Handler, *fakeS3, *httptest.Server, *atomic.Int64) {
+	t.Helper()
 	s3 := newFakeS3()
 	upstream := httptest.NewServer(s3)
 	t.Cleanup(upstream.Close)
-	h := NewHandler(upstream.Client(), t.TempDir())
+	var stored atomic.Int64
+	h := NewHandler(upstream.Client(), t.TempDir(), func(n int64) { stored.Add(n) })
 	// The fake S3 is on loopback http, which the production target guard
 	// rejects; allow it here so these tests exercise forwarding. The guard
 	// itself is covered by TestAllowedTarget / TestServeRejectsDisallowedTarget.
 	h.allowTarget = func(string) bool { return true }
-	return h, s3, upstream
+	return h, s3, upstream, &stored
 }
 
 // blobURL builds the shim path for a target object on the fake S3.
@@ -139,6 +148,77 @@ func TestPutBlobForwardsToPresignedURL(t *testing.T) {
 	}
 	if got := string(s3.get("/obj")); got != "payload" {
 		t.Errorf("forwarded body = %q, want payload", got)
+	}
+}
+
+func TestOnBytesCountsDataPutsNotStaging(t *testing.T) {
+	t.Parallel()
+
+	h, _, up, stored := setupWithBytes(t)
+
+	// Single-shot Put Blob counts its body length once.
+	put := httptest.NewRequest(http.MethodPut, blobURL(up, "single"), strings.NewReader("payload"))
+	h.ServeHTTP(httptest.NewRecorder(), put)
+	if got := stored.Load(); got != int64(len("payload")) {
+		t.Fatalf("after put blob, stored = %d, want %d", got, len("payload"))
+	}
+
+	// Staged blocks are local buffering only — they must not be counted, or a
+	// staged-then-committed blob would be metered twice.
+	target := blobURL(up, "multi")
+	stage := func(id, body string) {
+		req := httptest.NewRequest(http.MethodPut, target+"?comp=block&blockid="+id, strings.NewReader(body))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	stage("AAAA", "hello")
+	stage("BBBB", " world")
+	if got := stored.Load(); got != int64(len("payload")) {
+		t.Errorf("staging blocks were counted: stored = %d, want %d (unchanged)", got, len("payload"))
+	}
+
+	// Commit forwards the reassembled object and counts its total exactly once.
+	commit := httptest.NewRequest(http.MethodPut, target+"?comp=blocklist", strings.NewReader(blockListXML("AAAA", "BBBB")))
+	h.ServeHTTP(httptest.NewRecorder(), commit)
+	want := int64(len("payload") + len("hello world"))
+	if got := stored.Load(); got != want {
+		t.Errorf("after commit, stored = %d, want %d", got, want)
+	}
+}
+
+func TestOnBytesNotCountedForUnknownLength(t *testing.T) {
+	t.Parallel()
+
+	h, s3, up, stored := setupWithBytes(t)
+	// A chunked body with no declared Content-Length: the shim must not fabricate
+	// a byte count. (The fake S3 accepts it; real S3 would reject the presigned PUT.)
+	req := httptest.NewRequest(http.MethodPut, blobURL(up, "obj"), strings.NewReader("payload"))
+	req.ContentLength = -1
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	if got := string(s3.get("/obj")); got != "payload" {
+		t.Errorf("forwarded body = %q, want payload", got)
+	}
+	if got := stored.Load(); got != 0 {
+		t.Errorf("unknown-length put was counted: stored = %d, want 0", got)
+	}
+}
+
+func TestOnBytesNotCountedOnFailedPut(t *testing.T) {
+	t.Parallel()
+
+	h, s3, up, stored := setupWithBytes(t)
+	s3.putStatus.Store(http.StatusInternalServerError) // upstream PUT fails
+	put := httptest.NewRequest(http.MethodPut, blobURL(up, "obj"), strings.NewReader("payload"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, put)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if got := stored.Load(); got != 0 {
+		t.Errorf("failed put was counted: stored = %d, want 0", got)
 	}
 }
 
@@ -320,7 +400,7 @@ func TestServeRejectsDisallowedTarget(t *testing.T) {
 
 	// A handler with the production guard must 400 a token pointing at the
 	// instance metadata endpoint, even though the path/method are otherwise valid.
-	h := NewHandler(http.DefaultClient, t.TempDir())
+	h := NewHandler(http.DefaultClient, t.TempDir(), nil)
 	req := httptest.NewRequest(http.MethodGet, PathPrefix+EncodeTarget("https://169.254.169.254/latest/meta-data/"), nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

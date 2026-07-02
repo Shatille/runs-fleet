@@ -325,3 +325,9 @@ func (m *MultiPublisher) PublishRunnerToolCacheMiss(ctx context.Context, tool, v
 		return p.PublishRunnerToolCacheMiss(ctx, tool, version, arch)
 	})
 }
+
+func (m *MultiPublisher) PublishRunnerCacheInterception(ctx context.Context, status string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishRunnerCacheInterception(ctx, status)
+	})
+}

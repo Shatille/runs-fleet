@@ -9,8 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
 )
 
 // stubOrchestrator answers the v1 reserve endpoint with a presigned PUT URL.
@@ -93,6 +96,90 @@ func TestProxyServesCacheServiceOverTLS(t *testing.T) {
 	// raw presigned S3 URL.
 	if !strings.HasPrefix(body.SignedUploadURL, "https://results.test/blob/") {
 		t.Errorf("signedUploadUrl = %q, want a results.test /blob/ URL", body.SignedUploadURL)
+	}
+}
+
+// hostRewriteTransport routes requests to a single public-looking host onto a
+// loopback test server, so a data PUT can flow shim→"S3" without tripping the
+// shim's SSRF guard (which rejects a loopback target).
+type hostRewriteTransport struct {
+	base http.RoundTripper
+	from string
+	to   *url.URL
+}
+
+func (rt *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == rt.from {
+		req = req.Clone(req.Context())
+		req.URL.Scheme = rt.to.Scheme
+		req.URL.Host = rt.to.Host
+		req.Host = rt.to.Host
+	}
+	return rt.base.RoundTrip(req)
+}
+
+func TestBytesWrittenCountsBlobPuts(t *testing.T) {
+	t.Parallel()
+
+	var putBytes int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			n, _ := io.Copy(io.Discard, r.Body)
+			putBytes = n
+			w.Header().Set("ETag", `"x"`)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(ts.Close)
+	tsURL, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+
+	p, err := New(Config{
+		OrchestratorBaseURL: "https://orch.invalid",
+		CacheToken:          "tok",
+		ResultsHost:         "results.test",
+		ListenAddr:          "127.0.0.1:0",
+		StagingDir:          t.TempDir(),
+		// s3.internal is public per the SSRF guard, but this transport routes it
+		// to the loopback test server standing in for presigned S3.
+		HTTPClient: &http.Client{Transport: &hostRewriteTransport{base: http.DefaultTransport, from: "s3.internal", to: tsURL}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p.resolver = func(context.Context, string) ([]string, error) { return []string{"203.0.113.10"}, nil }
+	if err = p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+
+	if got := p.BytesWritten(); got != 0 {
+		t.Fatalf("BytesWritten before any write = %d, want 0", got)
+	}
+
+	payload := "cache-blob-payload"
+	blobURL := "https://" + p.Addr() + blobshim.PathPrefix + blobshim.EncodeTarget("https://s3.internal/put-target")
+	req, err := http.NewRequest(http.MethodPut, blobURL, strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := caClient(t, p).Do(req)
+	if err != nil {
+		t.Fatalf("put blob over TLS: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	if putBytes != int64(len(payload)) {
+		t.Fatalf("upstream received %d bytes, want %d", putBytes, len(payload))
+	}
+	if got := p.BytesWritten(); got != int64(len(payload)) {
+		t.Errorf("BytesWritten = %d, want %d", got, len(payload))
 	}
 }
 

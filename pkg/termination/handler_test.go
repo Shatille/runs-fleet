@@ -189,6 +189,11 @@ type mockMetricsAPI struct {
 
 	toolCacheMissCalls int
 	toolCacheMisses    [][3]string // {tool, version, arch}
+
+	cacheInterceptionCalls int
+	lastCacheInterception  string
+	cacheBytesStoredCalls  int
+	lastCacheBytesStored   int64
 }
 
 func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, repo string) error {
@@ -259,6 +264,18 @@ func (m *mockMetricsAPI) PublishRunnerExecutionSeconds(_ context.Context, arch s
 func (m *mockMetricsAPI) PublishRunnerToolCacheMiss(_ context.Context, tool, version, arch string) error {
 	m.toolCacheMissCalls++
 	m.toolCacheMisses = append(m.toolCacheMisses, [3]string{tool, version, arch})
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishRunnerCacheInterception(_ context.Context, status string) error {
+	m.cacheInterceptionCalls++
+	m.lastCacheInterception = status
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishCacheBytesStored(_ context.Context, bytes int64) error {
+	m.cacheBytesStoredCalls++
+	m.lastCacheBytesStored = bytes
 	return nil
 }
 
@@ -454,6 +471,8 @@ func TestHandler_processMessage_ToolCacheMisses(t *testing.T) {
 			"go/1.21.0/linux-x64", // OS-prefixed platform → arch normalized to x64
 			"garbage-key",         // malformed → skipped
 		},
+		CacheInterception: "engaged",
+		CacheBytesWritten: 4096,
 	}
 	body, _ := json.Marshal(msg)
 
@@ -477,6 +496,46 @@ func TestHandler_processMessage_ToolCacheMisses(t *testing.T) {
 		if metrics.toolCacheMisses[i] != w {
 			t.Errorf("miss[%d] = %v, want %v", i, metrics.toolCacheMisses[i], w)
 		}
+	}
+	if metrics.cacheInterceptionCalls != 1 || metrics.lastCacheInterception != "engaged" {
+		t.Errorf("cache interception metric = (%d, %q), want (1, engaged)", metrics.cacheInterceptionCalls, metrics.lastCacheInterception)
+	}
+	if metrics.cacheBytesStoredCalls != 1 || metrics.lastCacheBytesStored != 4096 {
+		t.Errorf("cache bytes stored metric = (%d, %d), want (1, 4096)", metrics.cacheBytesStoredCalls, metrics.lastCacheBytesStored)
+	}
+}
+
+// A completion reporting the fail-open interceptor outcome (the operationally
+// important alarm case) still emits the interception metric, but with no bytes
+// written the CacheBytesStored counter is left untouched.
+func TestHandler_processMessage_CacheInterceptionFailed(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:        "i-12345",
+		JobID:             "12345678901",
+		Status:            "success",
+		DurationSeconds:   120,
+		CacheInterception: "failed",
+		CacheBytesWritten: 0,
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.cacheInterceptionCalls != 1 || metrics.lastCacheInterception != "failed" {
+		t.Errorf("cache interception metric = (%d, %q), want (1, failed)", metrics.cacheInterceptionCalls, metrics.lastCacheInterception)
+	}
+	if metrics.cacheBytesStoredCalls != 0 {
+		t.Errorf("cache bytes stored metric fired for 0 bytes: calls = %d, want 0", metrics.cacheBytesStoredCalls)
 	}
 }
 
@@ -610,9 +669,11 @@ func TestHandler_processMessage_Started(t *testing.T) {
 		InstanceID: "i-12345",
 		JobID:      "12345678901",
 		Status:     "started",
-		// A started message must not have misses (nothing ran yet); assert the
-		// completion-only tool-cache-miss path isn't reached even if one leaks in.
-		ToolCacheMisses: []string{"Python/3.10.14/x64"},
+		// A started message must not carry completion-only signals; assert none of the
+		// completion-only metric paths (misses, cache interception, cache bytes) fire.
+		ToolCacheMisses:   []string{"Python/3.10.14/x64"},
+		CacheInterception: "engaged",
+		CacheBytesWritten: 4096,
 	}
 	body, _ := json.Marshal(msg)
 
@@ -628,6 +689,10 @@ func TestHandler_processMessage_Started(t *testing.T) {
 
 	if metrics.toolCacheMissCalls != 0 {
 		t.Errorf("expected no tool-cache-miss metrics for 'started' status, got %d", metrics.toolCacheMissCalls)
+	}
+	if metrics.cacheInterceptionCalls != 0 || metrics.cacheBytesStoredCalls != 0 {
+		t.Errorf("expected no cache interception/bytes metrics for 'started' status, got %d/%d",
+			metrics.cacheInterceptionCalls, metrics.cacheBytesStoredCalls)
 	}
 
 	// "started" confirms the job (launched -> running), not completion.

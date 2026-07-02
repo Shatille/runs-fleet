@@ -58,6 +58,8 @@ type MetricsAPI interface {
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
 	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
 	PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error
+	PublishRunnerCacheInterception(ctx context.Context, status string) error
+	PublishCacheBytesStored(ctx context.Context, bytes int64) error
 }
 
 // maxBootstrapRequeues bounds how many times a job whose instance fails to boot
@@ -139,6 +141,12 @@ type Message struct {
 	// ToolCacheMisses lists Actions tool-cache entries the job downloaded on-demand
 	// (not pre-baked), as "<Tool>/<version>/<platform>" keys, for the tool-cache-miss metric.
 	ToolCacheMisses []string `json:"tool_cache_misses,omitempty"`
+	// CacheInterception is the on-host cache interceptor's outcome (engaged|failed|disabled).
+	CacheInterception string `json:"cache_interception,omitempty"`
+	// CacheBytesWritten is v2 cache blob bytes stored to S3 through the interceptor
+	// this job (folded into the CacheBytesStored counter — the blob PUT bypasses the
+	// orchestrator, so it can't be counted server-side).
+	CacheBytesWritten int64 `json:"cache_bytes_written,omitempty"`
 }
 
 // handlerTickInterval is the interval for the termination handler loop.
@@ -522,6 +530,18 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 			}
 			if err := h.metrics.PublishRunnerToolCacheMiss(ctx, tool, version, arch); err != nil {
 				termLog.Warn(ctx, "tool cache miss metric publish failed", slog.String("error", err.Error()))
+			}
+		}
+		// Cache-interceptor outcome: makes silent fail-open interception visible.
+		if msg.CacheInterception != "" {
+			if err := h.metrics.PublishRunnerCacheInterception(ctx, msg.CacheInterception); err != nil {
+				termLog.Warn(ctx, "cache interception metric publish failed", slog.String("error", err.Error()))
+			}
+		}
+		// v2 cache write bytes (blob PUT bypasses the orchestrator; reported by the agent).
+		if msg.CacheBytesWritten > 0 {
+			if err := h.metrics.PublishCacheBytesStored(ctx, msg.CacheBytesWritten); err != nil {
+				termLog.Warn(ctx, "cache bytes stored metric publish failed", slog.String("error", err.Error()))
 			}
 		}
 	}

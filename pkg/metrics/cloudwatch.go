@@ -294,6 +294,11 @@ func (p *CloudWatchPublisher) PublishRunnerToolCacheMiss(ctx context.Context, to
 	return p.putCounter(ctx, "RunnerToolCacheMiss", dims("Tool", tool, "Version", version, "Arch", arch))
 }
 
+// PublishRunnerCacheInterception counts a job by cache-interceptor outcome (status).
+func (p *CloudWatchPublisher) PublishRunnerCacheInterception(ctx context.Context, status string) error {
+	return p.putCounter(ctx, "RunnerCacheInterception", dims("Status", status))
+}
+
 // --- helpers ---
 
 // dims builds a CloudWatch dimension list from name/value pairs. Empty values are
