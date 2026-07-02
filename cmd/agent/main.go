@@ -209,8 +209,9 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 
 	// Engage the transparent v2 cache interceptor. Best effort and fail-open:
 	// any failure leaves the runner talking to GitHub's cache directly.
-	if stop := engageCache(ctx, ac, registrar, runnerPath, logger); stop != nil {
-		defer stop()
+	cacheProxy, cacheInterception, cacheStop := engageCache(ctx, ac, registrar, runnerPath, logger)
+	if cacheStop != nil {
+		defer cacheStop()
 	}
 
 	jobStartedAt := time.Now()
@@ -279,14 +280,18 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 
 	jobStatus := agent.JobStatus{
-		InstanceID:      instanceID,
-		JobID:           jobID,
-		ExitCode:        result.ExitCode,
-		StartedAt:       result.StartedAt,
-		CompletedAt:     result.CompletedAt,
-		DurationSeconds: int(result.Duration.Seconds()),
-		InterruptedBy:   result.InterruptedBy,
-		ToolCacheMisses: toolCacheMisses,
+		InstanceID:        instanceID,
+		JobID:             jobID,
+		ExitCode:          result.ExitCode,
+		StartedAt:         result.StartedAt,
+		CompletedAt:       result.CompletedAt,
+		DurationSeconds:   int(result.Duration.Seconds()),
+		InterruptedBy:     result.InterruptedBy,
+		ToolCacheMisses:   toolCacheMisses,
+		CacheInterception: cacheInterception,
+	}
+	if cacheProxy != nil {
+		jobStatus.CacheBytesWritten = cacheProxy.BytesWritten()
 	}
 
 	if result.Error != nil {
@@ -300,14 +305,22 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	logger.Println("Agent completed successfully")
 }
 
+// Cache interception outcomes reported to the orchestrator as a metric.
+const (
+	cacheInterceptionEngaged  = "engaged"  // proxy + CA trust + pin all succeeded
+	cacheInterceptionFailed   = "failed"   // a fail-open branch — traffic goes to GitHub
+	cacheInterceptionDisabled = "disabled" // no cache URL configured for this deployment
+)
+
 // engageCache starts the on-host cache interceptor and redirects the runner's
 // cache traffic to it. Every step is fail-open: on any error the function logs
-// and returns nil, leaving the runner pointed at GitHub's own cache. On success
-// it returns a teardown closure. The pin is installed LAST, only after the CA
-// is trusted, so traffic is never redirected to an untrusted listener.
-func engageCache(ctx context.Context, ac *agentConfig, registrar *agent.Registrar, runnerPath string, logger *stdLogger) func() {
+// and leaves the runner pointed at GitHub's own cache. It returns the running
+// proxy (nil unless engaged, for reading write-byte stats), the outcome status,
+// and a teardown closure (nil unless engaged). The pin is installed LAST, only
+// after the CA is trusted, so traffic is never redirected to an untrusted listener.
+func engageCache(ctx context.Context, ac *agentConfig, registrar *agent.Registrar, runnerPath string, logger *stdLogger) (*cacheproxy.Proxy, string, func()) {
 	if ac.runnerConfig.CacheURL == "" {
-		return nil
+		return nil, cacheInterceptionDisabled, nil
 	}
 	cp, err := cacheproxy.New(cacheproxy.Config{
 		OrchestratorBaseURL: ac.runnerConfig.CacheURL,
@@ -316,25 +329,25 @@ func engageCache(ctx context.Context, ac *agentConfig, registrar *agent.Registra
 	})
 	if err != nil {
 		logger.Printf("cache interceptor disabled (fail open): %v", err)
-		return nil
+		return nil, cacheInterceptionFailed, nil
 	}
 	if err := cp.Start(ctx); err != nil {
 		logger.Printf("cache interceptor start failed (fail open): %v", err)
-		return nil
+		return nil, cacheInterceptionFailed, nil
 	}
 	caPath := filepath.Join(runnerPath, "runs-fleet-cache-ca.pem")
 	if err := provisionCacheTrust(cp, registrar, runnerPath, caPath); err != nil {
 		logger.Printf("cache interceptor not engaged (fail open): %v", err)
 		_ = cp.Stop(context.Background())
-		return nil
+		return nil, cacheInterceptionFailed, nil
 	}
 	if err := cacheproxy.EngageCacheTrustAndPin(cacheproxy.DefaultResultsHost, cp.CACertPEM()); err != nil {
 		logger.Printf("cache interceptor engage failed (fail open): %v", err)
 		_ = cp.Stop(context.Background())
-		return nil
+		return nil, cacheInterceptionFailed, nil
 	}
 	logger.Printf("cache interceptor engaged: %s -> %s", cacheproxy.DefaultResultsHost, cp.Addr())
-	return func() {
+	return cp, cacheInterceptionEngaged, func() {
 		if err := cacheproxy.DisengageCache(cacheproxy.DefaultResultsHost); err != nil {
 			logger.Printf("cache disengage failed: %v", err)
 		}

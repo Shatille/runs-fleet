@@ -212,6 +212,11 @@ type Publisher interface {
 	// downloaded on-demand because it was not pre-baked into the AMI, dimensioned by
 	// tool, version (major.minor), and arch. Used to tune which tool versions to bake.
 	PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error
+
+	// PublishRunnerCacheInterception counts a job by the on-host cache interceptor's
+	// outcome (status: engaged | failed | disabled). Makes silent fail-open
+	// interception (cache traffic escaping to GitHub) visible.
+	PublishRunnerCacheInterception(ctx context.Context, status string) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -360,6 +365,11 @@ func (NoopPublisher) PublishRunnerExecutionSeconds(context.Context, string, int,
 
 // PublishRunnerToolCacheMiss is a no-op.
 func (NoopPublisher) PublishRunnerToolCacheMiss(context.Context, string, string, string) error {
+	return nil
+}
+
+// PublishRunnerCacheInterception is a no-op.
+func (NoopPublisher) PublishRunnerCacheInterception(context.Context, string) error {
 	return nil
 }
 

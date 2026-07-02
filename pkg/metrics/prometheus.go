@@ -72,8 +72,9 @@ type PrometheusPublisher struct {
 	// Cost
 	instanceHours          *prometheus.CounterVec
 	estimatedCost          prometheus.Gauge
-	runnerExecutionSeconds *prometheus.CounterVec
-	runnerToolCacheMiss    *prometheus.CounterVec
+	runnerExecutionSeconds  *prometheus.CounterVec
+	runnerToolCacheMiss     *prometheus.CounterVec
+	runnerCacheInterception *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -250,6 +251,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "runner_tool_cache_miss_total",
 			Help: "On-demand tool downloads not pre-baked into the AMI, by tool, version (major.minor), and arch",
 		}, []string{"tool", "version", "arch"}),
+		runnerCacheInterception: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_cache_interception_total",
+			Help: "Jobs by on-host cache interceptor outcome (engaged, failed, disabled)",
+		}, []string{"status"}),
 	}
 
 	registry.MustRegister(
@@ -263,6 +268,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
 		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds, p.runnerToolCacheMiss,
+		p.runnerCacheInterception,
 	)
 
 	return p
@@ -478,6 +484,11 @@ func (p *PrometheusPublisher) PublishRunnerExecutionSeconds(_ context.Context, a
 
 func (p *PrometheusPublisher) PublishRunnerToolCacheMiss(_ context.Context, tool, version, arch string) error { //nolint:revive
 	p.runnerToolCacheMiss.WithLabelValues(tool, version, arch).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerCacheInterception(_ context.Context, status string) error { //nolint:revive
+	p.runnerCacheInterception.WithLabelValues(status).Inc()
 	return nil
 }
 

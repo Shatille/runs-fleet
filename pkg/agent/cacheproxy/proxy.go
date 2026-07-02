@@ -58,9 +58,17 @@ type Proxy struct {
 	server   *http.Server
 	listener net.Listener
 	healthy  atomic.Bool
+	// bytesWritten accumulates blob bytes stored to S3 through the shim (v2 cache
+	// writes), reported at job end so the orchestrator can meter v2 write volume.
+	bytesWritten atomic.Int64
 	// resolver resolves the real results-host IP before the /etc/hosts pin is
 	// installed; overridable in tests.
 	resolver func(ctx context.Context, host string) ([]string, error)
+}
+
+// BytesWritten returns the total blob bytes stored to S3 through the shim so far.
+func (p *Proxy) BytesWritten() int64 {
+	return p.bytesWritten.Load()
 }
 
 // New builds the proxy and its per-instance CA. It does not listen yet.
@@ -113,7 +121,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	presigner := cachev2.NewHTTPPresigner(p.cfg.HTTPClient, p.cfg.OrchestratorBaseURL, p.cfg.CacheToken)
 	cacheMux := http.NewServeMux()
 	cachev2.NewServiceV2(presigner, "https://"+p.cfg.ResultsHost, nil).RegisterRoutes(cacheMux)
-	shim := blobshim.NewHandler(p.cfg.HTTPClient, p.cfg.StagingDir)
+	shim := blobshim.NewHandler(p.cfg.HTTPClient, p.cfg.StagingDir, func(n int64) { p.bytesWritten.Add(n) })
 	upstream := &url.URL{Scheme: "https", Host: p.cfg.ResultsHost}
 	handler := intercept.NewInterceptor(cacheMux, shim, upstream, transport, p.healthy.Load)
 

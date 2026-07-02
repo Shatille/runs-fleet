@@ -39,15 +39,25 @@ type Handler struct {
 	client      *http.Client
 	staging     string
 	allowTarget func(string) bool
+	onBytes     func(int64)
 }
 
 // NewHandler returns a shim handler that forwards via client and buffers staged
-// blocks under stagingDir.
-func NewHandler(client *http.Client, stagingDir string) *Handler {
+// blocks under stagingDir. onBytes, if non-nil, is called with the object size on
+// each successful store to S3 (commit or single-shot put) so callers can meter
+// v2 cache write volume; it is not invoked for block staging.
+func NewHandler(client *http.Client, stagingDir string, onBytes func(int64)) *Handler {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Handler{client: client, staging: stagingDir, allowTarget: allowedTarget}
+	return &Handler{client: client, staging: stagingDir, allowTarget: allowedTarget, onBytes: onBytes}
+}
+
+// recordBytes reports n bytes stored (nil-safe).
+func (h *Handler) recordBytes(n int64) {
+	if h.onBytes != nil && n > 0 {
+		h.onBytes(n)
+	}
 }
 
 // EncodeTarget encodes a presigned URL into a path-safe blob token.
@@ -179,6 +189,7 @@ func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token,
 		http.Error(w, msgUpstream, http.StatusBadGateway)
 		return
 	}
+	h.recordBytes(total)
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -191,6 +202,12 @@ func (h *Handler) putBlob(w http.ResponseWriter, r *http.Request, target string)
 	if err != nil || status/100 != 2 {
 		http.Error(w, msgUpstream, http.StatusBadGateway)
 		return
+	}
+	// Only meter a known length. A chunked (-1) body has no declared size to
+	// count; it is not the Azure client's normal single-shot path and S3 rejects
+	// it upstream anyway, so skip rather than record a bogus size.
+	if r.ContentLength >= 0 {
+		h.recordBytes(r.ContentLength)
 	}
 	w.WriteHeader(http.StatusCreated)
 }

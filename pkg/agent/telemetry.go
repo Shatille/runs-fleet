@@ -72,6 +72,14 @@ type JobStatus struct {
 	// the job (not pre-baked), as "<Tool>/<version>/<platform>" keys. The orchestrator
 	// turns these into a metric to tune the baked tool set. Best-effort, may be empty.
 	ToolCacheMisses []string `json:"tool_cache_misses,omitempty"`
+	// CacheInterception is the on-host cache interceptor's outcome for this job:
+	// "engaged", "failed" (fell open to GitHub's cache), or "disabled" (no cache
+	// configured). Lets the orchestrator surface silent fail-open interception.
+	CacheInterception string `json:"cache_interception,omitempty"`
+	// CacheBytesWritten is the blob bytes stored to the S3 cache through the v2
+	// interceptor this job (the blob PUT bypasses the orchestrator, so it can't be
+	// counted server-side). Zero when interception didn't engage.
+	CacheBytesWritten int64 `json:"cache_bytes_written,omitempty"`
 }
 
 // SQSTelemetry handles sending job status to SQS.

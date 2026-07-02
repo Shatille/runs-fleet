@@ -46,7 +46,7 @@ runner system such as ARC) **without editing any workflow**. Map those labels to
 specs in the `RUNS_FLEET_LABEL_ALIASES` config and runs-fleet will claim and
 register for them. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-See [docs/USAGE.md](docs/USAGE.md) for full label reference and examples. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for environment variables.
+See [docs/USAGE.md](docs/USAGE.md) for full label reference and examples. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for environment variables. See [docs/METRICS.md](docs/METRICS.md) for the metrics reference.
 
 ## Architecture
 
