@@ -49,3 +49,8 @@ If a `setup-*` step logs "Attempting to download" (a cache miss), that version i
 baked; either it's outside the baked set (expected — it still works via download) or
 the cache layout for that tool needs adjusting. For Java specifically, confirm the
 `distribution:` is `temurin` (the baked distribution).
+
+Native-gem builds (`ruby.h`) are supported against the **default Ruby (3.4)** only:
+AL2023's `ruby<ver>-devel` packages share unversioned headers and can't co-install, so
+headers are baked for 3.4. Ruby 3.2 is runtime-only (pure-Ruby gems still work).
+Python headers are per-version (`python3.x-devel` co-install fine).
