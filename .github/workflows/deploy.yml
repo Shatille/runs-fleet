@@ -43,7 +43,7 @@ env:
 jobs:
   version:
     name: Calculate Version
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       version: ${{ steps.version.outputs.new_version }}
     steps:
@@ -106,10 +106,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
             platform: linux/amd64
           - arch: arm64
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
             platform: linux/arm64
     steps:
       - uses: actions/checkout@v5
@@ -144,7 +144,7 @@ jobs:
   manifest:
     name: Create Manifest
     needs: [version, build]
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -170,7 +170,7 @@ jobs:
   coverage:
     name: Update Coverage
     if: github.repository == 'Shatille/runs-fleet'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -218,7 +218,7 @@ jobs:
     name: Deploy to ECS
     if: github.repository == 'Shatille/runs-fleet'
     needs: [version, manifest]
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: aws-actions/configure-aws-credentials@v6
         with:

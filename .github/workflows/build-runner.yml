@@ -63,7 +63,7 @@ jobs:
   # at CI (pull_request) before merge, so there is no separate test gate here.
   prepare:
     name: Prepare Build
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       version: ${{ steps.version.outputs.version }}
@@ -169,10 +169,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
             platform: linux/amd64
           - arch: arm64
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
             platform: linux/arm64
     steps:
       - name: Checkout code
@@ -212,7 +212,7 @@ jobs:
   manifest:
     name: Create Multi-arch Manifest
     needs: [prepare, build]
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     env:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
     steps:
@@ -243,7 +243,7 @@ jobs:
   verify:
     name: Scan and Promote
     needs: [prepare, manifest]
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     env:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
     steps:

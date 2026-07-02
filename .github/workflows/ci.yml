@@ -41,7 +41,7 @@ jobs:
     name: Build
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -81,7 +81,7 @@ jobs:
     name: Lint
     needs: [changes, build]
     if: needs.changes.outputs.go == 'true'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -124,7 +124,7 @@ jobs:
     name: Test
     needs: [changes, build]
     if: needs.changes.outputs.go == 'true'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - uses: actions/checkout@v5
 

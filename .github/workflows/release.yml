@@ -25,7 +25,7 @@ env:
 jobs:
   release:
     name: Create Release
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
