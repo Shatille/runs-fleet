@@ -120,10 +120,10 @@ jobs:
         include:
           - arch: arm64
             packer_file: runner-base-arm64.pkr.hcl
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
           - arch: amd64
             packer_file: runner-base-amd64.pkr.hcl
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -138,7 +138,7 @@ jobs:
         uses: hashicorp/setup-packer@main
 
       - name: Install Session Manager Plugin
-        if: ${{ !inputs.use_fallback_runners }}
+        if: ${{ !(inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') }}
         run: |
           ARCH=$([ "$(uname -m)" = "x86_64" ] && echo linux_64bit || echo linux_arm64)
           sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ARCH}/session-manager-plugin.rpm"
@@ -233,11 +233,11 @@ jobs:
           - arch: arm64
             packer_file: runs-fleet-runner-arm64.pkr.hcl
             launch_template: runs-fleet-runner-arm64
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-24.04-arm' || format('runs-fleet={0}/cpu=4/arch=arm64', github.run_id) }}
           - arch: amd64
             packer_file: runs-fleet-runner-amd64.pkr.hcl
             launch_template: runs-fleet-runner-amd64
-            runner: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
+            runner: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4/arch=amd64', github.run_id) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -252,7 +252,7 @@ jobs:
         uses: hashicorp/setup-packer@main
 
       - name: Install Session Manager Plugin
-        if: ${{ !inputs.use_fallback_runners }}
+        if: ${{ !(inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') }}
         run: |
           ARCH=$([ "$(uname -m)" = "x86_64" ] && echo linux_64bit || echo linux_arm64)
           sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ARCH}/session-manager-plugin.rpm"
@@ -310,7 +310,7 @@ jobs:
     name: Cleanup Old AMIs
     needs: build-runner-ami
     if: needs.build-runner-ami.result == 'success'
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -354,7 +354,7 @@ jobs:
     name: Cleanup Orphan Packer Builders
     needs: [build-base, build-runner-ami]
     if: always()
-    runs-on: ${{ inputs.use_fallback_runners && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
+    runs-on: ${{ (inputs.use_fallback_runners || github.repository == 'Shatille/runs-fleet' || github.event.repository.visibility == 'public') && 'ubuntu-latest' || format('runs-fleet={0}/cpu=4', github.run_id) }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
