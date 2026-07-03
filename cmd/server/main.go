@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -173,7 +174,11 @@ func main() {
 		labelAliasResolver: labelAliasResolver,
 		fleetManager:       fleetManager,
 	}
-	mux := ws.setupHTTPRoutes(cacheServer, prometheusHandler)
+	mux, err := ws.setupHTTPRoutes(ctx, cacheServer, prometheusHandler)
+	if err != nil {
+		log.Error(ctx, "http route setup failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 
 	server := &http.Server{
 		Addr:         ":8080",
@@ -263,6 +268,13 @@ func main() {
 // abandoned while an in-flight job is still finishing. It must stay below the
 // pod's terminationGracePeriodSeconds (see deploy/) or k8s SIGKILLs mid-drain.
 const workerDrainTimeout = config.MessageProcessTimeout + 10*time.Second
+
+// oidcDiscoveryTimeout bounds the startup call to the OIDC issuer's
+// well-known discovery endpoint. A fast HTTP error already fails startup via
+// the returned error; this covers the case where the issuer is unreachable
+// (e.g. black-holed) and never responds at all -- without a bound, that
+// hangs main() forever instead of failing loudly.
+const oidcDiscoveryTimeout = 15 * time.Second
 
 // waitForWorkers waits for the worker WaitGroup to drain, returning false if the
 // timeout elapses first.
@@ -450,7 +462,7 @@ type webhookServer struct {
 	fleetManager       *fleet.Manager
 }
 
-func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHandler http.Handler) *http.ServeMux {
+func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache.Server, prometheusHandler http.Handler) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -468,12 +480,38 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 	cacheHandler.RegisterRoutes(mux)
 
 	// Admin API handlers
-	adminAuth := admin.NewAuthMiddleware(ws.cfg.AdminSecret)
+	var oidcClient *admin.OIDCClient
+	if ws.cfg.OIDCIssuerURL != "" {
+		// Bounded so an unreachable/black-holed issuer fails startup fast
+		// instead of hanging main() forever (a slow HTTP error already
+		// propagates via err below; a connection that never responds would
+		// not, without this).
+		discoverCtx, cancel := context.WithTimeout(ctx, oidcDiscoveryTimeout)
+		defer cancel()
+
+		var err error
+		oidcClient, err = admin.NewOIDCClient(discoverCtx, admin.OIDCClientConfig{
+			IssuerURL:    ws.cfg.OIDCIssuerURL,
+			ClientID:     ws.cfg.OIDCClientID,
+			ClientSecret: ws.cfg.OIDCClientSecret,
+			RedirectURL:  oidcRedirectURL(ws.cfg),
+			Scopes:       ws.cfg.OIDCScopes,
+			GroupsClaim:  ws.cfg.OIDCGroupsClaim,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("admin OIDC client setup: %w", err)
+		}
+	}
+
+	adminAuth := admin.NewAuthMiddleware(ws.cfg.AdminSessionSecret)
 	adminRateLimiter := admin.NewRateLimiter(ws.cfg.AdminRateLimit)
 
 	adminMux := http.NewServeMux()
 
-	adminHandler := admin.NewHandler(ws.dbClient, ws.cfg.AdminSecret)
+	authHandler := admin.NewAuthHandler(oidcClient, ws.cfg.AdminSessionSecret, time.Duration(ws.cfg.AdminSessionTTLMinutes)*time.Minute)
+	authHandler.RegisterRoutes(adminMux)
+
+	adminHandler := admin.NewHandler(ws.dbClient, adminAuth)
 	adminHandler.RegisterRoutes(adminMux)
 
 	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth, ws.cfg.TraceUIURL)
@@ -513,7 +551,16 @@ func (ws *webhookServer) setupHTTPRoutes(cacheServer *cache.Server, prometheusHa
 
 	mux.HandleFunc("/webhook", ws.handleWebhook)
 
-	return mux
+	return mux, nil
+}
+
+// oidcRedirectURL returns the configured OIDC redirect URL, defaulting to
+// the callback path under the orchestrator's own base URL.
+func oidcRedirectURL(cfg *config.Config) string {
+	if cfg.OIDCRedirectURL != "" {
+		return cfg.OIDCRedirectURL
+	}
+	return strings.TrimSuffix(cfg.BaseURL, "/") + "/api/auth/callback"
 }
 
 func (ws *webhookServer) handleReadiness(w http.ResponseWriter, r *http.Request) {

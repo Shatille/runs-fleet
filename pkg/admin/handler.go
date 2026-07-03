@@ -38,12 +38,11 @@ type Handler struct {
 	auth *AuthMiddleware
 }
 
-// NewHandler creates a new admin handler with authentication.
-// If adminSecret is empty, authentication is disabled.
-func NewHandler(db PoolDB, adminSecret string) *Handler {
+// NewHandler creates a new admin handler.
+func NewHandler(db PoolDB, auth *AuthMiddleware) *Handler {
 	return &Handler{
 		db:   db,
-		auth: NewAuthMiddleware(adminSecret),
+		auth: auth,
 	}
 }
 
@@ -113,7 +112,8 @@ type ErrorResponse struct {
 }
 
 // RegisterRoutes registers admin API routes on the given mux.
-// All endpoints require authentication when RUNS_FLEET_ADMIN_SECRET is set.
+// All endpoints require authentication whenever admin OIDC is configured
+// (RUNS_FLEET_ADMIN_OIDC_ISSUER_URL and the rest of the required fields).
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/pools", h.auth.WrapFunc(h.ListPools))
 	mux.Handle("GET /api/pools/{name}", h.auth.WrapFunc(h.GetPool))

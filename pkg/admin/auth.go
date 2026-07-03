@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
@@ -20,53 +19,63 @@ const (
 	GroupsContextKey contextKey = "admin_groups"
 )
 
-// Keycloak gatekeeper proxy headers
-const (
-	HeaderUser   = "X-Auth-Request-User"
-	HeaderGroups = "X-Auth-Request-Groups"
-	HeaderEmail  = "X-Auth-Request-Email"
-)
-
-// UserInfo contains authenticated user information from Keycloak.
+// UserInfo contains the authenticated user's identity, populated from a
+// verified OIDC session.
 type UserInfo struct {
 	Username string
 	Email    string
 	Groups   []string
 }
 
-// AuthMiddleware validates requests authenticated by Keycloak gatekeeper proxy.
-// It expects the proxy to set X-Auth-Request-User and optionally X-Auth-Request-Groups headers.
+// AuthMiddleware validates the admin session cookie minted by AuthHandler
+// after a successful OIDC login. When sessionSecret is empty, auth is
+// disabled entirely (local dev without an IdP configured) and every request
+// passes through unauthenticated.
 type AuthMiddleware struct {
-	// requireAuth when true, rejects requests without valid Keycloak headers.
-	// Set to false for local development without Keycloak.
-	requireAuth bool
+	sessionSecret string
+	requireAuth   bool
 }
 
 // NewAuthMiddleware creates authentication middleware for admin endpoints.
-// When requireAuth is true (non-empty string passed), requests without Keycloak headers are rejected.
-// For backwards compatibility, pass empty string to disable auth requirement.
-func NewAuthMiddleware(requireAuth string) *AuthMiddleware {
+// Pass an empty sessionSecret to disable auth (matches config.Validate's
+// guarantee that OIDC config is either fully set or fully empty).
+func NewAuthMiddleware(sessionSecret string) *AuthMiddleware {
 	return &AuthMiddleware{
-		requireAuth: requireAuth != "",
+		sessionSecret: sessionSecret,
+		requireAuth:   sessionSecret != "",
 	}
 }
 
-// Wrap returns an http.Handler that extracts user identity from Keycloak headers.
+// Wrap returns an http.Handler that validates the session cookie and adds
+// the authenticated user to the request context.
 func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user := m.extractUserInfo(r)
+		if !m.requireAuth {
+			next.ServeHTTP(w, r)
+			return
+		}
 
-		if m.requireAuth && user.Username == "" {
-			adminAuthLog.Warn(r.Context(), "admin auth failed: missing user header",
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil || cookie.Value == "" {
+			adminAuthLog.Warn(r.Context(), "admin auth failed: missing session cookie",
 				slog.String("remote_addr", r.RemoteAddr),
 				slog.String("path", r.URL.Path))
 			http.Error(w, "Unauthorized: authentication required", http.StatusUnauthorized)
 			return
 		}
 
-		// Add user info to context
-		ctx := r.Context()
-		ctx = context.WithValue(ctx, UserContextKey, user)
+		claims, err := ValidateSessionCookie(m.sessionSecret, cookie.Value)
+		if err != nil {
+			adminAuthLog.Warn(r.Context(), "admin auth failed: invalid session",
+				slog.String("remote_addr", r.RemoteAddr),
+				slog.String("path", r.URL.Path),
+				slog.String("error", err.Error()))
+			http.Error(w, "Unauthorized: invalid or expired session", http.StatusUnauthorized)
+			return
+		}
+
+		user := UserInfo{Username: claims.Username, Email: claims.Email, Groups: claims.Groups}
+		ctx := context.WithValue(r.Context(), UserContextKey, user)
 		if len(user.Groups) > 0 {
 			ctx = context.WithValue(ctx, GroupsContextKey, user.Groups)
 		}
@@ -83,22 +92,6 @@ func (m *AuthMiddleware) WrapFunc(next http.HandlerFunc) http.Handler {
 // IsEnabled returns whether authentication is required.
 func (m *AuthMiddleware) IsEnabled() bool {
 	return m.requireAuth
-}
-
-func (m *AuthMiddleware) extractUserInfo(r *http.Request) UserInfo {
-	user := UserInfo{
-		Username: r.Header.Get(HeaderUser),
-		Email:    r.Header.Get(HeaderEmail),
-	}
-
-	if groups := r.Header.Get(HeaderGroups); groups != "" {
-		user.Groups = strings.Split(groups, ",")
-		for i := range user.Groups {
-			user.Groups[i] = strings.TrimSpace(user.Groups[i])
-		}
-	}
-
-	return user
 }
 
 // GetUser returns the authenticated user from the request context.

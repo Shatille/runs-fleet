@@ -195,4 +195,22 @@ Required when `RUNS_FLEET_SECRETS_BACKEND=vault`.
 | `RUNS_FLEET_LOG_FORMAT` | `json` | Log format: `json` or `text` |
 | `RUNS_FLEET_ADMIN_RATE_LIMIT` | `60` | Admin API rate limit (per-IP requests/minute) |
 | `RUNS_FLEET_TRACE_UI_URL` | | Base URL for trace links shown in the admin jobs view (e.g. Jaeger UI) |
-| `RUNS_FLEET_ADMIN_SECRET` | | Enables admin API auth: any non-empty value requires authenticated Keycloak gatekeeper headers on `/api/` requests; leave empty to disable auth (local dev). The value is a toggle only — it is not validated as a secret |
+
+## Admin OIDC Authentication
+
+The admin API/UI authenticates directly against an OIDC provider (Keycloak,
+Auth0, Okta, Google, or any standards-compliant issuer) — no external
+gatekeeper or reverse proxy required. Leave every variable below unset to
+run the admin API unauthenticated (local dev only). Setting any one of them
+requires setting all of them; a partial configuration fails at startup.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL` | | OIDC issuer URL. Must expose `/.well-known/openid-configuration` |
+| `RUNS_FLEET_ADMIN_OIDC_CLIENT_ID` | | OAuth client ID registered with the provider |
+| `RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET` | | OAuth client secret |
+| `RUNS_FLEET_ADMIN_OIDC_REDIRECT_URL` | `{RUNS_FLEET_BASE_URL}/api/auth/callback` | Callback URL; must also be registered with the provider as an allowed redirect URI |
+| `RUNS_FLEET_ADMIN_OIDC_SCOPES` | `openid,profile,email` | Comma-separated OAuth scopes requested at login |
+| `RUNS_FLEET_ADMIN_OIDC_GROUPS_CLAIM` | `groups` | ID token claim name holding the user's groups. Keycloak/Okta use `groups`; Auth0 commonly namespaces it (e.g. `https://example.com/groups`); Google has none |
+| `RUNS_FLEET_ADMIN_SESSION_SECRET` | | HMAC signing key for the admin session cookie. Generate with e.g. `openssl rand -base64 32` |
+| `RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES` | `480` | Admin session lifetime. No refresh: once expired, the user logs in again |

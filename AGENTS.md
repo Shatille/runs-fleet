@@ -187,7 +187,8 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 
 ### Cache & Admin
 - `RUNS_FLEET_CACHE_SECRET` - HMAC secret for cache auth
-- `RUNS_FLEET_ADMIN_SECRET` - Admin API authentication
+- `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_REDIRECT_URL`, `_SCOPES`, `_GROUPS_CLAIM` - Admin API OIDC auth (native relying party, no external gatekeeper); leave unset to disable auth (local dev)
+- `RUNS_FLEET_ADMIN_SESSION_SECRET`, `RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES` - Admin session cookie signing key and TTL
 
 ## Development Commands
 

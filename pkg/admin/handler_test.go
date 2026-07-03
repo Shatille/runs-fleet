@@ -107,7 +107,7 @@ func TestListPools(t *testing.T) {
 			mockDB.pools = tt.pools
 			mockDB.listErr = tt.listErr
 
-			h := NewHandler(mockDB, "")
+			h := NewHandler(mockDB, NewAuthMiddleware(""))
 			req := httptest.NewRequest(http.MethodGet, "/api/pools", nil)
 			rec := httptest.NewRecorder()
 
@@ -177,7 +177,7 @@ func TestGetPool(t *testing.T) {
 			}
 			mockDB.getErr = tt.getErr
 
-			h := NewHandler(mockDB, "")
+			h := NewHandler(mockDB, NewAuthMiddleware(""))
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("GET /api/pools/{name}", h.GetPool)
@@ -288,7 +288,7 @@ func TestCreatePool(t *testing.T) {
 			}
 			mockDB.saveErr = tt.saveErr
 
-			h := NewHandler(mockDB, "")
+			h := NewHandler(mockDB, NewAuthMiddleware(""))
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
@@ -367,7 +367,7 @@ func TestUpdatePool(t *testing.T) {
 			}
 			mockDB.saveErr = tt.saveErr
 
-			h := NewHandler(mockDB, "")
+			h := NewHandler(mockDB, NewAuthMiddleware(""))
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)
@@ -448,7 +448,7 @@ func TestDeletePool(t *testing.T) {
 			}
 			mockDB.deleteErr = tt.deleteErr
 
-			h := NewHandler(mockDB, "")
+			h := NewHandler(mockDB, NewAuthMiddleware(""))
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("DELETE /api/pools/{name}", h.DeletePool)
@@ -474,7 +474,7 @@ func TestDeletePool(t *testing.T) {
 func TestValidatePoolRequest(t *testing.T) {
 	t.Parallel()
 
-	h := NewHandler(nil, "")
+	h := NewHandler(nil, NewAuthMiddleware(""))
 
 	tests := []struct {
 		name     string
@@ -575,7 +575,7 @@ func TestCreatePoolContentType(t *testing.T) {
 	t.Parallel()
 
 	mockDB := newMockDB()
-	h := NewHandler(mockDB, "")
+	h := NewHandler(mockDB, NewAuthMiddleware(""))
 
 	body := []byte(`{"pool_name": "test-pool"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
@@ -673,7 +673,7 @@ func TestUpdatePoolContentType(t *testing.T) {
 
 	mockDB := newMockDB()
 	mockDB.pools["test-pool"] = &db.PoolConfig{PoolName: "test-pool"}
-	h := NewHandler(mockDB, "")
+	h := NewHandler(mockDB, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)

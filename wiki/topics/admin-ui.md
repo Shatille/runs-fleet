@@ -35,7 +35,11 @@ single `AuthMiddleware` instance:
 - `handler_queues.go` -- `QueuesHandler`, SQS queue depth/DLQ snapshot.
 - `handler_circuit.go` -- `CircuitHandler`, scans the circuit-state table.
 - `handler_housekeeping.go` -- `HousekeepingHandler`, orphaned-job cleanup.
-- `auth.go` -- Keycloak gatekeeper header extraction middleware.
+- `auth.go` -- session-cookie-validating `AuthMiddleware` (as of 2026-07;
+  previously Keycloak gatekeeper header extraction).
+- `oidc.go`, `session.go`, `handler_auth.go` -- native OIDC: discovery/
+  exchange/verify, HMAC-signed session cookies, and the
+  `/api/auth/{login,callback,logout,config}` endpoints (added 2026-07).
 - `ui.go` -- serves the embedded Next.js static export.
 
 Each handler has its own `RegisterRoutes(mux *http.ServeMux)` method, takes
@@ -73,9 +77,10 @@ Run: make build-admin-ui".
 - **SQS** -- `GetQueueAttributes` for visible/in-flight/delayed counts on the
   main, pool, events, termination, and housekeeping queues, plus the main
   queue DLQ.
-- **Keycloak gatekeeper** -- the trust boundary. The middleware reads
-  `X-Auth-Request-User`, `X-Auth-Request-Email`, and `X-Auth-Request-Groups`
-  set by the proxy in front; it does not validate JWTs itself.
+- **An OIDC provider** (Keycloak, Auth0, Okta, Google, or any standards-
+  compliant issuer) -- the orchestrator is its own OIDC relying party as of
+  2026-07 (authorization-code + PKCE, `pkg/admin/oidc.go`). No external
+  gatekeeper or reverse proxy in front is required.
 
 ## API Surface [coverage: high -- 9 sources]
 
@@ -176,17 +181,28 @@ display.
 
 ## Key Decisions [coverage: high -- 9 sources]
 
-- **Keycloak gatekeeper as the trust boundary.** `auth.go` does not validate
-  tokens; it trusts the proxy-set headers `X-Auth-Request-User`,
-  `X-Auth-Request-Email`, `X-Auth-Request-Groups`. `ADMIN_UI_PLAN.md`
-  documents this as an explicit simplification away from the previous
-  Bearer-token model. The middleware exposes the user via context
-  (`UserContextKey`, `GroupsContextKey`) and a `GetUsername(ctx)` helper.
-- **Backwards-compat opt-out for local dev.** `NewAuthMiddleware("")` sets
-  `requireAuth = false`, so empty `RUNS_FLEET_ADMIN_SECRET` lets you run the
-  server locally without Keycloak; non-empty value flips it to required. The
-  pool handler still records audit entries with `user=anonymous` in that
-  case.
+- **Native OIDC, no external gatekeeper (2026-07).** `auth.go`'s
+  `AuthMiddleware` validates a self-contained, HMAC-signed session cookie
+  (`pkg/admin/session.go`) minted by `handler_auth.go` after a real
+  authorization-code + PKCE exchange (`pkg/admin/oidc.go`) against the
+  configured OIDC provider. This replaced the earlier Keycloak-gatekeeper
+  header-trust model, which itself had replaced the original Bearer-token
+  auth -- the project going open-source meant it could no longer assume
+  every self-hoster would stand up their own gatekeeper proxy. Sessions
+  are stateless (no shared session store, matching the orchestrator's
+  multi-Fargate-replica design) and have no refresh-token renewal: a fixed
+  TTL, then re-login. The middleware exposes the user via context
+  (`UserContextKey`, `GroupsContextKey`) and a `GetUsername(ctx)` helper --
+  unchanged from the header-trust era, so `auditLog()`'s call sites needed
+  no changes.
+- **Auth requirement derived from OIDC config presence, not a mode flag.**
+  `NewAuthMiddleware("")` sets `requireAuth = false`; the session secret is
+  empty exactly when `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL` (and the rest of
+  the OIDC config) is unset, letting you run the server locally without an
+  IdP. Config validation requires the OIDC fields to be all-set or
+  all-empty -- a partial configuration fails at startup rather than
+  silently disabling auth. The pool handler still records audit entries
+  with `user=anonymous` when auth is disabled.
 - **Audit logging is mandatory and built into every write path.** Every
   branch of `CreatePool`, `UpdatePool`, `DeletePool` writes an audit entry,
   including denied/error paths. This is non-configurable -- there is no flag
@@ -213,16 +229,22 @@ display.
 
 ## Gotchas [coverage: high -- 9 sources]
 
-- **The middleware is only safe behind a trusted proxy.** `auth.go` reads
-  user identity directly from request headers. If `/admin` or `/api` is ever
-  exposed without the Keycloak gatekeeper in front, anyone can spoof
-  `X-Auth-Request-User`. There is no JWT verification or signature check in
-  this package.
-- **`requireAuth` is derived from a single string flag.**
-  `NewAuthMiddleware(adminSecret)` enables enforcement when `adminSecret !=
-  ""`. The variable name (`adminSecret`) is a leftover from the legacy
-  Bearer-token model; the value is no longer used as a secret, only as a
-  boolean toggle.
+- **No RBAC beyond authentication.** Session claims carry `Groups` (from the
+  ID token's groups claim, via `GroupsContextKey`), but nothing checks them
+  -- any authenticated user can hit every endpoint, including destructive
+  writes (pool delete, requeue, cleanup). This is a known, separate gap
+  (see `ADMIN_UI_PLAN.md`'s RBAC note), not something this auth model
+  change addresses.
+- **The groups claim name varies by provider and is easy to get wrong on
+  first setup.** `RUNS_FLEET_ADMIN_OIDC_GROUPS_CLAIM` defaults to `"groups"`
+  (correct for Keycloak/Okta); Auth0 commonly namespaces it (e.g.
+  `https://example.com/groups`) and Google has no groups claim at all --
+  worth checking first if group-based logic ever silently sees zero groups.
+- **Sessions don't survive a session-secret rotation.** Rotating
+  `RUNS_FLEET_ADMIN_SESSION_SECRET` invalidates every existing session
+  cookie immediately (the HMAC signature no longer verifies) -- expected
+  and fine given there's no refresh flow to preserve, but worth knowing
+  before rotating in a live deployment.
 - **DynamoDB `Scan` on the hot path.** `ListCircuitStates`, the orphan-job
   finder, and the underlying `JobsDB` admin queries all use full-table scans
   with pagination loops. Fine at current scale, but cost and latency grow

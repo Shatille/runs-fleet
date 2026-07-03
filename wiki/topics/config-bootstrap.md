@@ -44,7 +44,7 @@ Note: the file header says the package "manages application configuration from e
   - **DynamoDB:** `JobsTableName`, `PoolsTableName`, `CircuitBreakerTable`.
   - **S3 / SNS:** `CacheBucketName`, `CostReportSNSTopic`, `CostReportBucket`.
   - **EC2:** `VPCID`, `SubnetIDs`, `SecurityGroupID`, `InstanceProfileARN`, `KeyName`, `SpotEnabled`, `MaxRuntimeMinutes`, `LogLevel`, `LaunchTemplateName`, `RunnerImage`, `Tags`.
-  - **Cache / Admin:** `CacheSecret`, `BaseURL`, `AdminSecret`.
+  - **Cache / Admin:** `CacheSecret`, `BaseURL`, `OIDCIssuerURL`/`OIDCClientID`/`OIDCClientSecret`/`OIDCRedirectURL`/`OIDCScopes`/`OIDCGroupsClaim`, `AdminSessionSecret`, `AdminSessionTTLMinutes` (as of 2026-07; superseded the earlier `AdminSecret` toggle).
   - **K8s:** `KubeConfig`, `KubeNamespace`, `KubeServiceAccount`, `KubeNodeSelector`, `KubeTolerations`, `KubeRunnerImage`, `KubeIdleTimeoutMinutes`, `KubeReleaseName`, `KubeStorageClass`, `KubeResourceLabels`.
   - **K8s DinD:** `KubeDindImage`, `KubeDaemonJSONConfigMap`, `KubeDockerWaitSeconds`, `KubeDockerGroupGID`, `KubeRegistryMirror`.
   - **Valkey:** `ValkeyAddr`, `ValkeyPassword`, `ValkeyDB`.

@@ -9,6 +9,7 @@ export async function apiFetch(
   try {
     const res = await fetch(url, {
       ...options,
+      credentials: 'include',
       signal: controller.signal,
     });
 

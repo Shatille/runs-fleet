@@ -116,8 +116,8 @@ Source dependency footprint visible in
   `:8080`)
 - `/metrics` — Prometheus scrape (when
   `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED=true`)
-- Admin API + UI (Next.js static export, gated by
-  `RUNS_FLEET_ADMIN_SECRET`)
+- Admin API + UI (Next.js static export, gated by native OIDC auth —
+  `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL` and related vars, as of 2026-07)
 - Cache protocol endpoints (HMAC-authenticated, S3 pre-signed URL
   redirects)
 

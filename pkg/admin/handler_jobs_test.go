@@ -279,11 +279,19 @@ func TestJobsHandler_WithAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("with auth header", func(t *testing.T) {
+	t.Run("with valid session", func(t *testing.T) {
 		t.Parallel()
 
+		token, err := GenerateSessionCookie("require-auth", SessionClaims{
+			Username:  "test-user",
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+		if err != nil {
+			t.Fatalf("setup: GenerateSessionCookie() error = %v", err)
+		}
+
 		req := httptest.NewRequest("GET", "/api/jobs", nil)
-		req.Header.Set(HeaderUser, "test-user")
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 
