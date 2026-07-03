@@ -53,6 +53,17 @@ imds_get() {
     "http://169.254.169.254/latest/$1"
 }
 
+# imds_bootstrap: resolve the IMDSv2 session token plus this instance's id and
+# region, exporting TOKEN, INSTANCE_ID and REGION for the caller (and for get_tag,
+# which reads REGION/INSTANCE_ID). Emits a specific diagnostic to stderr and
+# returns non-zero on the first failed fetch, so callers do `imds_bootstrap || exit 1`.
+imds_bootstrap() {
+  TOKEN=$(imds_token) || { echo "ERROR: Failed to fetch IMDSv2 token" >&2; return 1; }
+  INSTANCE_ID=$(imds_get meta-data/instance-id "$TOKEN") || { echo "ERROR: Failed to fetch instance-id" >&2; return 1; }
+  REGION=$(imds_get meta-data/placement/region "$TOKEN") || { echo "ERROR: Failed to fetch region" >&2; return 1; }
+  export TOKEN INSTANCE_ID REGION
+}
+
 # get_tag <tag-key>: print this instance's value for the tag (empty if the tag
 # is absent) and return 0 on a successful DescribeTags call; return non-zero if
 # the API call itself keeps failing. Callers that require the tag MUST treat a

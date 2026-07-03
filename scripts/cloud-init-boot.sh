@@ -3,9 +3,7 @@ set -e
 # shellcheck source-path=SCRIPTDIR source=boot-lib.sh
 source /opt/runs-fleet/boot-lib.sh
 
-TOKEN=$(imds_token) || { echo "ERROR: Failed to fetch IMDSv2 token"; exit 1; }
-INSTANCE_ID=$(imds_get meta-data/instance-id "$TOKEN") || { echo "ERROR: Failed to fetch instance-id"; exit 1; }
-REGION=$(imds_get meta-data/placement/region "$TOKEN") || { echo "ERROR: Failed to fetch region"; exit 1; }
+imds_bootstrap || exit 1
 
 echo "[$(date)] runs-fleet boot script starting for ${INSTANCE_ID}"
 
