@@ -9,18 +9,24 @@ export default function LogoutButton() {
 
   if (!authConfig?.auth_enabled) return null;
 
+  // Only navigate away on a confirmed 2xx: the session cookie is cleared
+  // server-side, so navigating after a failed request would leave the user
+  // believing they're logged out while the cookie (and server session) is
+  // still valid.
   async function handleLogout() {
+    let succeeded = false;
     try {
       const res = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-      if (!res.ok) {
+      succeeded = res.ok;
+      if (!succeeded) {
         toast('error', `Logout failed (${res.status}); please try again`);
-        return;
       }
     } catch {
       toast('error', 'Logout request failed; please try again');
-      return;
     }
-    window.location.href = '/admin/';
+    if (succeeded) {
+      window.location.href = '/admin/';
+    }
   }
 
   return (
