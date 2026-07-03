@@ -369,4 +369,4 @@ Phase 3 (S3 Cache): ✅ Complete
 Phase 4 (Production Hardening): ✅ Complete
 Phase 5 (Concurrent Processing): ✅ Complete
 
-See README.md for detailed roadmap.
+See `docs/ROADMAP.md` for candidate work beyond Phase 5.
