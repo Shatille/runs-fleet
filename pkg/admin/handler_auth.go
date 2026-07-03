@@ -202,7 +202,10 @@ func (h *AuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 }
 
 // Logout clears the session cookie. Safe to call whether or not a session
-// currently exists.
+// currently exists. Intentionally unauthenticated: sessions are stateless
+// signed cookies with no server-side store, so this only ever affects the
+// calling browser's own cookie -- there is no shared state to protect, and
+// gating it on auth would break clearing an already-expired session.
 func (h *AuthHandler) Logout(w http.ResponseWriter, _ *http.Request) {
 	clearCookie(w, sessionCookieName)
 	w.WriteHeader(http.StatusNoContent)
