@@ -13,19 +13,19 @@ This file defines the structure and conventions for the runs-fleet codebase wiki
 - `cmd-agent`: On-instance bootstrap binary (`cmd/agent/main.go`) — fetch config, register runner, execute, self-terminate.
 - `agent-runtime`: `pkg/agent` library — Downloader, Executor, SafetyMonitor, telemetry, terminator.
 - `fleet-orchestration`: `pkg/fleet` — EC2 Fleet API, launch templates, spot strategy, tag propagation.
-- `warm-pools`: `pkg/pools` — hot/stopped/ephemeral pool reconciliation; per-pool DynamoDB locks.
-- `compute-providers`: `pkg/provider` — backend abstraction; K8s implementation; EC2 path lives in pkg/fleet (asymmetric).
-- `queue-processing`: `pkg/queue` — SQS FIFO (EC2) and Valkey Streams (K8s) under a common interface.
-- `job-state-machine`: `pkg/state` (Valkey) + `pkg/runner` (manager + GitHub registration); EC2 state lives in pkg/db.
+- `warm-pools`: `pkg/pools` — hot/stopped/ephemeral pool reconciliation; per-pool DynamoDB locks. EC2-only since the 2026-06 K8s removal (`pkg/pools/k8s_manager.go` deleted).
+- `compute-providers`: **Obsolescence candidate — flagged 2026-07-03, not merged (needs human decision).** `pkg/provider` was removed entirely along with the K8s runner backend; EC2 fleet logic now lives directly in `pkg/fleet` with no interface layer above it. This topic is now a thin historical pointer and substantially overlaps `fleet-orchestration`.
+- `queue-processing`: `pkg/queue` — SQS FIFO only. Valkey Streams (K8s path) removed 2026-06.
+- `job-state-machine`: `pkg/db` (DynamoDB, sole job-state store since the Valkey/K8s removal) + `pkg/runner` (manager, registration via `pkg/github.Client`).
 - `state-storage`: `pkg/db` (DynamoDB), `pkg/circuit` (per-instance-type breaker), `pkg/secrets` (SSM/Vault Store).
-- `github-integration`: `pkg/github` webhook receiver, HMAC-SHA256, JIT tokens, label parser.
+- `github-integration`: `pkg/github` — GitHub App API client (auth, registration tokens, workflow-job status; relocated from `pkg/runner` in PR #380) + webhook HMAC-SHA256 validation + label/alias parsing. No JIT tokens are issued anywhere in this codebase (prior schema text was inaccurate).
 - `cache-service`: `pkg/cache` — GitHub Actions cache protocol over S3; HMAC token; pre-signed URLs.
 - `events-and-termination`: `pkg/events` (EventBridge spot warnings), `pkg/termination` (agent telemetry consumer).
 - `observability`: `pkg/metrics` (CloudWatch/Prometheus/Datadog), `pkg/logging` (slog), `pkg/cost` (S3+SNS reporter).
 - `housekeeping`: `pkg/housekeeping` — orphan sweeps, stale jobs, TTL'd entities; scheduler dispatches via SQS.
 - `admin-ui`: `pkg/admin` REST API + embedded Next.js UI; Keycloak gatekeeper auth model.
 - `config-bootstrap`: `pkg/config` — env var loading, AWS region defaulting, timeout constants.
-- `internal-services`: `internal/handler` (webhook server), `internal/validation` (path traversal guards), `internal/worker` (EC2/K8s/direct/warmpool worker loops, naming).
+- `internal-services`: `internal/handler` (webhook server), `internal/validation` (path traversal + Vault K8s-auth JWT path guards — unrelated to the K8s runner backend), `internal/worker` (EC2/direct/warmpool worker loops, naming — K8s worker path removed 2026-06), `internal/awsobs` (AWS SDK observability middleware: per-operation timeouts, call latency/failure metrics).
 - `infrastructure`: Dockerfiles, Packer (ARM-only base + runner AMIs), Helm chart (K8s only), Nix flake, Makefile.
 
 ## Concepts
@@ -70,3 +70,4 @@ Coverage tags: `[coverage: high -- N sources]` (5+), `[coverage: medium -- N sou
 ## Evolution Log
 
 - 2026-04-30: Initial schema generated from 19 topics, 4 concepts. Codebase-mode first compile.
+- 2026-07-03: Incremental compile after 152 commits / 284 changed files since last compile. Rewrote the 7 topics with structurally deleted or relocated sources: `compute-providers`, `queue-processing`, `job-state-machine`, `warm-pools`, `internal-services`, `github-integration`, `cmd-server`. Root cause of the drift: the K8s runner backend (removed 2026-06) deleted `pkg/provider/`, `pkg/state/valkey.go`, `pkg/pools/k8s_manager.go`, `pkg/queue/valkey.go`, and `internal/worker/k8s.go`; separately, `pkg/runner/github.go` was relocated to `pkg/github/client.go` (PR #380). Flagged `compute-providers` as an obsolescence/merge candidate against `fleet-orchestration` (not merged — human decision). Corrected the `asymmetric-backend-abstraction` concept, which `.compile-state.json` listed but whose file never existed on disk (schema.md's own Concepts section already correctly omitted it) — reconciled in `.compile-state.json`. The remaining 12 topics also accreted changes in this window (new features: admin cost page, Python/Ruby AL2023 runners, cache-interception v2, `pkg/tracing`) but were not touched this pass — still due for a `--full` recompile.

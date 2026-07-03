@@ -1,5 +1,5 @@
 {
-  "last_compiled": "2026-04-30",
+  "last_compiled": "2026-07-03",
   "mode": "codebase",
   "topics": [
     "project-overview",
@@ -25,7 +25,6 @@
   "concepts": [
     "per-resource-locking",
     "two-track-reliability",
-    "asymmetric-backend-abstraction",
     "idempotent-retry-over-rollback"
   ],
   "source_locations": [
@@ -44,10 +43,11 @@
     "scripts/cloud-init-boot.sh",
     "internal/handler/webhook.go",
     "internal/validation/path.go",
+    "internal/awsobs/middleware.go",
+    "internal/awsobs/timeout.go",
     "internal/worker/common.go",
     "internal/worker/direct.go",
     "internal/worker/ec2.go",
-    "internal/worker/k8s.go",
     "internal/worker/naming.go",
     "internal/worker/warmpool.go",
     "pkg/admin/auth.go",
@@ -81,6 +81,8 @@
     "pkg/events/handler.go",
     "pkg/fleet/fleet.go",
     "pkg/fleet/instances.go",
+    "pkg/github/alias.go",
+    "pkg/github/client.go",
     "pkg/github/webhook.go",
     "pkg/housekeeping/handler.go",
     "pkg/housekeeping/scheduler.go",
@@ -91,20 +93,13 @@
     "pkg/metrics/multi.go",
     "pkg/metrics/prometheus.go",
     "pkg/metrics/publisher.go",
-    "pkg/pools/k8s_manager.go",
     "pkg/pools/manager.go",
-    "pkg/provider/interface.go",
-    "pkg/provider/k8s/pool.go",
-    "pkg/provider/k8s/provider.go",
     "pkg/queue/interface.go",
     "pkg/queue/sqs.go",
-    "pkg/queue/valkey.go",
-    "pkg/runner/github.go",
     "pkg/runner/manager.go",
     "pkg/secrets/ssm.go",
     "pkg/secrets/store.go",
     "pkg/secrets/vault.go",
-    "pkg/state/valkey.go",
     "pkg/termination/handler.go",
     "docker/runner/Dockerfile",
     "docker/runner/entrypoint.sh",
@@ -114,5 +109,5 @@
     "deploy/helm/Chart.yaml",
     "deploy/helm/values.yaml"
   ],
-  "total_sources_scanned": 84
+  "total_sources_scanned": 80
 }
