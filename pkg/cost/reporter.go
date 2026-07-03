@@ -58,13 +58,18 @@ var instancePricing = map[string]float64{
 // SpotDiscount is the average spot discount compared to on-demand
 const SpotDiscount = 0.7 // 70% discount
 
+// defaultInstanceHourlyPrice is the on-demand hourly rate assumed for an instance
+// type absent from instancePricing (and when the live Pricing API is unavailable).
+// It mirrors the t4g.medium rate — our smallest common default tier.
+const defaultInstanceHourlyPrice = 0.0336
+
 // GetInstancePrice returns the hard-coded on-demand hourly price for an instance type.
 // Returns the t4g.medium price as default for unknown types.
 func GetInstancePrice(instanceType string) float64 {
 	if price, ok := instancePricing[instanceType]; ok {
 		return price
 	}
-	return 0.0336
+	return defaultInstanceHourlyPrice
 }
 
 // CloudWatchAPI defines CloudWatch operations for cost reporting.
@@ -321,7 +326,7 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	// Try to get dynamic pricing from AWS Pricing API, fall back to hard-coded
 	avgHourlyCost, err := r.priceFetcher.GetPrice(ctx, "t4g.medium")
 	if err != nil || avgHourlyCost == 0 {
-		avgHourlyCost = 0.0336
+		avgHourlyCost = defaultInstanceHourlyPrice
 	}
 
 	breakdown.EC2SpotCost = breakdown.EC2SpotHours * avgHourlyCost * (1 - SpotDiscount)

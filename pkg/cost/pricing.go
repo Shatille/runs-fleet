@@ -27,12 +27,12 @@ type PricingAPI interface {
 // PriceFetcher fetches EC2 instance pricing from AWS Pricing API.
 // It caches prices to avoid excessive API calls.
 type PriceFetcher struct {
-	client     PricingAPI
-	region     string
-	cache      map[string]float64
-	cacheMu    sync.RWMutex
-	cacheTime  time.Time
-	cacheTTL   time.Duration
+	client    PricingAPI
+	region    string
+	cache     map[string]float64
+	cacheMu   sync.RWMutex
+	cacheTime time.Time
+	cacheTTL  time.Duration
 	// useFallback is read/written from concurrent GetPrice callers (the admin
 	// cost page prices jobs per request against a shared fetcher), so it is
 	// atomic rather than guarded by cacheMu.
@@ -270,5 +270,5 @@ func (p *PriceFetcher) getFallbackPrice(instanceType string) float64 {
 		return price
 	}
 	// Default to t4g.medium price if unknown
-	return 0.0336
+	return defaultInstanceHourlyPrice
 }
