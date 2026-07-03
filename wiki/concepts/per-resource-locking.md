@@ -1,6 +1,6 @@
 ---
 concept: Per-Resource DynamoDB Locking
-last_compiled: 2026-04-30
+last_compiled: 2026-07-03
 topics_connected: [warm-pools, state-storage, housekeeping]
 status: active
 ---
@@ -34,7 +34,7 @@ The cost is that **every TTL is a tunable**. Set the lock TTL too short and a sl
 | Instance claim | (per-job) | Until job completes or crashes |
 | Job claim | (per-job) | Until terminal status set |
 
-The K8s backend deliberately skips this entire pattern because the K8s API itself provides idempotent create-by-name semantics — a different consensus substrate, not a different correctness model.
+The K8s backend (removed 2026-06 along with the rest of the K8s runner path) used to skip this entire pattern because the K8s API itself provides idempotent create-by-name semantics — a different consensus substrate, not a different correctness model. EC2 is now the only backend, so this contrast is historical.
 
 The pattern is also why this codebase's DynamoDB schema is an unusual mix of "real" rows and synthetic-PK rows (instance claims piggyback on the pools table). It works, but it's a maintenance trap: anyone adding a new claim type needs to know the table-reuse convention or they'll create a parallel table for what should be one row.
 

@@ -1,5 +1,21 @@
 # Compile Log
 
+## 2026-07-03
+
+**Topics updated:** cmd-server, compute-providers, queue-processing, job-state-machine, warm-pools, internal-services, github-integration
+
+**New topics:** none
+
+**Concepts updated:** per-resource-locking (one sentence corrected from present to past tense re: the removed K8s backend)
+
+**New concepts:** none
+
+**Sources scanned:** 152 commits / 284 changed files since last compile (`git log --since=2026-04-30`)
+
+**Sources changed:** 7 topics had structurally deleted or relocated source files; the other 12 tracked topics also touched files in this window but were scoped out of this pass (see Notes)
+
+**Notes:** Root cause of the drift: the K8s runner backend was removed upstream (2026-06), deleting `pkg/provider/`, `pkg/state/valkey.go`, `pkg/pools/k8s_manager.go`, `pkg/queue/valkey.go`, and `internal/worker/k8s.go` outright. Separately, `pkg/runner/github.go` was relocated to `pkg/github/client.go` and renamed (PR #380, 2026-07-03), and a dead `GetJITConfig` method was deleted — the old `github-integration` and `job-state-machine` articles both incorrectly described a JIT-token registration flow that never actually ran in production. Flagged `compute-providers` as an obsolescence/merge candidate against `fleet-orchestration` (pkg/provider no longer exists; not merged, human decision needed — schema.md updated to note this). Found and reconciled a state-tracking bug: `.compile-state.json` listed a 4th concept, `asymmetric-backend-abstraction`, whose file never existed on disk; `schema.md`'s own Concepts section already correctly listed only 3. This was a scoped incremental compile — the remaining 12 topics still need a `--full` recompile to pick up feature work merged in this window (admin cost page, Python/Ruby AL2023 runners, cache-interception v2, `pkg/tracing`, tool-cache metrics).
+
 ## 2026-04-30
 
 **Topics updated:** project-overview, cmd-server, cmd-agent, agent-runtime, fleet-orchestration, warm-pools, compute-providers, queue-processing, job-state-machine, state-storage, github-integration, cache-service, events-and-termination, observability, housekeeping, admin-ui, config-bootstrap, internal-services, infrastructure
