@@ -67,6 +67,35 @@ func (m *mockPoolDB) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]stri
 	return nil, nil
 }
 
+type mockAuditDB struct {
+	entries    []db.AuditEntry
+	err        error
+	listErr    error
+	listResult []db.AuditEntry
+	gotFilter  db.AuditFilter
+	tableUnset bool // when true, HasAuditTable reports false (simulates RUNS_FLEET_AUDIT_TABLE unset)
+}
+
+func (m *mockAuditDB) RecordAudit(_ context.Context, entry db.AuditEntry) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.entries = append(m.entries, entry)
+	return nil
+}
+
+func (m *mockAuditDB) ListAuditLogs(_ context.Context, filter db.AuditFilter) ([]db.AuditEntry, error) {
+	m.gotFilter = filter
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.listResult, nil
+}
+
+func (m *mockAuditDB) HasAuditTable() bool {
+	return !m.tableUnset
+}
+
 func TestListPools(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +136,7 @@ func TestListPools(t *testing.T) {
 			mockDB.pools = tt.pools
 			mockDB.listErr = tt.listErr
 
-			h := NewHandler(mockDB, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 			req := httptest.NewRequest(http.MethodGet, "/api/pools", nil)
 			rec := httptest.NewRecorder()
 
@@ -177,7 +206,7 @@ func TestGetPool(t *testing.T) {
 			}
 			mockDB.getErr = tt.getErr
 
-			h := NewHandler(mockDB, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("GET /api/pools/{name}", h.GetPool)
@@ -288,7 +317,7 @@ func TestCreatePool(t *testing.T) {
 			}
 			mockDB.saveErr = tt.saveErr
 
-			h := NewHandler(mockDB, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
@@ -367,7 +396,7 @@ func TestUpdatePool(t *testing.T) {
 			}
 			mockDB.saveErr = tt.saveErr
 
-			h := NewHandler(mockDB, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)
@@ -448,7 +477,7 @@ func TestDeletePool(t *testing.T) {
 			}
 			mockDB.deleteErr = tt.deleteErr
 
-			h := NewHandler(mockDB, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("DELETE /api/pools/{name}", h.DeletePool)
@@ -474,7 +503,7 @@ func TestDeletePool(t *testing.T) {
 func TestValidatePoolRequest(t *testing.T) {
 	t.Parallel()
 
-	h := NewHandler(nil, NewAuthMiddleware(""))
+	h := NewHandler(nil, nil, NewAuthMiddleware(""))
 
 	tests := []struct {
 		name     string
@@ -575,7 +604,7 @@ func TestCreatePoolContentType(t *testing.T) {
 	t.Parallel()
 
 	mockDB := newMockDB()
-	h := NewHandler(mockDB, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 
 	body := []byte(`{"pool_name": "test-pool"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
@@ -668,12 +697,99 @@ func TestPoolDiff(t *testing.T) {
 	}
 }
 
+func TestCreatePool_PersistsAuditEntry(t *testing.T) {
+	t.Parallel()
+
+	mockDB := newMockDB()
+	auditDB := &mockAuditDB{}
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pools", h.CreatePool)
+
+	body, _ := json.Marshal(PoolRequest{PoolName: "audited-pool", DesiredRunning: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := context.WithValue(req.Context(), UserContextKey, UserInfo{Username: "carol"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if len(auditDB.entries) != 1 {
+		t.Fatalf("got %d persisted audit entries, want 1", len(auditDB.entries))
+	}
+	entry := auditDB.entries[0]
+	if entry.User != "carol" || entry.Action != "pool.create" || entry.Target != "audited-pool" || entry.Result != "success" {
+		t.Errorf("entry = %+v, want user=carol action=pool.create target=audited-pool result=success", entry)
+	}
+}
+
+func TestCreatePool_AuditPersistenceFailureDoesNotFailRequest(t *testing.T) {
+	t.Parallel()
+
+	mockDB := newMockDB()
+	auditDB := &mockAuditDB{err: errors.New("dynamodb unavailable")}
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pools", h.CreatePool)
+
+	body, _ := json.Marshal(PoolRequest{PoolName: "still-created", DesiredRunning: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status = %d, want %d -- audit persistence failure must not fail the request", rec.Code, http.StatusCreated)
+	}
+	if mockDB.pools["still-created"] == nil {
+		t.Error("pool should still be created despite audit persistence failure")
+	}
+}
+
+// TestCreatePool_SkipsPersistenceWhenTableUnset covers the production
+// wiring shape: main.go always passes the shared *db.Client as AuditDB,
+// whether or not RUNS_FLEET_AUDIT_TABLE is set. recordAdminAction must
+// check HasAuditTable rather than assume an unconfigured table means a
+// nil AuditDB, or every admin action would attempt (and fail) a
+// RecordAudit call it should have skipped entirely.
+func TestCreatePool_SkipsPersistenceWhenTableUnset(t *testing.T) {
+	t.Parallel()
+
+	mockDB := newMockDB()
+	auditDB := &mockAuditDB{tableUnset: true}
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pools", h.CreatePool)
+
+	body, _ := json.Marshal(PoolRequest{PoolName: "no-audit-table", DesiredRunning: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if len(auditDB.entries) != 0 {
+		t.Errorf("got %d persisted audit entries, want 0 -- RecordAudit should not be attempted when the table is unset", len(auditDB.entries))
+	}
+}
+
 func TestUpdatePoolContentType(t *testing.T) {
 	t.Parallel()
 
 	mockDB := newMockDB()
 	mockDB.pools["test-pool"] = &db.PoolConfig{PoolName: "test-pool"}
-	h := NewHandler(mockDB, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)

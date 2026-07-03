@@ -30,6 +30,7 @@ type Client struct {
 	jobsTable         string
 	jobsPoolStatusGSI string
 	jobsInstanceIDGSI string
+	auditTable        string
 }
 
 // NewClient creates DynamoDB client for specified pools and jobs tables.
@@ -67,4 +68,16 @@ func (c *Client) SetJobsInstanceIDGSI(gsiName string) {
 // Use this to check before calling SaveJob or other job-related methods.
 func (c *Client) HasJobsTable() bool {
 	return c.jobsTable != ""
+}
+
+// SetAuditTable configures the audit log table name. When unset,
+// RecordAudit and ListAuditLogs return errors instead of touching DynamoDB.
+func (c *Client) SetAuditTable(tableName string) {
+	c.auditTable = tableName
+}
+
+// HasAuditTable returns true if the audit table is configured.
+// Use this to check before calling RecordAudit or ListAuditLogs.
+func (c *Client) HasAuditTable() bool {
+	return c.auditTable != ""
 }

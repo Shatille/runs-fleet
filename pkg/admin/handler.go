@@ -32,17 +32,30 @@ type PoolDB interface {
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 }
 
+// AuditDB persists and queries audit log entries. Satisfied by *db.Client.
+// HasAuditTable is the presence check callers must use -- a nil AuditDB
+// value never occurs in production (main.go always wires the shared
+// *db.Client, whether or not RUNS_FLEET_AUDIT_TABLE is set), so a nil
+// check on the interface itself would never trigger.
+type AuditDB interface {
+	RecordAudit(ctx context.Context, entry db.AuditEntry) error
+	ListAuditLogs(ctx context.Context, filter db.AuditFilter) ([]db.AuditEntry, error)
+	HasAuditTable() bool
+}
+
 // Handler provides HTTP endpoints for pool configuration management.
 type Handler struct {
-	db   PoolDB
-	auth *AuthMiddleware
+	db      PoolDB
+	auditDB AuditDB
+	auth    *AuthMiddleware
 }
 
 // NewHandler creates a new admin handler.
-func NewHandler(db PoolDB, auth *AuthMiddleware) *Handler {
+func NewHandler(poolDB PoolDB, auditDB AuditDB, auth *AuthMiddleware) *Handler {
 	return &Handler{
-		db:   db,
-		auth: auth,
+		db:      poolDB,
+		auditDB: auditDB,
+		auth:    auth,
 	}
 }
 
@@ -120,6 +133,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/pools", h.auth.WrapFunc(h.CreatePool))
 	mux.Handle("PUT /api/pools/{name}", h.auth.WrapFunc(h.UpdatePool))
 	mux.Handle("DELETE /api/pools/{name}", h.auth.WrapFunc(h.DeletePool))
+	mux.Handle("GET /api/audit-logs", h.auth.WrapFunc(h.ListAuditLogs))
 }
 
 // ListPools handles GET /api/pools.
@@ -204,31 +218,31 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.validatePoolRequest(&req, true); err != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
 
 	existing, err := h.db.GetPoolConfig(r.Context(), req.PoolName)
 	if err != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to check existing pool", err.Error())
 		return
 	}
 	if existing != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, "already exists"))
+		h.recordAudit(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, "already exists"))
 		h.writeError(w, http.StatusConflict, "Pool already exists", "")
 		return
 	}
 
 	config := h.requestToConfig(&req)
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to create pool", err.Error())
 		return
 	}
 
-	h.auditLog(r, "pool.create", req.PoolName, "success")
+	h.recordAudit(r, "pool.create", req.PoolName, "success")
 	h.writeJSON(w, http.StatusCreated, h.configToResponse(config))
 }
 
@@ -255,19 +269,19 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	req.PoolName = name
 
 	if err := h.validatePoolRequest(&req, false); err != nil {
-		h.auditLog(r, "pool.update", name, "denied", slog.String(logging.KeyReason, err.Error()))
+		h.recordAudit(r, "pool.update", name, "denied", slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
 
 	existing, err := h.db.GetPoolConfig(r.Context(), name)
 	if err != nil {
-		h.auditLog(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
 	}
 	if existing == nil {
-		h.auditLog(r, "pool.update", name, "denied", slog.String(logging.KeyReason, "not found"))
+		h.recordAudit(r, "pool.update", name, "denied", slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
@@ -277,13 +291,13 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	config.LastJobTime = existing.LastJobTime
 
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
-		h.auditLog(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to update pool", err.Error())
 		return
 	}
 
 	changes := poolDiff(existing, config)
-	h.auditLog(r, "pool.update", name, "success", slog.String("changes", changes))
+	h.recordAudit(r, "pool.update", name, "success", slog.String("changes", changes))
 	h.writeJSON(w, http.StatusOK, h.configToResponse(config))
 }
 
@@ -297,29 +311,29 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := h.db.GetPoolConfig(r.Context(), name)
 	if err != nil {
-		h.auditLog(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
 	}
 	if existing == nil {
-		h.auditLog(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "not found"))
+		h.recordAudit(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
 
 	if !existing.Ephemeral {
-		h.auditLog(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "non-ephemeral"))
+		h.recordAudit(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "non-ephemeral"))
 		h.writeError(w, http.StatusForbidden, "Cannot delete non-ephemeral pool", "Only ephemeral pools can be deleted via API")
 		return
 	}
 
 	if err := h.db.DeletePoolConfig(r.Context(), name); err != nil {
-		h.auditLog(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to delete pool", err.Error())
 		return
 	}
 
-	h.auditLog(r, "pool.delete", name, "success")
+	h.recordAudit(r, "pool.delete", name, "success")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -481,7 +495,10 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message, details
 	h.writeJSON(w, status, resp)
 }
 
-func (h *Handler) auditLog(r *http.Request, action, poolName, result string, extra ...any) {
+// logAdminAction writes the structured slog line for an admin action. Free
+// function (not a Handler method) so HousekeepingHandler and any future
+// handler can share it without depending on Handler itself.
+func logAdminAction(r *http.Request, action, target, result string, extra ...any) {
 	remoteAddr := r.Header.Get("X-Forwarded-For")
 	if remoteAddr == "" {
 		remoteAddr = r.RemoteAddr
@@ -494,7 +511,7 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 		slog.Bool(logging.KeyAudit, true),
 		slog.String(logging.KeyUser, user),
 		slog.String(logging.KeyAction, action),
-		slog.String(logging.KeyPoolName, poolName),
+		slog.String(logging.KeyPoolName, target),
 		slog.String(logging.KeyResult, result),
 		slog.String(logging.KeyRemoteAddr, remoteAddr),
 	}
@@ -509,6 +526,74 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 	default:
 		auditLog.Info(ctx, "admin action", attrs...)
 	}
+}
+
+// recordAudit logs the action via auditLog (unchanged, for CloudWatch
+// Insights / log-based alerting) and additionally persists it via auditDB
+// so it can be queried later through GET /api/audit-logs. extra's slog.Attr
+// values double as the persisted entry's Details, so call sites need no
+// separate details argument.
+func (h *Handler) recordAudit(r *http.Request, action, poolName, result string, extra ...any) {
+	recordAdminAction(r, h.auditDB, action, poolName, result, extra...)
+}
+
+// recordAdminAction is the shared implementation behind Handler.recordAudit
+// and HousekeepingHandler's audit call: log via logAdminAction, then persist
+// via auditDB so the action can be queried later through GET
+// /api/audit-logs. Persistence failures are logged but never fail the
+// parent request -- a gap in the audit trail is a lesser failure than
+// blocking an admin action. Checks HasAuditTable rather than nil-checking
+// auditDB: main.go always wires the shared *db.Client here regardless of
+// whether RUNS_FLEET_AUDIT_TABLE is set, so a nil interface never occurs in
+// production -- HasAuditTable is the real "is this configured" signal,
+// matching the jobs/pools table's empty-name-disables-feature convention.
+// auditDB itself may still be nil in tests that don't care about audit
+// persistence at all.
+func recordAdminAction(r *http.Request, auditDB AuditDB, action, target, result string, extra ...any) {
+	logAdminAction(r, action, target, result, extra...)
+
+	if auditDB == nil || !auditDB.HasAuditTable() {
+		return
+	}
+
+	remoteAddr := r.Header.Get("X-Forwarded-For")
+	if remoteAddr == "" {
+		remoteAddr = r.RemoteAddr
+	}
+
+	err := auditDB.RecordAudit(r.Context(), db.AuditEntry{
+		User:     GetUsername(r.Context()),
+		Action:   action,
+		Target:   target,
+		Result:   result,
+		Details:  auditDetailsFromAttrs(extra),
+		ClientIP: remoteAddr,
+	})
+	if err != nil {
+		adminLog.Error(r.Context(), "failed to persist audit entry",
+			slog.String(logging.KeyAction, action),
+			slog.String("error", err.Error()))
+	}
+}
+
+// auditDetailsFromAttrs converts auditLog's variadic slog.Attr values into a
+// plain map so the same call-site arguments serve both the structured log
+// line and the persisted audit entry. Non-slog.Attr values are ignored
+// (auditLog's call sites only ever pass slog.String/slog.Bool/etc.).
+func auditDetailsFromAttrs(attrs []any) map[string]any {
+	if len(attrs) == 0 {
+		return nil
+	}
+	details := make(map[string]any, len(attrs))
+	for _, a := range attrs {
+		if attr, ok := a.(slog.Attr); ok {
+			details[attr.Key] = attr.Value.Any()
+		}
+	}
+	if len(details) == 0 {
+		return nil
+	}
+	return details
 }
 
 func poolDiff(old, updated *db.PoolConfig) string {

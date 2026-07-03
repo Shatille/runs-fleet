@@ -38,6 +38,7 @@ type Config struct {
 	JobsPoolStatusGSI    string
 	JobsInstanceIDGSI    string
 	PoolsTableName       string
+	AuditTableName       string
 	CircuitBreakerTable  string
 	CacheBucketName      string
 	CostReportSNSTopic   string
@@ -144,6 +145,7 @@ func Load() (*Config, error) {
 		JobsPoolStatusGSI:    getEnv("RUNS_FLEET_JOBS_POOL_STATUS_GSI", ""),
 		JobsInstanceIDGSI:    getEnv("RUNS_FLEET_JOBS_INSTANCE_ID_GSI", ""),
 		PoolsTableName:       getEnv("RUNS_FLEET_POOLS_TABLE", ""),
+		AuditTableName:       getEnv("RUNS_FLEET_AUDIT_TABLE", ""),
 		CircuitBreakerTable:  getEnv("RUNS_FLEET_CIRCUIT_BREAKER_TABLE", "runs-fleet-circuit-state"),
 		CacheBucketName:      getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
 		CostReportSNSTopic:   getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),

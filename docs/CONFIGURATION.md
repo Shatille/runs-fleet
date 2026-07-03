@@ -31,6 +31,7 @@ All configuration is via environment variables, set on the orchestrator's runtim
 | `RUNS_FLEET_JOBS_INSTANCE_ID_GSI` | | Optional GSI on the jobs table for `instance_id` lookups. Falls back to a table scan if unset |
 | `RUNS_FLEET_POOLS_TABLE` | | Pool configurations (includes per-pool reconciliation locks) |
 | `RUNS_FLEET_CIRCUIT_BREAKER_TABLE` | `runs-fleet-circuit-state` | Circuit breaker state |
+| `RUNS_FLEET_AUDIT_TABLE` | | Admin API audit log (pool CRUD, housekeeping actions). Unset disables persistence -- actions are still logged via slog, just not queryable through `GET /api/audit-logs`. Requires a `user-index` GSI (hash: `user`, range: `timestamp`); see `deploy/terraform/dynamodb.tf` |
 
 ## S3 & SNS
 

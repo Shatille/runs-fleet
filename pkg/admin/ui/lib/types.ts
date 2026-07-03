@@ -131,3 +131,14 @@ export interface FamilyBreakdown {
   total_cost: number;
   spot_percent: number;
 }
+
+export interface AuditEntry {
+  id: string;
+  user: string;
+  action: string;
+  target?: string;
+  result: string;
+  details?: Record<string, unknown>;
+  client_ip?: string;
+  timestamp: string;
+}

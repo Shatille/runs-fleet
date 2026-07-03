@@ -125,3 +125,55 @@ resource "aws_dynamodb_table" "circuit_state" {
     enabled = true
   }
 }
+
+# runs-fleet-audit
+# ---
+# Primary key: id (ULID, time-sortable). Append-only admin action log.
+#
+# GSI:
+#   - user-index: REQUIRED. ListAuditLogs in pkg/db/audit.go queries it
+#     whenever a user filter is given; without it that path falls back
+#     to a Scan and logs a WARN. Set RUNS_FLEET_AUDIT_TABLE on the
+#     orchestrator to enable this table -- unset disables audit
+#     persistence entirely (the admin API still logs actions via slog,
+#     just doesn't persist them).
+#
+# TTL: the "ttl" attribute is epoch seconds, ~90 days out from write time
+# (see auditRetention in pkg/db/audit.go). The first table in this file
+# to use TTL -- entries age out automatically, no manual cleanup job.
+resource "aws_dynamodb_table" "audit" {
+  name         = "runs-fleet-audit"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  attribute {
+    name = "user"
+    type = "S"
+  }
+
+  attribute {
+    name = "timestamp"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "user-index"
+    hash_key        = "user"
+    range_key       = "timestamp"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}

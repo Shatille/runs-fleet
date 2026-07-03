@@ -17,6 +17,7 @@ import (
 
 // Test constants for table names.
 const testPoolsTable = "pools-table"
+const testAuditTable = "audit-table"
 
 // Test constant for the default pool name.
 const testPoolDefault = "default"
@@ -847,6 +848,58 @@ func TestHasJobsTable(t *testing.T) {
 				t.Errorf("HasJobsTable() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHasAuditTable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		auditTable string
+		want       bool
+	}{
+		{
+			name:       "returns true when audit table is configured",
+			auditTable: "my-audit-table",
+			want:       true,
+		},
+		{
+			name:       "returns false when audit table is empty",
+			auditTable: "",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{
+				dynamoClient: &MockDynamoDBAPI{},
+				auditTable:   tt.auditTable,
+			}
+			if got := client.HasAuditTable(); got != tt.want {
+				t.Errorf("HasAuditTable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSetAuditTable(t *testing.T) {
+	t.Parallel()
+
+	client := NewClientWithAPI(&MockDynamoDBAPI{}, testPoolsTable, "")
+	if client.HasAuditTable() {
+		t.Fatal("HasAuditTable() should be false before SetAuditTable is called")
+	}
+
+	client.SetAuditTable(testAuditTable)
+	if !client.HasAuditTable() {
+		t.Error("HasAuditTable() should be true after SetAuditTable is called")
+	}
+	if client.auditTable != testAuditTable {
+		t.Errorf("auditTable = %q, want %q", client.auditTable, testAuditTable)
 	}
 }
 
