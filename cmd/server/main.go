@@ -514,7 +514,7 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	authHandler := admin.NewAuthHandler(oidcClient, ws.cfg.AdminSessionSecret, time.Duration(ws.cfg.AdminSessionTTLMinutes)*time.Minute)
 	authHandler.RegisterRoutes(adminMux)
 
-	adminHandler := admin.NewHandler(ws.dbClient, adminAuth)
+	adminHandler := admin.NewHandler(ws.dbClient, ws.dbClient, adminAuth)
 	adminHandler.RegisterRoutes(adminMux)
 
 	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth, ws.cfg.TraceUIURL)

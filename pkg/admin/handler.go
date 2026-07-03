@@ -32,17 +32,24 @@ type PoolDB interface {
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 }
 
+// AuditDB persists audit log entries. Satisfied by *db.Client.
+type AuditDB interface {
+	RecordAudit(ctx context.Context, entry db.AuditEntry) error
+}
+
 // Handler provides HTTP endpoints for pool configuration management.
 type Handler struct {
-	db   PoolDB
-	auth *AuthMiddleware
+	db      PoolDB
+	auditDB AuditDB
+	auth    *AuthMiddleware
 }
 
 // NewHandler creates a new admin handler.
-func NewHandler(db PoolDB, auth *AuthMiddleware) *Handler {
+func NewHandler(poolDB PoolDB, auditDB AuditDB, auth *AuthMiddleware) *Handler {
 	return &Handler{
-		db:   db,
-		auth: auth,
+		db:      poolDB,
+		auditDB: auditDB,
+		auth:    auth,
 	}
 }
 
@@ -204,31 +211,31 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.validatePoolRequest(&req, true); err != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
 
 	existing, err := h.db.GetPoolConfig(r.Context(), req.PoolName)
 	if err != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to check existing pool", err.Error())
 		return
 	}
 	if existing != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, "already exists"))
+		h.recordAudit(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, "already exists"))
 		h.writeError(w, http.StatusConflict, "Pool already exists", "")
 		return
 	}
 
 	config := h.requestToConfig(&req)
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
-		h.auditLog(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to create pool", err.Error())
 		return
 	}
 
-	h.auditLog(r, "pool.create", req.PoolName, "success")
+	h.recordAudit(r, "pool.create", req.PoolName, "success")
 	h.writeJSON(w, http.StatusCreated, h.configToResponse(config))
 }
 
@@ -255,19 +262,19 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	req.PoolName = name
 
 	if err := h.validatePoolRequest(&req, false); err != nil {
-		h.auditLog(r, "pool.update", name, "denied", slog.String(logging.KeyReason, err.Error()))
+		h.recordAudit(r, "pool.update", name, "denied", slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
 
 	existing, err := h.db.GetPoolConfig(r.Context(), name)
 	if err != nil {
-		h.auditLog(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
 	}
 	if existing == nil {
-		h.auditLog(r, "pool.update", name, "denied", slog.String(logging.KeyReason, "not found"))
+		h.recordAudit(r, "pool.update", name, "denied", slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
@@ -277,13 +284,13 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	config.LastJobTime = existing.LastJobTime
 
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
-		h.auditLog(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to update pool", err.Error())
 		return
 	}
 
 	changes := poolDiff(existing, config)
-	h.auditLog(r, "pool.update", name, "success", slog.String("changes", changes))
+	h.recordAudit(r, "pool.update", name, "success", slog.String("changes", changes))
 	h.writeJSON(w, http.StatusOK, h.configToResponse(config))
 }
 
@@ -297,29 +304,29 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := h.db.GetPoolConfig(r.Context(), name)
 	if err != nil {
-		h.auditLog(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get pool", err.Error())
 		return
 	}
 	if existing == nil {
-		h.auditLog(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "not found"))
+		h.recordAudit(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
 
 	if !existing.Ephemeral {
-		h.auditLog(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "non-ephemeral"))
+		h.recordAudit(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "non-ephemeral"))
 		h.writeError(w, http.StatusForbidden, "Cannot delete non-ephemeral pool", "Only ephemeral pools can be deleted via API")
 		return
 	}
 
 	if err := h.db.DeletePoolConfig(r.Context(), name); err != nil {
-		h.auditLog(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
+		h.recordAudit(r, "pool.delete", name, "error", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to delete pool", err.Error())
 		return
 	}
 
-	h.auditLog(r, "pool.delete", name, "success")
+	h.recordAudit(r, "pool.delete", name, "success")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -509,6 +516,62 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 	default:
 		auditLog.Info(ctx, "admin action", attrs...)
 	}
+}
+
+// recordAudit logs the action via auditLog (unchanged, for CloudWatch
+// Insights / log-based alerting) and additionally persists it via auditDB
+// so it can be queried later through GET /api/audit-logs. extra's slog.Attr
+// values double as the persisted entry's Details, so call sites need no
+// separate details argument. Persistence failures are logged but never fail
+// the parent request -- a gap in the audit trail is a lesser failure than
+// blocking a pool write. When no audit table is configured, persistence is
+// silently skipped, matching the jobs/pools table's empty-name-disables-
+// feature convention.
+func (h *Handler) recordAudit(r *http.Request, action, poolName, result string, extra ...any) {
+	h.auditLog(r, action, poolName, result, extra...)
+
+	if h.auditDB == nil {
+		return
+	}
+
+	remoteAddr := r.Header.Get("X-Forwarded-For")
+	if remoteAddr == "" {
+		remoteAddr = r.RemoteAddr
+	}
+
+	err := h.auditDB.RecordAudit(r.Context(), db.AuditEntry{
+		User:     GetUsername(r.Context()),
+		Action:   action,
+		Target:   poolName,
+		Result:   result,
+		Details:  auditDetailsFromAttrs(extra),
+		ClientIP: remoteAddr,
+	})
+	if err != nil {
+		adminLog.Error(r.Context(), "failed to persist audit entry",
+			slog.String(logging.KeyAction, action),
+			slog.String("error", err.Error()))
+	}
+}
+
+// auditDetailsFromAttrs converts auditLog's variadic slog.Attr values into a
+// plain map so the same call-site arguments serve both the structured log
+// line and the persisted audit entry. Non-slog.Attr values are ignored
+// (auditLog's call sites only ever pass slog.String/slog.Bool/etc.).
+func auditDetailsFromAttrs(attrs []any) map[string]any {
+	if len(attrs) == 0 {
+		return nil
+	}
+	details := make(map[string]any, len(attrs))
+	for _, a := range attrs {
+		if attr, ok := a.(slog.Attr); ok {
+			details[attr.Key] = attr.Value.Any()
+		}
+	}
+	if len(details) == 0 {
+		return nil
+	}
+	return details
 }
 
 func poolDiff(old, updated *db.PoolConfig) string {
