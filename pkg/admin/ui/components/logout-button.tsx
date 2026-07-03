@@ -1,14 +1,23 @@
 'use client';
 
 import { useAuthConfig } from '@/lib/use-auth-config';
+import { useToast } from '@/components/toast';
 
 export default function LogoutButton() {
   const authConfig = useAuthConfig();
+  const { toast } = useToast();
 
   if (!authConfig?.auth_enabled) return null;
 
   async function handleLogout() {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    try {
+      const res = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      if (!res.ok) {
+        toast('error', `Logout failed (${res.status}); session may still be active`);
+      }
+    } catch {
+      toast('error', 'Logout request failed; session may still be active');
+    }
     window.location.href = '/admin/';
   }
 
