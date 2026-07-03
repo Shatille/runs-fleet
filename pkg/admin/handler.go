@@ -488,7 +488,10 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message, details
 	h.writeJSON(w, status, resp)
 }
 
-func (h *Handler) auditLog(r *http.Request, action, poolName, result string, extra ...any) {
+// logAdminAction writes the structured slog line for an admin action. Free
+// function (not a Handler method) so HousekeepingHandler and any future
+// handler can share it without depending on Handler itself.
+func logAdminAction(r *http.Request, action, target, result string, extra ...any) {
 	remoteAddr := r.Header.Get("X-Forwarded-For")
 	if remoteAddr == "" {
 		remoteAddr = r.RemoteAddr
@@ -501,7 +504,7 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 		slog.Bool(logging.KeyAudit, true),
 		slog.String(logging.KeyUser, user),
 		slog.String(logging.KeyAction, action),
-		slog.String(logging.KeyPoolName, poolName),
+		slog.String(logging.KeyPoolName, target),
 		slog.String(logging.KeyResult, result),
 		slog.String(logging.KeyRemoteAddr, remoteAddr),
 	}
@@ -522,15 +525,23 @@ func (h *Handler) auditLog(r *http.Request, action, poolName, result string, ext
 // Insights / log-based alerting) and additionally persists it via auditDB
 // so it can be queried later through GET /api/audit-logs. extra's slog.Attr
 // values double as the persisted entry's Details, so call sites need no
-// separate details argument. Persistence failures are logged but never fail
-// the parent request -- a gap in the audit trail is a lesser failure than
-// blocking a pool write. When no audit table is configured, persistence is
-// silently skipped, matching the jobs/pools table's empty-name-disables-
-// feature convention.
+// separate details argument.
 func (h *Handler) recordAudit(r *http.Request, action, poolName, result string, extra ...any) {
-	h.auditLog(r, action, poolName, result, extra...)
+	recordAdminAction(r, h.auditDB, action, poolName, result, extra...)
+}
 
-	if h.auditDB == nil {
+// recordAdminAction is the shared implementation behind Handler.recordAudit
+// and HousekeepingHandler's audit call: log via logAdminAction, then persist
+// via auditDB so the action can be queried later through GET
+// /api/audit-logs. Persistence failures are logged but never fail the
+// parent request -- a gap in the audit trail is a lesser failure than
+// blocking an admin action. When auditDB is nil (audit table not
+// configured), persistence is silently skipped, matching the jobs/pools
+// table's empty-name-disables-feature convention.
+func recordAdminAction(r *http.Request, auditDB AuditDB, action, target, result string, extra ...any) {
+	logAdminAction(r, action, target, result, extra...)
+
+	if auditDB == nil {
 		return
 	}
 
@@ -539,10 +550,10 @@ func (h *Handler) recordAudit(r *http.Request, action, poolName, result string, 
 		remoteAddr = r.RemoteAddr
 	}
 
-	err := h.auditDB.RecordAudit(r.Context(), db.AuditEntry{
+	err := auditDB.RecordAudit(r.Context(), db.AuditEntry{
 		User:     GetUsername(r.Context()),
 		Action:   action,
-		Target:   poolName,
+		Target:   target,
 		Result:   result,
 		Details:  auditDetailsFromAttrs(extra),
 		ClientIP: remoteAddr,

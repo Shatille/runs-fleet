@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
@@ -26,16 +27,18 @@ type HousekeepingHandler struct {
 	ec2Client     housekeeping.OrphanEC2API
 	dynamoClient  housekeeping.OrphanScanAPI
 	jobsTableName string
+	auditDB       AuditDB
 	auth          *AuthMiddleware
 	log           *logging.Logger
 }
 
 // NewHousekeepingHandler creates a new housekeeping admin handler.
-func NewHousekeepingHandler(ec2Client housekeeping.OrphanEC2API, dynamoClient housekeeping.OrphanScanAPI, jobsTableName string, auth *AuthMiddleware) *HousekeepingHandler {
+func NewHousekeepingHandler(ec2Client housekeeping.OrphanEC2API, dynamoClient housekeeping.OrphanScanAPI, jobsTableName string, auditDB AuditDB, auth *AuthMiddleware) *HousekeepingHandler {
 	return &HousekeepingHandler{
 		ec2Client:     ec2Client,
 		dynamoClient:  dynamoClient,
 		jobsTableName: jobsTableName,
+		auditDB:       auditDB,
 		auth:          auth,
 		log:           logging.WithComponent(logging.LogTypeAdmin, "housekeeping"),
 	}
@@ -83,6 +86,8 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 	}
 
 	if len(candidates) == 0 {
+		recordAdminAction(r, h.auditDB, "housekeeping.orphaned-jobs", "", "success",
+			slog.Bool("dry_run", dryRun), slog.Int("cleaned", 0), slog.Int("candidates", 0))
 		h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 			Cleaned:    0,
 			Candidates: 0,
@@ -103,6 +108,8 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 	}
 
 	if len(orphanedJobs) == 0 {
+		recordAdminAction(r, h.auditDB, "housekeeping.orphaned-jobs", "", "success",
+			slog.Bool("dry_run", dryRun), slog.Int("cleaned", 0), slog.Int("candidates", len(candidates)))
 		h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 			Cleaned:    0,
 			Candidates: len(candidates),
@@ -116,6 +123,8 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		for i, j := range orphanedJobs {
 			jobIDs[i] = j.JobID
 		}
+		recordAdminAction(r, h.auditDB, "housekeeping.orphaned-jobs", joinJobIDs(jobIDs), "success",
+			slog.Bool("dry_run", true), slog.Int("cleaned", 0), slog.Int("candidates", len(candidates)))
 		h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 			Cleaned:    0,
 			Candidates: len(candidates),
@@ -141,12 +150,26 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		h.log.Info(jobCtx, "marked job as orphaned")
 	}
 
+	recordAdminAction(r, h.auditDB, "housekeeping.orphaned-jobs", joinJobIDs(cleanedJobIDs), "success",
+		slog.Bool("dry_run", false), slog.Int("cleaned", cleanedCount), slog.Int("candidates", len(candidates)))
 	h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 		Cleaned:    cleanedCount,
 		Candidates: len(candidates),
 		JobIDs:     cleanedJobIDs,
 		Message:    "Cleaned " + strconv.Itoa(cleanedCount) + " orphaned jobs",
 	})
+}
+
+// joinJobIDs renders job IDs as a comma-separated audit target string.
+func joinJobIDs(jobIDs []int64) string {
+	if len(jobIDs) == 0 {
+		return ""
+	}
+	parts := make([]string, len(jobIDs))
+	for i, id := range jobIDs {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return strings.Join(parts, ",")
 }
 
 func (h *HousekeepingHandler) instanceExists(ctx context.Context, instanceID string) bool {

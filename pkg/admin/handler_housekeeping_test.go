@@ -89,7 +89,7 @@ func (m *mockHousekeepingDynamo) UpdateItem(_ context.Context, _ *dynamodb.Updat
 func TestHousekeepingHandler_CleanupOrphanedJobs_NoJobsTable(t *testing.T) {
 	t.Parallel()
 
-	handler := NewHousekeepingHandler(nil, nil, "", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(nil, nil, "", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -111,7 +111,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_NoCandidates(t *testing.T) {
 		items: []map[string]types.AttributeValue{},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -155,7 +155,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InstancesExist(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -204,7 +204,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_OrphanedFound(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -233,6 +233,46 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_OrphanedFound(t *testing.T) {
 	}
 }
 
+func TestHousekeepingHandler_CleanupOrphanedJobs_PersistsAuditEntry(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockHousekeepingEC2{
+		instances: map[string]ec2types.InstanceStateName{
+			"i-terminated": ec2types.InstanceStateNameTerminated,
+		},
+	}
+	dynamoClient := &mockHousekeepingDynamo{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "123"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-terminated"},
+				"status":      &types.AttributeValueMemberS{Value: "running"},
+			},
+		},
+	}
+	auditDB := &mockAuditDB{}
+
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", auditDB, NewAuthMiddleware(""))
+
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/housekeeping/orphaned-jobs", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if len(auditDB.entries) != 1 {
+		t.Fatalf("got %d persisted audit entries, want 1", len(auditDB.entries))
+	}
+	entry := auditDB.entries[0]
+	if entry.Action != "housekeeping.orphaned-jobs" || entry.Result != "success" || entry.Target != "123" {
+		t.Errorf("entry = %+v, want action=housekeeping.orphaned-jobs result=success target=123", entry)
+	}
+}
+
 func TestHousekeepingHandler_CleanupOrphanedJobs_DryRun(t *testing.T) {
 	t.Parallel()
 
@@ -249,7 +289,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_DryRun(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -304,7 +344,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ClaimingStatusNoInstance(t *tes
 		"i-exists": ec2types.InstanceStateNameRunning,
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -342,7 +382,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ScanError(t *testing.T) {
 		scanErr: errors.New("DynamoDB scan failed"),
 	}
 
-	handler := NewHousekeepingHandler(nil, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(nil, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -387,7 +427,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_UpdateError(t *testing.T) {
 		updateErr: errors.New("DynamoDB update failed"),
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -437,7 +477,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ConditionalCheckFailed(t *testi
 		updateErr: &types.ConditionalCheckFailedException{Message: aws.String("condition failed")},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -477,7 +517,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_CustomThreshold(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -502,7 +542,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ThresholdBelowMinimum(t *testin
 		items: []map[string]types.AttributeValue{},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -534,7 +574,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_RunningStatusNoInstance(t *test
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -611,7 +651,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_VariousInstanceStates(t *testin
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -655,7 +695,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_EC2Error(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -699,7 +739,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidInstanceIDError(t *testi
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -755,7 +795,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_BatchFailFallbackSuccess(t *tes
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -806,7 +846,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidJobID(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -872,7 +912,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_MixedScenario(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
