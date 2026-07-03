@@ -2,9 +2,9 @@
 
 Status and remaining work for the runs-fleet admin UI. The original plan tracked a build-out from basic pool CRUD to a full operational dashboard; most of Phase 1 and the auth migration have since shipped. This document is re-scoped around what is left.
 
-## Status (as of 2026-06-10)
+## Status (as of 2026-07-03)
 
-- **Auth**: ✅ Migrated to Keycloak gatekeeper header trust; legacy Bearer-token auth fully removed.
+- **Auth**: ✅ Native OIDC — the orchestrator is its own OIDC relying party (authorization-code flow + PKCE against any standards-compliant issuer). No external gatekeeper or reverse proxy required; a self-hoster points `RUNS_FLEET_ADMIN_OIDC_*` at their IdP directly. Sessions are a self-contained HMAC-signed cookie (no shared session store, no refresh tokens — fixed TTL, re-login on expiry). Superseded the earlier Keycloak-gatekeeper-header-trust model, which in turn had superseded the original Bearer-token auth.
 - **Phase 1 (read dashboards)**: 🟡 Mostly built. Jobs, Pool status, and Circuit breaker are complete; Instances/Queues/Cost have their list/summary endpoints but not the planned detail/breakdown sub-endpoints; Metrics summary and the Audit viewer are not built.
 - **Phase 2 (write actions)**: 🟡 Essentially unbuilt — one divergent housekeeping endpoint exists.
 - **Phase 3 (advanced)**: ❌ Not started.
@@ -17,7 +17,7 @@ The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedde
 
 | Area | Endpoint(s) / change | Evidence |
 |------|----------------------|----------|
-| Keycloak header auth | Trusts `X-Auth-Request-User` / `-Email` / `-Groups`; no token path | `pkg/admin/auth.go:25-102` |
+| Native OIDC auth | Authorization-code + PKCE flow, HMAC-signed session cookie, `/api/auth/{login,callback,logout,config}` | `pkg/admin/oidc.go`, `pkg/admin/session.go`, `pkg/admin/handler_auth.go`, `pkg/admin/auth.go` |
 | Pool CRUD | `GET/POST /api/pools`, `GET/PUT/DELETE /api/pools/{name}` | `handler.go:118-122` |
 | Pool status enhancement | `current_running` / `current_stopped` / `busy_instances` in pool response | `handler.go:59-61,148,391` |
 | Jobs dashboard | `GET /api/jobs`, `/api/jobs/stats`, `/api/jobs/{id}` | `handler_jobs.go:76-78` |
@@ -127,9 +127,9 @@ All require audit logging once persistence lands.
 
 ## Cross-cutting notes
 
-- **Trust boundary**: Keycloak gatekeeper authenticates; the backend trusts forwarded identity headers and rejects requests without them when `RUNS_FLEET_ADMIN_SECRET` is set (the value is a toggle, not a validated secret).
+- **Trust boundary**: the orchestrator itself is the OIDC relying party (authorization-code + PKCE); it verifies the ID token and mints its own signed session cookie. Auth is required whenever `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL` (and the rest of the required OIDC config) is set; leaving it all unset disables auth (local dev).
 - **Rate limiting**: already enforced per-IP across `/api/`; expensive new endpoints inherit it.
-- **RBAC (future)**: `X-Auth-Request-Groups` is already parsed into context and can gate write actions by group.
+- **RBAC (future)**: session claims already carry `Groups` (from the ID token's groups claim) into request context via `GroupsContextKey`, but nothing currently checks them — every authenticated user can hit every endpoint, including writes. Group-based gating on write endpoints is a real, separate gap, not yet implemented.
 - **Testing**: unit tests with mocked AWS clients; integration tests against test DynamoDB/SQS; Playwright for critical UI flows.
 
 ## New backend files (as Phase 2/remaining lands)

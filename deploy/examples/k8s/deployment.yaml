@@ -123,11 +123,26 @@ spec:
                 secretKeyRef:
                   name: runs-fleet
                   key: cache-secret
-            - name: RUNS_FLEET_ADMIN_SECRET
+            - name: RUNS_FLEET_ADMIN_OIDC_ISSUER_URL
               valueFrom:
                 secretKeyRef:
                   name: runs-fleet
-                  key: admin-secret
+                  key: admin-oidc-issuer-url
+            - name: RUNS_FLEET_ADMIN_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: admin-oidc-client-id
+            - name: RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: admin-oidc-client-secret
+            - name: RUNS_FLEET_ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: runs-fleet
+                  key: admin-session-secret
 
 ---
 apiVersion: v1

@@ -1,5 +1,15 @@
 # Compile Log
 
+## 2026-07-03 (admin UI auth model)
+
+**Topics updated:** admin-ui (patched auth-related sections only, not a full recompile)
+
+**New topics:** none
+
+**Concepts updated:** none
+
+**Notes:** Replaced Keycloak-gatekeeper header-trust auth with native OIDC (authorization-code + PKCE, HMAC-signed session cookie) — the project going open-source meant it could no longer assume every self-hoster runs a gatekeeper proxy. Updated `admin-ui.md`'s Architecture, Talks To, Key Decisions, and Gotchas sections; `docs/CONFIGURATION.md` and `docs/ADMIN_UI_PLAN.md` updated to match. `admin-ui` is one of the 12 topics still due for a full `--full` recompile (unrelated to this change).
+
 ## 2026-07-03
 
 **Topics updated:** cmd-server, compute-providers, queue-processing, job-state-machine, warm-pools, internal-services, github-integration

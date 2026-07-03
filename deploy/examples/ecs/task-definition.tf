@@ -92,7 +92,10 @@ resource "aws_ecs_task_definition" "orchestrator" {
       { name = "RUNS_FLEET_GITHUB_APP_PRIVATE_KEY", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/github-app-private-key" },
       { name = "RUNS_FLEET_GITHUB_WEBHOOK_SECRET", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/webhook-secret" },
       { name = "RUNS_FLEET_CACHE_SECRET", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/cache-secret" },
-      { name = "RUNS_FLEET_ADMIN_SECRET", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/admin-secret" },
+      { name = "RUNS_FLEET_ADMIN_OIDC_ISSUER_URL", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/admin-oidc-issuer-url" },
+      { name = "RUNS_FLEET_ADMIN_OIDC_CLIENT_ID", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/admin-oidc-client-id" },
+      { name = "RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/admin-oidc-client-secret" },
+      { name = "RUNS_FLEET_ADMIN_SESSION_SECRET", valueFrom = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:runs-fleet/admin-session-secret" },
     ]
 
     logConfiguration = {
