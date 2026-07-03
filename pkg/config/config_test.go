@@ -1191,3 +1191,97 @@ func TestValidateMetricsBufferPoolSizeBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateOIDCConfig(t *testing.T) {
+	validCfg := func() *Config {
+		return &Config{
+			OIDCIssuerURL:          "https://idp.example.com",
+			OIDCClientID:           "client-id",
+			OIDCClientSecret:       "client-secret",
+			AdminSessionSecret:     "session-secret",
+			AdminSessionTTLMinutes: 480,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "all empty is valid (auth disabled)",
+			cfg:     &Config{},
+			wantErr: false,
+		},
+		{
+			name:    "fully configured is valid",
+			cfg:     validCfg(),
+			wantErr: false,
+		},
+		{
+			name: "missing client secret with other OIDC fields set",
+			cfg: func() *Config {
+				c := validCfg()
+				c.OIDCClientSecret = ""
+				return c
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET is required",
+		},
+		{
+			name: "missing session secret with other OIDC fields set",
+			cfg: func() *Config {
+				c := validCfg()
+				c.AdminSessionSecret = ""
+				return c
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_ADMIN_SESSION_SECRET is required",
+		},
+		{
+			name: "only session secret set: multiple fields missing, deterministic order",
+			cfg: &Config{
+				AdminSessionSecret: "session-secret",
+			},
+			wantErr: true,
+			// Issuer URL is checked first, so with 3 of 4 fields missing the
+			// error always names it, not a random one of the three (checks
+			// are explicit, not a randomized map iteration).
+			errMsg: "RUNS_FLEET_ADMIN_OIDC_ISSUER_URL is required once admin OIDC auth is configured",
+		},
+		{
+			name: "issuer URL not https",
+			cfg: func() *Config {
+				c := validCfg()
+				c.OIDCIssuerURL = "http://idp.example.com"
+				return c
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_ADMIN_OIDC_ISSUER_URL",
+		},
+		{
+			name: "zero session TTL",
+			cfg: func() *Config {
+				c := validCfg()
+				c.AdminSessionTTLMinutes = 0
+				return c
+			}(),
+			wantErr: true,
+			errMsg:  "RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES must be greater than 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.validateOIDCConfig()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateOIDCConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("validateOIDCConfig() error = %v, want error containing %q", err, tt.errMsg)
+			}
+		})
+	}
+}

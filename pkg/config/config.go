@@ -64,9 +64,19 @@ type Config struct {
 
 	CacheSecret    string
 	BaseURL        string
-	AdminSecret    string
 	AdminRateLimit int
 	TraceUIURL     string
+
+	// Admin OIDC authentication. Auth is required when OIDCIssuerURL is set;
+	// left entirely empty, the admin API runs unauthenticated (local dev).
+	OIDCIssuerURL          string
+	OIDCClientID           string
+	OIDCClientSecret       string
+	OIDCRedirectURL        string // defaults to {BaseURL}/api/auth/callback if unset
+	OIDCScopes             []string
+	OIDCGroupsClaim        string
+	AdminSessionSecret     string
+	AdminSessionTTLMinutes int
 
 	// Metrics configuration
 	MetricsCloudWatchEnabled        bool     // Enable CloudWatch metrics (default: true)
@@ -155,9 +165,17 @@ func Load() (*Config, error) {
 
 		CacheSecret:    getEnv("RUNS_FLEET_CACHE_SECRET", ""),
 		BaseURL:        getEnv("RUNS_FLEET_BASE_URL", ""),
-		AdminSecret:    getEnv("RUNS_FLEET_ADMIN_SECRET", ""),
 		AdminRateLimit: getEnvIntDefault("RUNS_FLEET_ADMIN_RATE_LIMIT", 60),
 		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
+
+		OIDCIssuerURL:          getEnv("RUNS_FLEET_ADMIN_OIDC_ISSUER_URL", ""),
+		OIDCClientID:           getEnv("RUNS_FLEET_ADMIN_OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:       getEnv("RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURL:        getEnv("RUNS_FLEET_ADMIN_OIDC_REDIRECT_URL", ""),
+		OIDCScopes:             splitAndFilter(getEnv("RUNS_FLEET_ADMIN_OIDC_SCOPES", "openid,profile,email")),
+		OIDCGroupsClaim:        getEnv("RUNS_FLEET_ADMIN_OIDC_GROUPS_CLAIM", "groups"),
+		AdminSessionSecret:     getEnv("RUNS_FLEET_ADMIN_SESSION_SECRET", ""),
+		AdminSessionTTLMinutes: getEnvIntDefault("RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES", 480),
 
 		// Metrics
 		MetricsCloudWatchEnabled:        getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
@@ -242,6 +260,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateOIDCConfig(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -322,6 +344,39 @@ func (c *Config) validateVaultAuthConfig() error {
 	default:
 		return fmt.Errorf("VAULT_AUTH_METHOD must be 'aws', 'kubernetes', 'k8s', 'jwt', 'approle', or 'token', got %q", c.VaultAuthMethod)
 	}
+	return nil
+}
+
+// validateOIDCConfig validates admin OIDC configuration. Auth is off (all
+// fields empty) or fully configured (all required fields set); a partial
+// configuration is a startup error so a typo doesn't silently disable auth.
+// Checks are explicit (not a map + loop) so the reported missing field is
+// deterministic when more than one is empty.
+func (c *Config) validateOIDCConfig() error {
+	if c.OIDCIssuerURL == "" && c.OIDCClientID == "" && c.OIDCClientSecret == "" && c.AdminSessionSecret == "" {
+		return nil
+	}
+
+	if c.OIDCIssuerURL == "" {
+		return fmt.Errorf("RUNS_FLEET_ADMIN_OIDC_ISSUER_URL is required once admin OIDC auth is configured (another OIDC env var is set)")
+	}
+	if c.OIDCClientID == "" {
+		return fmt.Errorf("RUNS_FLEET_ADMIN_OIDC_CLIENT_ID is required once admin OIDC auth is configured (another OIDC env var is set)")
+	}
+	if c.OIDCClientSecret == "" {
+		return fmt.Errorf("RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET is required once admin OIDC auth is configured (another OIDC env var is set)")
+	}
+	if c.AdminSessionSecret == "" {
+		return fmt.Errorf("RUNS_FLEET_ADMIN_SESSION_SECRET is required once admin OIDC auth is configured (another OIDC env var is set)")
+	}
+
+	if err := validateBaseURL(c.OIDCIssuerURL); err != nil {
+		return fmt.Errorf("RUNS_FLEET_ADMIN_OIDC_ISSUER_URL: %w", err)
+	}
+	if c.AdminSessionTTLMinutes <= 0 {
+		return fmt.Errorf("RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES must be greater than 0, got %d", c.AdminSessionTTLMinutes)
+	}
+
 	return nil
 }
 
