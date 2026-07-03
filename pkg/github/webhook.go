@@ -1,4 +1,6 @@
-// Package github provides webhook validation and label parsing for GitHub Actions workflow jobs.
+// Package github provides a GitHub App API client (auth, registration
+// tokens, workflow-job status), webhook validation, and label parsing for
+// GitHub Actions workflow jobs.
 package github
 
 import (

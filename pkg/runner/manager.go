@@ -1,3 +1,5 @@
+// Package runner manages runner registration and lifecycle, delegating
+// GitHub API calls to pkg/github.
 package runner
 
 import (
@@ -7,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache"
+	"github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
@@ -20,15 +23,22 @@ type ManagerConfig struct {
 	TerminationQueueURL string
 }
 
+// registrationTokenGetter is the subset of a git-hosting provider's API that
+// Manager needs to register a runner. Satisfied by *github.Client today; a
+// future provider can satisfy it without Manager changing.
+type registrationTokenGetter interface {
+	GetRegistrationToken(ctx context.Context, repo string) (*github.RegistrationResult, error)
+}
+
 // Manager handles runner registration and secrets configuration.
 type Manager struct {
-	github       *GitHubClient
+	github       registrationTokenGetter
 	secretsStore secrets.Store
 	config       ManagerConfig
 }
 
 // NewManager creates a new runner manager.
-func NewManager(githubClient *GitHubClient, secretsStore secrets.Store, config ManagerConfig) *Manager {
+func NewManager(githubClient registrationTokenGetter, secretsStore secrets.Store, config ManagerConfig) *Manager {
 	return &Manager{
 		github:       githubClient,
 		secretsStore: secretsStore,

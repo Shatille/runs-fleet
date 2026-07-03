@@ -50,7 +50,7 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/db/` - DynamoDB state management (jobs, pools, locks)
 - `pkg/events/` - EventBridge event processing (spot interruptions)
 - `pkg/fleet/` - EC2 fleet orchestration (spot strategy, launch templates)
-- `pkg/github/` - GitHub API client (webhooks, JIT tokens, GraphQL)
+- `pkg/github/` - GitHub App API client (auth, registration tokens, workflow-job status) plus webhook validation and label parsing
 - `pkg/gitops/` - GitOps integration for pool configuration
 - `pkg/housekeeping/` - Cleanup tasks (orphaned instances, stale SSM, old jobs)
 - `pkg/logging/` - Structured logging (slog JSON output)
@@ -58,7 +58,7 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/pools/` - Warm pool reconciliation (hot/stopped instances)
 - `pkg/provider/` - Compute provider abstraction (EC2-only impl currently)
 - `pkg/queue/` - Queue abstraction (SQS implementation)
-- `pkg/runner/` - Runner lifecycle management
+- `pkg/runner/` - Runner lifecycle management (registration orchestration, secrets config), via a GitHub client injected through a small interface
 - `pkg/secrets/` - Secrets backend abstraction (SSM, Vault)
 - `pkg/termination/` - Instance termination notifications
 - `pkg/tracing/` - OpenTelemetry SDK, W3C TraceContext propagation, span instrumentation

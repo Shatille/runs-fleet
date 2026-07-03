@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
@@ -59,18 +60,18 @@ func (m *mockSecretsStore) List(ctx context.Context) ([]string, error) {
 	return nil, nil
 }
 
-// mockGitHubClientForManager implements the GitHub client interface for manager testing.
-type mockGitHubClientForManager struct {
+// mockGitHubClient implements registrationTokenGetter for manager testing.
+type mockGitHubClient struct {
 	regToken string
 	regErr   error
 	isOrg    bool
 }
 
-func (m *mockGitHubClientForManager) GetRegistrationToken(_ context.Context, _ string) (*RegistrationResult, error) {
+func (m *mockGitHubClient) GetRegistrationToken(_ context.Context, _ string) (*github.RegistrationResult, error) {
 	if m.regErr != nil {
 		return nil, m.regErr
 	}
-	return &RegistrationResult{Token: m.regToken, IsOrg: m.isOrg}, nil
+	return &github.RegistrationResult{Token: m.regToken, IsOrg: m.isOrg}, nil
 }
 
 func TestNewManager(t *testing.T) {
@@ -151,6 +152,358 @@ func TestManager_PrepareRunner_InvalidRepoFormat(t *testing.T) {
 				t.Errorf("expected error for repo '%s'", tt.repo)
 			}
 		})
+	}
+}
+
+func TestManager_PrepareRunner_SpecialRepoNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		repo  string
+		valid bool
+	}{
+		{"repo with hyphen", "my-org/my-repo", true},
+		{"repo with underscore", "my_org/my_repo", true},
+		{"repo with numbers", "org123/repo456", true},
+		{"single character", "a/b", true},
+		{"empty repo", "", false},
+		{"no slash", "noslash", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockStore := &mockSecretsStore{}
+			manager := NewManager(&mockGitHubClient{regToken: "tok"}, mockStore, ManagerConfig{})
+
+			req := PrepareRunnerRequest{
+				InstanceID: "i-12345",
+				JobID:      "job-123",
+				Repo:       tt.repo,
+				Labels:     []string{"self-hosted"},
+			}
+
+			err := manager.PrepareRunner(context.Background(), req)
+			if tt.valid && err != nil {
+				t.Errorf("repo %q: unexpected error: %v", tt.repo, err)
+			}
+			if !tt.valid && err == nil {
+				t.Errorf("repo %q: expected error", tt.repo)
+			}
+		})
+	}
+}
+
+func TestManager_PrepareRunner_Success(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regToken: "test-registration-token",
+		isOrg:    true,
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret:         "test-secret",
+		BaseURL:             testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-test-12345",
+		JobID:      "job-success-123",
+		RunID:      "run-success-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted", "linux"},
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+
+	if mockStore.putCalls != 1 {
+		t.Errorf("expected 1 put call, got %d", mockStore.putCalls)
+	}
+	if mockStore.lastPutID != "i-test-12345" {
+		t.Errorf("runner ID = %s, want i-test-12345", mockStore.lastPutID)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+	if storedConfig == nil {
+		t.Fatal("stored config is nil")
+	}
+
+	if storedConfig.Org != "testorg" {
+		t.Errorf("Org = %s, want testorg", storedConfig.Org)
+	}
+	if storedConfig.Repo != "testorg/testrepo" {
+		t.Errorf("Repo = %s, want testorg/testrepo", storedConfig.Repo)
+	}
+	if storedConfig.JITToken != "test-registration-token" {
+		t.Errorf("JITToken = %s, want test-registration-token", storedConfig.JITToken)
+	}
+	if storedConfig.JobID != "job-success-123" {
+		t.Errorf("JobID = %s, want job-success-123", storedConfig.JobID)
+	}
+	if storedConfig.CacheURL != testCacheURL {
+		t.Errorf("CacheURL = %s, want %s", storedConfig.CacheURL, testCacheURL)
+	}
+	if storedConfig.CacheToken == "" {
+		t.Error("expected a non-empty cache token when CacheSecret is set")
+	}
+	if !storedConfig.IsOrg {
+		t.Error("IsOrg should be true")
+	}
+}
+
+func TestManager_PrepareRunner_GitHubError(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regErr: errors.New("GitHub API rate limit exceeded"),
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret:         "test-secret",
+		BaseURL:             testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-gh-error-12345",
+		JobID:      "job-gh-error-123",
+		RunID:      "run-gh-error-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted"},
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err == nil {
+		t.Error("expected error from GitHub client")
+	}
+	if !contains(err.Error(), "registration token") {
+		t.Errorf("expected error to mention 'registration token', got: %s", err.Error())
+	}
+
+	if mockStore.putCalls != 0 {
+		t.Errorf("secrets store should not be called when GitHub fails, got %d calls", mockStore.putCalls)
+	}
+}
+
+func TestManager_PrepareRunner_StoreError(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{
+		putFunc: func(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
+			return errors.New("secrets store unavailable")
+		},
+	}
+	mockGH := &mockGitHubClient{
+		regToken: "test-token",
+		isOrg:    false,
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret:         "",
+		BaseURL:             testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-store-error-12345",
+		JobID:      "job-store-error-123",
+		RunID:      "run-store-error-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted"},
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err == nil {
+		t.Error("expected error from secrets store")
+	}
+	if !contains(err.Error(), "store") {
+		t.Errorf("expected error to mention 'store', got: %s", err.Error())
+	}
+}
+
+func TestManager_PrepareRunner_NoCacheSecret(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regToken: "test-token",
+		isOrg:    false,
+	}
+
+	// No cache secret configured
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret:         "",
+		BaseURL:             testCacheURL,
+		TerminationQueueURL: testTerminationQueueURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-no-cache-12345",
+		JobID:      "job-no-cache-123",
+		RunID:      "run-no-cache-456",
+		Repo:       "testorg/testrepo",
+		Labels:     []string{"self-hosted"},
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+	if storedConfig.CacheToken != "" {
+		t.Errorf("CacheToken should be empty when CacheSecret is not set, got: %s", storedConfig.CacheToken)
+	}
+}
+
+func TestManager_PrepareRunner_UserRepo(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regToken: "user-token",
+		isOrg:    false, // User, not org
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret: "secret",
+		BaseURL:     testCacheURL,
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-user-12345",
+		JobID:      "job-user-123",
+		RunID:      "run-user-456",
+		Repo:       "myuser/myrepo",
+		Labels:     []string{"self-hosted", "linux", "x64"},
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+
+	if storedConfig.Org != "myuser" {
+		t.Errorf("Org = %s, want myuser", storedConfig.Org)
+	}
+	if storedConfig.IsOrg {
+		t.Error("IsOrg should be false for user repo")
+	}
+}
+
+func TestManager_PrepareRunner_MultipleLabels(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regToken: "test-token",
+		isOrg:    true,
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret: "secret",
+	})
+
+	labels := []string{"self-hosted", "linux", "arm64", "gpu", "custom-label"}
+	req := PrepareRunnerRequest{
+		InstanceID: "i-labels-12345",
+		JobID:      "job-labels-123",
+		RunID:      "run-labels-456",
+		Repo:       "org/repo",
+		Labels:     labels,
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+
+	if len(storedConfig.Labels) != len(labels) {
+		t.Errorf("Labels length = %d, want %d", len(storedConfig.Labels), len(labels))
+	}
+	for i, label := range labels {
+		if storedConfig.Labels[i] != label {
+			t.Errorf("Labels[%d] = %s, want %s", i, storedConfig.Labels[i], label)
+		}
+	}
+}
+
+func TestManager_PrepareRunner_RunnerName(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regToken: "test-token",
+		isOrg:    true,
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		CacheSecret: "secret",
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-12345",
+		JobID:      "99999",
+		RunID:      "run-456",
+		Repo:       "org/myapp",
+		Labels:     []string{"self-hosted"},
+		Pool:       "default",
+		Conditions: "arm64-cpu4",
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+	if storedConfig.RunnerName != "runs-fleet-runner-default-99999" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-99999")
+	}
+}
+
+func TestManager_PrepareRunner_RunnerName_ColdStart(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{
+		regToken: "test-token",
+		isOrg:    true,
+	}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-12345",
+		JobID:      "88888",
+		RunID:      "run-456",
+		Repo:       "org/myapp",
+		Labels:     []string{"self-hosted"},
+		Pool:       "",
+		Conditions: "amd64-cpu8",
+	}
+
+	err := manager.PrepareRunner(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+
+	storedConfig := mockStore.lastPutCfg
+	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8-88888" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8-88888")
 	}
 }
 
@@ -286,426 +639,6 @@ func contains(s, substr string) bool {
 	return false
 }
 
-func TestMockGitHubClientForManager(t *testing.T) {
-	t.Parallel()
-
-	mock := &mockGitHubClientForManager{
-		regToken: "mock-token",
-		isOrg:    true,
-	}
-
-	result, err := mock.GetRegistrationToken(context.Background(), "org/repo")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result.Token != "mock-token" {
-		t.Errorf("Token = %s, want mock-token", result.Token)
-	}
-	if !result.IsOrg {
-		t.Error("IsOrg should be true")
-	}
-}
-
-func TestMockGitHubClientForManager_Error(t *testing.T) {
-	t.Parallel()
-
-	mock := &mockGitHubClientForManager{
-		regErr: errors.New("mock error"),
-	}
-
-	_, err := mock.GetRegistrationToken(context.Background(), "org/repo")
-	if err == nil {
-		t.Error("expected error from mock")
-	}
-}
-
-// testableManager wraps Manager to allow direct field access for testing.
-type testableManager struct {
-	Manager
-	ghClient *mockGitHubClientForManager
-}
-
-func newTestableManager(store secrets.Store, ghClient *mockGitHubClientForManager, config ManagerConfig) *testableManager {
-	return &testableManager{
-		Manager: Manager{
-			secretsStore: store,
-			config:       config,
-		},
-		ghClient: ghClient,
-	}
-}
-
-// PrepareRunnerWithMock is a test helper that mimics PrepareRunner but uses mock GitHub client.
-func (tm *testableManager) PrepareRunnerWithMock(ctx context.Context, req PrepareRunnerRequest) error {
-	// Extract org from repo string (owner/repo format, required)
-	if req.Repo == "" {
-		return errors.New("repo is required (owner/repo format)")
-	}
-	parts := splitRepo(req.Repo)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return errors.New("invalid repo format, expected owner/repo: " + req.Repo)
-	}
-	org := parts[0]
-	repoName := parts[1]
-
-	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions, req.JobID)
-
-	// Get registration token from mock GitHub client
-	regResult, err := tm.ghClient.GetRegistrationToken(ctx, req.Repo)
-	if err != nil {
-		return errors.New("failed to get registration token: " + err.Error())
-	}
-
-	// Generate cache token with repository scope for cache isolation
-	cacheToken := ""
-	if tm.config.CacheSecret != "" {
-		cacheToken = "generated-cache-token-" + req.JobID
-	}
-
-	// Build runner config with dynamic org from repo
-	config := &secrets.RunnerConfig{
-		Org:                 org,
-		Repo:                req.Repo,
-		RunID:               req.RunID,
-		JITToken:            regResult.Token,
-		Labels:              req.Labels,
-		RunnerName:          runnerName,
-		JobID:               req.JobID,
-		CacheToken:          cacheToken,
-		CacheURL:            tm.config.BaseURL,
-		TerminationQueueURL: tm.config.TerminationQueueURL,
-		IsOrg:               regResult.IsOrg,
-	}
-
-	// Store in secrets backend
-	if err := tm.secretsStore.Put(ctx, req.InstanceID, config); err != nil {
-		return errors.New("failed to store runner config: " + err.Error())
-	}
-
-	return nil
-}
-
-func splitRepo(repo string) []string {
-	for i := 0; i < len(repo); i++ {
-		if repo[i] == '/' {
-			return []string{repo[:i], repo[i+1:]}
-		}
-	}
-	return []string{repo}
-}
-
-func TestManager_PrepareRunnerWithMock_Success(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "test-registration-token",
-		isOrg:    true,
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret:         "test-secret",
-		BaseURL:             testCacheURL,
-		TerminationQueueURL: testTerminationQueueURL,
-	})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-test-12345",
-		JobID:      "job-success-123",
-		RunID:      "run-success-456",
-		Repo:       "testorg/testrepo",
-		Labels:     []string{"self-hosted", "linux"},
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err != nil {
-		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
-	}
-
-	// Verify secrets store was called
-	if mockStore.putCalls != 1 {
-		t.Errorf("expected 1 put call, got %d", mockStore.putCalls)
-	}
-
-	// Verify the runner ID
-	if mockStore.lastPutID != "i-test-12345" {
-		t.Errorf("runner ID = %s, want i-test-12345", mockStore.lastPutID)
-	}
-
-	// Verify the stored config contains expected values
-	storedConfig := mockStore.lastPutCfg
-	if storedConfig == nil {
-		t.Fatal("stored config is nil")
-		return
-	}
-
-	if storedConfig.Org != "testorg" {
-		t.Errorf("Org = %s, want testorg", storedConfig.Org)
-	}
-	if storedConfig.Repo != "testorg/testrepo" {
-		t.Errorf("Repo = %s, want testorg/testrepo", storedConfig.Repo)
-	}
-	if storedConfig.JITToken != "test-registration-token" {
-		t.Errorf("JITToken = %s, want test-registration-token", storedConfig.JITToken)
-	}
-	if storedConfig.JobID != "job-success-123" {
-		t.Errorf("JobID = %s, want job-success-123", storedConfig.JobID)
-	}
-	if storedConfig.CacheURL != testCacheURL {
-		t.Errorf("CacheURL = %s, want %s", storedConfig.CacheURL, testCacheURL)
-	}
-	if !storedConfig.IsOrg {
-		t.Error("IsOrg should be true")
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_GitHubError(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regErr: errors.New("GitHub API rate limit exceeded"),
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret:         "test-secret",
-		BaseURL:             testCacheURL,
-		TerminationQueueURL: testTerminationQueueURL,
-	})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-gh-error-12345",
-		JobID:      "job-gh-error-123",
-		RunID:      "run-gh-error-456",
-		Repo:       "testorg/testrepo",
-		Labels:     []string{"self-hosted"},
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err == nil {
-		t.Error("expected error from GitHub client")
-	}
-	if !contains(err.Error(), "registration token") {
-		t.Errorf("expected error to mention 'registration token', got: %s", err.Error())
-	}
-
-	// Secrets store should not be called since GitHub failed first
-	if mockStore.putCalls != 0 {
-		t.Errorf("secrets store should not be called when GitHub fails, got %d calls", mockStore.putCalls)
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_StoreError(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{
-		putFunc: func(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
-			return errors.New("secrets store unavailable")
-		},
-	}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "test-token",
-		isOrg:    false,
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret:         "",
-		BaseURL:             testCacheURL,
-		TerminationQueueURL: testTerminationQueueURL,
-	})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-store-error-12345",
-		JobID:      "job-store-error-123",
-		RunID:      "run-store-error-456",
-		Repo:       "testorg/testrepo",
-		Labels:     []string{"self-hosted"},
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err == nil {
-		t.Error("expected error from secrets store")
-	}
-	if !contains(err.Error(), "store") {
-		t.Errorf("expected error to mention 'store', got: %s", err.Error())
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_NoCacheSecret(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "test-token",
-		isOrg:    false,
-	}
-
-	// No cache secret configured
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret:         "",
-		BaseURL:             testCacheURL,
-		TerminationQueueURL: testTerminationQueueURL,
-	})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-no-cache-12345",
-		JobID:      "job-no-cache-123",
-		RunID:      "run-no-cache-456",
-		Repo:       "testorg/testrepo",
-		Labels:     []string{"self-hosted"},
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err != nil {
-		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
-	}
-
-	// Verify stored config has empty cache token
-	storedConfig := mockStore.lastPutCfg
-	if storedConfig.CacheToken != "" {
-		t.Errorf("CacheToken should be empty when CacheSecret is not set, got: %s", storedConfig.CacheToken)
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_UserRepo(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "user-token",
-		isOrg:    false, // User, not org
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret: "secret",
-		BaseURL:     testCacheURL,
-	})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-user-12345",
-		JobID:      "job-user-123",
-		RunID:      "run-user-456",
-		Repo:       "myuser/myrepo",
-		Labels:     []string{"self-hosted", "linux", "x64"},
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err != nil {
-		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
-	}
-
-	storedConfig := mockStore.lastPutCfg
-
-	if storedConfig.Org != "myuser" {
-		t.Errorf("Org = %s, want myuser", storedConfig.Org)
-	}
-	if storedConfig.IsOrg {
-		t.Error("IsOrg should be false for user repo")
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_MultipleLabels(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "test-token",
-		isOrg:    true,
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret: "secret",
-	})
-
-	labels := []string{"self-hosted", "linux", "arm64", "gpu", "custom-label"}
-	req := PrepareRunnerRequest{
-		InstanceID: "i-labels-12345",
-		JobID:      "job-labels-123",
-		RunID:      "run-labels-456",
-		Repo:       "org/repo",
-		Labels:     labels,
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err != nil {
-		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
-	}
-
-	storedConfig := mockStore.lastPutCfg
-
-	if len(storedConfig.Labels) != len(labels) {
-		t.Errorf("Labels length = %d, want %d", len(storedConfig.Labels), len(labels))
-	}
-	for i, label := range labels {
-		if storedConfig.Labels[i] != label {
-			t.Errorf("Labels[%d] = %s, want %s", i, storedConfig.Labels[i], label)
-		}
-	}
-}
-
-func TestManager_PrepareRunner_SpecialRepoNames(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		repo       string
-		validParts bool
-	}{
-		{"repo with hyphen", "my-org/my-repo", true},
-		{"repo with underscore", "my_org/my_repo", true},
-		{"repo with numbers", "org123/repo456", true},
-		{"single character", "a/b", true},
-		{"empty repo", "", false},
-		{"no slash", "noslash", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			parts := splitRepo(tt.repo)
-			hasValidFormat := len(parts) == 2 && parts[0] != "" && parts[1] != ""
-			if hasValidFormat != tt.validParts {
-				t.Errorf("repo %q: validParts = %v, want %v", tt.repo, hasValidFormat, tt.validParts)
-			}
-		})
-	}
-}
-
-func TestSplitRepo(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input    string
-		expected []string
-	}{
-		{"owner/repo", []string{"owner", "repo"}},
-		{"org/project", []string{"org", "project"}},
-		{"a/b", []string{"a", "b"}},
-		{"noslash", []string{"noslash"}},
-		{"", []string{""}},
-		{"multiple/slashes/here", []string{"multiple", "slashes/here"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			t.Parallel()
-
-			result := splitRepo(tt.input)
-			if len(result) != len(tt.expected) {
-				t.Errorf("splitRepo(%q) length = %d, want %d", tt.input, len(result), len(tt.expected))
-				return
-			}
-			for i := range result {
-				if result[i] != tt.expected[i] {
-					t.Errorf("splitRepo(%q)[%d] = %q, want %q", tt.input, i, result[i], tt.expected[i])
-				}
-			}
-		})
-	}
-}
-
 func TestBuildRunnerName(t *testing.T) {
 	t.Parallel()
 
@@ -810,96 +743,5 @@ func TestBuildRunnerName(t *testing.T) {
 	name2 := buildRunnerName("", "cygnus", "cpu4", "65558617355")
 	if name1 == name2 {
 		t.Errorf("different job IDs should produce different names: %q == %q", name1, name2)
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_RunnerName(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "test-token",
-		isOrg:    true,
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{
-		CacheSecret: "secret",
-	})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-12345",
-		JobID:      "99999",
-		RunID:      "run-456",
-		Repo:       "org/myapp",
-		Labels:     []string{"self-hosted"},
-		Pool:       "default",
-		Conditions: "arm64-cpu4",
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err != nil {
-		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
-	}
-
-	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-default-99999" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-99999")
-	}
-}
-
-func TestManager_PrepareRunnerWithMock_RunnerName_ColdStart(t *testing.T) {
-	t.Parallel()
-
-	mockStore := &mockSecretsStore{}
-	mockGH := &mockGitHubClientForManager{
-		regToken: "test-token",
-		isOrg:    true,
-	}
-
-	tm := newTestableManager(mockStore, mockGH, ManagerConfig{})
-
-	req := PrepareRunnerRequest{
-		InstanceID: "i-12345",
-		JobID:      "88888",
-		RunID:      "run-456",
-		Repo:       "org/myapp",
-		Labels:     []string{"self-hosted"},
-		Pool:       "",
-		Conditions: "amd64-cpu8",
-	}
-
-	err := tm.PrepareRunnerWithMock(context.Background(), req)
-	if err != nil {
-		t.Fatalf("PrepareRunnerWithMock() error = %v", err)
-	}
-
-	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8-88888" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8-88888")
-	}
-}
-
-func TestRegistrationResult_Fields(t *testing.T) {
-	t.Parallel()
-
-	result := &RegistrationResult{
-		Token: "test-token-12345",
-		IsOrg: true,
-	}
-
-	if result.Token != "test-token-12345" {
-		t.Errorf("Token = %s, want test-token-12345", result.Token)
-	}
-	if !result.IsOrg {
-		t.Error("IsOrg should be true")
-	}
-
-	result2 := &RegistrationResult{
-		Token: "user-token",
-		IsOrg: false,
-	}
-
-	if result2.IsOrg {
-		t.Error("IsOrg should be false")
 	}
 }
