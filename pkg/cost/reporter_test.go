@@ -88,16 +88,16 @@ func (m *mockPriceFetcher) GetPrice(ctx context.Context, instanceType string) (f
 
 func TestReporter_GenerateDailyReport(t *testing.T) {
 	tests := []struct {
-		name           string
-		cwClient       *mockCloudWatchClient
-		s3Client       *mockS3Client
-		snsClient      *mockSNSClient
-		priceFetcher   *mockPriceFetcher
-		snsTopicARN    string
-		reportsBucket  string
-		wantErr        bool
-		wantS3Called   bool
-		wantSNSCalled  bool
+		name          string
+		cwClient      *mockCloudWatchClient
+		s3Client      *mockS3Client
+		snsClient     *mockSNSClient
+		priceFetcher  *mockPriceFetcher
+		snsTopicARN   string
+		reportsBucket string
+		wantErr       bool
+		wantS3Called  bool
+		wantSNSCalled bool
 	}{
 		{
 			name:          "successful report generation with S3 and SNS",

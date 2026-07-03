@@ -4,9 +4,7 @@ export PATH="/usr/local/bin:$PATH"
 # shellcheck source-path=SCRIPTDIR source=boot-lib.sh
 source /opt/runs-fleet/boot-lib.sh
 
-TOKEN=$(imds_token) || { echo "ERROR: Failed to fetch IMDSv2 token"; exit 1; }
-INSTANCE_ID=$(imds_get meta-data/instance-id "$TOKEN") || { echo "ERROR: Failed to fetch instance-id"; exit 1; }
-REGION=$(imds_get meta-data/placement/region "$TOKEN") || { echo "ERROR: Failed to fetch region"; exit 1; }
+imds_bootstrap || exit 1
 
 # Fail closed: a failed DescribeTags must not be read as "no backend tag" and
 # silently fall through to the SSM default, booting the agent on the wrong

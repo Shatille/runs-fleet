@@ -101,36 +101,32 @@ func NewSQSTelemetry(cfg aws.Config, queueURL string, logger Logger) *SQSTelemet
 	}
 }
 
-// Telemetry is an alias for SQSTelemetry for backward compatibility.
-// Deprecated: Use SQSTelemetry instead.
-type Telemetry = SQSTelemetry
-
 // SendJobStarted sends a job started notification.
-func (t *Telemetry) SendJobStarted(ctx context.Context, status JobStatus) error {
+func (t *SQSTelemetry) SendJobStarted(ctx context.Context, status JobStatus) error {
 	status.Status = StatusStarted
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobCompleted sends a job completion notification.
-func (t *Telemetry) SendJobCompleted(ctx context.Context, status JobStatus) error {
+func (t *SQSTelemetry) SendJobCompleted(ctx context.Context, status JobStatus) error {
 	status.Status = DetermineCompletionStatus(status.InterruptedBy, status.ExitCode)
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobTimeout sends a job timeout notification.
-func (t *Telemetry) SendJobTimeout(ctx context.Context, status JobStatus) error {
+func (t *SQSTelemetry) SendJobTimeout(ctx context.Context, status JobStatus) error {
 	status.Status = StatusTimeout
 	return t.sendMessage(ctx, status)
 }
 
 // SendJobFailure sends a job failure notification.
-func (t *Telemetry) SendJobFailure(ctx context.Context, status JobStatus) error {
+func (t *SQSTelemetry) SendJobFailure(ctx context.Context, status JobStatus) error {
 	status.Status = StatusFailure
 	return t.sendMessage(ctx, status)
 }
 
 // sendMessage sends a job status message to SQS.
-func (t *Telemetry) sendMessage(ctx context.Context, status JobStatus) error {
+func (t *SQSTelemetry) sendMessage(ctx context.Context, status JobStatus) error {
 	body, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("failed to marshal status: %w", err)
@@ -166,7 +162,7 @@ func (t *Telemetry) sendMessage(ctx context.Context, status JobStatus) error {
 }
 
 // SendWithTimeout sends a message with a timeout.
-func (t *Telemetry) SendWithTimeout(status JobStatus, timeout time.Duration) error {
+func (t *SQSTelemetry) SendWithTimeout(status JobStatus, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 

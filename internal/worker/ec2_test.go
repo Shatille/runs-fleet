@@ -617,17 +617,17 @@ func (m *mockWarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *que
 // Embeds NoopPublisher to satisfy the full Publisher interface.
 type mockMetricsPublisher struct {
 	metrics.NoopPublisher
-	mu                 sync.Mutex
-	warmPoolHitCalled  bool
-	coldStartCalled    bool
-	queueDepthDelta    float64
-	queueReceiveResult string
+	mu                     sync.Mutex
+	warmPoolHitCalled      bool
+	coldStartCalled        bool
+	queueDepthDelta        float64
+	queueReceiveResult     string
 	requeuedReason         string
 	schedulingFailures     int
 	schedulingFailureTypes []string
 	dedupPaths             []string
-	jobWaits           []jobWaitCall
-	processingCalls    []processingCall
+	jobWaits               []jobWaitCall
+	processingCalls        []processingCall
 }
 
 type jobWaitCall struct {

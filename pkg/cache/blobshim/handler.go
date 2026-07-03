@@ -26,9 +26,15 @@ import (
 const PathPrefix = "/blob/"
 
 const (
-	msgBadTarget = "bad blob target"
-	msgUpstream  = "upstream error"
-	msgStaging   = "staging error"
+	msgBadTarget        = "bad blob target"
+	msgUpstream         = "upstream error"
+	msgStaging          = "staging error"
+	msgNotFound         = "not found"
+	msgUnsupportedComp  = "unsupported comp"
+	msgMethodNotAllowed = "method not allowed"
+	msgMissingBlockID   = "missing blockid"
+	msgInvalidBlockList = "invalid block list"
+	msgUnknownBlock     = "unknown block"
 )
 
 // Handler serves the Azure Block Blob subset the v2 cache client uses and
@@ -93,7 +99,7 @@ func allowedTarget(raw string) bool {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, PathPrefix) {
-		http.Error(w, "not found", http.StatusNotFound)
+		http.Error(w, msgNotFound, http.StatusNotFound)
 		return
 	}
 	token := strings.TrimPrefix(r.URL.Path, PathPrefix)
@@ -113,21 +119,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "":
 			h.putBlob(w, r, target)
 		default:
-			http.Error(w, "unsupported comp", http.StatusBadRequest)
+			http.Error(w, msgUnsupportedComp, http.StatusBadRequest)
 		}
 	case http.MethodGet:
 		h.getBlob(w, r, target)
 	case http.MethodHead:
 		h.headBlob(w, r, target)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, msgMethodNotAllowed, http.StatusMethodNotAllowed)
 	}
 }
 
 func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, token string) {
 	blockID := r.URL.Query().Get("blockid")
 	if blockID == "" {
-		http.Error(w, "missing blockid", http.StatusBadRequest)
+		http.Error(w, msgMissingBlockID, http.StatusBadRequest)
 		return
 	}
 	dir := h.blockDir(token)
@@ -151,7 +157,7 @@ func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, token strin
 func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token, target string) {
 	ids, err := parseBlockList(r.Body)
 	if err != nil {
-		http.Error(w, "invalid block list", http.StatusBadRequest)
+		http.Error(w, msgInvalidBlockList, http.StatusBadRequest)
 		return
 	}
 	dir := h.blockDir(token)
@@ -167,7 +173,7 @@ func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token,
 		f, openErr := os.Open(filepath.Join(dir, encodeBlockID(id)))
 		if openErr != nil {
 			cleanup()
-			http.Error(w, "unknown block", http.StatusBadRequest)
+			http.Error(w, msgUnknownBlock, http.StatusBadRequest)
 			return
 		}
 		info, statErr := f.Stat()
@@ -271,7 +277,7 @@ func (h *Handler) headBlob(w http.ResponseWriter, r *http.Request, target string
 	// object, and 416 on a zero-byte object (a valid, if rare, cache). Treat
 	// 416 as size 0; any other non-2xx is a genuine miss.
 	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable && resp.StatusCode/100 != 2 {
-		http.Error(w, "not found", http.StatusNotFound)
+		http.Error(w, msgNotFound, http.StatusNotFound)
 		return
 	}
 	size := int64(0)

@@ -40,6 +40,16 @@ const (
 // in tests) rather than as a mutable global.
 const defaultBootstrapGracePeriod = 3 * time.Minute
 
+// reconcileInterval is how often ReconcileLoop reconciles every pool.
+const reconcileInterval = 60 * time.Second
+
+// reconcileLockTTL bounds a per-pool reconcile lock. It exceeds reconcileInterval
+// so a lock left behind by a crashed owner is reclaimable within one interval
+// rather than deadlocking the pool; the buffer also absorbs clock skew and a
+// reconcile that slightly overruns its interval. Kept derived from
+// reconcileInterval so the two can't drift out of that ordering.
+const reconcileLockTTL = reconcileInterval + 5*time.Second
+
 // DBClient defines DynamoDB operations for pool configuration.
 //
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -250,7 +260,7 @@ func (m *Manager) selectSubnet() string {
 // In addition to the 60-second ticker, it accepts demand notifications via
 // NotifyPoolDemand to reconcile specific pools immediately when webhooks arrive.
 func (m *Manager) ReconcileLoop(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(reconcileInterval)
 	defer ticker.Stop()
 
 	// Initial reconciliation
@@ -344,10 +354,10 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	// passes that skip are captured by the lock-wait histogram below.
 	reconcileStart := time.Now()
 
-	// Acquire per-pool lock (65s TTL > 60s reconcile interval). Time the acquire
-	// wait — this is the contention signal that would have surfaced #298.
+	// Acquire per-pool lock (TTL > reconcile interval). Time the acquire wait —
+	// this is the contention signal that would have surfaced #298.
 	lockStart := time.Now()
-	if err := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, 65*time.Second); err != nil {
+	if err := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, reconcileLockTTL); err != nil {
 		if m.metrics != nil {
 			_ = m.metrics.PublishLockWaitSeconds(ctx, lockPoolReconcile, time.Since(lockStart).Seconds())
 		}
@@ -877,11 +887,7 @@ func (m *Manager) stopInstances(ctx context.Context, poolName string, instanceID
 	}
 
 	// Remove from idle tracking
-	m.idleMu.Lock()
-	for _, id := range instanceIDs {
-		delete(m.instanceIdle, id)
-	}
-	m.idleMu.Unlock()
+	m.forgetInstances(instanceIDs...)
 
 	m.publishPoolAction(ctx, poolName, poolActionStop, reason, len(instanceIDs))
 
@@ -905,11 +911,7 @@ func (m *Manager) terminateInstances(ctx context.Context, poolName string, insta
 	}
 
 	// Remove from idle tracking
-	m.idleMu.Lock()
-	for _, id := range instanceIDs {
-		delete(m.instanceIdle, id)
-	}
-	m.idleMu.Unlock()
+	m.forgetInstances(instanceIDs...)
 
 	m.publishPoolAction(ctx, poolName, poolActionTerminate, reason, len(instanceIDs))
 
@@ -920,11 +922,20 @@ func (m *Manager) terminateInstances(ctx context.Context, poolName string, insta
 	return nil
 }
 
-// MarkInstanceBusy marks an instance as busy (has an assigned job).
-func (m *Manager) MarkInstanceBusy(instanceID string) {
+// forgetInstances drops instances from idle tracking under idleMu. It is the one
+// place idle entries are deleted outside MarkInstanceIdle, so the stop/terminate/
+// claim paths share the same lock discipline instead of hand-rolling it.
+func (m *Manager) forgetInstances(instanceIDs ...string) {
 	m.idleMu.Lock()
 	defer m.idleMu.Unlock()
-	delete(m.instanceIdle, instanceID)
+	for _, id := range instanceIDs {
+		delete(m.instanceIdle, id)
+	}
+}
+
+// MarkInstanceBusy marks an instance as busy (has an assigned job).
+func (m *Manager) MarkInstanceBusy(instanceID string) {
+	m.forgetInstances(instanceID)
 }
 
 // MarkInstanceIdle marks an instance as idle (no assigned job).
@@ -1019,9 +1030,7 @@ func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID, repo stri
 	}
 
 	// Mark as busy immediately to prevent reconciler from touching it
-	m.idleMu.Lock()
-	delete(m.instanceIdle, instanceID)
-	m.idleMu.Unlock()
+	m.forgetInstances(instanceID)
 
 	poolLog.Info(ctx, "pool instance started for job")
 	return nil
@@ -1229,9 +1238,7 @@ func (m *Manager) StopPoolInstance(ctx context.Context, instanceID string) error
 	}
 
 	// Remove from busy tracking
-	m.idleMu.Lock()
-	delete(m.instanceIdle, instanceID)
-	m.idleMu.Unlock()
+	m.forgetInstances(instanceID)
 
 	poolLog.Info(ctx, "pool instance stopped")
 	return nil

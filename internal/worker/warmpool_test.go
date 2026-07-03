@@ -94,9 +94,9 @@ func TestTryAssignToWarmPool_DeadContext_Retryable(t *testing.T) {
 
 // mockEC2API implements pools.EC2API for testing
 type mockEC2API struct {
-	describeInstancesFunc          func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
-	startInstancesFunc             func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
-	stopInstancesFunc              func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	describeInstancesFunc  func(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	startInstancesFunc     func(ctx context.Context, params *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
+	stopInstancesFunc      func(ctx context.Context, params *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	terminateInstancesFunc func(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 	createTagsFunc         func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
@@ -319,13 +319,13 @@ func (m *mockRunnerPreparer) PrepareRunner(ctx context.Context, req runner.Prepa
 
 // mockJobDBClient implements JobDBClient for testing
 type mockJobDBClient struct {
-	hasJobsTable        bool
-	saveJobFunc         func(ctx context.Context, job *db.JobRecord) error
-	releaseClaimFunc    func(ctx context.Context, instanceID string, jobID int64) error
-	saveJobCalled       bool
-	releaseClaimCalled  bool
-	lastSavedJob        *db.JobRecord
-	releasedInstanceID  string
+	hasJobsTable       bool
+	saveJobFunc        func(ctx context.Context, job *db.JobRecord) error
+	releaseClaimFunc   func(ctx context.Context, instanceID string, jobID int64) error
+	saveJobCalled      bool
+	releaseClaimCalled bool
+	lastSavedJob       *db.JobRecord
+	releasedInstanceID string
 }
 
 func (m *mockJobDBClient) HasJobsTable() bool {
@@ -551,9 +551,9 @@ func TestTryAssignToWarmPool_DBSaveFailure_StopsInstance(t *testing.T) {
 // is correctly built from JobMessage fields and passed to ClaimAndStartPoolInstance.
 func TestTryAssignToWarmPool_SpecBuildingFromJobMessage(t *testing.T) {
 	tests := []struct {
-		name       string
-		job        *queue.JobMessage
-		wantSpec   *fleet.FlexibleSpec
+		name        string
+		job         *queue.JobMessage
+		wantSpec    *fleet.FlexibleSpec
 		wantNilSpec bool
 	}{
 		{

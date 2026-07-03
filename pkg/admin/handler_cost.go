@@ -37,16 +37,16 @@ type spotPricer interface {
 
 // CostSummaryResponse represents the cost summary API response.
 type CostSummaryResponse struct {
-	PeriodStart    string                `json:"period_start"`
-	PeriodEnd      string                `json:"period_end"`
-	TotalCost      float64               `json:"total_cost"`
-	SpotCost       float64               `json:"spot_cost"`
-	OnDemandCost   float64               `json:"on_demand_cost"`
-	SpotSavings    float64               `json:"spot_savings"`
-	AvgCostPerJob  float64               `json:"avg_cost_per_job"`
-	JobCount       int                   `json:"job_count"`
-	SpotJobCount   int                   `json:"spot_job_count"`
-	OnDemandCount  int                   `json:"on_demand_count"`
+	PeriodStart     string                 `json:"period_start"`
+	PeriodEnd       string                 `json:"period_end"`
+	TotalCost       float64                `json:"total_cost"`
+	SpotCost        float64                `json:"spot_cost"`
+	OnDemandCost    float64                `json:"on_demand_cost"`
+	SpotSavings     float64                `json:"spot_savings"`
+	AvgCostPerJob   float64                `json:"avg_cost_per_job"`
+	JobCount        int                    `json:"job_count"`
+	SpotJobCount    int                    `json:"spot_job_count"`
+	OnDemandCount   int                    `json:"on_demand_count"`
 	FamilyBreakdown []FamilyBreakdownEntry `json:"family_breakdown"`
 
 	// Runner-minute cost expresses the same usage in the standard hosted-runner

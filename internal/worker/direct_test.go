@@ -524,8 +524,6 @@ func TestProcessJobDirect_NilDBSkipsClaimCheck(t *testing.T) {
 	}
 }
 
-
-
 func TestTryDirectProcessing_WithCapacity(t *testing.T) {
 	var subnetIndex uint64
 	processor := &DirectProcessor{
@@ -592,4 +590,3 @@ func TestTryDirectProcessing_PanicRecovery(t *testing.T) {
 		t.Fatal("TryDirectProcessing did not complete")
 	}
 }
-

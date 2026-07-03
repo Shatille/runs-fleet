@@ -21,11 +21,11 @@ type CircuitDynamoAPI interface {
 
 // CircuitStateResponse represents circuit breaker state in the admin API response.
 type CircuitStateResponse struct {
-	InstanceType  string `json:"instance_type"`
-	State         string `json:"state"`
-	FailureCount  int    `json:"failure_count"`
-	LastFailure   string `json:"last_failure,omitempty"`
-	ResetAt       string `json:"reset_at,omitempty"`
+	InstanceType string `json:"instance_type"`
+	State        string `json:"state"`
+	FailureCount int    `json:"failure_count"`
+	LastFailure  string `json:"last_failure,omitempty"`
+	ResetAt      string `json:"reset_at,omitempty"`
 }
 
 // circuitRecord matches the DynamoDB structure.

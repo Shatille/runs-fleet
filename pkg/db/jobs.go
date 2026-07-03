@@ -45,15 +45,15 @@ const claimMaxAttempts = 3
 // jobRecord represents a job stored in DynamoDB.
 // Primary key is instance_id (one job per instance, ephemeral runners).
 type jobRecord struct {
-	InstanceID     string `dynamodbav:"instance_id,omitempty"`
-	JobID          int64  `dynamodbav:"job_id"`
-	RunID          int64  `dynamodbav:"run_id"`
-	Repo           string `dynamodbav:"repo"`
-	InstanceType   string `dynamodbav:"instance_type"`
-	Pool           string `dynamodbav:"pool,omitempty"`
-	Spot           bool   `dynamodbav:"spot"`
-	RetryCount     int    `dynamodbav:"retry_count"`
-	WarmPoolHit    bool   `dynamodbav:"warm_pool_hit"`
+	InstanceID   string `dynamodbav:"instance_id,omitempty"`
+	JobID        int64  `dynamodbav:"job_id"`
+	RunID        int64  `dynamodbav:"run_id"`
+	Repo         string `dynamodbav:"repo"`
+	InstanceType string `dynamodbav:"instance_type"`
+	Pool         string `dynamodbav:"pool,omitempty"`
+	Spot         bool   `dynamodbav:"spot"`
+	RetryCount   int    `dynamodbav:"retry_count"`
+	WarmPoolHit  bool   `dynamodbav:"warm_pool_hit"`
 	// omitempty so an (unexpected) empty status is dropped rather than written as
 	// S:"" — the pool-status GSI is keyed on status, and DynamoDB rejects a
 	// PutItem with an empty-string index-key attribute. Mirrors instance_id (#276)
