@@ -22,16 +22,16 @@ type mockAPIError struct {
 	message string
 }
 
-func (e *mockAPIError) Error() string              { return e.message }
-func (e *mockAPIError) ErrorCode() string          { return e.code }
-func (e *mockAPIError) ErrorMessage() string       { return e.message }
+func (e *mockAPIError) Error() string                 { return e.message }
+func (e *mockAPIError) ErrorCode() string             { return e.code }
+func (e *mockAPIError) ErrorMessage() string          { return e.message }
 func (e *mockAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultUnknown }
 
 type mockHousekeepingEC2 struct {
-	instances       map[string]ec2types.InstanceStateName
-	err             error
-	failBatchOnly   bool // If true, fail only when multiple instances requested
-	callCount       int
+	instances     map[string]ec2types.InstanceStateName
+	err           error
+	failBatchOnly bool // If true, fail only when multiple instances requested
+	callCount     int
 }
 
 func (m *mockHousekeepingEC2) DescribeInstances(_ context.Context, params *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -63,9 +63,9 @@ func (m *mockHousekeepingEC2) DescribeInstances(_ context.Context, params *ec2.D
 }
 
 type mockHousekeepingDynamo struct {
-	items      []map[string]types.AttributeValue
-	updateErr  error
-	scanErr    error
+	items       []map[string]types.AttributeValue
+	updateErr   error
+	scanErr     error
 	updateCalls int
 }
 
@@ -563,12 +563,12 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_VariousInstanceStates(t *testin
 
 	ec2Client := &mockHousekeepingEC2{
 		instances: map[string]ec2types.InstanceStateName{
-			"i-running":      ec2types.InstanceStateNameRunning,
-			"i-pending":      ec2types.InstanceStateNamePending,
-			"i-stopping":     ec2types.InstanceStateNameStopping,
-			"i-stopped":      ec2types.InstanceStateNameStopped,
-			"i-shutting":     ec2types.InstanceStateNameShuttingDown,
-			"i-terminated":   ec2types.InstanceStateNameTerminated,
+			"i-running":    ec2types.InstanceStateNameRunning,
+			"i-pending":    ec2types.InstanceStateNamePending,
+			"i-stopping":   ec2types.InstanceStateNameStopping,
+			"i-stopped":    ec2types.InstanceStateNameStopped,
+			"i-shutting":   ec2types.InstanceStateNameShuttingDown,
+			"i-terminated": ec2types.InstanceStateNameTerminated,
 		},
 	}
 	dynamoClient := &mockHousekeepingDynamo{

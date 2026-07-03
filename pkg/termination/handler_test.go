@@ -164,10 +164,10 @@ type mockMetricsAPI struct {
 	completedErr      error
 	confirmedErr      error
 
-	execSecondsCalls   int
-	lastExecSeconds    float64
-	lastExecResult     string
-	lastExecPool       string
+	execSecondsCalls int
+	lastExecSeconds  float64
+	lastExecResult   string
+	lastExecPool     string
 
 	runnerExecCalls   int
 	lastRunnerArch    string

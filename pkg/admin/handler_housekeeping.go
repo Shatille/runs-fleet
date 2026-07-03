@@ -48,10 +48,10 @@ func (h *HousekeepingHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // CleanupOrphanedJobsResponse contains the result of orphaned job cleanup.
 type CleanupOrphanedJobsResponse struct {
-	Cleaned    int      `json:"cleaned"`
-	Candidates int      `json:"candidates"`
-	JobIDs     []int64  `json:"job_ids,omitempty"`
-	Message    string   `json:"message"`
+	Cleaned    int     `json:"cleaned"`
+	Candidates int     `json:"candidates"`
+	JobIDs     []int64 `json:"job_ids,omitempty"`
+	Message    string  `json:"message"`
 }
 
 // CleanupOrphanedJobs handles POST /api/housekeeping/orphaned-jobs.

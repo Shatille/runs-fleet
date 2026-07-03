@@ -70,8 +70,8 @@ type PrometheusPublisher struct {
 	messageDeletionFailures *prometheus.CounterVec
 
 	// Cost
-	instanceHours          *prometheus.CounterVec
-	estimatedCost          prometheus.Gauge
+	instanceHours           *prometheus.CounterVec
+	estimatedCost           prometheus.Gauge
 	runnerExecutionSeconds  *prometheus.CounterVec
 	runnerToolCacheMiss     *prometheus.CounterVec
 	runnerCacheInterception *prometheus.CounterVec
