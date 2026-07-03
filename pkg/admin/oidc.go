@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -84,7 +85,7 @@ func (c *OIDCClient) Exchange(ctx context.Context, code, expectedNonce string, o
 		return nil, fmt.Errorf("verify id_token: %w", err)
 	}
 
-	if idToken.Nonce != expectedNonce {
+	if !constantTimeEqual(idToken.Nonce, expectedNonce) {
 		return nil, fmt.Errorf("id_token nonce mismatch")
 	}
 
@@ -127,4 +128,15 @@ func (c *OIDCClient) Exchange(ctx context.Context, code, expectedNonce string, o
 		Email:    std.Email,
 		Groups:   groups,
 	}, nil
+}
+
+// constantTimeEqual compares a and b without leaking their contents via
+// comparison-time timing. subtle.ConstantTimeCompare itself requires equal
+// lengths, so unequal-length inputs (a cheap, non-secret check) short-circuit
+// before it.
+func constantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

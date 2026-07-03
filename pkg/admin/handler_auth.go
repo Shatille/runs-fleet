@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -64,14 +65,29 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 // Config reports whether OIDC auth is enabled, so the frontend can render a
-// login affordance without hardcoding deployment assumptions.
-func (h *AuthHandler) Config(w http.ResponseWriter, _ *http.Request) {
+// login affordance without hardcoding deployment assumptions. Intentionally
+// unauthenticated: the frontend needs this before it knows whether the user
+// is logged in, and the response carries no sensitive data (a boolean and a
+// fixed, well-known path -- never the issuer URL, client ID, or secret).
+func (h *AuthHandler) Config(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"auth_enabled": h.oidc != nil}
 	if h.oidc != nil {
 		resp["login_url"] = "/api/auth/login"
 	}
+
+	// Encode into a buffer first (matching pkg/admin/handler.go's writeJSON):
+	// a mid-encode failure must not leave a partially-written 200 response
+	// with the status/headers already flushed.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(resp); err != nil {
+		authHandlerLog.Error(r.Context(), "config: encode response failed", slog.String("error", err.Error()))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	if _, err := buf.WriteTo(w); err != nil {
+		authHandlerLog.Error(r.Context(), "config: write response failed", slog.String("error", err.Error()))
+	}
 }
 
 // Login starts the authorization-code + PKCE flow: mint state/nonce/verifier,
