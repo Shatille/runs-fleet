@@ -1,4 +1,4 @@
-package runner
+package github
 
 import (
 	"context"
@@ -51,10 +51,10 @@ func generateTestKey(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(pemBytes)
 }
 
-func TestNewGitHubClient_ValidKey(t *testing.T) {
+func TestNewClient_ValidKey(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,33 +72,33 @@ func TestNewGitHubClient_ValidKey(t *testing.T) {
 	}
 }
 
-func TestNewGitHubClient_InvalidAppID(t *testing.T) {
+func TestNewClient_InvalidAppID(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	_, err := NewGitHubClient("invalid", keyBase64)
+	_, err := NewClient("invalid", keyBase64)
 	if err == nil {
 		t.Fatal("expected error for invalid app ID")
 	}
 }
 
-func TestNewGitHubClient_InvalidBase64(t *testing.T) {
-	_, err := NewGitHubClient("12345", "invalid-base64!!!")
+func TestNewClient_InvalidBase64(t *testing.T) {
+	_, err := NewClient("12345", "invalid-base64!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid base64")
 	}
 }
 
-func TestNewGitHubClient_InvalidPEM(t *testing.T) {
+func TestNewClient_InvalidPEM(t *testing.T) {
 	// Valid base64 but not a valid PEM
 	invalidPEM := base64.StdEncoding.EncodeToString([]byte("not a pem"))
 
-	_, err := NewGitHubClient("12345", invalidPEM)
+	_, err := NewClient("12345", invalidPEM)
 	if err == nil {
 		t.Fatal("expected error for invalid PEM")
 	}
 }
 
-func TestNewGitHubClient_PKCS8Key(t *testing.T) {
+func TestNewClient_PKCS8Key(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("failed to generate key: %v", err)
@@ -117,7 +117,7 @@ func TestNewGitHubClient_PKCS8Key(t *testing.T) {
 	pemBytes := pem.EncodeToMemory(pemBlock)
 	keyBase64 := base64.StdEncoding.EncodeToString(pemBytes)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error for PKCS8 key: %v", err)
 	}
@@ -127,10 +127,10 @@ func TestNewGitHubClient_PKCS8Key(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_generateJWT(t *testing.T) {
+func TestClient_generateJWT(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -156,10 +156,10 @@ func TestGitHubClient_generateJWT(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_InvalidRepo(t *testing.T) {
+func TestClient_GetRegistrationToken_InvalidRepo(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestGitHubClient_GetRegistrationToken_InvalidRepo(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
+func TestClient_GetRegistrationToken_Success(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	// Create a test server that simulates GitHub API
@@ -219,7 +219,7 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -238,24 +238,10 @@ func TestGitHubClient_GetRegistrationToken_Success(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetJITConfig_EmptyOrg(t *testing.T) {
+func TestClient_getInstallationInfo_EmptyOwner(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
-	_, err = client.GetJITConfig(context.Background(), "", "runner-name", []string{"self-hosted"})
-	if err == nil {
-		t.Error("expected error for empty org")
-	}
-}
-
-func TestGitHubClient_getInstallationInfo_EmptyOwner(t *testing.T) {
-	keyBase64 := generateTestKey(t)
-
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -266,10 +252,10 @@ func TestGitHubClient_getInstallationInfo_EmptyOwner(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_HttpTimeout(t *testing.T) {
+func TestClient_HttpTimeout(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -308,7 +294,7 @@ func TestInstallationInfo_Structure(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_getInstallationToken(t *testing.T) {
+func TestClient_getInstallationToken(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	// Create a test server
@@ -333,7 +319,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -355,7 +341,7 @@ func TestGitHubClient_getInstallationToken(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
+func TestClient_FallbackToUserInstallation(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	// Create a test server that simulates a personal account (no org)
@@ -388,7 +374,7 @@ func TestGitHubClient_FallbackToUserInstallation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -510,7 +496,7 @@ func TestRetryDelay(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_RetriesOnTransientErrors(t *testing.T) {
+func TestClient_GetRegistrationToken_RetriesOnTransientErrors(t *testing.T) {
 	tests := []struct {
 		name             string
 		errorStatusCode  int
@@ -584,7 +570,7 @@ func TestGitHubClient_GetRegistrationToken_RetriesOnTransientErrors(t *testing.T
 			}))
 			defer server.Close()
 
-			client, err := NewGitHubClient("12345", keyBase64)
+			client, err := NewClient("12345", keyBase64)
 			if err != nil {
 				t.Fatalf("failed to create client: %v", err)
 			}
@@ -606,7 +592,7 @@ func TestGitHubClient_GetRegistrationToken_RetriesOnTransientErrors(t *testing.T
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_NoRetryOnClientError(t *testing.T) {
+func TestClient_GetRegistrationToken_NoRetryOnClientError(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	attempts := 0
@@ -635,7 +621,7 @@ func TestGitHubClient_GetRegistrationToken_NoRetryOnClientError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -651,7 +637,7 @@ func TestGitHubClient_GetRegistrationToken_NoRetryOnClientError(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_ExhaustsRetries(t *testing.T) {
+func TestClient_GetRegistrationToken_ExhaustsRetries(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	attempts := 0
@@ -679,7 +665,7 @@ func TestGitHubClient_GetRegistrationToken_ExhaustsRetries(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -696,7 +682,7 @@ func TestGitHubClient_GetRegistrationToken_ExhaustsRetries(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_RespectsContextCancellation(t *testing.T) {
+func TestClient_GetRegistrationToken_RespectsContextCancellation(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -722,7 +708,7 @@ func TestGitHubClient_GetRegistrationToken_RespectsContextCancellation(t *testin
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -737,7 +723,7 @@ func TestGitHubClient_GetRegistrationToken_RespectsContextCancellation(t *testin
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *testing.T) {
+func TestClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	attempts := 0
@@ -771,7 +757,7 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -813,71 +799,7 @@ func TestGitHubClient_GetRegistrationToken_ContextCancelledDuringBackoff(t *test
 	}
 }
 
-func TestGitHubClient_GetJITConfig_Success(t *testing.T) {
-	keyBase64 := generateTestKey(t)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case testPathOrgInstallation:
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id": 123,
-				"account": map[string]interface{}{
-					"type": "Organization",
-				},
-			})
-		case testPathAccessTokens123:
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"token": "ghs_test_token",
-			})
-		case "/orgs/myorg/actions/runners/generate-jitconfig":
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"encoded_jit_config": "base64-encoded-jit-config",
-				"runner": map[string]interface{}{
-					"id":   12345,
-					"name": "test-runner",
-				},
-			})
-		default:
-			t.Logf("unexpected request path: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	client, err := NewGitHubClient("12345", keyBase64)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	client.baseURL = server.URL
-
-	// Note: This will fail because go-github client uses api.github.com directly
-	// The test validates the function signature and error handling
-	_, err = client.GetJITConfig(context.Background(), "myorg", "test-runner", []string{"self-hosted"})
-	// Error is expected because the GitHub client doesn't use our mock server's baseURL
-	if err == nil {
-		t.Log("GetJITConfig succeeded (unexpected but acceptable if mock is working)")
-	}
-}
-
-func TestGitHubClient_GetJITConfig_Validation(t *testing.T) {
-	keyBase64 := generateTestKey(t)
-
-	client, err := NewGitHubClient("12345", keyBase64)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-
-	// Test empty org - should return error immediately without network call
-	_, err = client.GetJITConfig(context.Background(), "", "test-runner", []string{"self-hosted"})
-	if err == nil {
-		t.Error("expected error for empty org")
-	}
-}
-
-func TestGitHubClient_getInstallationInfo_Success(t *testing.T) {
+func TestClient_getInstallationInfo_Success(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -901,7 +823,7 @@ func TestGitHubClient_getInstallationInfo_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -920,7 +842,7 @@ func TestGitHubClient_getInstallationInfo_Success(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_getInstallationInfo_UserAccount(t *testing.T) {
+func TestClient_getInstallationInfo_UserAccount(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -946,7 +868,7 @@ func TestGitHubClient_getInstallationInfo_UserAccount(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -965,7 +887,7 @@ func TestGitHubClient_getInstallationInfo_UserAccount(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_getInstallationInfo_NotFound(t *testing.T) {
+func TestClient_getInstallationInfo_NotFound(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -975,7 +897,7 @@ func TestGitHubClient_getInstallationInfo_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -987,7 +909,7 @@ func TestGitHubClient_getInstallationInfo_NotFound(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_getInstallationInfo_TokenCreationFailed(t *testing.T) {
+func TestClient_getInstallationInfo_TokenCreationFailed(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1010,7 +932,7 @@ func TestGitHubClient_getInstallationInfo_TokenCreationFailed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1067,10 +989,10 @@ func TestRetryDelay_ExponentialGrowth(t *testing.T) {
 	}
 }
 
-func TestNewGitHubClient_BaseURLDefault(t *testing.T) {
+func TestNewClient_BaseURLDefault(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1080,10 +1002,10 @@ func TestNewGitHubClient_BaseURLDefault(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_generateJWT_Validity(t *testing.T) {
+func TestClient_generateJWT_Validity(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1184,7 +1106,7 @@ func TestGetWorkflowJobByID_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1223,7 +1145,7 @@ func TestGetWorkflowJobByID_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1238,7 +1160,7 @@ func TestGetWorkflowJobByID_NotFound(t *testing.T) {
 func TestGetWorkflowJobByID_InvalidRepo(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1269,7 +1191,7 @@ func TestGetWorkflowJobByID_TokenError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1316,7 +1238,7 @@ func TestGetWorkflowJobByID_DoesNotCorruptHTTPTransport(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

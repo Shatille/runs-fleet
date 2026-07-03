@@ -1,4 +1,4 @@
-package runner
+package github
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestGitHubClient_CachesInstallationToken(t *testing.T) {
+func TestClient_CachesInstallationToken(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 
 	var mintCount, regCount int32
@@ -40,7 +40,7 @@ func TestGitHubClient_CachesInstallationToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestIsRetryableError_SecondaryRateLimit(t *testing.T) {
 	}
 }
 
-func TestGitHubClient_GetRegistrationToken_RetriesOnSecondaryRateLimit(t *testing.T) {
+func TestClient_GetRegistrationToken_RetriesOnSecondaryRateLimit(t *testing.T) {
 	keyBase64 := generateTestKey(t)
 	oldDelay := baseRetryDelay
 	baseRetryDelay = time.Millisecond
@@ -120,7 +120,7 @@ func TestGitHubClient_GetRegistrationToken_RetriesOnSecondaryRateLimit(t *testin
 	}))
 	defer server.Close()
 
-	client, err := NewGitHubClient("12345", keyBase64)
+	client, err := NewClient("12345", keyBase64)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}

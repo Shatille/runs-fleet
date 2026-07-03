@@ -1,5 +1,4 @@
-// Package runner manages GitHub Actions runner registration and configuration.
-package runner
+package github
 
 import (
 	"context"
@@ -125,8 +124,8 @@ func backoffDelay(resp *http.Response, attempt int) time.Duration {
 	return delay
 }
 
-// GitHubClient handles GitHub App authentication and runner registration.
-type GitHubClient struct {
+// Client handles GitHub App authentication and runner registration.
+type Client struct {
 	appID      int64
 	privateKey *rsa.PrivateKey
 	httpClient *http.Client
@@ -136,9 +135,9 @@ type GitHubClient struct {
 	tokenCache map[string]*installationInfo // keyed by owner
 }
 
-// NewGitHubClient creates a new GitHub client for runner operations.
+// NewClient creates a new GitHub client for runner operations.
 // privateKeyBase64 should be the base64-encoded PEM private key.
-func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, error) {
+func NewClient(appID string, privateKeyBase64 string) (*Client, error) {
 	id, err := strconv.ParseInt(appID, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid app ID: %w", err)
@@ -168,7 +167,7 @@ func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, erro
 		}
 	}
 
-	return &GitHubClient{
+	return &Client{
 		appID:      id,
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
@@ -178,7 +177,7 @@ func NewGitHubClient(appID string, privateKeyBase64 string) (*GitHubClient, erro
 }
 
 // generateJWT creates a JWT for GitHub App authentication.
-func (c *GitHubClient) generateJWT() (string, error) {
+func (c *Client) generateJWT() (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iat": now.Add(-60 * time.Second).Unix(), // 60s buffer for clock skew
@@ -201,7 +200,7 @@ type installationInfo struct {
 // cached token until it nears expiry. Caching collapses the per-runner GET
 // /installation + POST /access_tokens calls (the App-JWT-authed requests that
 // trip GitHub's secondary rate limits) into one mint per token lifetime.
-func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
+func (c *Client) getInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
 	if owner == "" {
 		return nil, fmt.Errorf("owner is required")
 	}
@@ -219,7 +218,7 @@ func (c *GitHubClient) getInstallationInfo(ctx context.Context, owner string) (*
 }
 
 // cachedInstallationInfo returns a still-valid cached token for owner, or nil.
-func (c *GitHubClient) cachedInstallationInfo(owner string) *installationInfo {
+func (c *Client) cachedInstallationInfo(owner string) *installationInfo {
 	c.tokenMu.Lock()
 	defer c.tokenMu.Unlock()
 	info, ok := c.tokenCache[owner]
@@ -230,7 +229,7 @@ func (c *GitHubClient) cachedInstallationInfo(owner string) *installationInfo {
 }
 
 // storeInstallationInfo caches a freshly minted token for owner.
-func (c *GitHubClient) storeInstallationInfo(owner string, info *installationInfo) {
+func (c *Client) storeInstallationInfo(owner string, info *installationInfo) {
 	c.tokenMu.Lock()
 	c.tokenCache[owner] = info
 	c.tokenMu.Unlock()
@@ -239,7 +238,7 @@ func (c *GitHubClient) storeInstallationInfo(owner string, info *installationInf
 // fetchInstallationInfo mints a new installation access token and account type.
 // It tries org-level first, then falls back to user-level for personal accounts.
 // Uses raw HTTP with Bearer prefix for JWT auth (go-github's WithAuthToken uses token prefix).
-func (c *GitHubClient) fetchInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
+func (c *Client) fetchInstallationInfo(ctx context.Context, owner string) (*installationInfo, error) {
 	jwt, err := c.generateJWT()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate JWT: %w", err)
@@ -335,44 +334,12 @@ func (c *GitHubClient) fetchInstallationInfo(ctx context.Context, owner string) 
 }
 
 // getInstallationToken is a convenience wrapper that returns just the token.
-func (c *GitHubClient) getInstallationToken(ctx context.Context, owner string) (string, error) {
+func (c *Client) getInstallationToken(ctx context.Context, owner string) (string, error) {
 	info, err := c.getInstallationInfo(ctx, owner)
 	if err != nil {
 		return "", err
 	}
 	return info.Token, nil
-}
-
-// GetJITConfig gets a Just-In-Time runner configuration for registering a runner.
-// Returns the JIT config that can be used with config.sh --jitconfig.
-// The org parameter specifies which organization to register the runner for.
-func (c *GitHubClient) GetJITConfig(ctx context.Context, org string, runnerName string, labels []string) (string, error) {
-	if org == "" {
-		return "", fmt.Errorf("org is required")
-	}
-
-	token, err := c.getInstallationToken(ctx, org)
-	if err != nil {
-		return "", err
-	}
-
-	// Create a separate http.Client to avoid go-github's WithAuthToken corrupting
-	// c.httpClient's transport (it wraps the transport with a token-injecting RoundTripper).
-	client := github.NewClient(&http.Client{Timeout: c.httpClient.Timeout}).WithAuthToken(token)
-
-	// Create JIT runner config
-	req := &github.GenerateJITConfigRequest{
-		Name:          runnerName,
-		RunnerGroupID: 1, // Default runner group
-		Labels:        labels,
-	}
-
-	jitConfig, _, err := client.Actions.GenerateOrgJITConfig(ctx, org, req)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate JIT config: %w", err)
-	}
-
-	return jitConfig.GetEncodedJITConfig(), nil
 }
 
 // RegistrationResult contains the registration token.
@@ -385,7 +352,7 @@ type RegistrationResult struct {
 // Always uses repo-level endpoint to ensure runners only pick up jobs from the specific repository.
 // Extracts owner from repo string (owner/repo format) for installation token.
 // Retries transient errors with exponential backoff.
-func (c *GitHubClient) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
+func (c *Client) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
 	// Extract owner from repo string (required)
 	if repo == "" {
 		return nil, fmt.Errorf("repo is required (owner/repo format)")
@@ -467,7 +434,7 @@ type WorkflowJobInfo struct {
 
 // GetWorkflowJobByID retrieves a workflow job by its ID from GitHub API.
 // The repo parameter must be in "owner/repo" format.
-func (c *GitHubClient) GetWorkflowJobByID(ctx context.Context, repo string, jobID int64) (*WorkflowJobInfo, error) {
+func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int64) (*WorkflowJobInfo, error) {
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
