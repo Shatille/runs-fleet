@@ -13,10 +13,12 @@ export default function LogoutButton() {
     try {
       const res = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
       if (!res.ok) {
-        toast('error', `Logout failed (${res.status}); session may still be active`);
+        toast('error', `Logout failed (${res.status}); please try again`);
+        return;
       }
     } catch {
-      toast('error', 'Logout request failed; session may still be active');
+      toast('error', 'Logout request failed; please try again');
+      return;
     }
     window.location.href = '/admin/';
   }

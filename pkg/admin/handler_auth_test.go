@@ -153,6 +153,41 @@ func TestAuthHandler_Login_RedirectSanitization(t *testing.T) {
 	}
 }
 
+func TestSanitizeRedirect(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"absolute URL", "https://evil.com/steal", defaultLoginRedirect},
+		{"protocol-relative", "//evil.com/steal", defaultLoginRedirect},
+		{"leading backslash", "/\\evil.com/steal", defaultLoginRedirect},
+		{"missing leading slash", "admin/jobs", defaultLoginRedirect},
+		{"empty", "", defaultLoginRedirect},
+		{
+			// A backslash that isn't the first character never changes the
+			// resolved host (verified against net/url.ResolveReference and
+			// WHATWG URL parsing): it stays a same-origin path segment, so
+			// it's safe to pass through rather than reject.
+			"non-leading backslash", "/admin/\\evil.com", "/admin/\\evil.com",
+		},
+		{
+			// ".." segments collapse within the path component only; they
+			// cannot cross the authority, so this resolves to a same-origin
+			// path and isn't an open redirect.
+			"dot-dot traversal", "/admin/../../evil.com", "/admin/../../evil.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeRedirect(tt.raw); got != tt.want {
+				t.Errorf("sanitizeRedirect(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAuthHandler_Callback_FullRoundTrip(t *testing.T) {
 	idp := newFakeIDP(t)
 	mux := newAuthMux(t, idp)
