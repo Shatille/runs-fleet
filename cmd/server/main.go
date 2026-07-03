@@ -142,9 +142,10 @@ func main() {
 		terminationQueueClient := queue.NewClient(sqsCfg, cfg.TerminationQueueURL)
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, jobQueue, cfg)
 	}
-	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, jobQueue)
+	githubClient := initGitHubClient(cfg)
+	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, jobQueue, githubClient)
 
-	runnerManager := initRunnerManager(secretsStore, cfg)
+	runnerManager := initRunnerManager(githubClient, secretsStore, cfg)
 
 	var subnetIndex uint64
 	directProcessor := &worker.DirectProcessor{
@@ -285,16 +286,26 @@ func initJobQueue(sqsCfg aws.Config, cfg *config.Config) queue.Queue {
 	return queue.NewSQSClient(sqsCfg, cfg.QueueURL)
 }
 
-func initRunnerManager(secretsStore secrets.Store, cfg *config.Config) *runner.Manager {
-	log := logging.WithComponent(logging.LogTypeServer, "runner")
+// initGitHubClient builds the single GitHub App client shared by the runner
+// manager and housekeeping's stale-job checker, so both talk to GitHub
+// through one installation-token cache instead of minting their own.
+func initGitHubClient(cfg *config.Config) *gh.Client {
+	log := logging.WithComponent(logging.LogTypeServer, "github")
 	if cfg.GitHubAppID == "" || cfg.GitHubAppPrivateKey == "" {
-		log.Warn(context.Background(), "runner manager not initialized", slog.String(logging.KeyReason, "github app credentials not configured"))
+		log.Warn(context.Background(), "github client not initialized", slog.String(logging.KeyReason, "github app credentials not configured"))
 		return nil
 	}
-	githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
+	client, err := gh.NewClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 	if err != nil {
 		log.Error(context.Background(), "github client creation failed", slog.String("error", err.Error()))
 		os.Exit(1)
+	}
+	return client
+}
+
+func initRunnerManager(githubClient *gh.Client, secretsStore secrets.Store, cfg *config.Config) *runner.Manager {
+	if githubClient == nil {
+		return nil
 	}
 	return runner.NewManager(githubClient, secretsStore, runner.ManagerConfig{
 		CacheSecret:         cfg.CacheSecret,
@@ -344,7 +355,7 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	return store
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, jobQueue queue.Queue) *housekeeping.Runner {
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, jobQueue queue.Queue, githubClient *gh.Client) *housekeeping.Runner {
 	if dbClient == nil || cfg.PoolsTableName == "" {
 		logging.WithComponent(logging.LogTypeServer, "housekeeping").Warn(context.Background(),
 			"housekeeping disabled: no pools table configured for task locking")
@@ -360,14 +371,8 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 	tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
 	tasksExecutor.SetJobRequeuer(jobQueue)
 
-	if cfg.GitHubAppID != "" && cfg.GitHubAppPrivateKey != "" {
-		githubClient, err := runner.NewGitHubClient(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
-		if err != nil {
-			hkLog := logging.WithComponent(logging.LogTypeServer, "housekeeping")
-			hkLog.Error(context.Background(), "failed to initialize GitHub client for stale job detection", slog.String("error", err.Error()))
-		} else {
-			tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})
-		}
+	if githubClient != nil {
+		tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})
 	}
 
 	r := housekeeping.NewRunner(tasksExecutor, housekeeping.DefaultSchedulerConfig())
@@ -647,9 +652,9 @@ func (p *poolDBAdapter) DeletePoolConfig(ctx context.Context, poolName string) e
 	return p.client.DeletePoolConfig(ctx, poolName)
 }
 
-// githubJobCheckerAdapter adapts runner.GitHubClient to housekeeping.GitHubJobChecker.
+// githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
 type githubJobCheckerAdapter struct {
-	client *runner.GitHubClient
+	client *gh.Client
 }
 
 func (g *githubJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, _ string, repo string, jobID int64) (*housekeeping.GitHubJobStatus, error) {
