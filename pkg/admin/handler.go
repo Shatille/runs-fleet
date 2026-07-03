@@ -33,9 +33,14 @@ type PoolDB interface {
 }
 
 // AuditDB persists and queries audit log entries. Satisfied by *db.Client.
+// HasAuditTable is the presence check callers must use -- a nil AuditDB
+// value never occurs in production (main.go always wires the shared
+// *db.Client, whether or not RUNS_FLEET_AUDIT_TABLE is set), so a nil
+// check on the interface itself would never trigger.
 type AuditDB interface {
 	RecordAudit(ctx context.Context, entry db.AuditEntry) error
 	ListAuditLogs(ctx context.Context, filter db.AuditFilter) ([]db.AuditEntry, error)
+	HasAuditTable() bool
 }
 
 // Handler provides HTTP endpoints for pool configuration management.
@@ -537,13 +542,17 @@ func (h *Handler) recordAudit(r *http.Request, action, poolName, result string, 
 // via auditDB so the action can be queried later through GET
 // /api/audit-logs. Persistence failures are logged but never fail the
 // parent request -- a gap in the audit trail is a lesser failure than
-// blocking an admin action. When auditDB is nil (audit table not
-// configured), persistence is silently skipped, matching the jobs/pools
-// table's empty-name-disables-feature convention.
+// blocking an admin action. Checks HasAuditTable rather than nil-checking
+// auditDB: main.go always wires the shared *db.Client here regardless of
+// whether RUNS_FLEET_AUDIT_TABLE is set, so a nil interface never occurs in
+// production -- HasAuditTable is the real "is this configured" signal,
+// matching the jobs/pools table's empty-name-disables-feature convention.
+// auditDB itself may still be nil in tests that don't care about audit
+// persistence at all.
 func recordAdminAction(r *http.Request, auditDB AuditDB, action, target, result string, extra ...any) {
 	logAdminAction(r, action, target, result, extra...)
 
-	if auditDB == nil {
+	if auditDB == nil || !auditDB.HasAuditTable() {
 		return
 	}
 

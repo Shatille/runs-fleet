@@ -73,6 +73,7 @@ type mockAuditDB struct {
 	listErr    error
 	listResult []db.AuditEntry
 	gotFilter  db.AuditFilter
+	tableUnset bool // when true, HasAuditTable reports false (simulates RUNS_FLEET_AUDIT_TABLE unset)
 }
 
 func (m *mockAuditDB) RecordAudit(_ context.Context, entry db.AuditEntry) error {
@@ -89,6 +90,10 @@ func (m *mockAuditDB) ListAuditLogs(_ context.Context, filter db.AuditFilter) ([
 		return nil, m.listErr
 	}
 	return m.listResult, nil
+}
+
+func (m *mockAuditDB) HasAuditTable() bool {
+	return !m.tableUnset
 }
 
 func TestListPools(t *testing.T) {
@@ -745,6 +750,37 @@ func TestCreatePool_AuditPersistenceFailureDoesNotFailRequest(t *testing.T) {
 	}
 	if mockDB.pools["still-created"] == nil {
 		t.Error("pool should still be created despite audit persistence failure")
+	}
+}
+
+// TestCreatePool_SkipsPersistenceWhenTableUnset covers the production
+// wiring shape: main.go always passes the shared *db.Client as AuditDB,
+// whether or not RUNS_FLEET_AUDIT_TABLE is set. recordAdminAction must
+// check HasAuditTable rather than assume an unconfigured table means a
+// nil AuditDB, or every admin action would attempt (and fail) a
+// RecordAudit call it should have skipped entirely.
+func TestCreatePool_SkipsPersistenceWhenTableUnset(t *testing.T) {
+	t.Parallel()
+
+	mockDB := newMockDB()
+	auditDB := &mockAuditDB{tableUnset: true}
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/pools", h.CreatePool)
+
+	body, _ := json.Marshal(PoolRequest{PoolName: "no-audit-table", DesiredRunning: 1})
+	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if len(auditDB.entries) != 0 {
+		t.Errorf("got %d persisted audit entries, want 0 -- RecordAudit should not be attempted when the table is unset", len(auditDB.entries))
 	}
 }
 

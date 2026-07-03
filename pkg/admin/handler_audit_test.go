@@ -26,6 +26,26 @@ func TestListAuditLogs_NotConfigured(t *testing.T) {
 	}
 }
 
+// TestListAuditLogs_TableUnsetOnConfiguredClient covers the production
+// wiring shape: main.go always passes the shared *db.Client as AuditDB
+// regardless of whether RUNS_FLEET_AUDIT_TABLE is set, so a nil AuditDB
+// never occurs -- HasAuditTable is the real presence signal.
+func TestListAuditLogs_TableUnsetOnConfiguredClient(t *testing.T) {
+	t.Parallel()
+
+	auditDB := &mockAuditDB{tableUnset: true}
+	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
+	rec := httptest.NewRecorder()
+
+	h.ListAuditLogs(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestListAuditLogs_ReturnsEntries(t *testing.T) {
 	t.Parallel()
 

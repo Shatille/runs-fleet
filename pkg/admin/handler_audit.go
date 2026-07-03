@@ -32,7 +32,7 @@ type AuditLogsResponse struct {
 // since, until (RFC3339; unparseable values are silently ignored, matching
 // ListJobs's since handling), limit (default 50, max 100), offset.
 func (h *Handler) ListAuditLogs(w http.ResponseWriter, r *http.Request) {
-	if h.auditDB == nil {
+	if h.auditDB == nil || !h.auditDB.HasAuditTable() {
 		h.writeError(w, http.StatusServiceUnavailable, "Audit table not configured", "")
 		return
 	}
