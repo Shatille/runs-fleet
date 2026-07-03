@@ -141,7 +141,7 @@ func TestNewTelemetry(t *testing.T) {
 	logger := &mockLogger{}
 	sqsClient := &mockTelemetrySQSAPI{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -156,7 +156,7 @@ func TestTelemetry_SendJobStarted(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -197,7 +197,7 @@ func TestTelemetry_SendJobCompleted_Success(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -232,7 +232,7 @@ func TestTelemetry_SendJobCompleted_Failure(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -264,7 +264,7 @@ func TestTelemetry_SendJobCompleted_Interrupted(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -296,7 +296,7 @@ func TestTelemetry_SendJobTimeout(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -327,7 +327,7 @@ func TestTelemetry_SendJobFailure(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -362,7 +362,7 @@ func TestTelemetry_SendMessage_RetryOnError(t *testing.T) {
 	}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -391,7 +391,7 @@ func TestTelemetry_SendMessage_AllRetriesFail(t *testing.T) {
 	}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -420,7 +420,7 @@ func TestTelemetry_SendMessage_ContextCancelled(t *testing.T) {
 	}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,
@@ -445,7 +445,7 @@ func TestTelemetry_SendWithTimeout(t *testing.T) {
 	sqsClient := &mockTelemetrySQSAPI{}
 	logger := &mockLogger{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: sqsClient,
 		queueURL:  "https://sqs.example.com/queue",
 		logger:    logger,

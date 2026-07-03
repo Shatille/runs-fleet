@@ -48,7 +48,7 @@ func TestTerminator_TerminateInstance(t *testing.T) {
 	mockEC2 := &mockEC2API{}
 	mockSQS := &mockTelemetrySQSAPI{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: mockSQS,
 		queueURL:  "https://sqs.example.com/test-queue",
 		logger:    &mockLogger{},
@@ -124,7 +124,7 @@ func TestTerminator_TerminateInstance_TelemetryError(t *testing.T) {
 		},
 	}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: mockSQS,
 		queueURL:  "https://sqs.example.com/test-queue",
 		logger:    &mockLogger{},
@@ -205,7 +205,7 @@ func TestTerminator_TerminateWithStatus_WithError(t *testing.T) {
 	mockEC2 := &mockEC2API{}
 	mockSQS := &mockTelemetrySQSAPI{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: mockSQS,
 		queueURL:  "https://sqs.example.com/test-queue",
 		logger:    &mockLogger{},
@@ -227,7 +227,7 @@ func TestTerminator_TerminateOnPanic(t *testing.T) {
 	mockEC2 := &mockEC2API{}
 	mockSQS := &mockTelemetrySQSAPI{}
 
-	telemetry := &Telemetry{
+	telemetry := &SQSTelemetry{
 		sqsClient: mockSQS,
 		queueURL:  "https://sqs.example.com/test-queue",
 		logger:    &mockLogger{},
