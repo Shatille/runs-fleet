@@ -120,6 +120,9 @@ func main() {
 	if cfg.JobsInstanceIDGSI != "" {
 		dbClient.SetJobsInstanceIDGSI(cfg.JobsInstanceIDGSI)
 	}
+	if cfg.AuditTableName != "" {
+		dbClient.SetAuditTable(cfg.AuditTableName)
+	}
 	cacheServer := cache.NewServer(awsCfg, cfg.CacheBucketName)
 	metricsPublisher, prometheusHandler := initMetrics(awsCfg, cfg)
 	awsObsRecorder.SetPublisher(metricsPublisher)
