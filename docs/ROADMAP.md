@@ -49,7 +49,7 @@ instrumentation) before items that need new design work, before nice-to-haves.
 - **Scheduled AMI rebuilds for security patches.** Packer builds are fully
   manual today — no scheduled job rebuilds base/runner AMIs for upstream
   CVEs, and no periodic check for AMI drift on already-running instances.
-- **Admin backend hardening.** No RBAC beyond Keycloak-header authentication
+- **Admin backend hardening.** No RBAC beyond OIDC authentication
   (any authenticated user can hit write endpoints); N+1 query in
   `ListInstances`; unbounded/hard-capped queries in circuit-state scan and
   cost-summary job listing; inconsistent pagination across list endpoints;

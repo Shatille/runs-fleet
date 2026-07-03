@@ -5,7 +5,7 @@ Status and remaining work for the runs-fleet admin UI. The original plan tracked
 ## Status (as of 2026-07-03)
 
 - **Auth**: ✅ Native OIDC — the orchestrator is its own OIDC relying party (authorization-code flow + PKCE against any standards-compliant issuer). No external gatekeeper or reverse proxy required; a self-hoster points `RUNS_FLEET_ADMIN_OIDC_*` at their IdP directly. Sessions are a self-contained HMAC-signed cookie (no shared session store, no refresh tokens — fixed TTL, re-login on expiry). Superseded the earlier Keycloak-gatekeeper-header-trust model, which in turn had superseded the original Bearer-token auth.
-- **Phase 1 (read dashboards)**: 🟡 Mostly built. Jobs, Pool status, and Circuit breaker are complete; Instances/Queues/Cost have their list/summary endpoints but not the planned detail/breakdown sub-endpoints; Metrics summary and the Audit viewer are not built.
+- **Phase 1 (read dashboards)**: 🟡 Mostly built. Jobs, Pool status, Circuit breaker, and the Audit viewer are complete; Instances/Queues/Cost have their list/summary endpoints but not the planned detail/breakdown sub-endpoints; Metrics summary is not built.
 - **Phase 2 (write actions)**: 🟡 Essentially unbuilt — one divergent housekeeping endpoint exists.
 - **Phase 3 (advanced)**: ❌ Not started.
 
@@ -25,7 +25,8 @@ The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedde
 | Queues list | `GET /api/queues` (visible/in-flight/delayed + main DLQ) | `handler_queues.go:62` |
 | Circuit breaker status | `GET /api/circuit` | `handler_circuit.go:62` |
 | Cost summary | `GET /api/cost/summary` (MTD, spot/on-demand split, per-family) | `handler_cost.go:64` |
-| Audit logging | `auditLog()` on pool CRUD, with user identity + client IP | `handler.go:484-512` |
+| Audit logging | Structured slog line (`logAdminAction`) on pool CRUD and housekeeping's orphaned-jobs cleanup, with user identity + client IP | `handler.go:495-519` |
+| Audit persistence + viewer | DynamoDB-backed (`RUNS_FLEET_AUDIT_TABLE`, 90-day TTL, ULID id), `GET /api/audit-logs` (user/action/since/until/limit/offset filters), `/admin/audit/` UI page | `pkg/db/audit.go`, `pkg/admin/handler_audit.go`, `ui/app/audit/page.tsx` |
 
 ### Built but not in the original plan
 
@@ -66,25 +67,12 @@ The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedde
 }
 ```
 
-#### Audit persistence + viewer
-Audit is currently **log-only** (`handler.go:auditLog()` → slog). To make it queryable, add a store and a viewer:
-
-- **Persistence** (recommended: DynamoDB with 90-day TTL):
-  ```
-  Table: runs-fleet-audit
-  Key: timestamp (S) + id (S)
-  GSI: user-index (user, timestamp)
-  Attrs: id(ULID), timestamp, user, action, target, result, details(map), client_ip, ttl
-  ```
-- **Coverage gap**: only pool CRUD calls `auditLog()`. The existing `POST /api/housekeeping/orphaned-jobs` write does **not** — add it there (and to all future write actions).
-- **Viewer**: `GET /api/audit-logs` with `user` / `action` / `since` / `until` / `limit` / `offset` filters; UI table with expandable rows.
-
 #### Pool reconcile timestamp
 Add `last_reconcile_at` (+ `last_reconcile_result`) to the pools table and surface it in the pool status response/UI. Not yet present anywhere.
 
 ### Phase 2 — write actions (mostly unbuilt)
 
-All require audit logging once persistence lands.
+All should call `recordAdminAction` (pkg/admin/handler.go) once implemented, same as pool CRUD and housekeeping's orphaned-jobs cleanup, so they land in the persisted audit trail automatically.
 
 | Action | Endpoint | Notes |
 |--------|----------|-------|
@@ -106,20 +94,18 @@ All require audit logging once persistence lands.
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| 1 | Audit persistence (DynamoDB) + add audit to housekeeping write | M |
-| 2 | Audit log viewer | M |
-| 3 | Pool `last_reconcile_at` | S |
-| 4 | Instance detail + Queue detail endpoints | S |
-| 5 | Cost `daily` + `by-pool` | M |
-| 6 | Metrics summary | M |
-| 7 | Manual instance termination | S |
-| 8 | Force reconciliation | S |
-| 9 | Circuit breaker reset | S |
-| 10 | DLQ redrive | S |
-| 11 | Generalized housekeeping trigger | S |
-| 12 | SSE real-time updates | L |
-| 13 | Spot interruption history | M |
-| 14 | Cache metrics | S |
+| 1 | Pool `last_reconcile_at` | S |
+| 2 | Instance detail + Queue detail endpoints | S |
+| 3 | Cost `daily` + `by-pool` | M |
+| 4 | Metrics summary | M |
+| 5 | Manual instance termination | S |
+| 6 | Force reconciliation | S |
+| 7 | Circuit breaker reset | S |
+| 8 | DLQ redrive | S |
+| 9 | Generalized housekeeping trigger | S |
+| 10 | SSE real-time updates | L |
+| 11 | Spot interruption history | M |
+| 12 | Cache metrics | S |
 
 **Effort**: S = 1-2 days, M = 3-5 days, L = 1+ week.
 
@@ -136,8 +122,6 @@ All require audit logging once persistence lands.
 
 ```
 pkg/admin/
-├── handler_audit.go     # audit store + GET /api/audit-logs
 ├── handler_metrics.go   # GET /api/metrics/summary
-├── handler_actions.go   # instance terminate, circuit reset, force reconcile, DLQ redrive
-└── ui/app/audit/page.tsx
+└── handler_actions.go   # instance terminate, circuit reset, force reconcile, DLQ redrive
 ```
