@@ -68,8 +68,11 @@ func (m *mockPoolDB) GetPoolBusyInstanceIDs(_ context.Context, _ string) ([]stri
 }
 
 type mockAuditDB struct {
-	entries []db.AuditEntry
-	err     error
+	entries    []db.AuditEntry
+	err        error
+	listErr    error
+	listResult []db.AuditEntry
+	gotFilter  db.AuditFilter
 }
 
 func (m *mockAuditDB) RecordAudit(_ context.Context, entry db.AuditEntry) error {
@@ -78,6 +81,14 @@ func (m *mockAuditDB) RecordAudit(_ context.Context, entry db.AuditEntry) error 
 	}
 	m.entries = append(m.entries, entry)
 	return nil
+}
+
+func (m *mockAuditDB) ListAuditLogs(_ context.Context, filter db.AuditFilter) ([]db.AuditEntry, error) {
+	m.gotFilter = filter
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.listResult, nil
 }
 
 func TestListPools(t *testing.T) {

@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -147,12 +149,8 @@ func (c *Client) listAuditLogsViaGSI(ctx context.Context, filter AuditFilter) ([
 	// action/until aren't part of the key condition (the GSI is keyed on
 	// user+timestamp only), so they're applied as a post-query filter.
 	filterExpr, filterClauses := auditFilterClauses(filter, false)
-	for k, v := range filterClauses.names {
-		names[k] = v
-	}
-	for k, v := range filterClauses.values {
-		values[k] = v
-	}
+	maps.Copy(names, filterClauses.names)
+	maps.Copy(values, filterClauses.values)
 	if filterExpr != "" {
 		input.FilterExpression = aws.String(filterExpr)
 	}
@@ -237,11 +235,7 @@ func auditFilterClauses(filter AuditFilter, includeUser bool) (string, auditExpr
 		return "", attrs
 	}
 
-	filterExpr := clauses[0]
-	for _, clause := range clauses[1:] {
-		filterExpr += " AND " + clause
-	}
-	return filterExpr, attrs
+	return strings.Join(clauses, " AND "), attrs
 }
 
 // paginateAuditEntries applies filter.Offset/Limit in memory. DynamoDB has

@@ -32,9 +32,10 @@ type PoolDB interface {
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 }
 
-// AuditDB persists audit log entries. Satisfied by *db.Client.
+// AuditDB persists and queries audit log entries. Satisfied by *db.Client.
 type AuditDB interface {
 	RecordAudit(ctx context.Context, entry db.AuditEntry) error
+	ListAuditLogs(ctx context.Context, filter db.AuditFilter) ([]db.AuditEntry, error)
 }
 
 // Handler provides HTTP endpoints for pool configuration management.
@@ -127,6 +128,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/pools", h.auth.WrapFunc(h.CreatePool))
 	mux.Handle("PUT /api/pools/{name}", h.auth.WrapFunc(h.UpdatePool))
 	mux.Handle("DELETE /api/pools/{name}", h.auth.WrapFunc(h.DeletePool))
+	mux.Handle("GET /api/audit-logs", h.auth.WrapFunc(h.ListAuditLogs))
 }
 
 // ListPools handles GET /api/pools.
