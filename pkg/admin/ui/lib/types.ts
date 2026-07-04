@@ -144,6 +144,35 @@ export interface FamilyBreakdown {
   spot_percent: number;
 }
 
+export interface CostDaily {
+  period_start: string;
+  period_end: string;
+  days: CostDayEntry[];
+}
+
+export interface CostDayEntry {
+  date: string;
+  total_cost: number;
+  spot_cost: number;
+  on_demand_cost: number;
+  job_count: number;
+}
+
+export interface CostByPool {
+  period_start: string;
+  period_end: string;
+  pools: CostPoolEntry[];
+}
+
+export interface CostPoolEntry {
+  pool: string;
+  job_count: number;
+  total_cost: number;
+  spot_cost: number;
+  on_demand_cost: number;
+  spot_percent: number;
+}
+
 export interface AuditEntry {
   id: string;
   user: string;

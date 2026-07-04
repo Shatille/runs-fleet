@@ -474,3 +474,113 @@ func TestExtractFamily(t *testing.T) {
 		}
 	}
 }
+
+func TestCostHandler_Daily(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 30, 0, 0, time.UTC)
+	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
+		{JobID: 1, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: monthStart},
+		{JobID: 2, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now},
+	}}
+
+	// nil pricers -> hard-coded fallback (t4g.medium = $0.0336/hr on-demand).
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/cost/daily", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp CostDailyResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	wantDays := int(now.Sub(time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)).Hours()/24) + 1
+	if len(resp.Days) != wantDays {
+		t.Errorf("zero-filled days = %d, want %d", len(resp.Days), wantDays)
+	}
+
+	var totalJobs int
+	var totalCost float64
+	byDate := map[string]CostDayEntry{}
+	for _, d := range resp.Days {
+		totalJobs += d.JobCount
+		totalCost += d.TotalCost
+		byDate[d.Date] = d
+	}
+	if totalJobs != 2 {
+		t.Errorf("summed job_count = %d, want 2", totalJobs)
+	}
+	if !approx(totalCost, 2*0.0336) {
+		t.Errorf("summed total_cost = %f, want %f", totalCost, 2*0.0336)
+	}
+	if _, ok := byDate[monthStart.Format("2006-01-02")]; !ok {
+		t.Errorf("missing bucket for month start %s", monthStart.Format("2006-01-02"))
+	}
+	if e := byDate[now.Format("2006-01-02")]; e.JobCount < 1 {
+		t.Errorf("today's bucket job_count = %d, want >= 1", e.JobCount)
+	}
+}
+
+func TestCostHandler_ByPool(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
+		{JobID: 1, Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Spot: true, Status: string(db.JobStatusCompleted), CreatedAt: now},
+		{JobID: 2, Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now},
+		{JobID: 3, Pool: "", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now},
+	}}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/cost/by-pool", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp CostByPoolResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Pools) != 2 {
+		t.Fatalf("pools = %d, want 2", len(resp.Pools))
+	}
+	// Sorted by total_cost desc: default (2 jobs) before cold-start (1 job).
+	if resp.Pools[0].Pool != "default" {
+		t.Errorf("pools[0] = %q, want default", resp.Pools[0].Pool)
+	}
+	if resp.Pools[1].Pool != "cold-start" {
+		t.Errorf("pools[1] = %q, want cold-start", resp.Pools[1].Pool)
+	}
+
+	byName := map[string]CostPoolEntry{}
+	for _, p := range resp.Pools {
+		byName[p.Pool] = p
+	}
+	if byName["default"].JobCount != 2 {
+		t.Errorf("default job_count = %d, want 2", byName["default"].JobCount)
+	}
+	if !approx(byName["default"].SpotPercent, 50) {
+		t.Errorf("default spot_percent = %f, want 50", byName["default"].SpotPercent)
+	}
+	// default = one on-demand ($0.0336) + one spot ($0.0336 * 0.3 = $0.01008).
+	if !approx(byName["default"].TotalCost, 0.0336+0.0336*(1-cost.SpotDiscount)) {
+		t.Errorf("default total_cost = %f", byName["default"].TotalCost)
+	}
+	if !approx(byName["cold-start"].TotalCost, 0.0336) {
+		t.Errorf("cold-start total_cost = %f, want 0.0336", byName["cold-start"].TotalCost)
+	}
+}

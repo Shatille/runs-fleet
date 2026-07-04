@@ -2,23 +2,30 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { CostSkeleton } from '@/components/skeleton';
-import { CostSummary } from '@/lib/types';
+import { CostSummary, CostDaily, CostByPool } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
 export default function CostPage() {
   const [summary, setSummary] = useState<CostSummary | null>(null);
+  const [daily, setDaily] = useState<CostDaily | null>(null);
+  const [byPool, setByPool] = useState<CostByPool | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchCostSummary = useCallback(async () => {
+  const fetchCost = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await apiFetch('/api/cost/summary');
-      if (!res.ok) {
-        throw new Error(`Failed to fetch cost summary: ${res.statusText}`);
+      const [summaryRes, dailyRes, byPoolRes] = await Promise.all([
+        apiFetch('/api/cost/summary'),
+        apiFetch('/api/cost/daily'),
+        apiFetch('/api/cost/by-pool'),
+      ]);
+      if (!summaryRes.ok) {
+        throw new Error(`Failed to fetch cost summary: ${summaryRes.statusText}`);
       }
-      const data = await res.json();
-      setSummary(data);
+      setSummary(await summaryRes.json());
+      if (dailyRes.ok) setDaily(await dailyRes.json());
+      if (byPoolRes.ok) setByPool(await byPoolRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load cost data');
     } finally {
@@ -27,12 +34,12 @@ export default function CostPage() {
   }, []);
 
   useEffect(() => {
-    fetchCostSummary();
-  }, [fetchCostSummary]);
+    fetchCost();
+  }, [fetchCost]);
 
   const handleRefresh = () => {
     setError(null);
-    fetchCostSummary();
+    fetchCost();
   };
 
   if (error) {
@@ -117,6 +124,36 @@ export default function CostPage() {
             </div>
           </div>
 
+          {daily && daily.days.length > 0 && <DailyChart daily={daily} />}
+
+          {byPool && byPool.pools.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 overflow-hidden mb-6">
+              <div className="px-4 py-3 border-b dark:border-gray-700">
+                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Breakdown by Pool</h3>
+              </div>
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <thead className="bg-gray-50 dark:bg-gray-700">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Pool</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Jobs</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cost</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Spot %</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                  {byPool.pools.map((entry) => (
+                    <tr key={entry.pool} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                      <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{entry.pool}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.job_count}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.total_cost.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.spot_percent.toFixed(0)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {summary.family_breakdown.length > 0 && (
             <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 overflow-hidden mb-6">
               <div className="px-4 py-3 border-b dark:border-gray-700">
@@ -200,6 +237,32 @@ export default function CostPage() {
           <p className="text-gray-500 dark:text-gray-400">No cost data available.</p>
         </div>
       )}
+    </div>
+  );
+}
+
+function DailyChart({ daily }: { daily: CostDaily }) {
+  const maxCost = Math.max(...daily.days.map((d) => d.total_cost), 0.0001);
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4 mb-6">
+      <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">Daily Cost</h3>
+      <div className="flex items-end gap-1 h-40" role="img" aria-label="Daily cost bar chart">
+        {daily.days.map((d) => (
+          <div key={d.date} className="flex-1 flex flex-col justify-end h-full group relative">
+            <div
+              className="bg-blue-500 dark:bg-blue-600 rounded-t hover:bg-blue-600 dark:hover:bg-blue-500 transition-colors"
+              style={{ height: `${(d.total_cost / maxCost) * 100}%` }}
+            />
+            <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap rounded bg-gray-900 text-white text-xs px-2 py-1 z-10">
+              {d.date}: ${d.total_cost.toFixed(2)} ({d.job_count} jobs)
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between mt-2 text-xs text-gray-500 dark:text-gray-400">
+        <span>{daily.days[0]?.date}</span>
+        <span>{daily.days[daily.days.length - 1]?.date}</span>
+      </div>
     </div>
   );
 }
