@@ -89,8 +89,8 @@ func TestMetricsHandler_GetSummary(t *testing.T) {
 	if !resp.SpotInterruptionRateEstimated {
 		t.Error("spot_interruption_rate_estimated = false, want true")
 	}
-	if !approx(resp.CostMTDUSD, 52.30) {
-		t.Errorf("cost_mtd_usd = %f, want 52.30", resp.CostMTDUSD)
+	if resp.CostMTDUSD == nil || !approx(*resp.CostMTDUSD, 52.30) {
+		t.Errorf("cost_mtd_usd = %v, want 52.30", resp.CostMTDUSD)
 	}
 }
 
@@ -137,8 +137,8 @@ func TestMetricsHandler_CostErrorTolerated(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.CostMTDUSD != 0 {
-		t.Errorf("cost_mtd_usd = %f, want 0 on cost error", resp.CostMTDUSD)
+	if resp.CostMTDUSD != nil {
+		t.Errorf("cost_mtd_usd = %v, want nil (omitted) on cost error", resp.CostMTDUSD)
 	}
 }
 

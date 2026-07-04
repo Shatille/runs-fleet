@@ -46,7 +46,9 @@ type MetricsSummaryResponse struct {
 	// is always true until Phase 3 stores real interruption history.
 	SpotInterruptionRate          float64 `json:"spot_interruption_rate"`
 	SpotInterruptionRateEstimated bool    `json:"spot_interruption_rate_estimated"`
-	CostMTDUSD                    float64 `json:"cost_mtd_usd"`
+	// CostMTDUSD is nil (omitted) when the cost lookup failed, so the UI can
+	// distinguish "unavailable" from a real $0.00.
+	CostMTDUSD *float64 `json:"cost_mtd_usd,omitempty"`
 }
 
 // MetricsHandler provides the aggregate metrics summary endpoint.
@@ -109,7 +111,7 @@ func (h *MetricsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	if mtd, err := h.cost.CostMTD(ctx); err != nil {
 		h.log.Warn(ctx, "cost mtd unavailable", slog.String(logging.KeyError, err.Error()))
 	} else {
-		resp.CostMTDUSD = mtd
+		resp.CostMTDUSD = &mtd
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)

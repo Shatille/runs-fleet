@@ -74,7 +74,7 @@ export default function MetricsPage() {
               value={`${(metrics.spot_interruption_rate * 100).toFixed(1)}%`}
               subtitle={metrics.spot_interruption_rate_estimated ? 'estimate' : undefined}
             />
-            <MetricCard label="Cost (MTD)" value={`$${metrics.cost_mtd_usd.toFixed(2)}`} />
+            <MetricCard label="Cost (MTD)" value={metrics.cost_mtd_usd != null ? `$${metrics.cost_mtd_usd.toFixed(2)}` : '—'} subtitle={metrics.cost_mtd_usd == null ? 'unavailable' : undefined} />
           </div>
 
           {metrics.spot_interruption_rate_estimated && (

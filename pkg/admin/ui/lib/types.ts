@@ -184,7 +184,7 @@ export interface MetricsSummary {
   avg_startup_time_seconds: number;
   spot_interruption_rate: number;
   spot_interruption_rate_estimated: boolean;
-  cost_mtd_usd: number;
+  cost_mtd_usd?: number;
 }
 
 export interface AuditEntry {
