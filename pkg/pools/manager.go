@@ -362,15 +362,19 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	// Acquire per-pool lock (TTL > reconcile interval). Time the acquire wait —
 	// this is the contention signal that would have surfaced #298.
 	lockStart := time.Now()
-	if lockErr := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, reconcileLockTTL); lockErr != nil {
+	// Assign to the named return (not a shadow) so the outcome recorder below sees
+	// the real error; the recorder is only registered after this block, so these
+	// early returns are never recorded (another instance owns the lock, or the
+	// pool is gone).
+	if err = m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, reconcileLockTTL); err != nil {
 		if m.metrics != nil {
 			_ = m.metrics.PublishLockWaitSeconds(ctx, lockPoolReconcile, time.Since(lockStart).Seconds())
 		}
 		// Lock held by another instance or pool deleted - skip silently
-		if errors.Is(lockErr, db.ErrPoolReconcileLockHeld) || errors.Is(lockErr, db.ErrPoolNotFound) {
+		if errors.Is(err, db.ErrPoolReconcileLockHeld) || errors.Is(err, db.ErrPoolNotFound) {
 			return nil
 		}
-		return fmt.Errorf("failed to acquire pool lock: %w", lockErr)
+		return fmt.Errorf("failed to acquire pool lock: %w", err)
 	}
 	if m.metrics != nil {
 		_ = m.metrics.PublishLockWaitSeconds(ctx, lockPoolReconcile, time.Since(lockStart).Seconds())

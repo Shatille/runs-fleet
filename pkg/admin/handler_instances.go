@@ -109,10 +109,13 @@ func (h *InstancesHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A DescribeInstances query by unique instance ID returns at most one
+	// instance; take the first match and stop.
 	var inst *types.Instance
-	for _, res := range output.Reservations {
-		for i := range res.Instances {
-			inst = &res.Instances[i]
+	for i := range output.Reservations {
+		if len(output.Reservations[i].Instances) > 0 {
+			inst = &output.Reservations[i].Instances[0]
+			break
 		}
 	}
 	if inst == nil {
