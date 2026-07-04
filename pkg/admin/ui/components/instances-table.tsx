@@ -66,7 +66,12 @@ export default function InstancesTable({ instances }: InstancesTableProps) {
           {sortedData.map((inst) => (
             <tr key={inst.instance_id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
               <td className="px-4 py-3 whitespace-nowrap">
-                <span className="font-mono text-sm text-gray-900 dark:text-gray-100">{inst.instance_id}</span>
+                <a
+                  href={`/admin/instances/detail/?id=${encodeURIComponent(inst.instance_id)}`}
+                  className="font-mono text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  {inst.instance_id}
+                </a>
               </td>
               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">
                 {inst.instance_type}

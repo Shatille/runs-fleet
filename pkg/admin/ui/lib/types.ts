@@ -84,6 +84,15 @@ export interface Instance {
   busy: boolean;
 }
 
+export interface InstanceDetail extends Instance {
+  availability_zone?: string;
+  image_id?: string;
+  subnet_id?: string;
+  architecture?: string;
+  state_reason?: string;
+  tags?: Record<string, string>;
+}
+
 export interface QueueStatus {
   name: string;
   url: string;
@@ -91,6 +100,7 @@ export interface QueueStatus {
   messages_in_flight: number;
   messages_delayed: number;
   dlq_messages: number;
+  oldest_message_age_seconds?: number;
 }
 
 export interface CircuitState {

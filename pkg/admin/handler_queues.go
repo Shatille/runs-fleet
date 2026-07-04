@@ -14,6 +14,11 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+// attrOldestMessageAge is the SQS queue attribute for the age (seconds) of the
+// oldest message. The SDK's QueueAttributeName enum omits it, so it's passed as
+// a raw string.
+const attrOldestMessageAge = "ApproximateAgeOfOldestMessage"
+
 // SQSAPI defines the SQS operations needed for queue status.
 type SQSAPI interface {
 	GetQueueAttributes(ctx context.Context, params *sqs.GetQueueAttributesInput, optFns ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error)
@@ -31,12 +36,13 @@ type QueueConfig struct {
 
 // QueueStatusResponse represents queue status in the admin API response.
 type QueueStatusResponse struct {
-	Name             string `json:"name"`
-	URL              string `json:"url"`
-	MessagesVisible  int    `json:"messages_visible"`
-	MessagesInFlight int    `json:"messages_in_flight"`
-	MessagesDelayed  int    `json:"messages_delayed"`
-	DLQMessages      int    `json:"dlq_messages,omitempty"`
+	Name                    string `json:"name"`
+	URL                     string `json:"url"`
+	MessagesVisible         int    `json:"messages_visible"`
+	MessagesInFlight        int    `json:"messages_in_flight"`
+	MessagesDelayed         int    `json:"messages_delayed"`
+	DLQMessages             int    `json:"dlq_messages,omitempty"`
+	OldestMessageAgeSeconds int    `json:"oldest_message_age_seconds,omitempty"`
 }
 
 // QueuesHandler provides HTTP endpoints for queue status.
@@ -57,44 +63,36 @@ func NewQueuesHandler(sqsClient SQSAPI, config QueueConfig, auth *AuthMiddleware
 	}
 }
 
+// queueNames is the fixed display order of runs-fleet queues.
+var queueNames = []string{"main", "pool", "events", "termination", "housekeeping"}
+
 // RegisterRoutes registers queue API routes on the given mux.
 func (h *QueuesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/queues", h.auth.WrapFunc(h.ListQueues))
+	mux.Handle("GET /api/queues/{queue_name}", h.auth.WrapFunc(h.GetQueue))
 }
 
 // ListQueues handles GET /api/queues.
 func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	queues := []struct {
-		name   string
-		url    string
-		dlqURL string
-	}{
-		{"main", h.config.MainQueue, h.config.MainQueueDLQ},
-		{"pool", h.config.PoolQueue, ""},
-		{"events", h.config.EventsQueue, ""},
-		{"termination", h.config.TerminationQueue, ""},
-		{"housekeeping", h.config.HousekeepingQueue, ""},
-	}
-
 	var results []QueueStatusResponse
-	for _, q := range queues {
-		if q.url == "" {
+	for _, name := range queueNames {
+		url, dlqURL, ok := h.queueByName(name)
+		if !ok {
 			continue
 		}
 
-		status, err := h.getQueueStatus(ctx, q.name, q.url)
+		status, err := h.getQueueStatus(ctx, name, url)
 		if err != nil {
 			h.log.Warn(ctx, "failed to get queue status",
-				slog.String("queue", q.name),
+				slog.String("queue", name),
 				slog.String(logging.KeyError, err.Error()))
 			continue
 		}
 
-		if q.dlqURL != "" {
-			dlqStatus, err := h.getQueueStatus(ctx, q.name+"-dlq", q.dlqURL)
-			if err == nil {
+		if dlqURL != "" {
+			if dlqStatus, err := h.getQueueStatus(ctx, name+"-dlq", dlqURL); err == nil {
 				status.DLQMessages = dlqStatus.MessagesVisible
 			}
 		}
@@ -107,6 +105,36 @@ func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetQueue handles GET /api/queues/{queue_name}. Unknown or unconfigured names
+// resolve to 404.
+func (h *QueuesHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := r.PathValue("queue_name")
+
+	url, dlqURL, ok := h.queueByName(name)
+	if !ok {
+		h.writeError(w, http.StatusNotFound, "Queue not found", "")
+		return
+	}
+
+	status, err := h.getQueueStatus(ctx, name, url)
+	if err != nil {
+		h.log.Error(ctx, "failed to get queue status",
+			slog.String("queue", name),
+			slog.String(logging.KeyError, err.Error()))
+		h.writeError(w, http.StatusInternalServerError, "Failed to get queue", err.Error())
+		return
+	}
+
+	if dlqURL != "" {
+		if dlqStatus, err := h.getQueueStatus(ctx, name+"-dlq", dlqURL); err == nil {
+			status.DLQMessages = dlqStatus.MessagesVisible
+		}
+	}
+
+	h.writeJSON(w, http.StatusOK, status)
+}
+
 func (h *QueuesHandler) getQueueStatus(ctx context.Context, name, url string) (*QueueStatusResponse, error) {
 	attrs, err := h.sqs.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
 		QueueUrl: aws.String(url),
@@ -114,6 +142,7 @@ func (h *QueuesHandler) getQueueStatus(ctx context.Context, name, url string) (*
 			sqstypes.QueueAttributeNameApproximateNumberOfMessages,
 			sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
 			sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed,
+			sqstypes.QueueAttributeName(attrOldestMessageAge),
 		},
 	})
 	if err != nil {
@@ -121,17 +150,49 @@ func (h *QueuesHandler) getQueueStatus(ctx context.Context, name, url string) (*
 	}
 
 	return &QueueStatusResponse{
-		Name:             name,
-		URL:              url,
-		MessagesVisible:  atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]),
-		MessagesInFlight: atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible)]),
-		MessagesDelayed:  atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed)]),
+		Name:                    name,
+		URL:                     url,
+		MessagesVisible:         atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]),
+		MessagesInFlight:        atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible)]),
+		MessagesDelayed:         atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed)]),
+		OldestMessageAgeSeconds: atoi(attrs.Attributes[attrOldestMessageAge]),
 	}, nil
+}
+
+// queueByName resolves a queue name to its URL and (for the main queue) its DLQ
+// URL. ok is false for an unknown or unconfigured name.
+func (h *QueuesHandler) queueByName(name string) (url, dlqURL string, ok bool) {
+	switch name {
+	case "main":
+		url, dlqURL = h.config.MainQueue, h.config.MainQueueDLQ
+	case "pool":
+		url = h.config.PoolQueue
+	case "events":
+		url = h.config.EventsQueue
+	case "termination":
+		url = h.config.TerminationQueue
+	case "housekeeping":
+		url = h.config.HousekeepingQueue
+	default:
+		return "", "", false
+	}
+	if url == "" {
+		return "", "", false
+	}
+	return url, dlqURL, true
 }
 
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func (h *QueuesHandler) writeError(w http.ResponseWriter, status int, message, details string) {
+	resp := ErrorResponse{Error: message}
+	if details != "" {
+		resp.Details = details
+	}
+	h.writeJSON(w, status, resp)
 }
 
 func (h *QueuesHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {

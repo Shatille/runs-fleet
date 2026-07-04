@@ -88,7 +88,12 @@ function QueueCard({ queue }: QueueCardProps) {
   return (
     <div className={`bg-white dark:bg-gray-800 rounded-lg shadow p-6 ${hasMessages ? 'ring-2 ring-yellow-200 dark:ring-yellow-700' : ''}`}>
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 capitalize">{queue.name}</h3>
+        <a
+          href={`/admin/queues/detail/?name=${encodeURIComponent(queue.name)}`}
+          className="text-lg font-semibold text-blue-600 dark:text-blue-400 hover:underline capitalize"
+        >
+          {queue.name}
+        </a>
         {queue.dlq_messages > 0 && (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-300">
             {queue.dlq_messages} in DLQ

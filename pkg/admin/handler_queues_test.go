@@ -184,3 +184,69 @@ func TestQueuesHandler_DLQMessages(t *testing.T) {
 		t.Errorf("got DLQ messages %d, want 5", mainQueue.DLQMessages)
 	}
 }
+
+func TestQueuesHandler_GetQueue(t *testing.T) {
+	t.Parallel()
+
+	const mainURL = "https://sqs.us-east-1.amazonaws.com/123456789/main"
+	const dlqURL = "https://sqs.us-east-1.amazonaws.com/123456789/main-dlq"
+	const poolURL = "https://sqs.us-east-1.amazonaws.com/123456789/pool"
+
+	config := QueueConfig{MainQueue: mainURL, MainQueueDLQ: dlqURL, PoolQueue: poolURL}
+	attrs := map[string]map[string]string{
+		mainURL: {
+			string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "7",
+			"ApproximateAgeOfOldestMessage":                                "42",
+		},
+		dlqURL:  {string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "2"},
+		poolURL: {string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "1"},
+	}
+
+	tests := []struct {
+		name       string
+		queueName  string
+		wantStatus int
+		wantDLQ    int
+		wantAge    int
+	}{
+		{name: "main with dlq and age", queueName: "main", wantStatus: http.StatusOK, wantDLQ: 2, wantAge: 42},
+		{name: "pool", queueName: "pool", wantStatus: http.StatusOK},
+		{name: "unknown name", queueName: "bogus", wantStatus: http.StatusNotFound},
+		{name: "unconfigured queue", queueName: "events", wantStatus: http.StatusNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := NewQueuesHandler(&mockSQSAPI{attrs: attrs}, config, NewAuthMiddleware(""))
+			mux := http.NewServeMux()
+			handler.RegisterRoutes(mux)
+
+			req := httptest.NewRequest("GET", "/api/queues/"+tt.queueName, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			var resp QueueStatusResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if resp.Name != tt.queueName {
+				t.Errorf("name = %q, want %q", resp.Name, tt.queueName)
+			}
+			if resp.DLQMessages != tt.wantDLQ {
+				t.Errorf("dlq_messages = %d, want %d", resp.DLQMessages, tt.wantDLQ)
+			}
+			if resp.OldestMessageAgeSeconds != tt.wantAge {
+				t.Errorf("oldest_message_age_seconds = %d, want %d", resp.OldestMessageAgeSeconds, tt.wantAge)
+			}
+		})
+	}
+}

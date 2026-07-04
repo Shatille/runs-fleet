@@ -17,6 +17,13 @@ export function formatRelativeTime(isoString?: string): string {
   return date.toLocaleDateString();
 }
 
+export function formatTimestamp(isoString?: string): string {
+  if (!isoString) return '-';
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString();
+}
+
 export function formatDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return '-';
   if (seconds < 60) return `${seconds}s`;
