@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
@@ -64,22 +65,24 @@ var poolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 // PoolResponse represents a pool configuration in API responses.
 type PoolResponse struct {
-	PoolName           string             `json:"pool_name"`
-	InstanceType       string             `json:"instance_type,omitempty"`
-	DesiredRunning     int                `json:"desired_running"`
-	DesiredStopped     int                `json:"desired_stopped"`
-	CurrentRunning     int                `json:"current_running"`
-	CurrentStopped     int                `json:"current_stopped"`
-	BusyInstances      int                `json:"busy_instances"`
-	IdleTimeoutMinutes int                `json:"idle_timeout_minutes,omitempty"`
-	Ephemeral          bool               `json:"ephemeral"`
-	Arch               string             `json:"arch,omitempty"`
-	CPUMin             int                `json:"cpu_min,omitempty"`
-	CPUMax             int                `json:"cpu_max,omitempty"`
-	RAMMin             float64            `json:"ram_min,omitempty"`
-	RAMMax             float64            `json:"ram_max,omitempty"`
-	Families           []string           `json:"families,omitempty"`
-	Schedules          []ScheduleResponse `json:"schedules,omitempty"`
+	PoolName            string             `json:"pool_name"`
+	InstanceType        string             `json:"instance_type,omitempty"`
+	DesiredRunning      int                `json:"desired_running"`
+	DesiredStopped      int                `json:"desired_stopped"`
+	CurrentRunning      int                `json:"current_running"`
+	CurrentStopped      int                `json:"current_stopped"`
+	BusyInstances       int                `json:"busy_instances"`
+	IdleTimeoutMinutes  int                `json:"idle_timeout_minutes,omitempty"`
+	Ephemeral           bool               `json:"ephemeral"`
+	Arch                string             `json:"arch,omitempty"`
+	CPUMin              int                `json:"cpu_min,omitempty"`
+	CPUMax              int                `json:"cpu_max,omitempty"`
+	RAMMin              float64            `json:"ram_min,omitempty"`
+	RAMMax              float64            `json:"ram_max,omitempty"`
+	Families            []string           `json:"families,omitempty"`
+	Schedules           []ScheduleResponse `json:"schedules,omitempty"`
+	LastReconcileAt     *time.Time         `json:"last_reconcile_at,omitempty"`
+	LastReconcileResult string             `json:"last_reconcile_result,omitempty"`
 }
 
 // ScheduleResponse represents a pool schedule in API responses.
@@ -404,21 +407,26 @@ func (h *Handler) configToResponse(config *db.PoolConfig) PoolResponse {
 
 func (h *Handler) configToResponseWithBusy(config *db.PoolConfig, busyCount int) PoolResponse {
 	resp := PoolResponse{
-		PoolName:           config.PoolName,
-		InstanceType:       config.InstanceType,
-		DesiredRunning:     config.DesiredRunning,
-		DesiredStopped:     config.DesiredStopped,
-		CurrentRunning:     config.CurrentRunning,
-		CurrentStopped:     config.CurrentStopped,
-		BusyInstances:      busyCount,
-		IdleTimeoutMinutes: config.IdleTimeoutMinutes,
-		Ephemeral:          config.Ephemeral,
-		Arch:               config.Arch,
-		CPUMin:             config.CPUMin,
-		CPUMax:             config.CPUMax,
-		RAMMin:             config.RAMMin,
-		RAMMax:             config.RAMMax,
-		Families:           config.Families,
+		PoolName:            config.PoolName,
+		InstanceType:        config.InstanceType,
+		DesiredRunning:      config.DesiredRunning,
+		DesiredStopped:      config.DesiredStopped,
+		CurrentRunning:      config.CurrentRunning,
+		CurrentStopped:      config.CurrentStopped,
+		BusyInstances:       busyCount,
+		IdleTimeoutMinutes:  config.IdleTimeoutMinutes,
+		Ephemeral:           config.Ephemeral,
+		Arch:                config.Arch,
+		CPUMin:              config.CPUMin,
+		CPUMax:              config.CPUMax,
+		RAMMin:              config.RAMMin,
+		RAMMax:              config.RAMMax,
+		Families:            config.Families,
+		LastReconcileResult: config.LastReconcileResult,
+	}
+	if !config.LastReconcileAt.IsZero() {
+		t := config.LastReconcileAt
+		resp.LastReconcileAt = &t
 	}
 
 	if len(config.Schedules) > 0 {

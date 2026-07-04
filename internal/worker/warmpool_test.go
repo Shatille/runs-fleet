@@ -170,6 +170,10 @@ func (m *mockDBClient) ReleasePoolReconcileLock(_ context.Context, _, _ string) 
 	return nil
 }
 
+func (m *mockDBClient) UpdatePoolReconcileResult(_ context.Context, _, _ string, _ time.Time) error {
+	return nil
+}
+
 func (m *mockDBClient) ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error {
 	if m.claimInstanceForJobFunc != nil {
 		return m.claimInstanceForJobFunc(ctx, instanceID, jobID, ttl)

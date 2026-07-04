@@ -31,15 +31,16 @@ const (
 //
 //nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
 type MockDBClient struct {
-	GetPoolConfigFunc            func(ctx context.Context, poolName string) (*db.PoolConfig, error)
-	UpdatePoolStateFunc          func(ctx context.Context, poolName string, running, stopped int) error
-	ListPoolsFunc                func(ctx context.Context) ([]string, error)
-	GetPoolP90ConcurrencyFunc    func(ctx context.Context, poolName string, windowHours int) (int, error)
-	GetPoolBusyInstanceIDsFunc   func(ctx context.Context, poolName string) ([]string, error)
-	AcquirePoolReconcileLockFunc func(ctx context.Context, poolName, owner string, ttl time.Duration) error
-	ReleasePoolReconcileLockFunc func(ctx context.Context, poolName, owner string) error
-	ClaimInstanceForJobFunc      func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
-	ReleaseInstanceClaimFunc     func(ctx context.Context, instanceID string, jobID int64) error
+	GetPoolConfigFunc             func(ctx context.Context, poolName string) (*db.PoolConfig, error)
+	UpdatePoolStateFunc           func(ctx context.Context, poolName string, running, stopped int) error
+	ListPoolsFunc                 func(ctx context.Context) ([]string, error)
+	GetPoolP90ConcurrencyFunc     func(ctx context.Context, poolName string, windowHours int) (int, error)
+	GetPoolBusyInstanceIDsFunc    func(ctx context.Context, poolName string) ([]string, error)
+	AcquirePoolReconcileLockFunc  func(ctx context.Context, poolName, owner string, ttl time.Duration) error
+	ReleasePoolReconcileLockFunc  func(ctx context.Context, poolName, owner string) error
+	UpdatePoolReconcileResultFunc func(ctx context.Context, poolName, result string, at time.Time) error
+	ClaimInstanceForJobFunc       func(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
+	ReleaseInstanceClaimFunc      func(ctx context.Context, instanceID string, jobID int64) error
 }
 
 func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error) {
@@ -87,6 +88,13 @@ func (m *MockDBClient) AcquirePoolReconcileLock(ctx context.Context, poolName, o
 func (m *MockDBClient) ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error {
 	if m.ReleasePoolReconcileLockFunc != nil {
 		return m.ReleasePoolReconcileLockFunc(ctx, poolName, owner)
+	}
+	return nil
+}
+
+func (m *MockDBClient) UpdatePoolReconcileResult(ctx context.Context, poolName, result string, at time.Time) error {
+	if m.UpdatePoolReconcileResultFunc != nil {
+		return m.UpdatePoolReconcileResultFunc(ctx, poolName, result, at)
 	}
 	return nil
 }

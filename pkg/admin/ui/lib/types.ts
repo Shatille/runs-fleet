@@ -15,6 +15,8 @@ export interface Pool {
   ram_max?: number;
   families?: string[];
   schedules?: Schedule[];
+  last_reconcile_at?: string;
+  last_reconcile_result?: string;
 }
 
 export interface Schedule {

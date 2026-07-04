@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
 )
+
+const reconcileResultSuccess = "success"
 
 type mockPoolDB struct {
 	pools       map[string]*db.PoolConfig
@@ -803,5 +806,50 @@ func TestUpdatePoolContentType(t *testing.T) {
 
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+func TestGetPool_SurfacesReconcileFields(t *testing.T) {
+	t.Parallel()
+
+	reconciledAt := time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC)
+	mockDB := newMockDB()
+	mockDB.pools["warm-pool"] = &db.PoolConfig{
+		PoolName:            "warm-pool",
+		InstanceType:        "c7g.xlarge",
+		LastReconcileAt:     reconciledAt,
+		LastReconcileResult: reconcileResultSuccess,
+	}
+
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/pools/{name}", h.GetPool)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pools/warm-pool", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var resp PoolResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.LastReconcileResult != reconcileResultSuccess {
+		t.Errorf("last_reconcile_result = %q, want success", resp.LastReconcileResult)
+	}
+	if resp.LastReconcileAt == nil || !resp.LastReconcileAt.Equal(reconciledAt) {
+		t.Errorf("last_reconcile_at = %v, want %v", resp.LastReconcileAt, reconciledAt)
+	}
+}
+
+func TestConfigToResponse_OmitsZeroReconcileTime(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(newMockDB(), nil, NewAuthMiddleware(""))
+	resp := h.configToResponse(&db.PoolConfig{PoolName: "p"})
+	if resp.LastReconcileAt != nil {
+		t.Errorf("last_reconcile_at = %v, want nil for zero time", resp.LastReconcileAt)
 	}
 }
