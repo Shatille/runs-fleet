@@ -242,11 +242,11 @@ export default function CostPage() {
 }
 
 function DailyChart({ daily }: { daily: CostDaily }) {
-  const maxCost = Math.max(...daily.days.map((d) => d.total_cost), 0.0001);
+  const maxCost = daily.days.reduce((m, d) => Math.max(m, d.total_cost), 0.0001);
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4 mb-6">
       <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">Daily Cost</h3>
-      <div className="flex items-end gap-1 h-40" role="img" aria-label="Daily cost bar chart">
+      <div className="flex items-end gap-1 h-40" role="img" aria-label="Daily cost bar chart; see the accompanying data table for values">
         {daily.days.map((d) => (
           <div key={d.date} className="flex-1 flex flex-col justify-end h-full group relative">
             <div
@@ -263,6 +263,21 @@ function DailyChart({ daily }: { daily: CostDaily }) {
         <span>{daily.days[0]?.date}</span>
         <span>{daily.days[daily.days.length - 1]?.date}</span>
       </div>
+      <table className="sr-only">
+        <caption>Daily cost</caption>
+        <thead>
+          <tr><th>Date</th><th>Total cost (USD)</th><th>Jobs</th></tr>
+        </thead>
+        <tbody>
+          {daily.days.map((d) => (
+            <tr key={d.date}>
+              <td>{d.date}</td>
+              <td>{d.total_cost.toFixed(2)}</td>
+              <td>{d.job_count}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
