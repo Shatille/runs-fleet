@@ -93,11 +93,11 @@ export default function MetricsPage() {
 function MetricCard({ label, value, subtitle, accent }: { label: string; value: string; subtitle?: string; accent?: 'red' }) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
-      <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</dt>
-      <dd className={`mt-1 text-2xl font-semibold ${accent === 'red' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'}`}>
+      <div className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</div>
+      <div className={`mt-1 text-2xl font-semibold ${accent === 'red' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'}`}>
         {value}
-      </dd>
-      {subtitle && <dd className="mt-1 text-xs text-gray-400 dark:text-gray-500">{subtitle}</dd>}
+      </div>
+      {subtitle && <div className="mt-1 text-xs text-gray-400 dark:text-gray-500">{subtitle}</div>}
     </div>
   );
 }

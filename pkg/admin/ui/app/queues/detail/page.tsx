@@ -106,10 +106,10 @@ function QueueDetailView() {
 function StatCard({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
-      <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</dt>
-      <dd className={`mt-1 text-2xl font-semibold ${highlight ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-900 dark:text-gray-100'}`}>
+      <div className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</div>
+      <div className={`mt-1 text-2xl font-semibold ${highlight ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-900 dark:text-gray-100'}`}>
         {value}
-      </dd>
+      </div>
     </div>
   );
 }
@@ -117,8 +117,8 @@ function StatCard({ label, value, highlight }: { label: string; value: number; h
 function StatCardText({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
-      <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</dt>
-      <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">{value}</dd>
+      <div className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</div>
+      <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">{value}</div>
     </div>
   );
 }
