@@ -173,6 +173,20 @@ export interface CostPoolEntry {
   spot_percent: number;
 }
 
+export interface MetricsSummary {
+  jobs_24h: {
+    total: number;
+    completed: number;
+    failed: number;
+    in_progress: number;
+  };
+  warm_pool_hit_rate: number;
+  avg_startup_time_seconds: number;
+  spot_interruption_rate: number;
+  spot_interruption_rate_estimated: boolean;
+  cost_mtd_usd: number;
+}
+
 export interface AuditEntry {
   id: string;
   user: string;

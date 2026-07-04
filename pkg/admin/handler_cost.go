@@ -169,6 +169,22 @@ func (h *CostHandler) monthToDateJobs(ctx context.Context) ([]db.AdminJobEntry, 
 	return jobs, start, now, err
 }
 
+// CostMTD returns the month-to-date total EC2 cost across completed jobs. Shared
+// with the metrics summary so both report the same figure.
+func (h *CostHandler) CostMTD(ctx context.Context) (float64, error) {
+	jobs, _, _, err := h.monthToDateJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	odMemo := make(map[string]float64)
+	spotMemo := make(map[string]spotResult)
+	var total float64
+	for _, job := range jobs {
+		total += h.priceJob(ctx, job, odMemo, spotMemo).total
+	}
+	return total, nil
+}
+
 // spotResult caches a per-instance-type spot price lookup for one request.
 type spotResult struct {
 	price float64

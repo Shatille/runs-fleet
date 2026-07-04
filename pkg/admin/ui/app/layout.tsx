@@ -43,6 +43,9 @@ export default function RootLayout({
                       <a href="/admin/" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                         Pools
                       </a>
+                      <a href="/admin/metrics/" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+                        Metrics
+                      </a>
                       <a href="/admin/jobs/" className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                         Jobs
                       </a>

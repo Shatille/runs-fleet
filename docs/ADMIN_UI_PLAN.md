@@ -5,7 +5,7 @@ Status and remaining work for the runs-fleet admin UI. The original plan tracked
 ## Status (as of 2026-07-03)
 
 - **Auth**: ✅ Native OIDC — the orchestrator is its own OIDC relying party (authorization-code flow + PKCE against any standards-compliant issuer). No external gatekeeper or reverse proxy required; a self-hoster points `RUNS_FLEET_ADMIN_OIDC_*` at their IdP directly. Sessions are a self-contained HMAC-signed cookie (no shared session store, no refresh tokens — fixed TTL, re-login on expiry). Superseded the earlier Keycloak-gatekeeper-header-trust model, which in turn had superseded the original Bearer-token auth.
-- **Phase 1 (read dashboards)**: 🟡 Mostly built. Jobs, Pool status, Circuit breaker, and the Audit viewer are complete; Instances/Queues/Cost have their list/summary endpoints but not the planned detail/breakdown sub-endpoints; Metrics summary is not built.
+- **Phase 1 (read dashboards)**: ✅ Complete. Jobs, Pool status (incl. `last_reconcile_at`), Circuit breaker, Audit viewer, Instance/Queue detail, Cost daily + by-pool breakdowns, and the Metrics summary are all built.
 - **Phase 2 (write actions)**: 🟡 Essentially unbuilt — one divergent housekeeping endpoint exists.
 - **Phase 3 (advanced)**: ❌ Not started.
 
@@ -27,6 +27,11 @@ The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedde
 | Cost summary | `GET /api/cost/summary` (MTD, spot/on-demand split, per-family) | `handler_cost.go:64` |
 | Audit logging | Structured slog line (`logAdminAction`) on pool CRUD and housekeeping's orphaned-jobs cleanup, with user identity + client IP | `handler.go:495-519` |
 | Audit persistence + viewer | DynamoDB-backed (`RUNS_FLEET_AUDIT_TABLE`, 90-day TTL, ULID id), `GET /api/audit-logs` (user/action/since/until/limit/offset filters), `/admin/audit/` UI page | `pkg/db/audit.go`, `pkg/admin/handler_audit.go`, `ui/app/audit/page.tsx` |
+| Pool reconcile status | `last_reconcile_at`/`last_reconcile_result` on the pools table + pool response, recorded by the reconcile loop, shown as a "Last Reconcile" column | `pkg/db/pool_config.go`, `pkg/pools/manager.go`, `handler.go`, `ui/components/pool-table.tsx` |
+| Instance detail | `GET /api/instances/{instance_id}` (placement, AMI, subnet, arch, tags) + detail page | `handler_instances.go`, `ui/app/instances/detail/page.tsx` |
+| Queue detail | `GET /api/queues/{queue_name}` (+ oldest-message age) + detail page | `handler_queues.go`, `ui/app/queues/detail/page.tsx` |
+| Cost daily + by-pool | `GET /api/cost/daily`, `GET /api/cost/by-pool` (shared `priceJob`) + chart & table | `handler_cost.go`, `ui/app/cost/page.tsx` |
+| Metrics summary | `GET /api/metrics/summary` (jobs 24h, warm-pool hit rate, avg startup, spot-interruption estimate, cost MTD) + `/admin/metrics/` page | `handler_metrics.go`, `ui/app/metrics/page.tsx` |
 
 ### Built but not in the original plan
 
@@ -43,32 +48,12 @@ The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedde
 
 ## Remaining Work
 
-### Phase 1 — finish read dashboards
-
-#### Instance detail
-`GET /api/instances/{instance_id}` — single-instance view. Only the list endpoint exists today.
-
-#### Queue detail
-`GET /api/queues/{queue_name}` — single-queue view. Only the list endpoint exists today.
-
-#### Cost breakdowns
-`GET /api/cost/daily` and `GET /api/cost/by-pool` — only `/api/cost/summary` exists. UI: daily cost chart + per-pool breakdown table.
-
-#### Metrics summary
-`GET /api/metrics/summary` — not built. `GET /api/jobs/stats` already covers job counts + warm-pool hit rate; the remaining gap is avg startup time, spot-interruption rate, and cost MTD in one aggregate.
-
-```json
-{
-  "jobs_24h": { "total": 150, "completed": 140, "failed": 5, "in_progress": 5 },
-  "warm_pool_hit_rate": 0.85,
-  "avg_startup_time_seconds": 45,
-  "spot_interruption_rate": 0.02,
-  "cost_mtd_usd": 52.30
-}
-```
-
-#### Pool reconcile timestamp
-Add `last_reconcile_at` (+ `last_reconcile_result`) to the pools table and surface it in the pool status response/UI. Not yet present anywhere.
+Phase 1 (read dashboards) is complete. The `spot_interruption_rate` in
+`GET /api/metrics/summary` ships as a **best-effort estimate** (share of spot
+jobs that were retried/requeued) and is flagged `spot_interruption_rate_estimated:
+true`; it over-counts because retry_count also bumps on bootstrap failures and
+stale-claim re-claims. An exact figure depends on the Phase 3 spot-interruption
+history.
 
 ### Phase 2 — write actions (mostly unbuilt)
 
@@ -94,18 +79,17 @@ All should call `recordAdminAction` (pkg/admin/handler.go) once implemented, sam
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| 1 | Pool `last_reconcile_at` | S |
-| 2 | Instance detail + Queue detail endpoints | S |
-| 3 | Cost `daily` + `by-pool` | M |
-| 4 | Metrics summary | M |
-| 5 | Manual instance termination | S |
-| 6 | Force reconciliation | S |
-| 7 | Circuit breaker reset | S |
-| 8 | DLQ redrive | S |
-| 9 | Generalized housekeeping trigger | S |
-| 10 | SSE real-time updates | L |
-| 11 | Spot interruption history | M |
-| 12 | Cache metrics | S |
+| 1 | Manual instance termination | S |
+| 2 | Force reconciliation | S |
+| 3 | Circuit breaker reset | S |
+| 4 | DLQ redrive | S |
+| 5 | Generalized housekeeping trigger | S |
+| 6 | SSE real-time updates | L |
+| 7 | Spot interruption history | M |
+| 8 | Cache metrics | S |
+
+Phase 1 (Pool `last_reconcile_at`, Instance/Queue detail, Cost daily + by-pool,
+Metrics summary) is shipped — see the Shipped table above.
 
 **Effort**: S = 1-2 days, M = 3-5 days, L = 1+ week.
 
@@ -122,6 +106,6 @@ All should call `recordAdminAction` (pkg/admin/handler.go) once implemented, sam
 
 ```
 pkg/admin/
-├── handler_metrics.go   # GET /api/metrics/summary
+├── handler_metrics.go   # GET /api/metrics/summary  (shipped)
 └── handler_actions.go   # instance terminate, circuit reset, force reconcile, DLQ redrive
 ```
