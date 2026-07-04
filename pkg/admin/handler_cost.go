@@ -429,6 +429,12 @@ func (h *CostHandler) GetCostByPool(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.computeByPool(ctx, jobs, start, end))
 }
 
+// computeDaily buckets each job's whole cost into the day of its CreatedAt.
+// This is intentional: jobs are short-lived CI runs (GitHub caps a job at 6h),
+// their cost is a single DurationSeconds-derived lump with no sub-day slices to
+// prorate, and CreatedAt is the same dimension monthToDateJobs filters on
+// (created_at >= start) -- so every fetched job lands in exactly one zero-filled
+// bucket and the daily totals sum to the summary's TotalCost.
 func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostDailyResponse {
 	type dayAccum struct {
 		total, spot, onDemand float64
