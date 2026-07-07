@@ -549,6 +549,9 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	costAdminHandler := admin.NewCostHandler(ws.dbClient, adminAuth, costPriceFetcher, ws.fleetManager)
 	costAdminHandler.RegisterRoutes(adminMux)
 
+	metricsAdminHandler := admin.NewMetricsHandler(ws.dbClient, costAdminHandler, adminAuth)
+	metricsAdminHandler.RegisterRoutes(adminMux)
+
 	mux.Handle("/api/", adminRateLimiter.Wrap(adminMux))
 	mux.Handle("/admin/", admin.UIHandler())
 

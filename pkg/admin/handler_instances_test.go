@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 type mockEC2API struct {
@@ -217,6 +218,122 @@ func TestInstancesHandler_InvalidStateFilter(t *testing.T) {
 
 			if rec.Code != tt.want {
 				t.Errorf("state=%q: got status %d, want %d", tt.state, rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstanceIDPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		id    string
+		valid bool
+	}{
+		{"i-0123456789abcdef0", true},   // 17 hex (current form)
+		{"i-1234abcd", true},            // 8 hex (legacy form)
+		{"i-1234ABCD", true},            // case-insensitive
+		{"i-0123456789abcd", false},     // 14 hex: never issued by AWS
+		{"i-0123456", false},            // 7 hex: too short
+		{"i-0123456789abcdef01", false}, // 18 hex: too long
+		{"i-0123456789abcdeg0", false},  // non-hex char
+		{"not-an-id", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		if got := instanceIDPattern.MatchString(tt.id); got != tt.valid {
+			t.Errorf("instanceIDPattern.MatchString(%q) = %v, want %v", tt.id, got, tt.valid)
+		}
+	}
+}
+
+func TestInstancesHandler_GetInstance(t *testing.T) {
+	t.Parallel()
+
+	launchTime := time.Now().Add(-30 * time.Minute)
+	found := &ec2.DescribeInstancesOutput{
+		Reservations: []types.Reservation{
+			{Instances: []types.Instance{
+				{
+					InstanceId:        aws.String("i-0123456789abcdef0"),
+					InstanceType:      types.InstanceTypeC7gXlarge,
+					State:             &types.InstanceState{Name: types.InstanceStateNameRunning},
+					LaunchTime:        &launchTime,
+					PrivateIpAddress:  aws.String("10.0.1.5"),
+					ImageId:           aws.String("ami-abc123"),
+					SubnetId:          aws.String("subnet-1"),
+					Architecture:      types.ArchitectureValuesArm64,
+					InstanceLifecycle: types.InstanceLifecycleTypeSpot,
+					Placement:         &types.Placement{AvailabilityZone: aws.String("ap-northeast-1a")},
+					Tags: []types.Tag{
+						{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")},
+						{Key: aws.String("runs-fleet:managed"), Value: aws.String("true")},
+					},
+				},
+			}},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		id         string
+		output     *ec2.DescribeInstancesOutput
+		ec2Err     error
+		busyIDs    map[string][]string
+		wantStatus int
+		wantBusy   bool
+	}{
+		{name: "found and busy", id: "i-0123456789abcdef0", output: found, busyIDs: map[string][]string{"default": {"i-0123456789abcdef0"}}, wantStatus: http.StatusOK, wantBusy: true},
+		{name: "found idle", id: "i-0123456789abcdef0", output: found, busyIDs: map[string][]string{}, wantStatus: http.StatusOK, wantBusy: false},
+		{name: "unmanaged or absent", id: "i-0123456789abcdef0", output: &ec2.DescribeInstancesOutput{}, wantStatus: http.StatusNotFound},
+		{name: "invalid id", id: "not-an-id", output: &ec2.DescribeInstancesOutput{}, wantStatus: http.StatusBadRequest},
+		{name: "aws not found error", id: "i-0123456789abcdef0", ec2Err: &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound"}, wantStatus: http.StatusNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ec2Mock := &mockEC2API{output: tt.output, err: tt.ec2Err}
+			dbMock := &mockInstancesDB{busyIDs: tt.busyIDs}
+			handler := NewInstancesHandler(ec2Mock, dbMock, &AuthMiddleware{requireAuth: false})
+
+			mux := http.NewServeMux()
+			handler.RegisterRoutes(mux)
+
+			req := httptest.NewRequest("GET", "/api/instances/"+tt.id, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			var resp InstanceDetailResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if resp.InstanceID != tt.id {
+				t.Errorf("instance_id = %q, want %q", resp.InstanceID, tt.id)
+			}
+			if resp.AvailabilityZone != "ap-northeast-1a" {
+				t.Errorf("availability_zone = %q, want ap-northeast-1a", resp.AvailabilityZone)
+			}
+			if resp.ImageID != "ami-abc123" {
+				t.Errorf("image_id = %q, want ami-abc123", resp.ImageID)
+			}
+			if !resp.Spot {
+				t.Error("spot = false, want true")
+			}
+			if resp.Busy != tt.wantBusy {
+				t.Errorf("busy = %v, want %v", resp.Busy, tt.wantBusy)
+			}
+			if resp.Tags["runs-fleet:pool"] != "default" {
+				t.Errorf("tags[runs-fleet:pool] = %q, want default", resp.Tags["runs-fleet:pool"])
 			}
 		})
 	}

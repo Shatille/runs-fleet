@@ -15,6 +15,8 @@ export interface Pool {
   ram_max?: number;
   families?: string[];
   schedules?: Schedule[];
+  last_reconcile_at?: string;
+  last_reconcile_result?: string;
 }
 
 export interface Schedule {
@@ -82,6 +84,15 @@ export interface Instance {
   busy: boolean;
 }
 
+export interface InstanceDetail extends Instance {
+  availability_zone?: string;
+  image_id?: string;
+  subnet_id?: string;
+  architecture?: string;
+  state_reason?: string;
+  tags?: Record<string, string>;
+}
+
 export interface QueueStatus {
   name: string;
   url: string;
@@ -89,6 +100,7 @@ export interface QueueStatus {
   messages_in_flight: number;
   messages_delayed: number;
   dlq_messages: number;
+  oldest_message_age_seconds?: number;
 }
 
 export interface CircuitState {
@@ -130,6 +142,49 @@ export interface FamilyBreakdown {
   total_hours: number;
   total_cost: number;
   spot_percent: number;
+}
+
+export interface CostDaily {
+  period_start: string;
+  period_end: string;
+  days: CostDayEntry[];
+}
+
+export interface CostDayEntry {
+  date: string;
+  total_cost: number;
+  spot_cost: number;
+  on_demand_cost: number;
+  job_count: number;
+}
+
+export interface CostByPool {
+  period_start: string;
+  period_end: string;
+  pools: CostPoolEntry[];
+}
+
+export interface CostPoolEntry {
+  pool: string;
+  job_count: number;
+  total_cost: number;
+  spot_cost: number;
+  on_demand_cost: number;
+  spot_percent: number;
+}
+
+export interface MetricsSummary {
+  jobs_24h: {
+    total: number;
+    completed: number;
+    failed: number;
+    in_progress: number;
+  };
+  warm_pool_hit_rate: number;
+  avg_startup_time_seconds: number;
+  spot_interruption_rate: number;
+  spot_interruption_rate_estimated: boolean;
+  cost_mtd_usd?: number;
 }
 
 export interface AuditEntry {

@@ -74,6 +74,40 @@ type FamilyBreakdownEntry struct {
 	SpotPercent float64 `json:"spot_percent"`
 }
 
+// CostDailyResponse is the per-day cost time series for the current month.
+type CostDailyResponse struct {
+	PeriodStart string         `json:"period_start"`
+	PeriodEnd   string         `json:"period_end"`
+	Days        []CostDayEntry `json:"days"`
+}
+
+// CostDayEntry is one calendar day's cost (zero-filled for days with no jobs).
+type CostDayEntry struct {
+	Date         string  `json:"date"` // YYYY-MM-DD (UTC)
+	TotalCost    float64 `json:"total_cost"`
+	SpotCost     float64 `json:"spot_cost"`
+	OnDemandCost float64 `json:"on_demand_cost"`
+	JobCount     int     `json:"job_count"`
+}
+
+// CostByPoolResponse is month-to-date cost grouped by warm pool.
+type CostByPoolResponse struct {
+	PeriodStart string          `json:"period_start"`
+	PeriodEnd   string          `json:"period_end"`
+	Pools       []CostPoolEntry `json:"pools"`
+}
+
+// CostPoolEntry is one pool's month-to-date cost. Cold-start (poolless) jobs are
+// grouped under the "cold-start" pseudo-pool.
+type CostPoolEntry struct {
+	Pool         string  `json:"pool"`
+	JobCount     int     `json:"job_count"`
+	TotalCost    float64 `json:"total_cost"`
+	SpotCost     float64 `json:"spot_cost"`
+	OnDemandCost float64 `json:"on_demand_cost"`
+	SpotPercent  float64 `json:"spot_percent"`
+}
+
 // CostHandler provides HTTP endpoints for cost reporting.
 type CostHandler struct {
 	db       CostDB
@@ -103,21 +137,15 @@ func NewCostHandler(db CostDB, auth *AuthMiddleware, onDemand onDemandPricer, sp
 // RegisterRoutes registers cost API routes on the given mux.
 func (h *CostHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/cost/summary", h.auth.WrapFunc(h.GetCostSummary))
+	mux.Handle("GET /api/cost/daily", h.auth.WrapFunc(h.GetCostDaily))
+	mux.Handle("GET /api/cost/by-pool", h.auth.WrapFunc(h.GetCostByPool))
 }
 
 // GetCostSummary handles GET /api/cost/summary.
 func (h *CostHandler) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	now := time.Now().UTC()
-	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	periodEnd := now
-
-	jobs, _, err := h.db.ListJobsForAdmin(ctx, db.AdminJobFilter{
-		Status: string(db.JobStatusCompleted),
-		Since:  periodStart,
-		Limit:  10000,
-	})
+	jobs, periodStart, periodEnd, err := h.monthToDateJobs(ctx)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "Failed to fetch jobs", err.Error())
 		return
@@ -125,6 +153,110 @@ func (h *CostHandler) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 
 	summary := h.computeCostSummary(ctx, jobs, periodStart, periodEnd)
 	h.writeJSON(w, http.StatusOK, summary)
+}
+
+// monthToDateJobs fetches all completed jobs since the start of the current UTC
+// month -- the shared query behind every cost endpoint. AdminJobFilter has no
+// upper bound, but "current month" only needs a Since lower bound.
+func (h *CostHandler) monthToDateJobs(ctx context.Context) ([]db.AdminJobEntry, time.Time, time.Time, error) {
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	jobs, _, err := h.db.ListJobsForAdmin(ctx, db.AdminJobFilter{
+		Status: string(db.JobStatusCompleted),
+		Since:  start,
+		Limit:  10000,
+	})
+	return jobs, start, now, err
+}
+
+// CostMTD returns the month-to-date total EC2 cost across completed jobs. Shared
+// with the metrics summary so both report the same figure.
+func (h *CostHandler) CostMTD(ctx context.Context) (float64, error) {
+	jobs, _, _, err := h.monthToDateJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	odMemo := make(map[string]float64)
+	spotMemo := make(map[string]spotResult)
+	var total float64
+	for _, job := range jobs {
+		total += h.priceJob(ctx, job, odMemo, spotMemo).total
+	}
+	return total, nil
+}
+
+// spotResult caches a per-instance-type spot price lookup for one request.
+type spotResult struct {
+	price float64
+	live  bool
+}
+
+// jobPricing is one job's EC2 cost, split for aggregation.
+type jobPricing struct {
+	total    float64
+	spot     float64 // total if the job ran on spot, else 0
+	onDemand float64 // total if the job ran on-demand, else 0
+	savings  float64
+	hours    float64 // billable hours (with the 0.5h minimum applied)
+}
+
+// priceJob computes one job's EC2 cost using live on-demand/spot prices when
+// available (falling back to the hard-coded table and fixed spot discount). The
+// odMemo/spotMemo maps price each distinct instance type once per request. This
+// is the single source of per-job pricing shared by the summary, daily, and
+// by-pool endpoints.
+func (h *CostHandler) priceJob(ctx context.Context, job db.AdminJobEntry, odMemo map[string]float64, spotMemo map[string]spotResult) jobPricing {
+	instanceType := job.InstanceType
+	if instanceType == "" {
+		instanceType = "t4g.medium"
+	}
+
+	durationHours := float64(job.DurationSeconds) / 3600
+	if durationHours <= 0 {
+		durationHours = 0.5
+	}
+
+	onDemandHourly, ok := odMemo[instanceType]
+	if !ok {
+		onDemandHourly = cost.GetInstancePrice(instanceType)
+		if h.onDemand != nil {
+			if live, err := h.onDemand.GetPrice(ctx, instanceType); err != nil {
+				h.log.Warn(ctx, "live on-demand price unavailable, using fallback",
+					slog.String(logging.KeyInstanceType, instanceType),
+					slog.String(logging.KeyError, err.Error()))
+			} else if live > 0 {
+				onDemandHourly = live
+			}
+		}
+		odMemo[instanceType] = onDemandHourly
+	}
+
+	p := jobPricing{hours: durationHours}
+	if job.Spot {
+		sr, seen := spotMemo[instanceType]
+		if !seen {
+			if h.spot != nil {
+				if sp, found := h.spot.SpotPrice(ctx, instanceType); found && sp > 0 {
+					sr = spotResult{price: sp, live: true}
+				}
+			}
+			spotMemo[instanceType] = sr
+		}
+		if sr.live {
+			p.total = durationHours * sr.price
+			if saving := durationHours * (onDemandHourly - sr.price); saving > 0 {
+				p.savings = saving
+			}
+		} else {
+			p.total = durationHours * onDemandHourly * (1 - cost.SpotDiscount)
+			p.savings = durationHours * onDemandHourly * cost.SpotDiscount
+		}
+		p.spot = p.total
+	} else {
+		p.total = durationHours * onDemandHourly
+		p.onDemand = p.total
+	}
+	return p
 }
 
 // archVcpuKey keys the runner-minute matrix by (architecture, vCPU count).
@@ -157,10 +289,6 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 	// Per-request memoization so each distinct instance type is priced once,
 	// even though the underlying fetchers also cache across requests.
 	odMemo := make(map[string]float64)
-	type spotResult struct {
-		price float64
-		live  bool
-	}
 	spotMemo := make(map[string]spotResult)
 
 	for _, job := range jobs {
@@ -169,54 +297,16 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			instanceType = "t4g.medium"
 		}
 
-		durationHours := float64(job.DurationSeconds) / 3600
-		if durationHours <= 0 {
-			durationHours = 0.5
-		}
-
-		onDemandHourly, ok := odMemo[instanceType]
-		if !ok {
-			onDemandHourly = cost.GetInstancePrice(instanceType)
-			if h.onDemand != nil {
-				if live, err := h.onDemand.GetPrice(ctx, instanceType); err != nil {
-					h.log.Warn(ctx, "live on-demand price unavailable, using fallback",
-						slog.String(logging.KeyInstanceType, instanceType),
-						slog.String(logging.KeyError, err.Error()))
-				} else if live > 0 {
-					onDemandHourly = live
-				}
-			}
-			odMemo[instanceType] = onDemandHourly
-		}
-
-		var jobCost float64
+		p := h.priceJob(ctx, job, odMemo, spotMemo)
+		totalCost += p.total
+		spotCost += p.spot
+		onDemandCost += p.onDemand
+		spotSavings += p.savings
 		if job.Spot {
-			sr, seen := spotMemo[instanceType]
-			if !seen {
-				if h.spot != nil {
-					if sp, found := h.spot.SpotPrice(ctx, instanceType); found && sp > 0 {
-						sr = spotResult{price: sp, live: true}
-					}
-				}
-				spotMemo[instanceType] = sr
-			}
-			if sr.live {
-				jobCost = durationHours * sr.price
-				if saving := durationHours * (onDemandHourly - sr.price); saving > 0 {
-					spotSavings += saving
-				}
-			} else {
-				jobCost = durationHours * onDemandHourly * (1 - cost.SpotDiscount)
-				spotSavings += durationHours * onDemandHourly * cost.SpotDiscount
-			}
-			spotCost += jobCost
 			spotJobCount++
 		} else {
-			jobCost = durationHours * onDemandHourly
-			onDemandCost += jobCost
 			onDemandCount++
 		}
-		totalCost += jobCost
 
 		family := extractFamily(instanceType)
 		acc, ok := families[family]
@@ -225,8 +315,8 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			families[family] = acc
 		}
 		acc.jobCount++
-		acc.hours += durationHours
-		acc.cost += jobCost
+		acc.hours += p.hours
+		acc.cost += p.total
 		if job.Spot {
 			acc.spotCount++
 		}
@@ -314,6 +404,142 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 		RunnerMinuteCost:      runnerMinuteCost,
 		RunnerMinuteRates:     h.rates,
 		RunnerMinuteBreakdown: runnerBreakdown,
+	}
+}
+
+// GetCostDaily handles GET /api/cost/daily.
+func (h *CostHandler) GetCostDaily(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobs, start, end, err := h.monthToDateJobs(ctx)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "Failed to fetch jobs", err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, h.computeDaily(ctx, jobs, start, end))
+}
+
+// GetCostByPool handles GET /api/cost/by-pool.
+func (h *CostHandler) GetCostByPool(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobs, start, end, err := h.monthToDateJobs(ctx)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "Failed to fetch jobs", err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, h.computeByPool(ctx, jobs, start, end))
+}
+
+// computeDaily buckets each job's whole cost into the day of its CreatedAt.
+// This is intentional: jobs are short-lived CI runs (GitHub caps a job at 6h),
+// their cost is a single DurationSeconds-derived lump with no sub-day slices to
+// prorate, and CreatedAt is the same dimension monthToDateJobs filters on
+// (created_at >= start) -- so every fetched job lands in exactly one zero-filled
+// bucket and the daily totals sum to the summary's TotalCost.
+func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostDailyResponse {
+	if start.After(end) {
+		return &CostDailyResponse{
+			PeriodStart: start.Format(time.RFC3339),
+			PeriodEnd:   end.Format(time.RFC3339),
+			Days:        []CostDayEntry{},
+		}
+	}
+
+	type dayAccum struct {
+		total, spot, onDemand float64
+		count                 int
+	}
+	days := make(map[string]*dayAccum)
+
+	odMemo := make(map[string]float64)
+	spotMemo := make(map[string]spotResult)
+	for _, job := range jobs {
+		key := job.CreatedAt.UTC().Format("2006-01-02")
+		p := h.priceJob(ctx, job, odMemo, spotMemo)
+		acc, ok := days[key]
+		if !ok {
+			acc = &dayAccum{}
+			days[key] = acc
+		}
+		acc.total += p.total
+		acc.spot += p.spot
+		acc.onDemand += p.onDemand
+		acc.count++
+	}
+
+	// Zero-fill every day from month start through today so the UI can chart a
+	// continuous series.
+	entries := make([]CostDayEntry, 0)
+	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
+		key := day.Format("2006-01-02")
+		entry := CostDayEntry{Date: key}
+		if acc, ok := days[key]; ok {
+			entry.TotalCost = acc.total
+			entry.SpotCost = acc.spot
+			entry.OnDemandCost = acc.onDemand
+			entry.JobCount = acc.count
+		}
+		entries = append(entries, entry)
+	}
+
+	return &CostDailyResponse{
+		PeriodStart: start.Format(time.RFC3339),
+		PeriodEnd:   end.Format(time.RFC3339),
+		Days:        entries,
+	}
+}
+
+func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostByPoolResponse {
+	type poolAccum struct {
+		total, spot, onDemand float64
+		count, spotCount      int
+	}
+	pools := make(map[string]*poolAccum)
+
+	odMemo := make(map[string]float64)
+	spotMemo := make(map[string]spotResult)
+	for _, job := range jobs {
+		pool := job.Pool
+		if pool == "" {
+			pool = "cold-start"
+		}
+		p := h.priceJob(ctx, job, odMemo, spotMemo)
+		acc, ok := pools[pool]
+		if !ok {
+			acc = &poolAccum{}
+			pools[pool] = acc
+		}
+		acc.total += p.total
+		acc.spot += p.spot
+		acc.onDemand += p.onDemand
+		acc.count++
+		if job.Spot {
+			acc.spotCount++
+		}
+	}
+
+	entries := make([]CostPoolEntry, 0, len(pools))
+	for name, acc := range pools {
+		spotPct := 0.0
+		if acc.count > 0 {
+			spotPct = float64(acc.spotCount) / float64(acc.count) * 100
+		}
+		entries = append(entries, CostPoolEntry{
+			Pool:         name,
+			JobCount:     acc.count,
+			TotalCost:    acc.total,
+			SpotCost:     acc.spot,
+			OnDemandCost: acc.onDemand,
+			SpotPercent:  spotPct,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].TotalCost > entries[j].TotalCost
+	})
+
+	return &CostByPoolResponse{
+		PeriodStart: start.Format(time.RFC3339),
+		PeriodEnd:   end.Format(time.RFC3339),
+		Pools:       entries,
 	}
 }
 

@@ -42,6 +42,12 @@ type PoolConfig struct {
 	Ephemeral   bool      `dynamodbav:"ephemeral,omitempty"`
 	LastJobTime time.Time `dynamodbav:"last_job_time,omitempty"`
 
+	// Reconciliation observability, written by the reconcile loop via
+	// UpdatePoolReconcileResult. Not part of SavePoolConfig's SET list, so pool
+	// CRUD never clobbers them.
+	LastReconcileAt     time.Time `dynamodbav:"last_reconcile_at,omitempty"`
+	LastReconcileResult string    `dynamodbav:"last_reconcile_result,omitempty"`
+
 	// Flexible instance spec (inherited from first job for ephemeral pools)
 	Arch     string   `dynamodbav:"arch,omitempty"`     // arm64, amd64
 	CPUMin   int      `dynamodbav:"cpu_min,omitempty"`  // Minimum vCPUs
@@ -307,6 +313,46 @@ func (c *Client) TouchPoolActivity(ctx context.Context, poolName string) error {
 			return fmt.Errorf("pool %s does not exist", poolName)
 		}
 		return fmt.Errorf("failed to update pool activity: %w", err)
+	}
+
+	return nil
+}
+
+// UpdatePoolReconcileResult records the timestamp and outcome of a pool
+// reconciliation pass. Targeted UpdateItem (like TouchPoolActivity) so it never
+// clobbers concurrent lock state or pool config. Returns ErrPoolNotFound if the
+// pool was deleted mid-reconcile, letting the caller ignore that benign race.
+func (c *Client) UpdatePoolReconcileResult(ctx context.Context, poolName, result string, at time.Time) error {
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	atAttr, err := attributevalue.Marshal(at)
+	if err != nil {
+		return fmt.Errorf("failed to marshal time: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: poolName},
+		},
+		UpdateExpression: aws.String("SET last_reconcile_at = :at, last_reconcile_result = :res"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":at":  atAttr,
+			":res": &types.AttributeValueMemberS{Value: result},
+		},
+		ConditionExpression: aws.String("attribute_exists(pool_name)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrPoolNotFound
+		}
+		return fmt.Errorf("failed to update pool reconcile result: %w", err)
 	}
 
 	return nil

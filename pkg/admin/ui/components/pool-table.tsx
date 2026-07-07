@@ -1,8 +1,25 @@
 import { Pool } from '@/lib/types';
+import { formatRelativeTime } from '@/lib/format';
 
 interface PoolTableProps {
   pools: Pool[];
   onDelete: (poolName: string) => void;
+}
+
+function ReconcileCell({ pool }: { pool: Pool }) {
+  if (!pool.last_reconcile_at) {
+    return <span className="text-gray-400 dark:text-gray-500">-</span>;
+  }
+  const failed = !!pool.last_reconcile_result && pool.last_reconcile_result !== 'success';
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className={`inline-block h-2 w-2 rounded-full ${failed ? 'bg-red-500' : 'bg-green-500'}`}
+        title={pool.last_reconcile_result || 'success'}
+      />
+      <span>{formatRelativeTime(pool.last_reconcile_at)}</span>
+    </span>
+  );
 }
 
 export default function PoolTable({ pools, onDelete }: PoolTableProps) {
@@ -31,6 +48,9 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Type
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Last Reconcile
             </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Actions
@@ -83,6 +103,9 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
                     Persistent
                   </span>
                 )}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                <ReconcileCell pool={pool} />
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                 <a

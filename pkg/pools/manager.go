@@ -50,6 +50,10 @@ const reconcileInterval = 60 * time.Second
 // reconcileInterval so the two can't drift out of that ordering.
 const reconcileLockTTL = reconcileInterval + 5*time.Second
 
+// maxReconcileResultLen caps the persisted last_reconcile_result string so a
+// pathologically long wrapped error can't bloat the pool item.
+const maxReconcileResultLen = 300
+
 // DBClient defines DynamoDB operations for pool configuration.
 //
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -61,6 +65,7 @@ type DBClient interface {
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 	AcquirePoolReconcileLock(ctx context.Context, poolName, owner string, ttl time.Duration) error
 	ReleasePoolReconcileLock(ctx context.Context, poolName, owner string) error
+	UpdatePoolReconcileResult(ctx context.Context, poolName, result string, at time.Time) error
 	ClaimInstanceForJob(ctx context.Context, instanceID string, jobID int64, ttl time.Duration) error
 	ReleaseInstanceClaim(ctx context.Context, instanceID string, jobID int64) error
 }
@@ -348,7 +353,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 }
 
 //nolint:gocyclo // Core reconciliation logic with multiple scale up/down paths
-func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
+func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error) {
 	// Time the whole reconcile pass (lock wait + AWS work) so slow passes are
 	// observable. The pass only runs when this instance wins the lock; contended
 	// passes that skip are captured by the lock-wait histogram below.
@@ -357,7 +362,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 	// Acquire per-pool lock (TTL > reconcile interval). Time the acquire wait —
 	// this is the contention signal that would have surfaced #298.
 	lockStart := time.Now()
-	if err := m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, reconcileLockTTL); err != nil {
+	// Assign to the named return (not a shadow) so the outcome recorder below sees
+	// the real error; the recorder is only registered after this block, so these
+	// early returns are never recorded (another instance owns the lock, or the
+	// pool is gone).
+	if err = m.dbClient.AcquirePoolReconcileLock(ctx, poolName, m.instanceID, reconcileLockTTL); err != nil {
 		if m.metrics != nil {
 			_ = m.metrics.PublishLockWaitSeconds(ctx, lockPoolReconcile, time.Since(lockStart).Seconds())
 		}
@@ -376,14 +385,34 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) error {
 		}
 	}()
 	defer func() {
-		if err := m.dbClient.ReleasePoolReconcileLock(ctx, poolName, m.instanceID); err != nil {
-			if isShutdownErr(err) {
+		if relErr := m.dbClient.ReleasePoolReconcileLock(ctx, poolName, m.instanceID); relErr != nil {
+			if isShutdownErr(relErr) {
 				poolLog.Debug(ctx, "pool lock release aborted: shutting down",
-					slog.String("error", err.Error()))
+					slog.String("error", relErr.Error()))
 				return
 			}
 			poolLog.Error(ctx, "pool lock release failed",
-				slog.String("error", err.Error()))
+				slog.String("error", relErr.Error()))
+		}
+	}()
+	// Record the reconcile outcome. Registered after (so it runs before, LIFO) the
+	// lock release, i.e. while this instance still owns the pool. A failed record
+	// is logged and ignored -- a missing reconcile timestamp must never fail the
+	// reconcile, and ErrPoolNotFound just means the pool was deleted mid-pass.
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "failed: " + err.Error()
+			if r := []rune(result); len(r) > maxReconcileResultLen {
+				result = string(r[:maxReconcileResultLen])
+			}
+		}
+		if recErr := m.dbClient.UpdatePoolReconcileResult(ctx, poolName, result, time.Now()); recErr != nil {
+			if errors.Is(recErr, db.ErrPoolNotFound) || isShutdownErr(recErr) {
+				return
+			}
+			poolLog.Warn(ctx, "pool reconcile result update failed",
+				slog.String("error", recErr.Error()))
 		}
 	}()
 
