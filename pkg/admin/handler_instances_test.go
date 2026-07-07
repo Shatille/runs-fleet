@@ -223,6 +223,31 @@ func TestInstancesHandler_InvalidStateFilter(t *testing.T) {
 	}
 }
 
+func TestInstanceIDPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		id    string
+		valid bool
+	}{
+		{"i-0123456789abcdef0", true},   // 17 hex (current form)
+		{"i-1234abcd", true},            // 8 hex (legacy form)
+		{"i-1234ABCD", true},            // case-insensitive
+		{"i-0123456789abcd", false},     // 14 hex: never issued by AWS
+		{"i-0123456", false},            // 7 hex: too short
+		{"i-0123456789abcdef01", false}, // 18 hex: too long
+		{"i-0123456789abcdeg0", false},  // non-hex char
+		{"not-an-id", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		if got := instanceIDPattern.MatchString(tt.id); got != tt.valid {
+			t.Errorf("instanceIDPattern.MatchString(%q) = %v, want %v", tt.id, got, tt.valid)
+		}
+	}
+}
+
 func TestInstancesHandler_GetInstance(t *testing.T) {
 	t.Parallel()
 

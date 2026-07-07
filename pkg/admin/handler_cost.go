@@ -436,6 +436,14 @@ func (h *CostHandler) GetCostByPool(w http.ResponseWriter, r *http.Request) {
 // (created_at >= start) -- so every fetched job lands in exactly one zero-filled
 // bucket and the daily totals sum to the summary's TotalCost.
 func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostDailyResponse {
+	if start.After(end) {
+		return &CostDailyResponse{
+			PeriodStart: start.Format(time.RFC3339),
+			PeriodEnd:   end.Format(time.RFC3339),
+			Days:        []CostDayEntry{},
+		}
+	}
+
 	type dayAccum struct {
 		total, spot, onDemand float64
 		count                 int

@@ -29,10 +29,12 @@ function QueueDetailView() {
       setLoading(false);
       return;
     }
+    let cancelled = false;
     async function fetchQueue() {
       try {
         setLoading(true);
         const res = await apiFetch(`/api/queues/${encodeURIComponent(name as string)}`);
+        if (cancelled) return;
         if (res.status === 404) {
           setError('Queue not found');
           return;
@@ -40,14 +42,21 @@ function QueueDetailView() {
         if (!res.ok) {
           throw new Error(`Failed to fetch queue: ${res.statusText}`);
         }
-        setQueue(await res.json());
+        const data = await res.json();
+        if (cancelled) return;
+        setQueue(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load queue');
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load queue');
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
-    fetchQueue();
+    void fetchQueue();
+    return () => {
+      cancelled = true;
+    };
   }, [name]);
 
   if (loading) return <DetailSkeleton />;

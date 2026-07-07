@@ -529,6 +529,22 @@ func TestCostHandler_Daily(t *testing.T) {
 	}
 }
 
+func TestCostHandler_ComputeDailyStartAfterEnd(t *testing.T) {
+	t.Parallel()
+
+	handler := NewCostHandler(&mockCostDB{}, NewAuthMiddleware(""), nil, nil)
+	start := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	resp := handler.computeDaily(context.Background(), nil, start, end)
+	if resp == nil {
+		t.Fatal("computeDaily returned nil")
+	}
+	if len(resp.Days) != 0 {
+		t.Errorf("Days = %d entries, want 0 when start is after end", len(resp.Days))
+	}
+}
+
 func TestCostHandler_ByPool(t *testing.T) {
 	t.Parallel()
 

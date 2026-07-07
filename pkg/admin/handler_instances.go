@@ -18,9 +18,10 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// instanceIDPattern validates EC2 instance IDs (i- followed by 8 or 17 hex
-// chars). Case-insensitive; EC2 itself is the authoritative validator.
-var instanceIDPattern = regexp.MustCompile(`^i-[0-9a-fA-F]{8,17}$`)
+// instanceIDPattern validates EC2 instance IDs: i- followed by exactly 8
+// (legacy) or 17 (current) hex chars. The in-between lengths AWS never issues
+// are rejected at the boundary; EC2 remains the authoritative validator.
+var instanceIDPattern = regexp.MustCompile(`^i-(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{17})$`)
 
 // EC2API defines the EC2 operations needed for instance listing.
 type EC2API interface {

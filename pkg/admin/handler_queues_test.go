@@ -185,6 +185,42 @@ func TestQueuesHandler_DLQMessages(t *testing.T) {
 	}
 }
 
+func TestQueuesHandler_UnparseableAttribute(t *testing.T) {
+	t.Parallel()
+
+	const mainURL = "https://sqs.us-east-1.amazonaws.com/123456789/main"
+	config := QueueConfig{MainQueue: mainURL}
+	attrs := map[string]map[string]string{
+		mainURL: {
+			string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "not-a-number",
+			"ApproximateAgeOfOldestMessage":                                "13",
+		},
+	}
+
+	handler := NewQueuesHandler(&mockSQSAPI{attrs: attrs}, config, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/queues/main", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp QueueStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.MessagesVisible != 0 {
+		t.Errorf("messages_visible = %d, want 0 for unparseable value", resp.MessagesVisible)
+	}
+	if resp.OldestMessageAgeSeconds != 13 {
+		t.Errorf("oldest_message_age_seconds = %d, want 13 (parseable siblings unaffected)", resp.OldestMessageAgeSeconds)
+	}
+}
+
 func TestQueuesHandler_GetQueue(t *testing.T) {
 	t.Parallel()
 

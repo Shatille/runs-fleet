@@ -29,10 +29,12 @@ function InstanceDetailView() {
       setLoading(false);
       return;
     }
+    let cancelled = false;
     async function fetchInstance() {
       try {
         setLoading(true);
         const res = await apiFetch(`/api/instances/${encodeURIComponent(id as string)}`);
+        if (cancelled) return;
         if (res.status === 404) {
           setError('Instance not found');
           return;
@@ -40,14 +42,21 @@ function InstanceDetailView() {
         if (!res.ok) {
           throw new Error(`Failed to fetch instance: ${res.statusText}`);
         }
-        setInstance(await res.json());
+        const data = await res.json();
+        if (cancelled) return;
+        setInstance(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load instance');
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load instance');
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
-    fetchInstance();
+    void fetchInstance();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   if (loading) return <DetailSkeleton />;

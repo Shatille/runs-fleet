@@ -152,10 +152,10 @@ func (h *QueuesHandler) getQueueStatus(ctx context.Context, name, url string) (*
 	return &QueueStatusResponse{
 		Name:                    name,
 		URL:                     url,
-		MessagesVisible:         atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]),
-		MessagesInFlight:        atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible)]),
-		MessagesDelayed:         atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed)]),
-		OldestMessageAgeSeconds: atoi(attrs.Attributes[attrOldestMessageAge]),
+		MessagesVisible:         h.atoi(ctx, name, string(sqstypes.QueueAttributeNameApproximateNumberOfMessages), attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)]),
+		MessagesInFlight:        h.atoi(ctx, name, string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible), attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible)]),
+		MessagesDelayed:         h.atoi(ctx, name, string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed), attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed)]),
+		OldestMessageAgeSeconds: h.atoi(ctx, name, attrOldestMessageAge, attrs.Attributes[attrOldestMessageAge]),
 	}, nil
 }
 
@@ -182,8 +182,22 @@ func (h *QueuesHandler) queueByName(name string) (url, dlqURL string, ok bool) {
 	return url, dlqURL, true
 }
 
-func atoi(s string) int {
-	n, _ := strconv.Atoi(s)
+// atoi parses an SQS numeric attribute, returning 0 for an absent value. A
+// present-but-unparseable value is a data-integrity signal (API change or
+// corruption), so it is logged rather than silently coerced to 0.
+func (h *QueuesHandler) atoi(ctx context.Context, queue, attr, s string) int {
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		h.log.Warn(ctx, "unparseable SQS queue attribute",
+			slog.String("queue", queue),
+			slog.String("attribute", attr),
+			slog.String("value", s),
+			slog.String(logging.KeyError, err.Error()))
+		return 0
+	}
 	return n
 }
 
