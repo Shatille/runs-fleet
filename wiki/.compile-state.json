@@ -1,5 +1,5 @@
 {
-  "last_compiled": "2026-07-03",
+  "last_compiled": "2026-07-09",
   "mode": "codebase",
   "topics": [
     "project-overview",
@@ -25,7 +25,8 @@
   "concepts": [
     "per-resource-locking",
     "two-track-reliability",
-    "idempotent-retry-over-rollback"
+    "idempotent-retry-over-rollback",
+    "db-record-as-rendezvous"
   ],
   "source_locations": [
     "README.md",
@@ -107,7 +108,19 @@
     "packer/provision-runs-fleet.sh",
     "packer/runs-fleet-runner-arm64.pkr.hcl",
     "deploy/helm/Chart.yaml",
-    "deploy/helm/values.yaml"
+    "deploy/helm/values.yaml",
+    "docs/METRICS.md",
+    "docs/ROADMAP.md",
+    "packer/README.md",
+    "packer/provision-trivy-scan.sh",
+    "pkg/db/audit.go",
+    "pkg/tracing/tracing.go",
+    "pkg/admin/handler_audit.go",
+    "pkg/admin/handler_cost.go",
+    "pkg/admin/handler_metrics.go",
+    "deploy/terraform/dynamodb.tf",
+    "scripts/boot-lib.sh",
+    ".github/workflows/build-amis.yml"
   ],
-  "total_sources_scanned": 80
+  "total_sources_scanned": 92
 }

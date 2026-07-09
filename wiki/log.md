@@ -41,3 +41,12 @@
 **Sources changed:** 84 (first run)
 
 **Notes:** Codebase-mode first compile. Topics consolidated from 25 packages into 19 surfaces (e.g., db+circuit+secrets merged into state-storage, metrics+logging+cost merged into observability). Compilation discovered several drift items worth tracking: runner version pinned in 3 places (Docker, Makefile, Packer); npm sentinel hash in flake.nix; cost reporter prices are us-east-1 but default region is ap-northeast-1; Vault secrets backend partially implemented with a planned audit-log table not yet built.
+
+## 2026-07-09
+
+**Topics updated:** project-overview, cmd-server, cmd-agent, agent-runtime, fleet-orchestration, warm-pools, job-state-machine, state-storage, github-integration, events-and-termination, observability, admin-ui, config-bootstrap, internal-services, infrastructure (15)
+**New topics:** none
+**Concepts:** db-record-as-rendezvous (new), two-track-reliability (updated)
+**Sources scanned:** ~120 (all changed files since 2026-07-03 across PRs #383-#387, plus full source re-reads for the 15 recompiled topics)
+**Sources changed:** 66 files since 2026-07-03
+**Notes:** Cleared most of the 2026-04-30 `--full` recompile debt (9 topics had pre-K8s-removal content purged). Compilation surfaced a live bug: pkg/cost/getCostMetrics queries retired metric names — daily cost report EC2 section computes from zeros. Still pending: compute-providers merge decision, cache-service/housekeeping/queue-processing untouched (no source changes).

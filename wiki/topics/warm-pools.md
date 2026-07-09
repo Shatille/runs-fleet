@@ -1,12 +1,12 @@
 ---
 topic: Warm Pools (Reconciliation)
-last_compiled: 2026-07-03
-sources_count: 3
+last_compiled: 2026-07-09
+sources_count: 4
 ---
 
 # Warm Pools (Reconciliation)
 
-## Purpose [coverage: medium -- 3 sources]
+## Purpose [coverage: medium -- 4 sources]
 
 Warm pools pre-provision EC2 instances so workflow jobs start in seconds
 rather than waiting on a cold EC2 boot. A single reconciler continuously
@@ -17,7 +17,7 @@ after idle. Warm pools are EC2-only: the K8s pool manager that once mirrored
 this behavior for Helm-deployed placeholder pods was removed upstream (see
 Key Decisions).
 
-## Architecture [coverage: medium -- 3 sources]
+## Architecture [coverage: medium -- 4 sources]
 
 The reconciler is implemented in `pkg/pools/manager.go` as `Manager`. Its
 entry point `ReconcileLoop(ctx)` ticks every 60 seconds and calls
@@ -30,8 +30,12 @@ drains and deduplicates the channel via `reconcileDemand`.
 
 `reconcilePool` flow:
 1. Acquire a per-pool DynamoDB lock with a 65s TTL
-   (`AcquirePoolReconcileLock`); skip silently on `ErrPoolReconcileLockHeld`
-   or `ErrPoolNotFound`. Release is deferred via `ReleasePoolReconcileLock`.
+   (`reconcileLockTTL = reconcileInterval + 5s`, kept derived so the ordering
+   can't drift) via `AcquirePoolReconcileLock`; skip silently on
+   `ErrPoolReconcileLockHeld` or `ErrPoolNotFound`. Release is deferred via
+   `ReleasePoolReconcileLock`, and a second deferred recorder persists the
+   pass outcome ("success" or the error, truncated to 300 runes) via
+   `UpdatePoolReconcileResult` while the lock is still held.
 2. Load `PoolConfig` and resolve `desiredRunning`, `desiredStopped` via
    `getScheduledDesiredCounts` (time-of-day / day-of-week schedules) or
    `getEphemeralAutoScaledCount` (P90 concurrency over the past hour for
@@ -60,13 +64,25 @@ drains and deduplicates the channel via `reconcileDemand`.
 7. Persist counts via `UpdatePoolState` and publish pool gauges/actions to
    `MetricsAPI`.
 
+Instance creation goes through `createPoolFleetInstances`:
+`resolvePoolInstanceTypes` translates the pool's flexible spec (or a legacy
+pinned `InstanceType`) into candidate types, `RankInstanceTypesByPrice`
+expands them into an inverse-price-weighted interleaved sequence, and each
+instance to create picks uniformly at random from that sequence
+(`ranked[m.randIntn(len(ranked))]`) — cheaper types therefore win
+proportionally more often. Each launch gets a round-robin `SubnetID` plus the
+full `SubnetIDs` list (so `CreateOnDemandInstance` can rotate AZs on capacity
+errors) and a `Reason` (`ready_deficit` / `stopped_replenish`) for
+observability. Ephemeral pools no longer pin an `InstanceType`; the pinned
+fallback only applies to legacy admin-created pools whose spec fails to
+resolve.
+
 Idle tracking is in-memory: `Manager.instanceIdle` is a
 `map[string]time.Time` guarded by `idleMu`, seeded the first time
 `getPoolInstances` observes a running instance, and mutated by
-`MarkInstanceBusy` / `MarkInstanceIdle`. `stopInstances` and
-`terminateInstances` also delete entries so the map never grows unbounded.
-There is no `forgetInstances` helper as such — cleanup is inlined at each
-call site that removes an instance from the pool.
+`MarkInstanceBusy` / `MarkInstanceIdle`. The stop/terminate/claim paths all
+drop entries through the shared `forgetInstances` helper (the one deletion
+point outside `MarkInstanceIdle`), so the map never grows unbounded.
 
 Job assignment uses `ClaimAndStartPoolInstance(ctx, poolName, jobID, repo,
 spec)`: it filters stopped instances by `FlexibleSpec`, sorts best-fit
@@ -81,15 +97,18 @@ paths); `ClaimAndStartPoolInstance` is preferred wherever an instance still
 needs to be selected, since it is the only path with the DynamoDB conditional
 write guarding against double-claims across orchestrator processes.
 
-## Talks To [coverage: medium -- 3 sources]
+## Talks To [coverage: medium -- 4 sources]
 
 - `pkg/db` — `DBClient` interface (in `manager.go`) covers `GetPoolConfig`,
   `UpdatePoolState`, `ListPools`, `GetPoolP90Concurrency`,
   `GetPoolBusyInstanceIDs`, `AcquirePoolReconcileLock`,
-  `ReleasePoolReconcileLock`, `ClaimInstanceForJob`, `ReleaseInstanceClaim`.
-  Implementations live in [pkg/db/pool_config.go](../../pkg/db/pool_config.go)
-  (table CRUD on `runs-fleet-pools`) and [pkg/db/locks.go](../../pkg/db/locks.go)
-  (reconcile-lock and instance-claim primitives).
+  `ReleasePoolReconcileLock`, `UpdatePoolReconcileResult`,
+  `ClaimInstanceForJob`, `ReleaseInstanceClaim`. Implementations live in
+  [pkg/db/pool_config.go](../../pkg/db/pool_config.go) (table CRUD on
+  `runs-fleet-pools`), [pkg/db/locks.go](../../pkg/db/locks.go)
+  (reconcile-lock and task-lock primitives), and
+  [pkg/db/instance_claims.go](../../pkg/db/instance_claims.go)
+  (instance-claim conditional writes).
 - `pkg/fleet` — `FleetAPI` exposes `CreateFleet`, `CreateOnDemandInstance`,
   `RankInstanceTypesByPrice`. Pools always call `CreateOnDemandInstance` for
   reliability. `fleet.FlexibleSpec`, `fleet.InstanceSpec`,
@@ -97,7 +116,10 @@ write guarding against double-claims across orchestrator processes.
   launch parameters.
 - `pkg/github` — `github.JobConfig` and `github.ResolveFlexibleSpec` are used
   by `resolvePoolInstanceTypes` to translate pool-level CPU/RAM/family
-  requirements into a list of concrete EC2 instance types.
+  requirements into a list of concrete EC2 instance types. When a pool spec
+  has no `families`, resolution falls back to
+  `fleet.DefaultFlexibleFamilies`, which excludes burstable families since
+  PR #385 (see Key Decisions).
 - `pkg/config` — `config.Config` supplies `SubnetIDs`, round-robined by
   `selectSubnet` for new pool instances.
 - `pkg/metrics` — optional `MetricsAPI` publishes pool action counts, desired
@@ -111,7 +133,7 @@ write guarding against double-claims across orchestrator processes.
   60s ticker. (Producer/consumer wiring lives outside this package but
   consumes its API.)
 
-## API Surface [coverage: medium -- 3 sources]
+## API Surface [coverage: medium -- 4 sources]
 
 ```go
 // pkg/pools/manager.go
@@ -171,6 +193,7 @@ func (c *Client) UpdatePoolState(ctx, poolName string, running, stopped int) err
 func (c *Client) SavePoolConfig(ctx, *PoolConfig) error
 func (c *Client) CreateEphemeralPool(ctx, *PoolConfig) error
 func (c *Client) TouchPoolActivity(ctx, poolName) error
+func (c *Client) UpdatePoolReconcileResult(ctx, poolName, result string, at time.Time) error
 func (c *Client) DeletePoolConfig(ctx, poolName) error  // ephemeral-only
 
 // pkg/db/locks.go
@@ -182,9 +205,15 @@ func (c *Client) AcquirePoolReconcileLock(ctx, poolName, owner string, ttl time.
 func (c *Client) ReleasePoolReconcileLock(ctx, poolName, owner string) error
 func (c *Client) AcquireTaskLock(ctx, taskType, owner string, ttl time.Duration) error
 func (c *Client) ReleaseTaskLock(ctx, taskType, owner string) error
+
+// pkg/db/instance_claims.go
+var ErrInstanceAlreadyClaimed = errors.New("instance already claimed by another job")
+
+func (c *Client) ClaimInstanceForJob(ctx, instanceID string, jobID int64, ttl time.Duration) error
+func (c *Client) ReleaseInstanceClaim(ctx, instanceID string, jobID int64) error
 ```
 
-## Data [coverage: medium -- 3 sources]
+## Data [coverage: medium -- 4 sources]
 
 DynamoDB table: `runs-fleet-pools`. Partition key: `pool_name` (string).
 
@@ -203,6 +232,8 @@ DynamoDB table: `runs-fleet-pools`. Partition key: `pool_name` (string).
 | `schedules` | L | List of `PoolSchedule` entries |
 | `ephemeral` | BOOL | Auto-create / auto-delete pool |
 | `last_job_time` | S (RFC3339) | Updated by `TouchPoolActivity` |
+| `last_reconcile_at` | S (RFC3339) | Set by `UpdatePoolReconcileResult` after each owned pass |
+| `last_reconcile_result` | S | `"success"` or `"failed: ..."`, capped at 300 runes |
 | `arch` | S | `arm64` / `amd64` |
 | `cpu_min`, `cpu_max` | N | vCPU range |
 | `ram_min`, `ram_max` | N | RAM range (GB) |
@@ -215,12 +246,12 @@ DynamoDB table: `runs-fleet-pools`. Partition key: `pool_name` (string).
 `days_of_week` (`[]int`, 0=Sunday), `desired_running`, `desired_stopped`.
 
 Task locks and instance claims reuse the same table with sentinel key
-prefixes (`__task_lock:` for task locks; a separate prefix for instance
+prefixes (`__task_lock:` for task locks, `__instance_claim:` for instance
 claims) plus `lock_owner` / `lock_expires` attributes.
 `IsReservedPoolKey` identifies both prefixes so `ListPools` and
 `GetPoolConfig` never surface them as phantom pools.
 
-## Key Decisions [coverage: medium -- 3 sources]
+## Key Decisions [coverage: medium -- 4 sources]
 
 - **2026-06: K8s pool manager removed.** `pkg/pools/k8s_manager.go` was
   deleted along with the K8s runner backend; `pkg/pools/manager.go` became
@@ -233,9 +264,11 @@ claims) plus `lock_owner` / `lock_expires` attributes.
   reconcile different pools concurrently while the same pool always
   serializes to one writer, with no cluster-wide leader to elect or fail
   over.
-- **65s TTL > 60s reconcile interval.** `reconcilePool` passes
-  `65*time.Second` so a healthy lock holder always renews before expiry,
-  while a crashed holder's lock auto-expires before the next tick.
+- **65s TTL > 60s reconcile interval.** `reconcileLockTTL` is defined as
+  `reconcileInterval + 5*time.Second` (not an independent literal) so the
+  two constants can't drift out of ordering: a healthy lock holder always
+  renews before expiry, while a crashed holder's lock auto-expires before
+  the next tick.
 - **Owner check uses a unique UUID per process, not hostname.**
   `AcquirePoolReconcileLock`'s doc comment emphasizes this so a crashed
   instance cannot bypass TTL by reusing its identity on restart.
@@ -246,6 +279,28 @@ claims) plus `lock_owner` / `lock_expires` attributes.
 - **Warm pools are on-demand only.** `createPoolFleetInstances` always calls
   `CreateOnDemandInstance`; the comment on it states stop/start reliability
   matters more than spot savings for short-lived job execution.
+- **Price-weighted random type selection — and PR #385's correction to its
+  candidate list.** `createPoolFleetInstances` picks each new instance's type
+  uniformly at random from `RankInstanceTypesByPrice`'s inverse-price-weighted
+  sequence (cheapest types repeated up to 5x). This mechanism is why the
+  burstable defaults were dangerous: with `t3` in
+  `fleet.DefaultFlexibleFamilies`, ~2.5GHz `t3.medium` won ~70% of warm-pool
+  picks and an A/B benchmark measured CI 2.25x slower than a competitor on
+  identical tests. PR #385 (commit 89e63c0) dropped `t3`/`t4g` from the
+  default family lists — the pick mechanism is unchanged; only the candidate
+  list is now burstable-free unless a pool explicitly configures those
+  families. Sequel to the PR #376 RAM floor: the same failure mode (price
+  optimization selecting starvation-grade hardware), one tier up.
+- **Ephemeral pools carry a flexible spec, not a pinned type (PR #376).**
+  `resolvePoolInstanceTypes` resolves the spec fresh each cycle; the pinned
+  `InstanceType` fallback only applies to legacy admin-created pools. This
+  stops ephemeral pools from freezing the smallest instance type chosen at
+  creation time.
+- **Reconcile outcome is persisted per pool.** Each owned pass writes
+  `last_reconcile_at` / `last_reconcile_result` via
+  `UpdatePoolReconcileResult` while the lock is still held (registered after,
+  hence running before, the lock release), feeding the admin reconcile-status
+  dashboard; a failed write is logged and never fails the reconcile.
 - **Bootstrap grace period before stopping a spare.** `reconcilePool` will
   not stop a warm-pool spare within `bootstrapGracePeriod`
   (`defaultBootstrapGracePeriod`, 3 minutes) of its `LaunchTime`. See
@@ -281,8 +336,15 @@ claims) plus `lock_owner` / `lock_expires` attributes.
 - **Round-robin subnet selection.** `selectSubnet` returns from
   `config.SubnetIDs` round-robin via an atomic counter.
 
-## Gotchas [coverage: medium -- 3 sources]
+## Gotchas [coverage: medium -- 4 sources]
 
+- **A pool spec that resolves zero instance types silently creates nothing.**
+  `createPoolFleetInstances` logs "no instance types resolved" and returns 0
+  for that cycle. Since PR #385 this can happen for family-less specs pinned
+  to a burstable-only generation (`gen=3` amd64, `gen=4` arm64) — those
+  generations only contained `t3`/`t4g`, which are no longer in the default
+  family lists. Pools that explicitly configure `families: [t3]` or `[t4g]`
+  still resolve burstables.
 - **Stopping a spare mid-boot causes a systemd "destructive transaction"
   that looks like a bootstrap failure.** If the reconciler stops a
   warm-pool spare while agent-bootstrap's `systemctl start` is still
@@ -341,3 +403,4 @@ claims) plus `lock_owner` / `lock_expires` attributes.
 - [pkg/pools/manager.go](../../pkg/pools/manager.go)
 - [pkg/db/pool_config.go](../../pkg/db/pool_config.go)
 - [pkg/db/locks.go](../../pkg/db/locks.go)
+- [pkg/db/instance_claims.go](../../pkg/db/instance_claims.go)

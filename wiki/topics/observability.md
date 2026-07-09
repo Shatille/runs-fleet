@@ -1,53 +1,63 @@
 ---
-topic: Observability (Metrics, Logging, Cost)
-last_compiled: 2026-04-30
-sources_count: 8
+topic: Observability (Metrics, Tracing, Logging, Cost)
+last_compiled: 2026-07-09
+sources_count: 19
 ---
 
-# Observability (Metrics, Logging, Cost)
+# Observability (Metrics, Tracing, Logging, Cost)
 
-## Purpose [coverage: high -- 8 sources]
+## Purpose [coverage: high -- 19 sources]
 
-runs-fleet emits multi-backend metrics, structured JSON logs, and daily cost
-reports so operators can monitor fleet health, debug incidents across
-distributed Fargate instances, and track AWS spend per workflow job.
+runs-fleet emits multi-backend metrics, OpenTelemetry traces, structured JSON
+logs, and daily cost reports so operators can monitor fleet health, debug
+incidents across distributed Fargate instances, and track AWS spend per
+workflow job.
 
-The observability surface is split across three packages:
+The observability surface is split across four packages:
 
-- `pkg/metrics` — A `Publisher` interface with three concrete backends
-  (CloudWatch, Prometheus, Datadog DogStatsD) plus a fan-out `MultiPublisher`
-  and a `NoopPublisher`. Backends are individually toggleable via env vars,
-  so an operator can run "CloudWatch + Datadog", "Prometheus only", or any
-  combination.
+- `pkg/metrics` — A `Publisher` interface (~45 methods, organized into labeled
+  families: job lifecycle, fleet/provisioning, pools, internals,
+  cache/housekeeping, cost) with three concrete backends (CloudWatch,
+  Prometheus, Datadog DogStatsD) plus a fan-out `MultiPublisher` and a
+  `NoopPublisher`. Backends are individually toggleable via env vars.
+  `docs/METRICS.md` is the canonical per-metric reference (names, dimensions,
+  meaning); this article covers the machinery and its sharp edges.
+- `pkg/tracing` — OpenTelemetry SDK setup (OTLP gRPC exporter, batcher),
+  a package-level `Tracer()`, and W3C TraceContext propagation helpers that
+  carry `traceparent` strings through SQS message attributes. Returns a noop
+  provider when disabled (zero overhead).
 - `pkg/logging` — A thin wrapper around stdlib `log/slog` that pins the global
-  handler to JSON-on-stdout, attaches a `host` attribute, and exposes a
-  curated set of attribute keys (`KeyJobID`, `KeyPoolName`, etc.) and
-  `log_type` categories so log aggregators can filter cleanly.
+  handler to JSON-on-stdout, attaches a `host` attribute, exposes curated
+  attribute keys and `log_type` categories, and adds context-stashed attrs
+  (`ContextWith` / `ContextWithJob`) so task identity (job_id, run_id, repo)
+  rides the `context.Context` into every log line.
 - `pkg/cost` — A daily report generator that pulls `RunsFleet` CloudWatch
   metrics, multiplies them by hard-coded ARM instance prices (with optional
   AWS Pricing API lookup), writes a markdown report to S3, and publishes the
-  same body to an SNS topic.
+  same body to an SNS topic. Explicit about its limitations: hard-coded prices
+  for three instance families, fixed 70% spot discount, no data-transfer or
+  EBS line items.
 
-The cost subsystem is explicit about its limitations: hard-coded prices for
-three instance families, fixed 70% spot discount, and no data-transfer or
-EBS line items.
-
-## Architecture [coverage: high -- 8 sources]
+## Architecture [coverage: high -- 19 sources]
 
 ### Metrics fan-out
 
-`Publisher` (defined in `pkg/metrics/publisher.go`) is a 27-method interface
-covering counters (`PublishJobSuccess`, `PublishCacheHit`), gauges
-(`PublishQueueDepth`, `PublishFleetSize`, `PublishPoolUtilization`),
-distributions (`PublishJobDuration`), and Datadog-specific surfaces
-(`PublishServiceCheck`, `PublishEvent`).
+`Publisher` (defined in [pkg/metrics/publisher.go](../../pkg/metrics/publisher.go))
+covers counters (`PublishJobEnqueued`, `PublishJobCompleted`), gauges
+(`PublishQueueDepth`, `PublishInstances`, `PublishPoolInstances`),
+latency distributions (`PublishJobWaitSeconds`, `PublishJobStartupSeconds`,
+`PublishAgentBootstrapSeconds`, `PublishInstanceProvisionSeconds`, ...), and
+Datadog-specific surfaces (`PublishServiceCheck`, `PublishEvent`). The
+interface doc declares the cardinality policy: the high-cardinality `repo`
+label is restricted to the three job-lifecycle counters (`JobsEnqueued`,
+`JobsAssigned`, `JobsCompleted`); every other metric uses small closed enums.
 
-`MultiPublisher` (`pkg/metrics/multi.go`) wraps an arbitrary list of
-publishers. Each interface call invokes `publishAll`, which spawns a
-goroutine per child, runs each publisher's method on a nested goroutine,
-collects errors with a 5-second per-publisher timeout (`publishTimeout`),
-logs warnings via the metrics logger, and returns the joined error set
-(`errors.Join`). One slow backend cannot block the others.
+`MultiPublisher` ([pkg/metrics/multi.go](../../pkg/metrics/multi.go)) wraps an
+arbitrary list of publishers. Each interface call invokes `publishAll`, which
+spawns a goroutine per child, runs each publisher's method on a nested
+goroutine, collects errors with a 5-second per-publisher timeout
+(`publishTimeout`), logs warnings via the metrics logger, and returns the
+joined error set (`errors.Join`). One slow backend cannot block the others.
 
 ```
 caller → MultiPublisher.PublishX
@@ -57,42 +67,107 @@ caller → MultiPublisher.PublishX
 ```
 
 `NoopPublisher` (same file as the interface) is a zero-value-friendly stub
-returned when metrics are disabled — every method returns `nil`. It exists
-so callers can avoid `if publisher != nil` guards.
+returned when metrics are disabled — every method returns `nil`.
+
+Adding a Publisher method means touching **six** points: the interface +
+`NoopPublisher` (publisher.go), CloudWatch, Prometheus (field + registration +
+method), Datadog, and the `MultiPublisher` fan-out.
 
 ### Backend implementations
 
-`CloudWatchPublisher` (`pkg/metrics/cloudwatch.go`) uses `cloudwatch.Client`
-from AWS SDK v2. Default namespace is `RunsFleet` (overridable via
-`NewCloudWatchPublisherWithNamespace`). Counters call `putMetric` (single
-`MetricDatum` with `Value`); gauges call `putGaugeMetric` (uses
-`StatisticValues` with `SampleCount=1` so CloudWatch treats the point as a
-gauge sample). Dimensions are added inline for the four
-dimension-bearing metrics: `PoolName` (`PoolUtilization`,
-`PoolRunningJobs`), `TaskType` (`SchedulingFailure`), and `InstanceType`
-(`CircuitBreakerTriggered`). `PublishServiceCheck` and `PublishEvent` are
-no-ops on CloudWatch (Datadog-only surfaces).
+`CloudWatchPublisher` ([pkg/metrics/cloudwatch.go](../../pkg/metrics/cloudwatch.go))
+uses `cloudwatch.Client` from AWS SDK v2. The namespace is the fixed constant
+`cloudWatchNamespace = "RunsFleet"` — intentionally **not** configurable
+(prevents metric collisions across deployments in one account/region).
+Counters go through `putCounter`/`putCounterValue` (single `MetricDatum` with
+`Value`); gauges and latency observations go through `putGauge`/`putStatistic`
+(a single-sample `StatisticSet` with `SampleCount=1, Sum=Min=Max=value`).
+The `dims()` helper drops empty dimension values so an absent optional label
+(e.g. no pool) does not mint a distinct series. Three high-frequency latency
+metrics are **deliberate no-ops** on this backend
+(`PublishMessageProcessingSeconds`, `PublishLockWaitSeconds`,
+`PublishAWSCallDuration`, ~lines 186–224): un-batched `PutMetricData` would
+issue a synchronous API request per message/SDK call — the AWS-call histogram
+alone would roughly double the orchestrator's AWS API volume. Those
+histograms live on Prometheus/Datadog only; CloudWatch keeps the
+low-frequency `AWSCallFailures` counter.
 
-`PrometheusPublisher` (`pkg/metrics/prometheus.go`) constructs a private
-`prometheus.Registry` and pre-allocates one collector per metric:
-`prometheus.Counter`/`Gauge`/`Histogram` for label-free metrics, and
-`*CounterVec`/`*GaugeVec` for label-bearing ones. The histogram for
-`job_duration_seconds` uses fixed buckets `[30, 60, 120, 300, 600, 900,
-1800, 3600]`. Default namespace is `runs_fleet`. `Handler()` exposes the
-registry for mounting at `/metrics`. `PublishServiceCheck` and
-`PublishEvent` are no-ops.
+`PrometheusPublisher` ([pkg/metrics/prometheus.go](../../pkg/metrics/prometheus.go))
+constructs a private `prometheus.Registry` and pre-allocates one collector per
+metric (`CounterVec`/`GaugeVec`/`HistogramVec`). Name prefix is the fixed
+constant `runs_fleet`. Two shared bucket sets:
+`latencyBucketsLong = [0.5, 1, 2, 5, 10, 20, 30, 60, 90, 120]` for
+job/provision/fleet/bootstrap latencies and
+`latencyBucketsShort = [0.005 … 10, 30]` for lock-wait and message-processing;
+`aws_call_duration_seconds` has its own `[0.05 … 30]` set. `Handler()` exposes
+the registry for mounting at `/metrics`.
 
-`DatadogPublisher` (`pkg/metrics/datadog.go`) uses the official
-`github.com/DataDog/datadog-go/v5/statsd` client. The namespace
-(`runs_fleet`) is appended with a `.` separator and applied as a global
-prefix (`statsd.WithNamespace`). Tags supplied via `DatadogConfig.Tags`
-become global tags on every metric. The high-frequency
-`PublishCacheHit`/`PublishCacheMiss` paths pass `p.sampleRate` (default
-1.0) to `client.Incr`; everything else hard-codes rate `1`.
-`PublishJobDuration` uses `Distribution` (not `Histogram`) so percentiles
-are computed globally across the Fargate fleet rather than per-host.
-`PublishServiceCheck` and `PublishEvent` map status/alert-type integers
-onto Datadog's enum values.
+`DatadogPublisher` ([pkg/metrics/datadog.go](../../pkg/metrics/datadog.go))
+uses the official `github.com/DataDog/datadog-go/v5/statsd` client with the
+fixed `runs_fleet.` prefix (`statsd.WithNamespace`) and global tags from
+`DatadogConfig.Tags`. All latency metrics use `Distribution` (not
+`Histogram`) so percentiles are computed globally across the Fargate fleet
+rather than per-host. `p.sampleRate` (default 1.0) applies only to the
+high-frequency paths — `message_processing_seconds`, `lock_wait_seconds`,
+`cache_requests`, `cache_operations`; everything else hard-codes rate `1`.
+The `ddTag` helper drops empty tag values, mirroring CloudWatch's `dims()`.
+`PublishServiceCheck`/`PublishEvent` map status/alert-type onto Datadog enums;
+they are no-ops on the other two backends.
+
+### Acquisition-latency pipeline (PR #387, 2026-07-09)
+
+Three distributions now decompose "how long until a runner picks up the job":
+
+- **`JobStartupSeconds` (Pool, Source)** — the headline end-to-end number on
+  the **GitHub clock**: `workflow_job` created → started. Published from a new
+  `in_progress` webhook case:
+  `HandleWorkflowJobInProgress` ([internal/handler/webhook.go](../../internal/handler/webhook.go))
+  derives a `StartupObservation` only when the job ran on one of our runners
+  (runner-name `runs-fleet-` prefix) AND carries parseable runs-fleet labels
+  (`in_progress` fires for every runner in the repo, including foreign ones).
+  `PublishJobStartupMetrics` resolves Source (`warm_pool`/`cold_start`) via
+  one `GetJobByJobID` read; any miss publishes with an **empty source** rather
+  than dropping the observation. Runs post-ack in a panic-recovered background
+  goroutine (`cmd/server/main.go` `"in_progress"` case).
+- **`InstanceProvisionSeconds` (Source, Family)** — assignment →
+  runner-registered, emitted at `confirmRunnerStarted` in
+  [pkg/termination/handler.go](../../pkg/termination/handler.go): agent
+  `StartedAt` minus the job record's `created_at`, surfaced by
+  `MarkJobStarted`'s `ReturnValueAllNew` echo (`events.JobInfo` gained
+  `WarmPoolHit` + `CreatedAt`). Semantics: `warm_pool` = assignment →
+  registered (resume + bootstrap); `cold_start` = post-CreateFleet →
+  registered (CreateFleet itself is `FleetCreateSeconds`). Previously
+  defined-but-never-called.
+- **`AgentBootstrapSeconds` (Pool, Phase)** — agent-measured bootstrap
+  segments riding the "started" telemetry as five additive `omitempty`
+  fields; the termination handler publishes one observation per positive
+  segment. Phase is a closed enum fixed orchestrator-side: `boot`
+  (`/proc/uptime` at agent entry), `config`, `runner_download`,
+  `registration`, `total`.
+
+### Tracing
+
+`pkg/tracing` is four small files. `ParseConfig()`
+([pkg/tracing/config.go](../../pkg/tracing/config.go)) reads
+`RUNS_FLEET_TRACING_ENABLED` (default false), `RUNS_FLEET_OTEL_ENDPOINT`,
+`RUNS_FLEET_OTEL_INSECURE` (default true), `RUNS_FLEET_OTEL_SERVICE_NAME`
+(default `runs-fleet`), and `RUNS_FLEET_ENV` (deployment environment
+resource attribute). `Setup()`
+([pkg/tracing/provider.go](../../pkg/tracing/provider.go)) returns a **noop
+`TracerProvider`** when disabled or endpoint-less; otherwise it builds an OTLP
+gRPC exporter with a batching span processor and a resource carrying service
+name/version (version from `debug.ReadBuildInfo`, `"dev"` fallback).
+`Tracer()` ([pkg/tracing/tracer.go](../../pkg/tracing/tracer.go)) is the
+package-level accessor (`otel.Tracer("runs-fleet")`) — instrumentation sites
+never hold a provider. `InjectTraceContext`/`ExtractTraceContext`
+([pkg/tracing/propagation.go](../../pkg/tracing/propagation.go)) round-trip a
+W3C `traceparent` string via a map carrier, which `pkg/queue/sqs.go` stores in
+SQS message attributes so traces span webhook → queue → worker → termination.
+Instrumented sites: `cmd/server/main.go`, `internal/handler/webhook.go`,
+`internal/worker/ec2.go`, `pkg/fleet/fleet.go`, `pkg/queue/sqs.go`,
+`pkg/events/handler.go` (`events.spot_interruption`), and
+`pkg/termination/handler.go` (`termination.process`,
+`termination.bootstrap_failed`).
 
 ### Logging
 
@@ -109,35 +184,44 @@ logger backed by a `lazyHandler`, which delegates to
 `slog.Default().Handler()` at log time — package-level loggers declared
 before `Init()` runs still pick up the JSON handler once it's installed.
 
+[pkg/logging/context.go](../../pkg/logging/context.go) adds context-stashed
+attrs: `ContextWith(ctx, attrs...)` accumulates `slog.Attr`s on the context;
+`ContextWithJob(ctx, jobID, runID, repo)` stashes the standard task-identity
+triple (zero-valued fields omitted). A `contextHandler` wrapper injects the
+stashed attrs into every record — but only via `*logging.Logger` methods,
+which all require a context. Stash a key at most once per context branch:
+slog does not de-duplicate, so re-stashing emits it twice.
+
 ### Cost reporting
 
 `pkg/cost/reporter.go` defines `Reporter` with three injected AWS clients
 (`CloudWatchAPI`, `S3API`, `SNSAPI`) plus a `PriceFetcherAPI` for dynamic
-price lookups. `GenerateDailyReport` is the entry point. Flow:
+price lookups. `GenerateDailyReport` is the entry point (dispatched from
+[pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)). Flow:
 
 1. Compute a 24-hour window aligned to the current hour.
 2. `getCostMetrics` issues a single `GetMetricData` call against the
    `RunsFleet` namespace for five metrics: `FleetSizeIncrement`,
    `SpotInterruptions`, `JobSuccess`, `JobFailure`, `JobDuration` (sum
-   over 1-hour periods).
+   over 1-hour periods). **These are pre-rework metric names — see Gotchas.**
 3. Split fleet activations 80/20 spot/on-demand and compute hours.
 4. Look up the average instance price (`t4g.medium`) via
-   `PriceFetcher.GetPrice`; fall back to `0.0336` USD if the Pricing API
-   call fails.
+   `PriceFetcher.GetPrice`; fall back to `defaultInstanceHourlyPrice =
+   0.0336` USD if the Pricing API call fails.
 5. Compute `EC2SpotCost`, `EC2OnDemandCost`, `SpotSavings` using the fixed
    `SpotDiscount = 0.7`.
 6. Estimate Fargate ($1.20/day flat), SQS ($0.40/M reqs), DynamoDB ($1.25/M
    writes + $0.25/M reads), CloudWatch logs ($0.50/GB), and S3 ($0.05
    flat).
-7. `runnerMinuteCost` (in `pkg/cost/runnerminutes.go`) issues a second
-   `GetMetricData` call — one metric-math `SUM(SEARCH(...))` query per distinct
-   `(arch, vCPU)` shape in `fleet.InstanceCatalog` — to total
-   `RunnerExecutionSeconds` (emitted at job termination, dimensioned by
-   `Arch`/`Vcpu`/`Spot`/`Result`). It converts seconds to billable vCPU-minutes
-   and multiplies by the default per-vCPU-minute rates
-   (`cost.DefaultRunnerMinuteRates()`: amd64 $0.002, arm64 $0.00125) to produce
-   the standard hosted-runner-equivalent cost. A query failure is logged and
-   skipped (the figure stays zero).
+7. `runnerMinuteCost` (in [pkg/cost/runnerminutes.go](../../pkg/cost/runnerminutes.go))
+   issues a second `GetMetricData` call — one metric-math `SUM(SEARCH(...))`
+   query per distinct `(arch, vCPU)` shape in `fleet.InstanceCatalog` — to
+   total `RunnerExecutionSeconds` (emitted at job termination, dimensioned by
+   `Arch`/`Vcpu`/`Spot`/`Result`). It converts seconds to billable
+   vCPU-minutes and multiplies by the default per-vCPU-minute rates
+   (`cost.DefaultRunnerMinuteRates()`: amd64 $0.002, arm64 $0.00125) to
+   produce the standard hosted-runner-equivalent cost. A query failure is
+   logged and skipped (the figure stays zero).
 8. `generateMarkdownReport` formats a markdown report with a disclaimer
    block; the runner-minute cost section is included only when the figure is
    non-zero.
@@ -153,98 +237,120 @@ error logs a warning, sets `useFallback = true` (sticky for the lifetime
 of the fetcher until `RefreshCache` resets it), and returns the
 hard-coded price from the package-level `instancePricing` map.
 
-## Talks To [coverage: high -- 8 sources]
+## Talks To [coverage: high -- 19 sources]
 
 | Component             | Direction | Backend / API                                |
 | --------------------- | --------- | -------------------------------------------- |
 | CloudWatchPublisher   | out       | `cloudwatch.PutMetricData` (namespace `RunsFleet`) |
 | PrometheusPublisher   | in        | HTTP `/metrics` scrape (handler at `Handler()`)    |
 | DatadogPublisher      | out       | DogStatsD UDP (default `127.0.0.1:8125`)           |
+| tracing.Setup         | out       | OTLP gRPC collector (`RUNS_FLEET_OTEL_ENDPOINT`)   |
+| tracing propagation   | both      | SQS message attributes (`traceparent`)             |
 | logging.Init          | out       | `os.Stdout` (JSON lines)                           |
 | Reporter (cost)       | out       | `cloudwatch.GetMetricData` (read RunsFleet metrics) |
 | Reporter (cost)       | out       | `s3.PutObject` (cost reports bucket)               |
 | Reporter (cost)       | out       | `sns.Publish` (daily-cost SNS topic)               |
 | PriceFetcher          | out       | `pricing.GetProducts` (us-east-1 endpoint)         |
 
-## API Surface [coverage: high -- 8 sources]
+Metric producers span the codebase; the notable cross-package flows are the
+webhook `in_progress` path (→ `JobStartupSeconds`) and the termination
+handler, which converts agent telemetry into `RunnerConfirmed`,
+`InstanceProvisionSeconds`, `AgentBootstrapSeconds`, `JobsCompleted`,
+`JobExecutionSeconds`, `RunnerExecutionSeconds`, tool-cache and
+cache-interception counters — see
+[events-and-termination](events-and-termination.md).
+
+## API Surface [coverage: high -- 19 sources]
 
 ### Publisher interface (`pkg/metrics/publisher.go`)
 
-Counters (no dimensions):
-- `PublishFleetSizeIncrement(ctx)` / `PublishFleetSizeDecrement(ctx)`
-- `PublishJobSuccess(ctx)` / `PublishJobFailure(ctx)` / `PublishJobQueued(ctx)`
-- `PublishSpotInterruption(ctx)`
-- `PublishMessageDeletionFailure(ctx)`
-- `PublishCacheHit(ctx)` / `PublishCacheMiss(ctx)` (sampled on Datadog)
-- `PublishJobClaimFailure(ctx)`
-- `PublishWarmPoolHit(ctx)`
+Organized into labeled families (full per-metric reference:
+[docs/METRICS.md](../../docs/METRICS.md)):
 
-Counters with `count int` argument (used for cleanup metrics):
-- `PublishOrphanedInstancesTerminated(ctx, count)`
-- `PublishSSMParametersDeleted(ctx, count)`
-- `PublishJobRecordsArchived(ctx, count)`
-- `PublishOrphanedJobsCleanedUp(ctx, count)`
-- `PublishStaleJobsReconciled(ctx, count)`
+- **Job lifecycle**: `PublishJobEnqueued(pool, arch, capacity, repo)`,
+  `PublishJobAssigned(pool, source, repo)`, `PublishRunnerConfirmed(pool)`,
+  `PublishJobCompleted(pool, result, repo)`, `PublishJobRequeued(reason)`,
+  `PublishJobDeduplicated(path)`, `PublishJobWaitSeconds(pool, source, s)`,
+  `PublishJobStartupSeconds(pool, source, s)`,
+  `PublishAgentBootstrapSeconds(pool, phase, s)`,
+  `PublishJobExecutionSeconds(pool, result, s)`
+- **Fleet / provisioning**: `PublishInstanceProvisionSeconds(source, family,
+  s)`, `PublishFleetCreate(capacity, result)`,
+  `PublishFleetCreateSeconds(capacity, s)`, `PublishInstances(state,
+  capacity, pool, n)`, `PublishSpotInterruption(family)`,
+  `PublishCircuitBreakerTrip(instanceType)`,
+  `PublishCircuitBreakerOpen(instanceType, open)`
+- **Pools**: `PublishPoolInstances(pool, state, n)`,
+  `PublishPoolDesired(pool, kind, n)`, `PublishPoolAction(pool, action,
+  reason)`, `PublishPoolReconcileSeconds(s)`
+- **Internals**: `PublishMessageProcessingSeconds(queue, result, s)`,
+  `PublishLockWaitSeconds(lock, s)`, `PublishWorkerInflight(queue, n)`,
+  `PublishQueueDepth(queue, depth)`, `PublishQueueReceive(queue, result)`,
+  `PublishAWSCallDuration(service, operation, s)`,
+  `PublishAWSCallFailure(service, operation, result)`
+- **Cache / housekeeping / misc**: `PublishCacheRequest(result)`,
+  `PublishCacheOperation(op)`, `PublishCacheBytesStored(bytes)`,
+  `PublishCacheError(op)`, `PublishCacheAuthRejected(reason)`,
+  `PublishHousekeepingAction(action, count)`,
+  `PublishSchedulingFailure(taskType)`,
+  `PublishMessageDeletionFailure(queue)`, `PublishServiceCheck(name, status,
+  message)`, `PublishEvent(title, text, alertType, tags)`
+- **Cost**: `PublishInstanceHours(capacity, family, hours)`,
+  `PublishEstimatedCost(usd)`, `PublishRunnerExecutionSeconds(arch, vcpu,
+  spot, result, seconds)`, `PublishRunnerToolCacheMiss(tool, version, arch)`,
+  `PublishRunnerCacheInterception(status)`
+- **Lifecycle**: `Close() error`
 
-Counters with dimensions:
-- `PublishSchedulingFailure(ctx, taskType)`
-- `PublishCircuitBreakerTriggered(ctx, instanceType)`
-- `PublishRunnerExecutionSeconds(ctx, arch, vcpu, spot, result, seconds)` — billable
-  runner seconds, dimensioned `Arch`/`Vcpu`/`Spot`/`Result`; sum reconstructs
-  per-(arch,vCPU) usage for the standard runner-minute cost
-
-Gauges:
-- `PublishQueueDepth(ctx, depth float64)`
-- `PublishFleetSize(ctx, size int)`
-- `PublishPoolUtilization(ctx, poolName, utilization float64)`
-- `PublishPoolRunningJobs(ctx, poolName, count int)`
-
-Distribution / histogram:
-- `PublishJobDuration(ctx, durationSeconds int)`
-
-Datadog-specific (no-op on CloudWatch and Prometheus):
-- `PublishServiceCheck(ctx, name, status int, message)` — status: `0=OK,
-  1=Warning, 2=Critical, 3=Unknown` (constants `ServiceCheckOK`,
-  `ServiceCheckWarning`, `ServiceCheckCritical`, `ServiceCheckUnknown`).
-- `PublishEvent(ctx, title, text, alertType, tags)` — alertType:
-  `"info" | "warning" | "error" | "success"`.
-
-Lifecycle:
-- `Close() error` — closes underlying client connections.
+The fulfillment SLA is documented on the interface itself:
+`PublishJobAssigned` (success) vs `PublishSchedulingFailure` (failure);
+`PublishJobCompleted`'s `result` is *our* runner's operational lifecycle
+(`served`/`interrupted`/`error`/`timeout`), never the client workflow's
+pass/fail; `PublishJobDeduplicated` is benign dual-path dedup, never an SLA
+failure.
 
 ### Constructors
 
-- `NewCloudWatchPublisher(cfg aws.Config) *CloudWatchPublisher`
-- `NewCloudWatchPublisherWithNamespace(cfg aws.Config, namespace string)`
+- `NewCloudWatchPublisher(cfg aws.Config) *CloudWatchPublisher` — namespace
+  fixed, no override constructor anymore
 - `NewPrometheusPublisher(cfg PrometheusConfig) *PrometheusPublisher`
   - `(*PrometheusPublisher).Handler() http.Handler`
   - `(*PrometheusPublisher).Registry() *prometheus.Registry`
-- `NewDatadogPublisher(cfg DatadogConfig) (*DatadogPublisher, error)`
+- `NewDatadogPublisher(cfg DatadogConfig) (*DatadogPublisher, error)` —
+  `DatadogConfig` adds client tuning knobs (`BufferPoolSize`,
+  `BufferFlushInterval`, `WorkersCount`, `MaxMessagesPerPayload`)
 - `NewMultiPublisher(publishers ...Publisher) *MultiPublisher`
-  - `(*MultiPublisher).Add(p Publisher)`
-  - `(*MultiPublisher).Publishers() []Publisher`
+  - `(*MultiPublisher).Add(p Publisher)` / `.Publishers() []Publisher`
 - `NoopPublisher{}` (zero-value)
 
-### Logging helpers (`pkg/logging/logger.go`)
+### Tracing (`pkg/tracing`)
+
+- `ParseConfig() Config` — env-var driven
+- `Setup(ctx, cfg) (trace.TracerProvider, error)` — noop when disabled
+- `Shutdown(ctx, tp) error` — flushes the SDK provider; safe on noop
+- `Tracer() trace.Tracer` — package-level accessor
+- `InjectTraceContext(ctx) string` / `ExtractTraceContext(traceparent) context.Context`
+
+### Logging helpers (`pkg/logging`)
 
 - `Init()` — sets up JSON slog on stdout, redirects stdlib `log`.
-- `New(attrs ...any) *Logger` — lazy-handler logger.
-- `WithComponent(logType, component string) *Logger` — convention for
-  package-level loggers.
+- `New(attrs ...any) *Logger` / `WithComponent(logType, component) *Logger`
 - `(*Logger).With(attrs ...any) *Logger`
+- `ContextWith(ctx, attrs ...slog.Attr) context.Context` /
+  `ContextWithJob(ctx, jobID, runID int64, repo string) context.Context`
+- `NewContextHandler(inner slog.Handler) slog.Handler` — for custom handlers
 
-Attribute key constants: `KeyAction`, `KeyAliasLabel` (`"alias_label"`),
-`KeyAudit`, `KeyBackend`, `KeyComponent`, `KeyCount`, `KeyDuration`
-(`"duration_ms"`), `KeyError`, `KeyHost`, `KeyInstanceID`, `KeyInstanceType`,
-`KeyJobID`, `KeyJobName`, `KeyLogType`, `KeyNamespace`, `KeyOwner`,
-`KeyPoolName`, `KeyQueueURL`, `KeyReason`, `KeyRemoteAddr`, `KeyResult`,
-`KeyRepo`, `KeyRunID`, `KeyTask`, `KeyUser`, `KeyWorkflowName`.
+Attribute key constants: `KeyAction`, `KeyAliasLabel`, `KeyAudit`,
+`KeyBackend`, `KeyComponent`, `KeyCount`, `KeyDuration` (`"duration_ms"`),
+`KeyError`, `KeyHost`, `KeyInstanceID`, `KeyInstanceType`, `KeyJobID`,
+`KeyJobName`, `KeyLogType`, `KeyNamespace`, `KeyOperation`, `KeyOwner`,
+`KeyPoolName`, `KeyService`, `KeyQueueURL`, `KeyReason`, `KeyRemoteAddr`,
+`KeyResult`, `KeyRepo`, `KeyRunID`, `KeyTask`, `KeyUser`, `KeyWorkflowName`.
 
 Log-type constants: `LogTypeServer`, `LogTypeWebhook`, `LogTypeQueue`,
 `LogTypePool`, `LogTypeHousekeep`, `LogTypeTermination`, `LogTypeEvents`,
 `LogTypeCache`, `LogTypeAdmin`, `LogTypeFleet`, `LogTypeCircuit`,
 `LogTypeRunner`, `LogTypeCost`, `LogTypeK8s`, `LogTypeMetrics`, `LogTypeDB`,
-`LogTypeAgent`.
+`LogTypeAgent`, `LogTypeAWS`.
 
 ### Cost reporting
 
@@ -260,39 +366,36 @@ Log-type constants: `LogTypeServer`, `LogTypeWebhook`, `LogTypeQueue`,
 
 `SpotDiscount = 0.7` (package-level constant).
 
-## Data [coverage: high -- 8 sources]
+## Data [coverage: high -- 19 sources]
 
-### Metric names emitted (CloudWatch / Datadog / Prometheus)
+### Metric taxonomy (summary)
 
-| CloudWatch                  | Datadog / Prometheus               | Type         | Dimension      |
-| --------------------------- | ---------------------------------- | ------------ | -------------- |
-| QueueDepth                  | queue_depth                        | gauge        | —              |
-| FleetSizeIncrement          | fleet_size_increment[_total]       | counter      | —              |
-| FleetSizeDecrement          | fleet_size_decrement[_total]       | counter      | —              |
-| FleetSize                   | fleet_size                         | gauge        | —              |
-| JobDuration                 | job_duration_seconds               | dist/histo   | —              |
-| JobSuccess                  | job_success[_total]                | counter      | —              |
-| JobFailure                  | job_failure[_total]                | counter      | —              |
-| JobQueued                   | job_queued[_total]                 | counter      | —              |
-| SpotInterruptions           | spot_interruptions[_total]         | counter      | —              |
-| MessageDeletionFailures     | message_deletion_failures[_total]  | counter      | —              |
-| CacheHits                   | cache_hits[_total]                 | counter      | — (sampled DD) |
-| CacheMisses                 | cache_misses[_total]               | counter      | — (sampled DD) |
-| OrphanedInstancesTerminated | orphaned_instances_terminated[_total] | counter   | —              |
-| SSMParametersDeleted        | ssm_parameters_deleted[_total]     | counter      | —              |
-| JobRecordsArchived          | job_records_archived[_total]       | counter      | —              |
-| OrphanedJobsCleanedUp       | orphaned_jobs_cleaned_up[_total]   | counter      | —              |
-| StaleJobsReconciled         | stale_jobs_reconciled[_total]      | counter      | —              |
-| PoolUtilization             | pool_utilization_percent           | gauge        | PoolName       |
-| PoolRunningJobs             | pool_running_jobs                  | gauge        | PoolName       |
-| SchedulingFailure           | scheduling_failure[_total]         | counter      | TaskType       |
-| CircuitBreakerTriggered     | circuit_breaker_triggered[_total]  | counter      | InstanceType   |
-| JobClaimFailures            | job_claim_failures[_total]         | counter      | —              |
-| WarmPoolHits                | warm_pool_hits[_total]             | counter      | —              |
+The full table lives in [docs/METRICS.md](../../docs/METRICS.md). Naming:
+CloudWatch uses `PascalCase` under namespace `RunsFleet`; Prometheus/Datadog
+use `snake_case` under `runs_fleet_`/`runs_fleet.` (counters end `_total` on
+Prometheus). Highlights and dimensions:
 
-Datadog adds two surfaces missing from the others: `ServiceCheck`
-(name-prefixed with namespace, status `Ok|Warn|Critical|Unknown`) and
-`Event` (`AlertType` mapped from string).
+| Metric (CloudWatch)        | Type      | Dimensions       | Notes |
+| -------------------------- | --------- | ---------------- | ----- |
+| JobsEnqueued / JobsAssigned / JobsCompleted | counter | Pool, …, **Repo** | only metrics allowed the repo label |
+| RunnerConfirmed            | counter   | Pool             | agent "started" signal; flatline vs JobsAssigned = registration failure |
+| JobWaitSeconds             | histogram | Pool, Source     | enqueue → assignment (SQS slice only) |
+| JobStartupSeconds          | histogram | Pool, Source     | GitHub-clock created → started; headline startup number (PR #387) |
+| InstanceProvisionSeconds   | histogram | Source, Family   | assignment → runner-registered (PR #387 wiring) |
+| AgentBootstrapSeconds      | histogram | Pool, Phase      | boot \| config \| runner_download \| registration \| total (PR #387) |
+| JobExecutionSeconds        | histogram | Pool, Result     | |
+| FleetCreate[Seconds]       | ctr/histo | Capacity[, Result] | |
+| SpotInterruptions          | counter   | Family           | |
+| CircuitBreakerTrip / Open  | ctr/gauge | InstanceType     | |
+| PoolInstances / PoolDesired / PoolActions | gauge/ctr | PoolName, … | |
+| MessageProcessingSeconds, LockWaitSeconds, AWSCallDuration | histogram | … | **Prometheus/Datadog only** (CloudWatch no-op) |
+| SchedulingFailure          | counter   | TaskType         | failure side of the fulfillment SLA |
+| Cache* / RunnerCacheInterception / RunnerToolCacheMiss | counter | … | agent-sourced ones ride termination telemetry |
+| RunnerExecutionSeconds     | counter   | Arch, Vcpu, Spot, Result | billable runner seconds; feeds runner-minute cost |
+| InstanceHours / EstimatedCost | ctr/gauge | …            | defined but not yet wired to the cost reporter (TODO in reporter.go) |
+
+Datadog adds two surfaces missing from the others: `ServiceCheck` and
+`Event`.
 
 ### Log fields
 
@@ -300,25 +403,22 @@ JSON lines emitted to stdout look like:
 
 ```json
 {
-  "time":"2026-04-30T...",
+  "time":"2026-07-09T...",
   "level":"INFO",
   "msg":"...",
   "host":"<hostname>",
   "log_type":"<one-of-LogType*>",
   "component":"<package-defined>",
+  "job_id":123, "run_id":456, "repo":"org/repo",
   ...
 }
 ```
 
-Common fields used across the codebase: `action`, `alias_label`, `audit`,
-`backend`, `component`, `count`, `duration_ms`, `error`, `host`, `instance_id`,
-`instance_type`, `job_id`, `job_name`, `log_type`, `namespace`, `owner`,
-`pool_name`, `queue_url`, `reason`, `remote_addr`, `result`, `repo`,
-`run_id`, `task`, `user`, `workflow_name`. Stdlib `log.Print*` calls are
-forwarded as `level=WARN` with `log_type=stdlib`. `alias_label` is set on the
-webhook "job enqueued" line — non-empty with the matched custom label when the
-job was resolved via a config-driven alias, empty for a native `runs-fleet`
-marker.
+Task-identity fields (`job_id`, `run_id`, `repo`) are usually injected via
+context stashing (`ContextWithJob`), not per-call args. Stdlib `log.Print*`
+calls are forwarded as `level=WARN` with `log_type=stdlib`. `alias_label` is
+set on the webhook "job enqueued" line — non-empty with the matched custom
+label when the job was resolved via a config-driven alias.
 
 ### Cost report shape
 
@@ -364,134 +464,183 @@ disclaimer footer. S3 path: `cost/<YYYY>/<MM>/<DD>.md`.
 
 Unknown instance types fall back to `t4g.medium` (`0.0336`).
 
-## Key Decisions [coverage: high -- 8 sources]
+## Key Decisions [coverage: high -- 19 sources]
 
 - **Multi-backend by interface, fan-out by composition.** `Publisher` is a
   single interface and `MultiPublisher` is just another implementation —
   callers don't know how many backends are live. Operators compose any
-  subset (CloudWatch + Datadog, Prometheus only, all three, none) without
-  code changes.
+  subset without code changes.
 - **5-second per-publisher timeout in fan-out.** A slow CloudWatch
   endpoint can't stall the Prometheus or Datadog write — `MultiPublisher`
   spawns a goroutine per child, races it against `time.After(5s)`, and
   collects errors via `errors.Join`.
-- **Datadog `Distribution` over `Histogram` for `JobDuration`.** Datadog's
+- **Fixed namespaces.** `RunsFleet` / `runs_fleet` are constants, no longer
+  constructor-overridable: a stable namespace prevents metric collisions
+  across deployments sharing an AWS account or Prometheus/Datadog instance.
+- **Cardinality policy on the interface.** `repo` is restricted to the three
+  job-lifecycle counters; all other labels are closed enums documented per
+  method; both CloudWatch (`dims`) and Datadog (`ddTag`) drop empty label
+  values so optional labels don't fan out. The bar for a new label is
+  written into the interface doc: "Do not add repo to any histogram or any
+  other metric."
+- **High-frequency histograms no-oped on CloudWatch.** There is no batching
+  layer, so per-message/per-SDK-call latency metrics would issue one
+  synchronous `PutMetricData` each — `PublishAWSCallDuration` alone would
+  roughly double AWS API volume. Prometheus/Datadog carry those; CloudWatch
+  keeps only low-frequency counters and single-sample statistics.
+- **Acquisition latency made visible (PR #387, 2026-07-09).** A ~35–40s
+  runner-acquisition latency was operationally invisible: the admin UI's
+  "Avg Startup" measures assignment → started (`created_at` is stamped at
+  assignment), and `JobWaitSeconds` covers only enqueue → assignment.
+  `JobStartupSeconds` (GitHub-clock created → started, from the
+  `in_progress` webhook) is the headline number spanning strictly more than
+  `JobWaitSeconds`; `InstanceProvisionSeconds` and `AgentBootstrapSeconds`
+  decompose where the time goes (orchestrator-side rendezvous vs on-instance
+  boot/config/download/registration).
+- **Agent has no metrics client.** Everything the agent observes
+  (bootstrap timings, tool-cache misses, cache-interceptor outcome, v2
+  cache bytes) rides the termination telemetry to SQS; the orchestrator
+  parses and publishes. The `Phase` label enum for `AgentBootstrapSeconds`
+  is fixed orchestrator-side as a cardinality guard — the agent never
+  supplies label strings.
+- **Datadog `Distribution` over `Histogram` for latencies.** Datadog's
   `Distribution` aggregates percentiles globally across all hosts;
-  `Histogram` is per-host. The codebase explicitly comments this choice.
-- **Sample rate only on cache hit/miss.** Every other Datadog counter uses
-  rate `1`. Cache events are the only metric that fires per-request and
-  warranted explicit sampling.
+  `Histogram` is per-host.
+- **Tracing is noop-by-default.** `Setup` returns a noop provider when
+  disabled; instrumentation calls `tracing.Tracer()` unconditionally with
+  zero overhead. Trace context crosses process boundaries as a W3C
+  `traceparent` string in SQS message attributes, not custom headers.
 - **Lazy-handler slog wrapper.** Package-level loggers
   (`var costLog = logging.WithComponent(...)`) are created at package init
   before `main` calls `Init()`. The `lazyHandler` resolves
   `slog.Default()` at log time, so those loggers transparently start
   emitting JSON once `Init` runs.
+- **Context-stashed log identity.** `ContextWithJob` threads job identity
+  through call graphs without plumbing logger instances; the
+  `contextHandler` injects stashed attrs at Handle time.
 - **Stdlib `log` redirected to slog as WARN.** Any `log.Print` from
-  vendored deps becomes JSON with `log_type=stdlib`, level WARN — no
-  silent stderr drips.
-- **Cost reports are estimates, not billing.** The pricing table sits
-  behind a long comment explaining: prices go stale, regional variations
-  not modeled, EBS/data-transfer/spot-actual not included, AWS Cost
-  Explorer is the source of truth. The published markdown ends with a
-  disclaimer block.
-- **Pricing API region override.** `pricing.Client` only works in
-  `us-east-1` and `ap-south-1`; `NewPriceFetcher` copies the supplied
-  `aws.Config` and force-sets `Region = "us-east-1"` so callers don't
-  need to think about it.
-- **Sticky fallback flag.** Once a Pricing API call fails, `PriceFetcher`
-  flips `useFallback = true` and stops calling the API for the lifetime
-  of the fetcher (resets only on `RefreshCache`). This avoids hammering
-  a broken API on every report.
-- **80/20 spot/on-demand assumption.** `getCostMetrics` doesn't query
-  actual spot vs on-demand counts; it splits `FleetSizeIncrement` 80%
-  spot, 20% on-demand based on observed product behavior.
+  vendored deps becomes JSON with `log_type=stdlib` — no silent stderr
+  drips.
+- **Cost reports are estimates, not billing.** Hard-coded prices, fixed 70%
+  spot discount, 80/20 spot/on-demand split assumption, hand-tuned
+  supporting-service coefficients; the published markdown ends with a
+  disclaimer block pointing at AWS Cost Explorer as the source of truth.
+- **Pricing API region override + sticky fallback.** `pricing.Client` only
+  works in `us-east-1`/`ap-south-1`, so `NewPriceFetcher` force-sets
+  `us-east-1`; a single API failure flips `useFallback = true` for the
+  fetcher's lifetime (reset only by `RefreshCache`) to avoid hammering a
+  broken API on every report.
 
-## Gotchas [coverage: high -- 8 sources]
+## Gotchas [coverage: high -- 19 sources]
 
 - **Per-pool gauges poisoned by instance-claim rows (high-cardinality
   footgun).** Instance claims and housekeeping task locks share the *pools*
   DynamoDB table, distinguished only by a sentinel `pool_name` prefix
   (`__instance_claim:<instance-id>`, `__task_lock:<task>`). Any path that
   scans the table as if every row were a pool and then publishes
-  `PoolName`/`Pool`-dimensioned metrics mints **one zero-valued metric series
-  per ephemeral instance ID** — unbounded cardinality that grows with instance
-  churn, not with pool count. This drove CloudWatch custom metrics
-  (`MetricMonitorUsage`) to 3,000+ series (~$900/mo) during busy periods while
-  collapsing back to ~baseline when idle, so it hides between bills. The guard
-  is `db.IsReservedPoolKey`: `ListPools`, `GetPoolConfig`, and
-  `ExecutePoolAudit` all skip reserved keys, so a phantom pool is never
-  reconciled (and never writes a reconcile lock). When adding a metric
-  dimensioned by pool, confirm the pool value comes from a *filtered* pool list,
-  never a raw table scan — and prefer a billing alarm on CloudWatch estimated
-  charges to catch the next cardinality blowup on day one.
-- **CloudWatch put-rate.** Most metric methods issue one
-  `PutMetricData` per call. High-frequency calls (e.g., per-cache-event)
-  will hit CloudWatch's request limits — there's no batching layer.
-  Prefer Prometheus or Datadog (sampled) for hot paths.
-- **`PublishServiceCheck`/`PublishEvent` no-op outside Datadog.** Don't
-  rely on these reaching CloudWatch or Prometheus — they silently return
-  `nil`. Use them in addition to, not instead of, regular metrics.
-- **Datadog sample-rate only on cache hit/miss.** A 0.1 `SampleRate` in
-  `DatadogConfig` divides cache counters by 10 in the agent
-  (`statsd.Incr(... rate)` scales counts upstream), but every other metric
-  ignores it. If you set `SampleRate = 0.1` expecting a 10× volume
-  reduction across the board, you'll be surprised.
-- **`MultiPublisher` 5s timeout.** A backend that consistently exceeds
-  5 seconds will log a warning every publish and still consume a
-  goroutine for the full duration of the underlying call (the timeout
-  only abandons the result, not the work).
+  pool-dimensioned metrics mints **one zero-valued metric series per
+  ephemeral instance ID** — unbounded cardinality that grows with instance
+  churn. This drove CloudWatch custom metrics to 3,000+ series (~$900/mo)
+  during busy periods while collapsing back to baseline when idle, so it
+  hides between bills. The guard is `db.IsReservedPoolKey`: `ListPools`,
+  `GetPoolConfig`, and `ExecutePoolAudit` all skip reserved keys. When
+  adding a pool-dimensioned metric, confirm the pool value comes from a
+  *filtered* pool list, never a raw table scan — and prefer a billing alarm
+  on CloudWatch estimated charges to catch the next blowup on day one.
+- **Cost reporter queries pre-rework metric names.** `getCostMetrics` still
+  asks CloudWatch for `FleetSizeIncrement`, `JobSuccess`, `JobFailure`, and
+  `JobDuration` — none of which the reworked `Publisher` emits anymore — and
+  queries `SpotInterruptions` without the `Family` dimension, so it only
+  matches the dimensionless series emitted when no job was found for the
+  interrupted instance. The EC2 section of the daily report therefore
+  computes from zeros (jobs completed = 0, `avgJobHours` default 0.5, EC2
+  cost ≈ 0); only the runner-minute query (`RunnerExecutionSeconds` via
+  metric-math SEARCH) is aligned with the current taxonomy. Fixing the
+  queries — or wiring the reporter to the `EstimatedCost`/`InstanceHours`
+  publisher methods per the TODO in `GenerateDailyReport` — is open work.
+- **Cross-clock guard on `InstanceProvisionSeconds`.** The metric joins an
+  orchestrator-stamped timestamp (`created_at` at assignment) with an
+  agent-stamped one (`StartedAt` from the EC2 instance). Clock skew is
+  bounded by chrony but not zero, so `publishProvisionSeconds` publishes
+  only when both timestamps are non-zero **and** the span is positive — a
+  skewed pair is silently dropped, never emitted as a negative or bogus
+  value. Expect the histogram to slightly undercount very fast warm-pool
+  hits.
+- **Two-halves deploy for agent-sourced metrics.** The orchestrator half
+  (handler + `pkg/metrics`) rides the orchestrator image; the agent half
+  (the `bootstrap_*` telemetry fields) rides the **AMI cascade**
+  (`build-runner.yml` → `build-amis.yml`). Deploy order is immaterial —
+  zero-as-absent gives old-agent compatibility both ways — but
+  `AgentBootstrapSeconds` flatlines until *both* halves are live. Don't
+  debug an empty dashboard panel before the new AMI has rolled.
+- **`JobStartupSeconds` source can be empty.** The Source label is resolved
+  by a post-ack `GetJobByJobID` lookup; a nil DB client, missing jobs table,
+  read error, or absent record publishes with `source=""` (dropped as a
+  dimension) rather than losing the observation. Don't assume
+  `warm_pool + cold_start` sums to the total.
+- **Admin "Avg Startup" ≠ `JobStartupSeconds`.** The admin panel measures
+  assignment → started; the metric measures GitHub created → started. They
+  legitimately disagree — the metric includes the webhook → enqueue →
+  assignment head the panel excludes.
+- **CloudWatch put-rate.** Metric methods issue one `PutMetricData` per
+  call with no batching. The known-hot paths are already no-oped on
+  CloudWatch; any *new* high-frequency metric must follow the same pattern
+  or prefer Prometheus/Datadog.
+- **`PublishServiceCheck`/`PublishEvent` no-op outside Datadog.** They
+  silently return `nil` on CloudWatch and Prometheus. Use them in addition
+  to, not instead of, regular metrics.
+- **Datadog sample-rate applies only to four metrics.** A 0.1 `SampleRate`
+  scales `message_processing_seconds`, `lock_wait_seconds`,
+  `cache_requests`, and `cache_operations`; every other metric hard-codes
+  rate 1. Setting `SampleRate` expecting an across-the-board volume
+  reduction will surprise you.
+- **`MultiPublisher` 5s timeout abandons the result, not the work.** A
+  backend that consistently exceeds 5 seconds logs a warning every publish
+  and still consumes a goroutine for the full duration of the underlying
+  call.
 - **Pricing API hard-fails to fallback.** A single failed Pricing API call
-  flips `useFallback` permanently for that fetcher instance — subsequent
-  calls return hard-coded prices without retrying. To recover, call
-  `RefreshCache` (which resets the flag) or construct a new `PriceFetcher`.
-- **Hard-coded prices are us-east-1, 2024.** `instancePricing` does not
-  reflect ap-northeast-1 (this project's default region) pricing, nor any
-  AWS pricing changes since 2024. The fallback path therefore biases
-  reports systematically — usually low for ap-northeast-1 (Tokyo
-  surcharge) and outdated otherwise.
-- **Only three instance families priced.** `t4g`, `c7g`, `m7g`. Any other
-  family (e.g., the `c8g`/`m8g` Graviton4 generations the runner labels
-  support) falls back to `t4g.medium = 0.0336`, which is wrong for any
-  larger or non-burstable instance.
-- **70% spot discount is a constant.** `SpotDiscount = 0.7` is applied
-  uniformly, regardless of actual spot price at report time. Reports do
-  not reflect spot-price spikes or interruption-driven on-demand
-  fallback.
-- **Data transfer, EBS, ENIs, NAT excluded.** The cost breakdown only
-  models EC2 compute + Fargate + SQS + DynamoDB + CloudWatch + S3, with
-  hand-tuned coefficients (e.g., `1.20` flat for Fargate). Reality
-  includes EBS, data egress, NAT gateway hours, ECR storage, etc.
-- **80/20 spot/on-demand split is an assumption, not measured.** Even if
-  every fleet activation succeeded as spot, the report would still
-  attribute 20% of activations to on-demand pricing.
-- **`avgJobHours` defaults to 0.5 with no signal.** When neither
-  `JobSuccess` nor `JobFailure` reported any data points, the breakdown
-  silently uses 30 minutes per job. Empty-day reports are not zero — they
-  still attribute Fargate + SQS + DynamoDB + S3 base costs.
+  flips `useFallback` permanently for that fetcher instance. To recover,
+  call `RefreshCache` or construct a new `PriceFetcher`.
+- **Hard-coded prices are us-east-1, 2024, three families only.** `t4g`,
+  `c7g`, `m7g`; anything else (including the `c8g`/`m8g` Graviton4
+  generations the labels support) falls back to `t4g.medium = 0.0336`.
+  Does not reflect ap-northeast-1 (this project's default region) pricing.
+- **Data transfer, EBS, ENIs, NAT excluded.** The cost breakdown models
+  EC2 compute + Fargate + SQS + DynamoDB + CloudWatch + S3 with hand-tuned
+  coefficients; reality includes EBS, egress, NAT gateway hours, ECR, etc.
 - **Logging `Init()` race.** `Init` overwrites `slog.Default` and stdlib
-  `log.SetOutput`. Calling it concurrently with logging calls is unsafe.
-  Treat it as a once-at-startup operation.
-- **`HOSTNAME` env var preferred over `os.Hostname`.** In containers
-  where Kubernetes injects `HOSTNAME` (the pod name), the log `host`
-  field will be the pod name; in plain ECS Fargate it falls back to the
-  container's hostname. Account for this when grouping by `host`.
-- **CloudWatch gauges via `StatisticValues`.** `putGaugeMetric` sets
-  `SampleCount=1, Sum=Min=Max=value`. CloudWatch alarms on `Average`,
-  `Sum`, `Min`, `Max` all return the same number. This is intentional but
-  uncommon — operators expecting a typical CloudWatch counter shape may
-  be confused.
+  `log.SetOutput`. Treat it as a once-at-startup operation.
+- **Context attr stashing does not de-duplicate.** Re-stashing a key already
+  present on the context (e.g. calling `ContextWithJob` twice with the same
+  job_id) emits the attribute twice in the JSON line — slog does not
+  de-duplicate. `pkg/termination` deliberately passes `jobID=0` on its
+  second stash for exactly this reason.
+- **`HOSTNAME` env var preferred over `os.Hostname`.** In Kubernetes the
+  log `host` field is the pod name; on plain Fargate it falls back to the
+  container hostname. Account for this when grouping by `host`.
+- **CloudWatch gauges/latencies via `StatisticValues`.** Single-sample
+  statistic sets mean `Average`, `Sum`, `Min`, `Max` all return the same
+  number per datapoint. Intentional but uncommon — percentile analysis of
+  the `*Seconds` metrics is only meaningful on Prometheus/Datadog.
 
 ## Sources [coverage: high]
 
 - [pkg/metrics/publisher.go](../../pkg/metrics/publisher.go)
 - [pkg/metrics/cloudwatch.go](../../pkg/metrics/cloudwatch.go)
-- [pkg/metrics/datadog.go](../../pkg/metrics/datadog.go)
 - [pkg/metrics/prometheus.go](../../pkg/metrics/prometheus.go)
+- [pkg/metrics/datadog.go](../../pkg/metrics/datadog.go)
 - [pkg/metrics/multi.go](../../pkg/metrics/multi.go)
+- [pkg/tracing/config.go](../../pkg/tracing/config.go)
+- [pkg/tracing/provider.go](../../pkg/tracing/provider.go)
+- [pkg/tracing/propagation.go](../../pkg/tracing/propagation.go)
+- [pkg/tracing/tracer.go](../../pkg/tracing/tracer.go)
 - [pkg/logging/logger.go](../../pkg/logging/logger.go)
+- [pkg/logging/context.go](../../pkg/logging/context.go)
 - [pkg/cost/reporter.go](../../pkg/cost/reporter.go)
 - [pkg/cost/pricing.go](../../pkg/cost/pricing.go)
-- [pkg/pools/manager.go](../../pkg/pools/manager.go)
+- [pkg/cost/runnerminutes.go](../../pkg/cost/runnerminutes.go)
+- [docs/METRICS.md](../../docs/METRICS.md)
+- [internal/handler/webhook.go](../../internal/handler/webhook.go)
+- [pkg/termination/handler.go](../../pkg/termination/handler.go)
 - [pkg/db/pool_config.go](../../pkg/db/pool_config.go)
-- [pkg/db/instance_claims.go](../../pkg/db/instance_claims.go)
 - [pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)

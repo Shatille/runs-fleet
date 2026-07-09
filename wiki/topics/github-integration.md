@@ -1,12 +1,12 @@
 ---
 topic: GitHub Integration (Webhooks + App API Client)
-last_compiled: 2026-07-03
+last_compiled: 2026-07-09
 sources_count: 3
 ---
 
 # GitHub Integration (Webhooks + App API Client)
 
-## Purpose [coverage: high -- 3 sources]
+## Purpose [coverage: medium -- 3 sources]
 
 `pkg/github` is runs-fleet's entire surface for talking to GitHub: it is both
 the front door (receiving `workflow_job` webhooks) and the back channel
@@ -38,7 +38,7 @@ Downstream consumers: `internal/handler` (webhook business logic),
 housekeeping), and `pkg/runner.Manager` (calls the client to obtain
 registration tokens for booting agents).
 
-## Architecture [coverage: high -- 3 sources]
+## Architecture [coverage: medium -- 3 sources]
 
 ```
 GitHub webhook (workflow_job)
@@ -74,7 +74,7 @@ take a `context.Context` and return typed results. Side effects (DynamoDB,
 SQS, metrics, EC2) live in `internal/handler`, `pkg/runner`, and
 `cmd/server`, which call into this package rather than the reverse.
 
-## Talks To [coverage: high -- 3 sources]
+## Talks To [coverage: medium -- 3 sources]
 
 - **GitHub (inbound)** — webhook deliveries authenticated with the
   `X-Hub-Signature-256` header and `RUNS_FLEET_GITHUB_WEBHOOK_SECRET`.
@@ -86,7 +86,9 @@ SQS, metrics, EC2) live in `internal/handler`, `pkg/runner`, and
   `GetWorkflowJobByID`.
 - **`pkg/fleet`** — `ResolveFlexibleSpec` calls `fleet.ResolveInstanceTypes`
   and `fleet.DefaultFlexibleFamilies` to turn cpu/ram/family/gen/arch labels
-  into a concrete instance-type list for spot diversification.
+  into a concrete instance-type list for spot diversification. Since PR #385
+  (2026-07) the default family lists exclude the burstable t3/t4g tiers (see
+  Data and Gotchas).
 - **`pkg/runner`** — `Manager` holds a `registrationTokenGetter` (satisfied
   by `*github.Client`) and calls `GetRegistrationToken` when booting a
   runner.
@@ -96,9 +98,12 @@ SQS, metrics, EC2) live in `internal/handler`, `pkg/runner`, and
 - **`internal/handler`** — calls `ParseLabelsWithAliases`,
   `HandleWorkflowJobQueued`, `HandleJobFailure` as the webhook business
   logic layer (DynamoDB, SQS, metrics side effects live there, not in this
-  package).
+  package). Since PR #387 (2026-07), `workflow_job` in_progress events are
+  also consumed for startup-latency metrics (`HandleWorkflowJobInProgress`,
+  filtered by runner-name prefix + a successful label parse) — covered by
+  the internal-services and observability articles.
 
-## API Surface [coverage: high -- 3 sources]
+## API Surface [coverage: medium -- 3 sources]
 
 **`webhook.go`:**
 
@@ -136,7 +141,7 @@ The HTTP route for webhooks is wired up in `internal/handler` /
 `cmd/server`, outside this package; `pkg/github` is the business logic and
 API client invoked by those layers.
 
-## Data [coverage: high -- 3 sources]
+## Data [coverage: medium -- 3 sources]
 
 **Inbound webhook headers:**
 
@@ -164,7 +169,13 @@ Recognized keys: `cpu`, `ram` (both accept `min+max` ranges), `family`
 (split on `+`), `gen` (bounded 1..10), `arch` (`arm64`/`amd64`, with
 `aarch64`/`x64`/`x86_64` synonyms normalized), `pool`, `spot`, `disk`
 (bounded 1..16384). Unknown keys are silently ignored. Defaults:
-`Spot=true`, `CPUMin=2`, `CPUMax=2*CPUMin`.
+`Spot=true`, `CPUMin=2`, `CPUMax=2*CPUMin`. When no `family=` is given,
+`fleet.DefaultFlexibleFamilies(arch)` supplies the per-arch defaults —
+amd64 `c6i/c7i/m6i/m7i`, arm64 `c8g/m8g/r8g/c7g/m7g`, both when arch is
+unset — which exclude the burstable t3/t4g tiers as of PR #385 (2026-07);
+explicit `family=t3`/`family=t4g` still resolves them from the catalog. A
+spec that resolves to zero instance types makes `ResolveFlexibleSpec`
+return "no instance types match the specified cpu/ram/family requirements".
 
 **GitHub App API state (`client.go`):**
 
@@ -180,7 +191,7 @@ Recognized keys: `cpu`, `ram` (both accept `min+max` ranges), `family`
   `GetWorkflowJobByID`, consumed by `pkg/housekeeping`'s stale-job
   reconciler through the `GitHubJobChecker` interface.
 
-## Key Decisions [coverage: high -- 3 sources]
+## Key Decisions [coverage: medium -- 3 sources]
 
 - **HMAC-SHA256 webhook validation.** `ValidateSignature` rejects empty
   secrets, signatures missing the `sha256=` prefix, and uses `hmac.Equal`
@@ -218,6 +229,13 @@ Recognized keys: `cpu`, `ram` (both accept `min+max` ranges), `family`
   accept a different implementation without changing `pkg/runner` — no
   second provider exists today, and the interface was deliberately kept
   minimal rather than over-built for hypothetical future needs.
+- **2026-07, PR #385: burstable families dropped from label-resolution
+  defaults.** Price-weighted spot selection made t3.medium dominate
+  family-less requests (a benchmark measured CI 2.25x slower on it), so
+  `fleet.DefaultFlexibleFamilies` no longer includes t3 (amd64) or t4g
+  (arm64). The decision lives in `pkg/fleet` (see the fleet-orchestration
+  article), but its observable effect is here: what a `runs-on:` label
+  without `family=` resolves to.
 - **Custom label aliases (transparent runner migration).**
   `ParseLabelsWithAliases` lets runs-fleet claim jobs whose `runs-on:`
   carries an externally-defined custom label (e.g. inherited from Actions
@@ -231,7 +249,7 @@ Recognized keys: `cpu`, `ram` (both accept `min+max` ranges), `family`
   name (when it's a legal pool name and the alias spec sets no explicit
   `pool=`) so migrated workloads get fast restarts.
 
-## Gotchas [coverage: high -- 3 sources]
+## Gotchas [coverage: medium -- 3 sources]
 
 - **This is not the JIT registration flow, despite the naming.**
   `RegistrationResult` has an `IsOrg` field (deprecated, always `false`
@@ -266,6 +284,12 @@ Recognized keys: `cpu`, `ram` (both accept `min+max` ranges), `family`
 - **Unknown label keys are silently ignored** by `parseLabelParts`, so
   typos like `arc=arm64` or `pol=default` don't error — they just don't
   take effect.
+- **Family-less `gen=3` (amd64) and `gen=4` (arm64) always error.** Those
+  generations contain only burstable families (t3 / t4g), which PR #385
+  removed from the defaults, so the spec resolves to zero instance types
+  and `ResolveFlexibleSpec` errors — the job is skipped with a log, the
+  same path as an impossible cpu request. Add an explicit `family=t3` /
+  `family=t4g` to opt back in (the types remain in the catalog).
 - **Installation-token cache is per-process.** Multiple Fargate tasks each
   hold their own `tokenCache`; there is no shared cache, so horizontal
   scaling multiplies installation-token mint calls (bounded by the 50-min
@@ -279,7 +303,7 @@ Recognized keys: `cpu`, `ram` (both accept `min+max` ranges), `family`
   they compete for the same queued jobs — whichever registers/claims a
   runner first wins, and the loser's ephemeral runner self-terminates.
 
-## Sources [coverage: high]
+## Sources [coverage: medium]
 
 - [pkg/github/webhook.go](../../pkg/github/webhook.go)
 - [pkg/github/client.go](../../pkg/github/client.go)
