@@ -202,6 +202,34 @@ BUILDX
 sudo systemctl daemon-reload || { echo "Failed to reload systemd"; exit 1; }
 sudo systemctl enable buildx-setup.service || { echo "Failed to enable buildx-setup.service"; exit 1; }
 
+echo "==> Pre-baking common Docker images into the AMI image store"
+# Ephemeral runners boot from this AMI with a fresh /var/lib/docker, so without
+# this every job re-pulls its service/build images from Docker Hub (mysql:8.0
+# alone is ~25s per job). Pulling here persists the images on the AMI's root
+# volume; at job time a moved tag re-pulls only changed layers. The weekly AMI
+# rebuild (build-amis.yml cron) bounds staleness. binfmt uses the same ref as
+# the binfmt-qemu.service unit above so the two never diverge.
+# docker is enabled (not started) during provisioning, so start it before pulling.
+sudo systemctl start docker || { echo "Failed to start docker"; exit 1; }
+PREBAKE_IMAGES=(
+  "mysql:8.0"
+  "mysql:8.4"
+  "postgres:16"
+  "postgres:17"
+  "redis:7"
+  "moby/buildkit:buildx-stable-1"
+  "tonistiigi/binfmt:${BINFMT_VERSION}"
+)
+for image in "${PREBAKE_IMAGES[@]}"; do
+  echo "==> Pulling ${image}"
+  for attempt in 1 2 3; do
+    sudo docker pull "${image}" && break
+    [ "$attempt" -lt 3 ] || { echo "Failed to pull ${image}"; exit 1; }
+    echo "    pull attempt ${attempt} failed; retrying in 3s"
+    sleep 3
+  done
+done
+
 echo "==> Installing Vault CLI"
 VAULT_VERSION="1.18.3"
 if [ "$ARCH" = "x86_64" ]; then
@@ -590,6 +618,7 @@ echo "    - yq: $(yq --version)"
 echo "    - curl: $(curl --version | head -1)"
 echo "    - QEMU binfmt: enabled at boot"
 echo "    - Docker buildx: multi-arch builder configured"
+echo "    - Pre-baked images: ${PREBAKE_IMAGES[*]}"
 echo "    - SSM Agent: enabled"
 echo "    - Session Manager Plugin: $(session-manager-plugin --version)"
 echo "    - CloudWatch Agent: enabled"

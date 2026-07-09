@@ -33,6 +33,10 @@ If you're tempted to add anything else to `provision-runs-fleet.sh`, that's a si
 2. If the package adds a binary that downstream consumers should be able to inspect, append a line to the trailing summary (`echo "    - your-tool: $(your-tool --version)"`).
 3. Open a PR. Merging to `main` triggers the unified `Build AMIs` workflow (`.github/workflows/build-amis.yml`); the `build-base` job runs, and `build-runner-ami` waits for it. The base build also runs weekly (Sunday 06:00 UTC) and on workflow_dispatch.
 
+## Pre-baked Docker images
+
+`provision-base.sh` pulls a small set of common CI images (databases, Redis, buildkit, binfmt) into the AMI's Docker image store so ephemeral runners don't re-pull them from Docker Hub on every job. The list lives in the `PREBAKE_IMAGES` array in `provision-base.sh` — edit it there to add or drop an image. This belongs in the base layer (not the runner layer) because the images are a CI-workload concern that's stable across agent-binary revisions, and because the host dockerd's image store lives on the AMI root volume, so images pulled during base provisioning persist into the snapshot. The weekly base rebuild bounds staleness, and a moved tag at job time re-pulls only changed layers.
+
 ## Verifying
 
 `docker/runner/CLAUDE.md` describes the container-image security workflow. The AMI side runs a Trivy scan on the provisioned filesystem before the snapshot is taken (`packer/provision-trivy-scan.sh`), then applies the shared `.trivy/gate.sh`: the build fails only on HIGH/CRITICAL findings we can remediate (OS packages, our `runs-fleet-agent` binary). Findings that live only in third-party prebuilt binaries (Docker/containerd, npm-bundled libs) are reported but non-blocking — same policy as the container image (see `docker/runner/CLAUDE.md`). If your new package introduces a *remediable* finding, fix it (bump the package) or, for a genuinely-unreachable one, suppress it in `.trivy/vex.json` with a documented justification rather than `.trivyignore`.
