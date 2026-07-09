@@ -317,15 +317,18 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
 // When arch is empty, returns both ARM64 and AMD64 families for maximum spot diversification.
 // Includes 8th gen families (c8g, m8g, r8g) which may not be available in all regions.
+// Burstable families (t3/t4g) stay in the catalog for explicit family= opt-in but are
+// excluded here: price-weighted selection made t3.medium dominate warm pools (a benchmark
+// measured CI 2.25x slower on it), so an unconstrained request must not land on one.
 func DefaultFlexibleFamilies(arch string) []string {
 	switch arch {
 	case "amd64":
-		return []string{"c6i", "c7i", "m6i", "m7i", "t3"}
+		return []string{"c6i", "c7i", "m6i", "m7i"}
 	case "arm64":
-		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "t4g"}
+		return []string{"c8g", "m8g", "r8g", "c7g", "m7g"}
 	default:
 		// No arch preference - include both for diversification
-		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "t4g", "c6i", "c7i", "m6i", "m7i", "t3"}
+		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "c6i", "c7i", "m6i", "m7i"}
 	}
 }
 
