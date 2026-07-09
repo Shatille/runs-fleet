@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -339,6 +340,53 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 		if !found {
 			t.Errorf("DefaultFlexibleFamilies(\"\") missing AMD64 family %q", f)
 		}
+	}
+}
+
+// TestDefaultFamilies_NoBurstableByDefault asserts the burstable families were
+// dropped from the defaults: an unconstrained request never lands on t3/t4g (a
+// benchmark showed price-weighted selection made t3.medium dominate warm pools),
+// while explicit family=t3/t4g still resolves them.
+func TestDefaultFamilies_NoBurstableByDefault(t *testing.T) {
+	t.Parallel()
+
+	if slices.Contains(DefaultFlexibleFamilies("amd64"), "t3") {
+		t.Errorf("DefaultFlexibleFamilies(amd64) should not contain t3, got %v", DefaultFlexibleFamilies("amd64"))
+	}
+	if slices.Contains(DefaultFlexibleFamilies("arm64"), "t4g") {
+		t.Errorf("DefaultFlexibleFamilies(arm64) should not contain t4g, got %v", DefaultFlexibleFamilies("arm64"))
+	}
+	empty := DefaultFlexibleFamilies("")
+	if slices.Contains(empty, "t3") || slices.Contains(empty, "t4g") {
+		t.Errorf("DefaultFlexibleFamilies(\"\") should not contain t3 or t4g, got %v", empty)
+	}
+
+	// Incident-shaped cpu=2 request per arch: resolves to a non-empty list with no
+	// burstable type.
+	for _, arch := range []string{"amd64", "arm64"} {
+		spec := FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: arch, Families: DefaultFlexibleFamilies(arch)}
+		types := ResolveInstanceTypes(spec)
+		if len(types) == 0 {
+			t.Fatalf("cpu=2 %s resolved no instance types", arch)
+		}
+		for _, typ := range types {
+			inst, ok := GetInstanceSpec(typ)
+			if !ok {
+				t.Errorf("resolved type %q not in catalog", typ)
+				continue
+			}
+			if inst.Family == "t3" || inst.Family == "t4g" {
+				t.Errorf("cpu=2 %s resolved burstable type %q (family %q)", arch, typ, inst.Family)
+			}
+		}
+	}
+
+	// Explicit family= opt-in still resolves the burstable tiers.
+	if !slices.Contains(ResolveInstanceTypes(FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: "amd64", Families: []string{"t3"}}), "t3.medium") {
+		t.Error("family=t3 should still resolve t3.medium")
+	}
+	if !slices.Contains(ResolveInstanceTypes(FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: "arm64", Families: []string{"t4g"}}), "t4g.medium") {
+		t.Error("family=t4g should still resolve t4g.medium")
 	}
 }
 

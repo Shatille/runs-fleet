@@ -78,9 +78,11 @@ When `arch` is omitted, runs-fleet does **not** submit both architectures to EC2
 If you want hard control over architecture, set `arch=arm64` or `arch=amd64` explicitly.
 
 **Default families per arch:**
-- ARM64: `c8g, m8g, r8g, c7g, m7g, t4g`
-- AMD64: `c6i, c7i, m6i, m7i, t3`
+- ARM64: `c8g, m8g, r8g, c7g, m7g`
+- AMD64: `c6i, c7i, m6i, m7i`
 - No arch: all of the above
+
+Burstable families (`t3`, `t4g`) are excluded from these defaults — their price-weighted selection made t3.medium dominate warm pools. To use them, request them explicitly with `family=t3` or `family=t4g`.
 
 ## Custom Disk Size
 

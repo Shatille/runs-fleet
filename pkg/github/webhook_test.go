@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -600,6 +601,73 @@ func TestParseLabels_FlexibleSpecs(t *testing.T) {
 	}
 }
 
+func TestParseLabels_DefaultFamiliesExcludeBurstable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		labels          []string
+		wantContainsT3  bool
+		wantContainsT4g bool
+	}{
+		{
+			name:   "amd64 default (benchmarked shape)",
+			labels: []string{"runs-fleet/cpu=2/arch=amd64"},
+		},
+		{
+			name:   "arm64 default",
+			labels: []string{"runs-fleet/cpu=2/arch=arm64"},
+		},
+		{
+			name:   "bare (no arch)",
+			labels: []string{"runs-fleet/cpu=2"},
+		},
+		{
+			name:           "explicit family=t3 opt-in",
+			labels:         []string{"runs-fleet/cpu=2/arch=amd64/family=t3"},
+			wantContainsT3: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := ParseLabels(tt.labels)
+			if err != nil {
+				t.Fatalf("ParseLabels() error = %v", err)
+			}
+			if len(got.InstanceTypes) == 0 {
+				t.Fatal("ParseLabels() InstanceTypes is empty")
+			}
+
+			hasT3, hasT4g := false, false
+			for _, typ := range got.InstanceTypes {
+				if strings.HasPrefix(typ, "t3.") {
+					hasT3 = true
+				}
+				if strings.HasPrefix(typ, "t4g.") {
+					hasT4g = true
+				}
+			}
+			if hasT3 != tt.wantContainsT3 {
+				t.Errorf("ParseLabels() t3 present = %v, want %v (types %v)", hasT3, tt.wantContainsT3, got.InstanceTypes)
+			}
+			if hasT4g != tt.wantContainsT4g {
+				t.Errorf("ParseLabels() t4g present = %v, want %v (types %v)", hasT4g, tt.wantContainsT4g, got.InstanceTypes)
+			}
+			if tt.wantContainsT3 && !slices.Contains(got.InstanceTypes, "t3.medium") {
+				t.Errorf("ParseLabels() family=t3 should resolve t3.medium, got %v", got.InstanceTypes)
+			}
+			if !tt.wantContainsT3 && !tt.wantContainsT4g {
+				if strings.HasPrefix(got.InstanceType, "t3.") || strings.HasPrefix(got.InstanceType, "t4g.") {
+					t.Errorf("ParseLabels() primary InstanceType is burstable %q", got.InstanceType)
+				}
+			}
+		})
+	}
+}
+
 //nolint:dupl // Similar structure to TestParseRangeFloat but tests different types
 func TestParseRange(t *testing.T) {
 	t.Parallel()
@@ -854,6 +922,16 @@ func TestParseLabels_Generation(t *testing.T) {
 		{
 			name:    "Invalid gen value (too large)",
 			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=11"},
+			wantErr: true,
+		},
+		{
+			name:    "Gen 3 amd64 (only burstable t3, excluded from defaults)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=amd64/gen=3"},
+			wantErr: true,
+		},
+		{
+			name:    "Gen 4 arm64 (only burstable t4g, excluded from defaults)",
+			labels:  []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=4"},
 			wantErr: true,
 		},
 		{
