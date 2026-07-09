@@ -80,6 +80,15 @@ type JobStatus struct {
 	// interceptor this job (the blob PUT bypasses the orchestrator, so it can't be
 	// counted server-side). Zero when interception didn't engage.
 	CacheBytesWritten int64 `json:"cache_bytes_written,omitempty"`
+	// Bootstrap*Seconds decompose the agent-side startup into segments the
+	// orchestrator turns into the agent_bootstrap_seconds metric. All are
+	// omitempty so a zero (unmeasured, or a pre-rollout agent) is absent on the
+	// wire; the orchestrator treats absence as "no measurement".
+	BootstrapBootSeconds     float64 `json:"bootstrap_boot_seconds,omitempty"`
+	BootstrapConfigSeconds   float64 `json:"bootstrap_config_seconds,omitempty"`
+	BootstrapRunnerSeconds   float64 `json:"bootstrap_runner_seconds,omitempty"`
+	BootstrapRegisterSeconds float64 `json:"bootstrap_register_seconds,omitempty"`
+	BootstrapTotalSeconds    float64 `json:"bootstrap_total_seconds,omitempty"`
 }
 
 // SQSTelemetry handles sending job status to SQS.

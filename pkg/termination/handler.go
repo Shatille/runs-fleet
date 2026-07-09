@@ -53,6 +53,7 @@ type MetricsAPI interface {
 	PublishJobCompleted(ctx context.Context, pool, result, repo string) error
 	PublishRunnerConfirmed(ctx context.Context, pool string) error
 	PublishInstanceProvisionSeconds(ctx context.Context, source, family string, seconds float64) error
+	PublishAgentBootstrapSeconds(ctx context.Context, pool, phase string, seconds float64) error
 	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
 	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
 	PublishJobRequeued(ctx context.Context, reason string) error
@@ -155,6 +156,14 @@ type Message struct {
 	// this job (folded into the CacheBytesStored counter — the blob PUT bypasses the
 	// orchestrator, so it can't be counted server-side).
 	CacheBytesWritten int64 `json:"cache_bytes_written,omitempty"`
+	// Bootstrap*Seconds decompose the agent-side startup; the handler publishes
+	// each positive segment as agent_bootstrap_seconds. Absent (zero) from an old
+	// agent, in which case no bootstrap metric is emitted.
+	BootstrapBootSeconds     float64 `json:"bootstrap_boot_seconds,omitempty"`
+	BootstrapConfigSeconds   float64 `json:"bootstrap_config_seconds,omitempty"`
+	BootstrapRunnerSeconds   float64 `json:"bootstrap_runner_seconds,omitempty"`
+	BootstrapRegisterSeconds float64 `json:"bootstrap_register_seconds,omitempty"`
+	BootstrapTotalSeconds    float64 `json:"bootstrap_total_seconds,omitempty"`
 }
 
 // handlerTickInterval is the interval for the termination handler loop.
@@ -431,8 +440,36 @@ func (h *Handler) confirmRunnerStarted(ctx context.Context, msg *Message) error 
 			termLog.Warn(ctx, "runner confirmed metric failed", slog.String("error", err.Error()))
 		}
 		h.publishProvisionSeconds(ctx, info, msg.StartedAt)
+		h.publishBootstrapSeconds(ctx, info.Pool, msg)
 	}
 	return nil
+}
+
+// publishBootstrapSeconds emits the agent-reported bootstrap segments as
+// agent_bootstrap_seconds, one per positive segment. The phase enum is fixed
+// orchestrator-side (a cardinality guard) rather than taken from the agent; a
+// zero segment (an old agent, or an unmeasured phase) is skipped.
+func (h *Handler) publishBootstrapSeconds(ctx context.Context, pool string, msg *Message) {
+	segments := [...]struct {
+		phase   string
+		seconds float64
+	}{
+		{"boot", msg.BootstrapBootSeconds},
+		{"config", msg.BootstrapConfigSeconds},
+		{"runner_download", msg.BootstrapRunnerSeconds},
+		{"registration", msg.BootstrapRegisterSeconds},
+		{"total", msg.BootstrapTotalSeconds},
+	}
+	for _, s := range segments {
+		if s.seconds <= 0 {
+			continue
+		}
+		if err := h.metrics.PublishAgentBootstrapSeconds(ctx, pool, s.phase, s.seconds); err != nil {
+			termLog.Warn(ctx, "agent bootstrap metric failed",
+				slog.String("phase", s.phase),
+				slog.String("error", err.Error()))
+		}
+	}
 }
 
 // publishProvisionSeconds emits the assignment-to-runner-registered latency for a

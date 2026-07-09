@@ -887,3 +887,68 @@ func TestRunID_StaysSeparateFromJobID(t *testing.T) {
 		t.Errorf("log stream = %q, want run_id-based stream", logStream)
 	}
 }
+
+func TestParseUptime(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  float64
+	}{
+		{"typical", "12345.67 98765.43\n", 12345.67},
+		{"no idle field", "42.5", 42.5},
+		{"leading space", "  100.0 200.0", 100.0},
+		{"empty", "", 0},
+		{"garbage", "not-a-number 1", 0},
+		{"zero", "0.00 0.00", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseUptime([]byte(tt.input)); got != tt.want {
+				t.Errorf("parseUptime(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBootstrapTimings_ApplyTo(t *testing.T) {
+	start := time.Now()
+	bt := bootstrapTimings{
+		boot:     12.5,
+		config:   3 * time.Second,
+		runner:   8 * time.Second,
+		register: 5 * time.Second,
+		start:    start,
+	}
+	jobStartedAt := start.Add(20 * time.Second)
+
+	var js agent.JobStatus
+	bt.applyTo(&js, jobStartedAt)
+
+	if js.BootstrapBootSeconds != 12.5 {
+		t.Errorf("BootstrapBootSeconds = %v, want 12.5", js.BootstrapBootSeconds)
+	}
+	if js.BootstrapConfigSeconds != 3 {
+		t.Errorf("BootstrapConfigSeconds = %v, want 3", js.BootstrapConfigSeconds)
+	}
+	if js.BootstrapRunnerSeconds != 8 {
+		t.Errorf("BootstrapRunnerSeconds = %v, want 8", js.BootstrapRunnerSeconds)
+	}
+	if js.BootstrapRegisterSeconds != 5 {
+		t.Errorf("BootstrapRegisterSeconds = %v, want 5", js.BootstrapRegisterSeconds)
+	}
+	if js.BootstrapTotalSeconds != 20 {
+		t.Errorf("BootstrapTotalSeconds = %v, want 20", js.BootstrapTotalSeconds)
+	}
+}
+
+// A zero-valued start (never captured) must not fabricate a negative or huge
+// total from the monotonic clock; the total is left zero.
+func TestBootstrapTimings_ApplyTo_ZeroStart(t *testing.T) {
+	bt := bootstrapTimings{boot: 5}
+	var js agent.JobStatus
+	bt.applyTo(&js, time.Now())
+	if js.BootstrapTotalSeconds != 0 {
+		t.Errorf("BootstrapTotalSeconds = %v, want 0 when start is unset", js.BootstrapTotalSeconds)
+	}
+}
