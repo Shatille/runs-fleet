@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/events"
 	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
@@ -273,6 +274,95 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		slog.Int("retry_count", requeueMsg.RetryCount))
 
 	return true, nil
+}
+
+// StartupObservation captures the end-to-end acquisition latency for a single
+// workflow_job in_progress event, ready to publish once the source is resolved.
+type StartupObservation struct {
+	JobID   int64
+	Pool    string
+	Seconds float64
+}
+
+// JobStartupDB resolves the warm-pool disposition of a job for the startup
+// metric. It is satisfied by *db.Client.
+type JobStartupDB interface {
+	HasJobsTable() bool
+	GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInfo, error)
+}
+
+// HandleWorkflowJobInProgress derives the startup observation from an in_progress
+// workflow_job event. It returns nil unless the job ran on one of our runners
+// (runner name carries the runs-fleet- prefix) AND carries parseable runs-fleet
+// labels — the same two-sided proof HandleJobFailure uses, since in_progress
+// fires for every runner in the repo, including foreign ones. The duration is the
+// GitHub-clock created-to-started span; nil when either timestamp is zero or the
+// span is non-positive.
+func HandleWorkflowJobInProgress(event *github.WorkflowJobEvent, resolver *gh.AliasResolver) *StartupObservation {
+	job := event.GetWorkflowJob()
+	if job == nil {
+		return nil
+	}
+
+	runnerName := job.GetRunnerName()
+	if len(runnerName) <= len(runnerNamePrefix) || runnerName[:len(runnerNamePrefix)] != runnerNamePrefix {
+		return nil
+	}
+
+	jobConfig, err := gh.ParseLabelsWithAliases(job.Labels, resolver)
+	if err != nil {
+		return nil
+	}
+
+	created := job.GetCreatedAt().Time
+	started := job.GetStartedAt().Time
+	if created.IsZero() || started.IsZero() {
+		return nil
+	}
+	seconds := started.Sub(created).Seconds()
+	if seconds <= 0 {
+		return nil
+	}
+
+	return &StartupObservation{
+		JobID:   job.GetID(),
+		Pool:    jobConfig.Pool,
+		Seconds: seconds,
+	}
+}
+
+// PublishJobStartupMetrics publishes the end-to-end startup latency for an
+// observation. It resolves the source (warm_pool or cold_start) via one job
+// lookup; any miss (nil db, no jobs table, error, or no record) publishes with an
+// empty source rather than dropping the observation. Publish errors are logged,
+// not returned — this runs post-ack.
+func PublishJobStartupMetrics(ctx context.Context, m metrics.Publisher, dbc JobStartupDB, obs *StartupObservation) {
+	if m == nil || obs == nil {
+		return
+	}
+
+	source := ""
+	if dbc != nil && dbc.HasJobsTable() {
+		info, err := dbc.GetJobByJobID(ctx, obs.JobID)
+		switch {
+		case err != nil:
+			webhookLog.Warn(ctx, "startup source lookup failed",
+				slog.Int64(logging.KeyJobID, obs.JobID),
+				slog.String("error", err.Error()))
+		case info != nil:
+			if info.WarmPoolHit {
+				source = "warm_pool"
+			} else {
+				source = "cold_start"
+			}
+		}
+	}
+
+	if err := m.PublishJobStartupSeconds(ctx, obs.Pool, source, obs.Seconds); err != nil {
+		webhookLog.Error(ctx, "job startup metric failed",
+			slog.Int64(logging.KeyJobID, obs.JobID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // BuildRunnerLabel returns the runs-fleet label for GitHub runner registration.

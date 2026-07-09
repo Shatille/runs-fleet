@@ -93,6 +93,8 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishJobRequeued", func() error { return pub.PublishJobRequeued(ctx, "spot_interruption") }},
 		{"PublishJobDeduplicated", func() error { return pub.PublishJobDeduplicated(ctx, "queue") }},
 		{"PublishJobWaitSeconds", func() error { return pub.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},
+		{"PublishJobStartupSeconds", func() error { return pub.PublishJobStartupSeconds(ctx, "default", "cold_start", 38) }},
+		{"PublishAgentBootstrapSeconds", func() error { return pub.PublishAgentBootstrapSeconds(ctx, "default", "total", 20) }},
 		{"PublishJobExecutionSeconds", func() error { return pub.PublishJobExecutionSeconds(ctx, "default", "success", 90) }},
 		{"PublishInstanceProvisionSeconds", func() error { return pub.PublishInstanceProvisionSeconds(ctx, "cold_start", "c7g", 30) }},
 		{"PublishFleetCreate", func() error { return pub.PublishFleetCreate(ctx, "1", "success") }},
@@ -152,6 +154,8 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	_ = pub.PublishCacheBytesStored(ctx, 2048)
 	_ = pub.PublishCacheError(ctx, "commit")
 	_ = pub.PublishCacheAuthRejected(ctx, "invalid")
+	_ = pub.PublishJobStartupSeconds(ctx, "default", "cold_start", 38)
+	_ = pub.PublishAgentBootstrapSeconds(ctx, "default", "total", 20)
 
 	body := scrape(t, pub)
 
@@ -167,6 +171,8 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 		`runs_fleet_cache_bytes_stored_total 2048`,
 		`runs_fleet_cache_errors_total{operation="commit"} 1`,
 		`runs_fleet_cache_auth_rejected_total{reason="invalid"} 1`,
+		`runs_fleet_job_startup_seconds_count{pool="default",source="cold_start"} 1`,
+		`runs_fleet_agent_bootstrap_seconds_count{phase="total",pool="default"} 1`,
 	}
 
 	for _, metric := range expectedMetrics {

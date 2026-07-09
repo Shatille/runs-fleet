@@ -128,6 +128,18 @@ func (m *MultiPublisher) PublishJobWaitSeconds(ctx context.Context, pool, source
 	})
 }
 
+func (m *MultiPublisher) PublishJobStartupSeconds(ctx context.Context, pool, source string, seconds float64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishJobStartupSeconds(ctx, pool, source, seconds)
+	})
+}
+
+func (m *MultiPublisher) PublishAgentBootstrapSeconds(ctx context.Context, pool, phase string, seconds float64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishAgentBootstrapSeconds(ctx, pool, phase, seconds)
+	})
+}
+
 func (m *MultiPublisher) PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error { //nolint:revive
 	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishJobExecutionSeconds(ctx, pool, result, seconds)

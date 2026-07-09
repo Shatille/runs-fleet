@@ -43,14 +43,22 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 | `JobsCompleted` | `jobs_completed_total` | counter | Pool, Result, Repo | A job finished. Result is **our** runner lifecycle — `served` \| `interrupted` \| `error` \| `timeout` — never the client workflow's pass/fail. |
 | `JobsRequeued` | `jobs_requeued_total` | counter | Reason | A job was re-queued (e.g. spot interruption, bootstrap failure). |
 | `JobsDeduplicated` | `jobs_deduplicated_total` | counter | Path | The dual-path dispatch loser dropped its copy. Correct dedup — **not** a scheduling failure. |
-| `JobWaitSeconds` | `job_wait_seconds` | histogram | Pool, Source | Enqueue → assignment latency. |
+| `JobWaitSeconds` | `job_wait_seconds` | histogram | Pool, Source | Enqueue → assignment latency (the SQS slice only). |
+| `JobStartupSeconds` | `job_startup_seconds` | histogram | Pool, Source | End-to-end acquisition latency on the **GitHub clock**: `workflow_job` created → started. The headline startup number, spanning strictly more than `JobWaitSeconds`. Source: `warm_pool` \| `cold_start` \| empty when unresolved. Measured from the `in_progress` webhook. |
 | `JobExecutionSeconds` | `job_execution_seconds` | histogram | Pool, Result | Job execution duration. |
+
+> The admin UI's "Avg Startup" is a separate, post-hoc number: it measures
+> assignment → started (created_at is stamped at assignment), not GitHub
+> created → started. `JobStartupSeconds` and that panel legitimately disagree;
+> the former is the full acquisition latency, the latter excludes the
+> webhook→enqueue→assignment head.
 
 ### Fleet / provisioning
 
 | CloudWatch | Prometheus | Type | Dimensions | Meaning |
 |------------|------------|------|------------|---------|
-| `InstanceProvisionSeconds` | `instance_provision_seconds` | histogram | Source, Family | Time to provision an instance. |
+| `InstanceProvisionSeconds` | `instance_provision_seconds` | histogram | Source, Family | Assignment → runner-registered latency, emitted at runner confirmation. `warm_pool` = resume + bootstrap; `cold_start` = post-CreateFleet through registration (CreateFleet itself is `FleetCreateSeconds`). The jobs DB record is the cross-instance rendezvous joining the orchestrator-stamped assignment time with the agent's started signal. |
+| `AgentBootstrapSeconds` | `agent_bootstrap_seconds` | histogram | Pool, Phase | Agent-side bootstrap segment. Phase is a closed enum: `boot` (kernel + cloud-init + bootstrap scripts, via `/proc/uptime`) \| `config` (AWS config + secrets fetch) \| `runner_download` \| `registration` (register + env + cache engage) \| `total` (boot → job start). Agent-sourced; see below. |
 | `FleetCreate` | `fleet_create_total` | counter | Capacity, Result | EC2 CreateFleet outcome. |
 | `FleetCreateSeconds` | `fleet_create_seconds` | histogram | Capacity | CreateFleet latency. |
 | `Instances` | `instances` | gauge | State, Capacity, Pool | Current instance count by state. |
@@ -118,6 +126,30 @@ orchestrator-side. These metrics therefore ship in **two parts**:
 
 The two halves are order-independent — absent telemetry fields are ignored, so
 a metric simply stays at zero until both halves are deployed.
+
+### Bootstrap phase timings → `AgentBootstrapSeconds`
+
+The agent decomposes its own startup into five segments carried on the **started**
+telemetry (not completion), each an `omitempty float64` on `JobStatus`:
+
+| Field | Phase label | Covers |
+|-------|-------------|--------|
+| `bootstrap_boot_seconds` | `boot` | Kernel + cloud-init + bootstrap scripts, read from `/proc/uptime` at agent entry (fresh on a warm-pool resume, so the semantics hold across stop/start). |
+| `bootstrap_config_seconds` | `config` | `initAgent`: AWS config load + secrets fetch. |
+| `bootstrap_runner_seconds` | `runner_download` | GitHub Actions runner download / prebake check. |
+| `bootstrap_register_seconds` | `registration` | Register runner + set runner environment + engage cache. |
+| `bootstrap_total_seconds` | `total` | Boot → job-start, sent explicitly so untimed gaps between segments do not vanish. |
+
+The handler publishes one `AgentBootstrapSeconds` per **positive** segment; the
+`Phase` enum lives orchestrator-side (a cardinality guard — the agent never
+supplies label strings). A zero segment is skipped, which is exactly how an
+**old agent** (whose telemetry lacks these fields, decoding them as zero) emits
+nothing. A new agent talking to an old orchestrator is equally safe: the extra
+JSON fields are ignored on decode.
+
+Deploy order is immaterial, but note the agent half rides the **AMI cascade**
+(`build-runner.yml` → `build-amis.yml`), so the bootstrap metric flatlines until
+both the orchestrator image and the new AMI are live.
 
 ## Cache-interception observability
 

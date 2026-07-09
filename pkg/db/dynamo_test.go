@@ -1802,8 +1802,10 @@ func TestMarkJobStarted_TransitionsLaunchedToRunning(t *testing.T) {
 				gotStartedAt = v.Value
 			}
 			return &dynamodb.UpdateItemOutput{Attributes: map[string]types.AttributeValue{
-				"job_id": &types.AttributeValueMemberN{Value: "12345"},
-				"pool":   &types.AttributeValueMemberS{Value: testPoolDefault},
+				"job_id":        &types.AttributeValueMemberN{Value: "12345"},
+				"pool":          &types.AttributeValueMemberS{Value: testPoolDefault},
+				"warm_pool_hit": &types.AttributeValueMemberBOOL{Value: true},
+				"created_at":    &types.AttributeValueMemberS{Value: "2026-06-05T05:04:00Z"},
 			}}, nil
 		},
 	}
@@ -1821,6 +1823,13 @@ func TestMarkJobStarted_TransitionsLaunchedToRunning(t *testing.T) {
 	if info.Pool != testPoolDefault {
 		t.Errorf("MarkJobStarted() returned pool %q, want %q", info.Pool, testPoolDefault)
 	}
+	if !info.WarmPoolHit {
+		t.Error("MarkJobStarted() must surface warm_pool_hit from the AllNew return")
+	}
+	wantCreated := time.Date(2026, 6, 5, 5, 4, 0, 0, time.UTC)
+	if !info.CreatedAt.Equal(wantCreated) {
+		t.Errorf("MarkJobStarted() CreatedAt = %v, want %v", info.CreatedAt, wantCreated)
+	}
 	if gotStatus != string(JobStatusRunning) {
 		t.Errorf("MarkJobStarted() must set status=running; got %q", gotStatus)
 	}
@@ -1829,6 +1838,35 @@ func TestMarkJobStarted_TransitionsLaunchedToRunning(t *testing.T) {
 	}
 	if gotStartedAt != startedAt.Format(time.RFC3339) {
 		t.Errorf("MarkJobStarted() must stamp started_at=%q; got %q", startedAt.Format(time.RFC3339), gotStartedAt)
+	}
+}
+
+// A malformed created_at attribute must not fail the unmarshal: the record still
+// transitions and CreatedAt is left zero (the provision metric self-guards on it).
+func TestMarkJobStarted_MalformedCreatedAtIsZero(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			return &dynamodb.UpdateItemOutput{Attributes: map[string]types.AttributeValue{
+				"job_id":     &types.AttributeValueMemberN{Value: "12345"},
+				"pool":       &types.AttributeValueMemberS{Value: testPoolDefault},
+				"created_at": &types.AttributeValueMemberS{Value: "not-a-timestamp"},
+			}}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+	info, err := client.MarkJobStarted(context.Background(), 12345, time.Now())
+	if err != nil {
+		t.Fatalf("MarkJobStarted() must not fail on a malformed created_at; got %v", err)
+	}
+	if info == nil {
+		t.Fatal("MarkJobStarted() must still return the record on a malformed created_at")
+	}
+	if !info.CreatedAt.IsZero() {
+		t.Errorf("MarkJobStarted() CreatedAt = %v, want zero", info.CreatedAt)
 	}
 }
 

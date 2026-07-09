@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -530,5 +531,70 @@ func TestJobStatus_JSONSerialization(t *testing.T) {
 	}
 	if decoded.JobID != status.JobID {
 		t.Errorf("expected JobID '%s', got '%s'", status.JobID, decoded.JobID)
+	}
+}
+
+// The bootstrap timing fields must round-trip through JSON so the orchestrator
+// decodes exactly what the agent sent.
+func TestJobStatus_BootstrapTimingsRoundTrip(t *testing.T) {
+	status := JobStatus{
+		InstanceID:               "i-12345",
+		JobID:                    testJobID123,
+		BootstrapBootSeconds:     12.5,
+		BootstrapConfigSeconds:   3.2,
+		BootstrapRunnerSeconds:   8.1,
+		BootstrapRegisterSeconds: 5.4,
+		BootstrapTotalSeconds:    30.7,
+	}
+
+	jsonBytes, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("failed to marshal status: %v", err)
+	}
+
+	var decoded JobStatus
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal status: %v", err)
+	}
+
+	if decoded.BootstrapBootSeconds != status.BootstrapBootSeconds {
+		t.Errorf("BootstrapBootSeconds = %v, want %v", decoded.BootstrapBootSeconds, status.BootstrapBootSeconds)
+	}
+	if decoded.BootstrapConfigSeconds != status.BootstrapConfigSeconds {
+		t.Errorf("BootstrapConfigSeconds = %v, want %v", decoded.BootstrapConfigSeconds, status.BootstrapConfigSeconds)
+	}
+	if decoded.BootstrapRunnerSeconds != status.BootstrapRunnerSeconds {
+		t.Errorf("BootstrapRunnerSeconds = %v, want %v", decoded.BootstrapRunnerSeconds, status.BootstrapRunnerSeconds)
+	}
+	if decoded.BootstrapRegisterSeconds != status.BootstrapRegisterSeconds {
+		t.Errorf("BootstrapRegisterSeconds = %v, want %v", decoded.BootstrapRegisterSeconds, status.BootstrapRegisterSeconds)
+	}
+	if decoded.BootstrapTotalSeconds != status.BootstrapTotalSeconds {
+		t.Errorf("BootstrapTotalSeconds = %v, want %v", decoded.BootstrapTotalSeconds, status.BootstrapTotalSeconds)
+	}
+}
+
+// The bootstrap timing fields carry omitempty, so a zero-valued status must not
+// emit them — this is what lets an old orchestrator ignore them and a new
+// orchestrator treat absence as "no measurement".
+func TestJobStatus_BootstrapTimingsOmittedWhenZero(t *testing.T) {
+	status := JobStatus{InstanceID: "i-12345", JobID: testJobID123}
+
+	jsonBytes, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("failed to marshal status: %v", err)
+	}
+
+	body := string(jsonBytes)
+	for _, key := range []string{
+		"bootstrap_boot_seconds",
+		"bootstrap_config_seconds",
+		"bootstrap_runner_seconds",
+		"bootstrap_register_seconds",
+		"bootstrap_total_seconds",
+	} {
+		if strings.Contains(body, key) {
+			t.Errorf("zero-valued status must omit %q; got %s", key, body)
+		}
 	}
 }

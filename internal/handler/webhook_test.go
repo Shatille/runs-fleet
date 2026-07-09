@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/events"
 	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -86,6 +88,12 @@ type MockMetrics struct {
 	LastRepo               string
 	LastCapacity           string
 	PublishJobEnqueuedFunc func(ctx context.Context) error
+
+	StartupCalled  bool
+	StartupPool    string
+	StartupSource  string
+	StartupSeconds float64
+	StartupErr     error
 }
 
 func (m *MockMetrics) PublishJobEnqueued(ctx context.Context, pool, _, capacity, repo string) error {
@@ -102,6 +110,27 @@ func (m *MockMetrics) PublishJobEnqueued(ctx context.Context, pool, _, capacity,
 func (m *MockMetrics) PublishQueueDepth(_ context.Context, _ string, _ float64) error {
 	m.QueueDepthCalled = true
 	return nil
+}
+
+func (m *MockMetrics) PublishJobStartupSeconds(_ context.Context, pool, source string, seconds float64) error {
+	m.StartupCalled = true
+	m.StartupPool = pool
+	m.StartupSource = source
+	m.StartupSeconds = seconds
+	return m.StartupErr
+}
+
+// mockStartupDB is a minimal JobStartupDB for exercising PublishJobStartupMetrics.
+type mockStartupDB struct {
+	hasTable bool
+	info     *events.JobInfo
+	err      error
+}
+
+func (m *mockStartupDB) HasJobsTable() bool { return m.hasTable }
+
+func (m *mockStartupDB) GetJobByJobID(_ context.Context, _ int64) (*events.JobInfo, error) {
+	return m.info, m.err
 }
 
 // MockDBClient implements db.Client methods needed for EnsureEphemeralPool testing.
@@ -978,5 +1007,199 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHandleWorkflowJobInProgress(t *testing.T) {
+	created := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	started := created.Add(38 * time.Second)
+	ts := func(t time.Time) *github.Timestamp { return &github.Timestamp{Time: t} }
+
+	tests := []struct {
+		name        string
+		job         *github.WorkflowJob
+		wantNil     bool
+		wantPool    string
+		wantSeconds float64
+	}{
+		{
+			name: "runs-fleet runner with labels",
+			job: &github.WorkflowJob{
+				ID:         github.Int64(12345),
+				RunnerName: github.String("runs-fleet-i-abc123"),
+				Labels:     []string{"runs-fleet=67890/cpu=4/pool=default"},
+				CreatedAt:  ts(created),
+				StartedAt:  ts(started),
+			},
+			wantPool:    "default",
+			wantSeconds: 38,
+		},
+		{
+			name: "foreign runner is ignored",
+			job: &github.WorkflowJob{
+				ID:         github.Int64(12345),
+				RunnerName: github.String("blacksmith-runner"),
+				Labels:     []string{"runs-fleet=67890/cpu=4/pool=default"},
+				CreatedAt:  ts(created),
+				StartedAt:  ts(started),
+			},
+			wantNil: true,
+		},
+		{
+			name: "no runs-fleet labels is ignored",
+			job: &github.WorkflowJob{
+				ID:         github.Int64(12345),
+				RunnerName: github.String("runs-fleet-i-abc123"),
+				Labels:     []string{"self-hosted", "linux"},
+				CreatedAt:  ts(created),
+				StartedAt:  ts(started),
+			},
+			wantNil: true,
+		},
+		{
+			name: "missing timestamps yields nil",
+			job: &github.WorkflowJob{
+				ID:         github.Int64(12345),
+				RunnerName: github.String("runs-fleet-i-abc123"),
+				Labels:     []string{"runs-fleet=67890/cpu=4"},
+			},
+			wantNil: true,
+		},
+		{
+			name: "started before created yields nil",
+			job: &github.WorkflowJob{
+				ID:         github.Int64(12345),
+				RunnerName: github.String("runs-fleet-i-abc123"),
+				Labels:     []string{"runs-fleet=67890/cpu=4"},
+				CreatedAt:  ts(started),
+				StartedAt:  ts(created),
+			},
+			wantNil: true,
+		},
+		{
+			name: "alias labels resolve",
+			job: &github.WorkflowJob{
+				ID:         github.Int64(12345),
+				RunnerName: github.String("runs-fleet-i-abc123"),
+				Labels:     []string{"gpu-pool"},
+				CreatedAt:  ts(created),
+				StartedAt:  ts(started),
+			},
+			wantPool:    "gpu-pool",
+			wantSeconds: 38,
+		},
+	}
+
+	resolver, err := gh.ParseAliasRules(`[{"match":"gpu-pool","spec":"runs-fleet/cpu=8/pool=gpu-pool"}]`)
+	if err != nil {
+		t.Fatalf("ParseAliasRules() error = %v", err)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := &github.WorkflowJobEvent{WorkflowJob: tt.job}
+			obs := HandleWorkflowJobInProgress(event, resolver)
+			if tt.wantNil {
+				if obs != nil {
+					t.Fatalf("HandleWorkflowJobInProgress() = %+v, want nil", obs)
+				}
+				return
+			}
+			if obs == nil {
+				t.Fatal("HandleWorkflowJobInProgress() = nil, want observation")
+			}
+			if obs.Pool != tt.wantPool {
+				t.Errorf("Pool = %q, want %q", obs.Pool, tt.wantPool)
+			}
+			if obs.Seconds != tt.wantSeconds {
+				t.Errorf("Seconds = %v, want %v", obs.Seconds, tt.wantSeconds)
+			}
+			if obs.JobID != 12345 {
+				t.Errorf("JobID = %d, want 12345", obs.JobID)
+			}
+		})
+	}
+}
+
+func TestHandleWorkflowJobInProgress_NilJob(t *testing.T) {
+	if obs := HandleWorkflowJobInProgress(&github.WorkflowJobEvent{}, nil); obs != nil {
+		t.Fatalf("HandleWorkflowJobInProgress() = %+v, want nil", obs)
+	}
+}
+
+func TestPublishJobStartupMetrics(t *testing.T) {
+	obs := &StartupObservation{JobID: 12345, Pool: "default", Seconds: 38}
+
+	tests := []struct {
+		name       string
+		dbc        JobStartupDB
+		wantSource string
+	}{
+		{
+			name:       "warm pool hit resolves source",
+			dbc:        &mockStartupDB{hasTable: true, info: &events.JobInfo{WarmPoolHit: true}},
+			wantSource: "warm_pool",
+		},
+		{
+			name:       "cold start resolves source",
+			dbc:        &mockStartupDB{hasTable: true, info: &events.JobInfo{WarmPoolHit: false}},
+			wantSource: "cold_start",
+		},
+		{
+			name:       "nil db still publishes with empty source",
+			dbc:        nil,
+			wantSource: "",
+		},
+		{
+			name:       "no jobs table still publishes with empty source",
+			dbc:        &mockStartupDB{hasTable: false},
+			wantSource: "",
+		},
+		{
+			name:       "db error still publishes with empty source",
+			dbc:        &mockStartupDB{hasTable: true, err: errors.New("boom")},
+			wantSource: "",
+		},
+		{
+			name:       "not found still publishes with empty source",
+			dbc:        &mockStartupDB{hasTable: true, info: nil},
+			wantSource: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &MockMetrics{}
+			PublishJobStartupMetrics(context.Background(), m, tt.dbc, obs)
+			if !m.StartupCalled {
+				t.Fatal("PublishJobStartupSeconds was not called")
+			}
+			if m.StartupPool != "default" {
+				t.Errorf("pool = %q, want default", m.StartupPool)
+			}
+			if m.StartupSource != tt.wantSource {
+				t.Errorf("source = %q, want %q", m.StartupSource, tt.wantSource)
+			}
+			if m.StartupSeconds != 38 {
+				t.Errorf("seconds = %v, want 38", m.StartupSeconds)
+			}
+		})
+	}
+}
+
+func TestPublishJobStartupMetrics_NilObservation(t *testing.T) {
+	m := &MockMetrics{}
+	PublishJobStartupMetrics(context.Background(), m, nil, nil)
+	if m.StartupCalled {
+		t.Error("PublishJobStartupSeconds must not be called for a nil observation")
+	}
+}
+
+func TestPublishJobStartupMetrics_PublishErrorDoesNotPanic(t *testing.T) {
+	m := &MockMetrics{StartupErr: errors.New("publish failed")}
+	obs := &StartupObservation{JobID: 1, Pool: "default", Seconds: 10}
+	PublishJobStartupMetrics(context.Background(), m, nil, obs)
+	if !m.StartupCalled {
+		t.Error("PublishJobStartupSeconds should still be attempted")
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
@@ -52,13 +54,17 @@ func main() {
 
 	ctx := context.Background()
 
+	timings := bootstrapTimings{boot: readUptime(), start: time.Now()}
+
 	instanceID := os.Getenv("RUNS_FLEET_INSTANCE_ID")
 	if instanceID == "" {
 		log.Fatal("RUNS_FLEET_INSTANCE_ID environment variable is required")
 	}
 	maxRuntimeMinutes := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
 
+	configStart := time.Now()
 	ac, err := initAgent(ctx, instanceID, logger)
+	timings.config = time.Since(configStart)
 	if err != nil {
 		if errors.Is(err, secrets.ErrConfigNotFound) {
 			logger.Println("No job config found — instance in pool standby")
@@ -89,7 +95,7 @@ func main() {
 		executor.SetCloudWatchLogger(ac.cwLogger)
 	}
 
-	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger)
+	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger, &timings)
 }
 
 // resolveJobID returns the GitHub job_id (used to key the job record) from the
@@ -177,22 +183,25 @@ func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agen
 // runAgent executes the agent phases.
 func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader,
 	executor *agent.Executor, cleanup *agent.Cleanup,
-	instanceID, jobID string, logger *stdLogger) {
+	instanceID, jobID string, logger *stdLogger, timings *bootstrapTimings) {
 
 	if ac.cwLogger != nil {
 		defer ac.cwLogger.Stop()
 	}
 
 	logger.Println("Phase 1: Downloading GitHub Actions runner...")
+	runnerStart := time.Now()
 	runnerPath, err := downloader.DownloadRunner(ctx)
 	if err != nil {
 		logger.Printf("Failed to download runner: %v", err)
 		terminateWithError(ctx, ac.terminator, instanceID, jobID, "download_failed", err)
 		return
 	}
+	timings.runner = time.Since(runnerStart)
 	logger.Printf("Runner downloaded successfully to %s", runnerPath)
 
 	logger.Println("Phase 2: Registering runner with GitHub...")
+	registerStart := time.Now()
 	registrar := agent.NewRegistrar(ac.secretsStore, logger)
 
 	if regErr := registrar.RegisterRunner(ctx, ac.runnerConfig, runnerPath); regErr != nil {
@@ -213,6 +222,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	if cacheStop != nil {
 		defer cacheStop()
 	}
+	timings.register = time.Since(registerStart)
 
 	jobStartedAt := time.Now()
 
@@ -222,6 +232,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 			JobID:      jobID,
 			StartedAt:  jobStartedAt,
 		}
+		timings.applyTo(&jobStatus, jobStartedAt)
 		if sendErr := ac.telemetry.SendJobStarted(ctx, jobStatus); sendErr != nil {
 			logger.Printf("Warning: failed to send job started notification: %v", sendErr)
 		}
@@ -385,6 +396,54 @@ func terminateWithError(ctx context.Context, terminator agent.InstanceTerminator
 	if termErr := terminator.TerminateInstance(ctx, instanceID, jobStatus); termErr != nil {
 		log.Printf("Failed to terminate instance: %v", termErr)
 	}
+}
+
+// bootstrapTimings accumulates the agent-side startup segments. start is the
+// monotonic process-start reference used for the total; boot is the /proc/uptime
+// reading (kernel + cloud-init + bootstrap scripts) that precedes the process.
+type bootstrapTimings struct {
+	boot     float64
+	config   time.Duration
+	runner   time.Duration
+	register time.Duration
+	start    time.Time
+}
+
+// applyTo copies the captured segments onto a JobStatus in seconds. The total is
+// the start-to-jobStartedAt span (a monotonic delta) and is left zero when start
+// was never captured, so an unset reference can't fabricate a bogus value.
+func (bt bootstrapTimings) applyTo(js *agent.JobStatus, jobStartedAt time.Time) {
+	js.BootstrapBootSeconds = bt.boot
+	js.BootstrapConfigSeconds = bt.config.Seconds()
+	js.BootstrapRunnerSeconds = bt.runner.Seconds()
+	js.BootstrapRegisterSeconds = bt.register.Seconds()
+	if !bt.start.IsZero() {
+		js.BootstrapTotalSeconds = jobStartedAt.Sub(bt.start).Seconds()
+	}
+}
+
+// readUptime returns the seconds-since-boot from /proc/uptime, or 0 on any error
+// (the file is absent off Linux, e.g. darwin test hosts; production is AL2023).
+func readUptime() float64 {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0
+	}
+	return parseUptime(data)
+}
+
+// parseUptime extracts the first (uptime) field from /proc/uptime contents,
+// returning 0 when the field is missing or unparseable.
+func parseUptime(data []byte) float64 {
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // getEnvInt gets an integer environment variable with a default value.

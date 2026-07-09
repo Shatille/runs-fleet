@@ -368,6 +368,20 @@ func TestCloudWatchPublisher_LowFrequencyLatencyAsStatistic(t *testing.T) {
 			},
 		},
 		{
+			name: "JobStartupSeconds", wantName: "JobStartupSeconds",
+			wantDims: map[string]string{"Pool": "default", "Source": "cold_start"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishJobStartupSeconds(context.Background(), "default", "cold_start", 38)
+			},
+		},
+		{
+			name: "AgentBootstrapSeconds", wantName: "AgentBootstrapSeconds",
+			wantDims: map[string]string{"Pool": "default", "Phase": "total"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishAgentBootstrapSeconds(context.Background(), "default", "total", 20)
+			},
+		},
+		{
 			name: "JobExecutionSeconds", wantName: "JobExecutionSeconds",
 			wantDims: map[string]string{"Pool": "default", "Result": "success"},
 			publish: func(p *CloudWatchPublisher) error {

@@ -194,6 +194,14 @@ type mockMetricsAPI struct {
 	lastCacheInterception  string
 	cacheBytesStoredCalls  int
 	lastCacheBytesStored   int64
+
+	provisionCalls  int
+	lastProvSource  string
+	lastProvFamily  string
+	lastProvSeconds float64
+
+	bootstrapCalls   int
+	bootstrapByPhase map[string]float64
 }
 
 func (m *mockMetricsAPI) PublishJobCompleted(_ context.Context, pool, result, repo string) error {
@@ -213,6 +221,23 @@ func (m *mockMetricsAPI) PublishRunnerConfirmed(_ context.Context, pool string) 
 	m.confirmedCalls++
 	m.lastConfirmedPool = pool
 	return m.confirmedErr
+}
+
+func (m *mockMetricsAPI) PublishInstanceProvisionSeconds(_ context.Context, source, family string, seconds float64) error {
+	m.provisionCalls++
+	m.lastProvSource = source
+	m.lastProvFamily = family
+	m.lastProvSeconds = seconds
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishAgentBootstrapSeconds(_ context.Context, _, phase string, seconds float64) error {
+	m.bootstrapCalls++
+	if m.bootstrapByPhase == nil {
+		m.bootstrapByPhase = make(map[string]float64)
+	}
+	m.bootstrapByPhase[phase] = seconds
+	return nil
 }
 
 func (m *mockMetricsAPI) PublishJobExecutionSeconds(_ context.Context, pool, result string, seconds float64) error {
@@ -758,6 +783,170 @@ func TestHandler_processMessage_StartedDBErrorRetries(t *testing.T) {
 	}
 	if q.deleteCalls != 0 {
 		t.Errorf("expected the message NOT to be deleted on DB error, got %d delete calls", q.deleteCalls)
+	}
+}
+
+func TestHandler_processMessage_StartedProvisionSeconds(t *testing.T) {
+	created := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	started := created.Add(30 * time.Second)
+
+	tests := []struct {
+		name        string
+		record      *events.JobInfo
+		startedAt   time.Time
+		wantPublish bool
+		wantSource  string
+		wantFamily  string
+		wantSeconds float64
+	}{
+		{
+			name:        "warm pool hit publishes warm_pool source",
+			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "c7g.xlarge", WarmPoolHit: true, CreatedAt: created},
+			startedAt:   started,
+			wantPublish: true,
+			wantSource:  "warm_pool",
+			wantFamily:  "c7g",
+			wantSeconds: 30,
+		},
+		{
+			name:        "cold start publishes cold_start source",
+			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "m7g.large", WarmPoolHit: false, CreatedAt: created},
+			startedAt:   started,
+			wantPublish: true,
+			wantSource:  "cold_start",
+			wantFamily:  "m7g",
+			wantSeconds: 30,
+		},
+		{
+			name:        "zero created_at does not publish",
+			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "c7g.xlarge"},
+			startedAt:   started,
+			wantPublish: false,
+		},
+		{
+			name:        "zero started_at does not publish",
+			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "c7g.xlarge", CreatedAt: created},
+			startedAt:   time.Time{},
+			wantPublish: false,
+		},
+		{
+			name:        "started before created does not publish",
+			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "c7g.xlarge", CreatedAt: started},
+			startedAt:   created,
+			wantPublish: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQueueAPI{}
+			db := &mockDBAPI{startedRecord: tt.record}
+			metrics := &mockMetricsAPI{}
+			handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+			msg := Message{InstanceID: "i-12345", JobID: "1", Status: "started", StartedAt: tt.startedAt}
+			body, _ := json.Marshal(msg)
+
+			if err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantPublish {
+				if metrics.provisionCalls != 1 {
+					t.Fatalf("provision calls = %d, want 1", metrics.provisionCalls)
+				}
+				if metrics.lastProvSource != tt.wantSource {
+					t.Errorf("source = %q, want %q", metrics.lastProvSource, tt.wantSource)
+				}
+				if metrics.lastProvFamily != tt.wantFamily {
+					t.Errorf("family = %q, want %q", metrics.lastProvFamily, tt.wantFamily)
+				}
+				if metrics.lastProvSeconds != tt.wantSeconds {
+					t.Errorf("seconds = %v, want %v", metrics.lastProvSeconds, tt.wantSeconds)
+				}
+			} else if metrics.provisionCalls != 0 {
+				t.Errorf("provision calls = %d, want 0", metrics.provisionCalls)
+			}
+		})
+	}
+}
+
+// A late "started" message (nil record) must publish no provision metric.
+func TestHandler_processMessage_StartedNoRecordNoProvision(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{startedNoOp: true}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{InstanceID: "i-12345", JobID: "1", Status: "started", StartedAt: time.Now()}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if metrics.provisionCalls != 0 {
+		t.Errorf("provision calls = %d, want 0 on a nil record", metrics.provisionCalls)
+	}
+}
+
+// A started message carrying all five bootstrap segments publishes one
+// AgentBootstrapSeconds per positive segment, tagged with the closed phase enum.
+func TestHandler_processMessage_StartedBootstrapSeconds(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:               "i-12345",
+		JobID:                    "12345678901",
+		Status:                   "started",
+		StartedAt:                time.Now(),
+		BootstrapBootSeconds:     12.5,
+		BootstrapConfigSeconds:   3.2,
+		BootstrapRunnerSeconds:   8.1,
+		BootstrapRegisterSeconds: 5.4,
+		BootstrapTotalSeconds:    30.7,
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.bootstrapCalls != 5 {
+		t.Fatalf("bootstrap calls = %d, want 5", metrics.bootstrapCalls)
+	}
+	want := map[string]float64{
+		"boot":            12.5,
+		"config":          3.2,
+		"runner_download": 8.1,
+		"registration":    5.4,
+		"total":           30.7,
+	}
+	for phase, sec := range want {
+		if metrics.bootstrapByPhase[phase] != sec {
+			t.Errorf("phase %q = %v, want %v", phase, metrics.bootstrapByPhase[phase], sec)
+		}
+	}
+}
+
+// An old agent's started message (raw JSON without the bootstrap fields) decodes
+// additively — the missing segments read as zero and no bootstrap metric fires.
+func TestHandler_processMessage_StartedOldAgentNoBootstrap(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	// Raw JSON as a pre-rollout agent would send it: no bootstrap_* keys.
+	body := `{"instance_id":"i-12345","job_id":"12345678901","status":"started","started_at":"2026-07-09T12:00:00Z"}`
+
+	if err := handler.processMessage(context.Background(), queue.Message{Body: body, Handle: testReceiptTermination}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if metrics.bootstrapCalls != 0 {
+		t.Errorf("bootstrap calls = %d, want 0 for an old-agent message", metrics.bootstrapCalls)
 	}
 }
 
