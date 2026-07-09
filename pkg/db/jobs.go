@@ -1097,6 +1097,7 @@ func (c *Client) GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInf
 		Pool:         record.Pool,
 		Spot:         record.Spot,
 		RetryCount:   record.RetryCount,
+		WarmPoolHit:  record.WarmPoolHit,
 	}, nil
 }
 

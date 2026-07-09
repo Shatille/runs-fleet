@@ -653,6 +653,21 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		}
 		return true, "Job queued", postAck
 
+	case "in_progress":
+		obs := handler.HandleWorkflowJobInProgress(event, ws.labelAliasResolver)
+		if obs == nil {
+			return false, "", nil
+		}
+		// ws.dbClient is a concrete *db.Client; guard the typed nil before it is
+		// assigned to the handler.JobStartupDB interface.
+		var startupDB handler.JobStartupDB
+		if ws.dbClient != nil {
+			startupDB = ws.dbClient
+		}
+		return true, "Startup recorded", func(bgCtx context.Context) {
+			handler.PublishJobStartupMetrics(bgCtx, ws.metricsPublisher, startupDB, obs)
+		}
+
 	case "completed":
 		if event.GetWorkflowJob().GetConclusion() != "failure" {
 			return false, "", nil

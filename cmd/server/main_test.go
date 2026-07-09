@@ -743,6 +743,7 @@ type recordingMetrics struct {
 	metrics.NoopPublisher
 	jobQueued  atomic.Bool
 	queueDepth atomic.Bool
+	jobStartup atomic.Bool
 	fail       bool
 }
 
@@ -756,6 +757,14 @@ func (m *recordingMetrics) PublishJobEnqueued(context.Context, string, string, s
 
 func (m *recordingMetrics) PublishQueueDepth(context.Context, string, float64) error {
 	m.queueDepth.Store(true)
+	if m.fail {
+		return errors.New("metrics error")
+	}
+	return nil
+}
+
+func (m *recordingMetrics) PublishJobStartupSeconds(context.Context, string, string, float64) error {
+	m.jobStartup.Store(true)
 	if m.fail {
 		return errors.New("metrics error")
 	}
@@ -834,6 +843,55 @@ func TestHandleWebhook_AcksBeforeBestEffortWork(t *testing.T) {
 
 	waitFor(t, func() bool { return met.jobQueued.Load() && met.queueDepth.Load() },
 		"post-ack metrics never published")
+}
+
+// TestHandleWebhook_InProgressPublishesStartup verifies an in_progress event from
+// a runs-fleet runner acks immediately and publishes the startup latency metric
+// as post-ack best-effort work.
+func TestHandleWebhook_InProgressPublishesStartup(t *testing.T) {
+	const secret = "test-secret"
+	body := []byte(`{"action":"in_progress","workflow_job":{"id":12345,"runner_name":"runs-fleet-i-abc123","labels":["runs-fleet=67890/cpu=4/pool=default"],"created_at":"2026-07-09T12:00:00Z","started_at":"2026-07-09T12:00:38Z"},"repository":{"full_name":"owner/repo"}}`)
+
+	met := &recordingMetrics{}
+	ws := &webhookServer{
+		cfg:              &config.Config{GitHubWebhookSecret: secret},
+		metricsPublisher: met,
+	}
+
+	rec := httptest.NewRecorder()
+	ws.handleWebhook(rec, signWebhook(t, secret, body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleWebhook() status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	waitFor(t, func() bool { return met.jobStartup.Load() }, "post-ack startup metric never published")
+}
+
+// TestHandleWebhook_InProgressForeignRunnerSkips verifies an in_progress event from
+// a non-runs-fleet runner does not publish the startup metric.
+func TestHandleWebhook_InProgressForeignRunnerSkips(t *testing.T) {
+	const secret = "test-secret"
+	body := []byte(`{"action":"in_progress","workflow_job":{"id":12345,"runner_name":"blacksmith-runner","labels":["runs-fleet=67890/cpu=4/pool=default"],"created_at":"2026-07-09T12:00:00Z","started_at":"2026-07-09T12:00:38Z"},"repository":{"full_name":"owner/repo"}}`)
+
+	met := &recordingMetrics{}
+	ws := &webhookServer{
+		cfg:              &config.Config{GitHubWebhookSecret: secret},
+		metricsPublisher: met,
+	}
+
+	rec := httptest.NewRecorder()
+	ws.handleWebhook(rec, signWebhook(t, secret, body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleWebhook() status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Give any post-ack goroutine a moment; the metric must never fire.
+	time.Sleep(50 * time.Millisecond)
+	if met.jobStartup.Load() {
+		t.Error("startup metric published for a foreign runner")
+	}
 }
 
 func waitFor(t *testing.T, cond func() bool, msg string) {

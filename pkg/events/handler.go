@@ -53,7 +53,8 @@ type JobInfo struct {
 	InstanceType string
 	Pool         string
 	Spot         bool
-	RetryCount   int // Number of times this job has been retried
+	RetryCount   int  // Number of times this job has been retried
+	WarmPoolHit  bool // Whether the job was served by a warm-pool instance
 }
 
 // MetricsAPI provides CloudWatch metrics publishing.
