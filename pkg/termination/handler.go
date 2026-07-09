@@ -52,6 +52,7 @@ type JobQueueAPI interface {
 type MetricsAPI interface {
 	PublishJobCompleted(ctx context.Context, pool, result, repo string) error
 	PublishRunnerConfirmed(ctx context.Context, pool string) error
+	PublishInstanceProvisionSeconds(ctx context.Context, source, family string, seconds float64) error
 	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
 	PublishMessageProcessingSeconds(ctx context.Context, queue, result string, seconds float64) error
 	PublishJobRequeued(ctx context.Context, reason string) error
@@ -77,6 +78,13 @@ const reasonBootstrapFailed = "bootstrap_failed"
 // queueTermination is the queue label for the termination worker's
 // message-processing latency metric.
 const queueTermination = "termination"
+
+// Source labels for the instance-provision-latency metric, matching the
+// worker's enum (internal/worker).
+const (
+	sourceWarmPool  = "warm_pool"
+	sourceColdStart = "cold_start"
+)
 
 // Job-result values for the jobs_completed metric. These describe OUR runner's
 // operational lifecycle, never the client workflow's pass/fail conclusion.
@@ -422,8 +430,43 @@ func (h *Handler) confirmRunnerStarted(ctx context.Context, msg *Message) error 
 		if err := h.metrics.PublishRunnerConfirmed(ctx, info.Pool); err != nil {
 			termLog.Warn(ctx, "runner confirmed metric failed", slog.String("error", err.Error()))
 		}
+		h.publishProvisionSeconds(ctx, info, msg.StartedAt)
 	}
 	return nil
+}
+
+// publishProvisionSeconds emits the assignment-to-runner-registered latency for a
+// confirmed runner. warm_pool covers resume+bootstrap; cold_start covers
+// post-CreateFleet through registration (CreateFleet itself is FleetCreateSeconds).
+// The DB record is the cross-instance rendezvous joining the assignment timestamp
+// (stamped orchestrator-side) with the started signal (stamped agent-side). It
+// publishes only when both timestamps are non-zero and the span is positive, so a
+// cross-clock skew (bounded by chrony) cannot emit a negative or bogus value.
+func (h *Handler) publishProvisionSeconds(ctx context.Context, info *events.JobInfo, startedAt time.Time) {
+	if info.CreatedAt.IsZero() || startedAt.IsZero() {
+		return
+	}
+	seconds := startedAt.Sub(info.CreatedAt).Seconds()
+	if seconds <= 0 {
+		return
+	}
+	source := sourceColdStart
+	if info.WarmPoolHit {
+		source = sourceWarmPool
+	}
+	if err := h.metrics.PublishInstanceProvisionSeconds(ctx, source, instanceFamily(info.InstanceType), seconds); err != nil {
+		termLog.Warn(ctx, "instance provision metric failed", slog.String("error", err.Error()))
+	}
+}
+
+// instanceFamily returns the family segment of an instance type ("c7g" for
+// "c7g.xlarge"), or "" for an empty or malformed type so the family label is
+// omitted rather than carrying a noisy value.
+func instanceFamily(instanceType string) string {
+	if i := strings.IndexByte(instanceType, '.'); i > 0 {
+		return instanceType[:i]
+	}
+	return ""
 }
 
 // validateMessage validates required fields in termination message.

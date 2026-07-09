@@ -657,6 +657,10 @@ func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, er
 		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
 	}
 
+	// A malformed created_at must never fail the unmarshal: the record still
+	// transitions and consumers self-guard on a zero CreatedAt.
+	createdAt, _ := time.Parse(time.RFC3339, record.CreatedAt)
+
 	return &events.JobInfo{
 		JobID:        record.JobID,
 		RunID:        record.RunID,
@@ -665,6 +669,8 @@ func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, er
 		Pool:         record.Pool,
 		Spot:         record.Spot,
 		RetryCount:   record.RetryCount,
+		WarmPoolHit:  record.WarmPoolHit,
+		CreatedAt:    createdAt,
 	}, nil
 }
 
@@ -1084,21 +1090,7 @@ func (c *Client) GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInf
 		return nil, nil
 	}
 
-	var record jobRecord
-	if err := attributevalue.UnmarshalMap(output.Item, &record); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal job record: %w", err)
-	}
-
-	return &events.JobInfo{
-		JobID:        record.JobID,
-		RunID:        record.RunID,
-		Repo:         record.Repo,
-		InstanceType: record.InstanceType,
-		Pool:         record.Pool,
-		Spot:         record.Spot,
-		RetryCount:   record.RetryCount,
-		WarmPoolHit:  record.WarmPoolHit,
-	}, nil
+	return unmarshalJobInfo(output.Item)
 }
 
 // MarkJobRequeuedByJobID atomically marks a job as "requeued" using the job_id partition key.

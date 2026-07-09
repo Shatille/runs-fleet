@@ -375,11 +375,6 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		_ = deps.Metrics.PublishJobAssigned(ctx, job.Pool, sourceColdStart, job.Repo)
 		publishJobWait(ctx, deps.Metrics, job.Pool, sourceColdStart, msg.SentAt)
 	}
-	// TODO(metrics): emit instance provision latency (launch -> runner-ready) via
-	// PublishInstanceProvisionSeconds(ctx, sourceColdStart, family, provisioned).
-	// Deferred: the runner-ready timestamp is recorded on a different instance
-	// (the agent) than the launch timestamp here, and no cross-instance
-	// launch+ready pair is readily available at this point.
 
 	ec2Log.Info(ctx, "instances launched",
 		slog.Int(logging.KeyCount, len(instanceIDs)))
