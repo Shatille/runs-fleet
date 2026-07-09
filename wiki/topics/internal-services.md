@@ -1,6 +1,6 @@
 ---
 topic: Internal Services (handlers, validation, workers)
-last_compiled: 2026-07-03
+last_compiled: 2026-07-09
 sources_count: 9
 ---
 
@@ -10,7 +10,7 @@ sources_count: 9
 
 The `internal/` tree holds orchestrator-only helpers that are intentionally not part of the public `pkg/` API. Go's `internal/` rule prevents downstream importers from depending on these types, so the orchestrator can refactor them freely. Four subpackages live here:
 
-- `internal/handler` — HTTP-level webhook processing (parsing GitHub `workflow_job` events, building queue messages, and bootstrapping ephemeral pools).
+- `internal/handler` — HTTP-level webhook processing (parsing GitHub `workflow_job` events, building queue messages, bootstrapping ephemeral pools, and deriving the job-startup latency observation from `in_progress` events).
 - `internal/validation` — small input-validation utilities used at config time (currently only the Vault Kubernetes JWT path guard).
 - `internal/worker` — the queue worker loops that dispatch jobs to compute backends. There is one entry point per dispatch path: `direct` (in-process) and `ec2` (spot/on-demand fleet creation), both of which can short-circuit through `warmpool` (assignment to pre-warmed instances). `naming.go` provides the runner-conditions string used in instance/runner identifiers. The K8s dispatch path (`worker/k8s.go`) was removed along with the K8s runner backend; see Key Decisions.
 - `internal/awsobs` — smithy-go middleware attached to the shared AWS SDK config. It times every AWS operation for latency/failure metrics and enforces a per-operation timeout, giving the orchestrator a diagnostic signal for a wedged AWS connection instead of an opaque `context deadline exceeded`.
@@ -22,6 +22,8 @@ Together these packages form the "control glue" between the GitHub webhook on on
 **Webhook intake (`internal/handler/webhook.go`)**
 
 `HandleWorkflowJobQueued` is the canonical entry point. It calls `gh.ParseLabelsWithAliases`, parses the run ID from the webhook payload (not the label), and (for `pool=` jobs) lazily creates an ephemeral pool via `EnsureEphemeralPool` before constructing a `queue.JobMessage` and enqueuing it. Enqueue metrics are deliberately deferred: `PublishJobQueuedMetrics` runs *after* the webhook handler returns so the durable work (label parse, pool ensure, SQS send) is on the response's critical path but observability is not. Failure-path handling — `HandleJobFailure` — re-queues failed jobs (capped at `maxJobRetries = 2`), forcing on-demand on retry.
+
+The `in_progress` path (PR #387) follows the same split. `HandleWorkflowJobInProgress` is a pure filter — no I/O, no context — that returns a `StartupObservation` (job ID, pool, GitHub-clock created-to-started seconds) only when the runner name carries the `runs-fleet-` prefix AND the labels parse; it returns nil on a zero timestamp or non-positive span. `PublishJobStartupMetrics` then runs post-ack: it resolves the source (`warm_pool` / `cold_start` from `events.JobInfo.WarmPoolHit`) via one `GetJobByJobID` read through the `JobStartupDB` interface and publishes `JobStartupSeconds`.
 
 **Worker loop pattern (`internal/worker/common.go`)**
 
@@ -72,9 +74,10 @@ Both middlewares anchor themselves relative to the SDK's own `RegisterServiceMet
 - `pkg/fleet` — `fleet.Manager`, `fleet.LaunchSpec`, `fleet.FlexibleSpec` for EC2 fleet creation and warm-pool spec matching.
 - `pkg/pools` — `pools.Manager`, `pools.AvailableInstance`, `pools.ErrNoAvailableInstance` for warm pool claim/start/stop.
 - `pkg/db` — `db.Client`, `db.JobRecord`, `db.PoolConfig`, sentinel errors `db.ErrJobAlreadyClaimed`, `db.ErrJobClaimExhausted`, and `db.ErrPoolAlreadyExists`. Used for job claims, ephemeral pool creation, and instance-claim release.
+- `pkg/events` — `events.JobInfo` (carrying `WarmPoolHit`), the return type of `GetJobByJobID` consumed by `PublishJobStartupMetrics` to resolve the startup-metric source.
 - `pkg/github` — `gh.ParseLabelsWithAliases`, `gh.JobConfig`, `gh.AliasResolver` for webhook label parsing.
 - `pkg/runner` — `runner.Manager`, `runner.PrepareRunnerRequest`. Both EC2 and warm-pool paths call `PrepareRunner` to write SSM parameters before the agent boots.
-- `pkg/metrics` — `metrics.Publisher` for queue depth, fleet size, warm-pool hits, scheduling failures, claim failures, message-deletion failures, job duration, job-wait latency, and (via `internal/awsobs`) per-operation AWS call duration/failure.
+- `pkg/metrics` — `metrics.Publisher` for queue depth, fleet size, warm-pool hits, scheduling failures, claim failures, message-deletion failures, job duration, job-wait latency, job-startup latency (`JobStartupSeconds`), and (via `internal/awsobs`) per-operation AWS call duration/failure.
 - `pkg/config` — `config.Config`, `config.MessageProcessTimeout`, `config.MessageReceiveTimeout`, `config.CleanupTimeout`, `config.ShortTimeout`, plus subnet lists.
 - `pkg/logging` — `logging.WithComponent` / `logging.ContextWithJob` for namespaced slog loggers (`webhook`, `worker`, `direct`, `ec2-worker`, `warmpool-assigner`) and job-identity propagation into deep AWS call logs.
 - `pkg/tracing` — `tracing.Tracer()`, `tracing.ExtractTraceContext` / `InjectTraceContext` for W3C TraceContext propagation across the webhook → SQS → worker boundary.
@@ -90,6 +93,10 @@ The `internal/handler` package is also imported by `internal/worker` (for `Build
 - `PublishJobQueuedMetrics(ctx, metrics.Publisher, *queue.JobMessage)`
 - `CapacityLabel(cpu int) string`
 - `HandleJobFailure(ctx, *github.WorkflowJobEvent, queue.Queue, *db.Client, *gh.AliasResolver) (bool, error)`
+- `HandleWorkflowJobInProgress(*github.WorkflowJobEvent, *gh.AliasResolver) *StartupObservation` — pure filter, no ctx/I/O
+- `PublishJobStartupMetrics(ctx, metrics.Publisher, JobStartupDB, *StartupObservation)`
+- `StartupObservation` struct (JobID, Pool, Seconds)
+- `JobStartupDB` interface (`HasJobsTable`, `GetJobByJobID` returning `*events.JobInfo`); satisfied by `*db.Client`
 - `EnsureEphemeralPool(ctx, PoolDBClient, *gh.JobConfig) error`
 - `BuildRunnerLabel(*queue.JobMessage) string`
 - `PoolDBClient` interface (`GetPoolConfig`, `CreateEphemeralPool`, `TouchPoolActivity`)
@@ -147,7 +154,7 @@ The `internal/handler` package is also imported by `internal/worker` (for `Build
 
 **Runner naming**
 
-- `runnerNamePrefix = "runs-fleet-"` (declared in `handler/webhook.go`). `HandleJobFailure` uses this prefix to recognise jobs it owns when filtering completed-with-failure events.
+- `runnerNamePrefix = "runs-fleet-"` (declared in `handler/webhook.go`). Both `HandleJobFailure` and `HandleWorkflowJobInProgress` use this prefix to recognise jobs this system owns when filtering webhook events that fire for every runner in a repo.
 - `BuildRunnerConditions` produces the suffix portion. Format: `arch-cpu<min>-ram<min>-disk<gib>-<family1>-<family2>-gen<n>`. Only set fields are included; the assembled string is dash-joined with no leading separator. Empty job specs produce an empty string.
 - `BuildRunnerLabel` returns the original webhook label when present; otherwise reconstructs `runs-fleet=<run_id>[/pool=<name>][/spot=false]`. This is what GitHub sees during JIT registration.
 
@@ -187,6 +194,8 @@ The runner name is assembled by upstream callers as `runs-fleet-<conditions>-<sh
 
 - **Webhook metrics deferred past the ack.** `HandleWorkflowJobQueued` does only durable work (label parse, ephemeral pool ensure, SQS send); `PublishJobQueuedMetrics` is called separately, after the webhook response, so a slow or failing metrics backend cannot delay GitHub's webhook delivery budget.
 
+- **2026-07: startup latency measured on GitHub's clock (PR #387).** `HandleWorkflowJobInProgress` computes `JobStartupSeconds` from the webhook payload's own `created_at`/`started_at` — both stamped by GitHub — so orchestrator/GitHub clock skew cannot corrupt the span, and no local timestamp bookkeeping is needed. Two design constraints follow: (1) `in_progress` fires for *every* runner in a repo, including foreign ones, so the filter demands two-sided proof of ownership — the `runs-fleet-` runner-name prefix AND a successful `ParseLabelsWithAliases` — the same pair `HandleJobFailure` uses; (2) the filter is pure and the DB read + publish run post-ack via `PublishJobStartupMetrics`, keeping the webhook's durable path free of new I/O. On any source-lookup miss (nil db, no jobs table, error, missing record) the observation is published with an empty source rather than dropped, so dashboard totals stay complete. The counterpart instance-provision latency (launch → runner-ready) is deliberately *not* published from `internal/worker/ec2.go` — its old TODO was removed in the same PR; the launch and runner-ready timestamps live on different instances, so the metric is emitted from `pkg/termination`'s runner-confirmation path using the jobs DB record as the cross-instance rendezvous.
+
 - **AWS SDK middleware as a diagnostic safety net, not a semantic layer.** `internal/awsobs` does not change AWS call behavior beyond enforcing a timeout; it purely times and classifies calls. It replaces an earlier per-call WARN log (which flooded logs on SQS `ReceiveMessage` long-polls) with a metric, trading per-call log noise for a queryable duration/failure signal dimensioned by service and operation.
 
 - **Middleware self-anchoring instead of fixed stack position.** Both `awsobs` middlewares locate themselves relative to named middleware IDs (`RegisterServiceMetadata`, then each other) rather than assuming a fixed index in the Initialize step, so they remain correctly ordered even if the SDK's own middleware set changes, with a `middleware.Before` fallback if the expected anchor is missing.
@@ -206,6 +215,8 @@ The runner name is assembled by upstream callers as `runs-fleet-<conditions>-<sh
 - **Matrix jobs share `RunID`.** `BuildRunnerLabel` keys off `RunID` only, so two matrix jobs in the same workflow run produce identical labels. Disambiguation comes from the runner-name suffix (job ID), not the label.
 
 - **`HandleJobFailure` over-filters intentionally.** It returns `false, nil` when the runner name does not start with `runs-fleet-`, when labels can't be parsed, or when no jobs table exists. None of these are errors — they are signals that the event was for a different system or that we have nothing to do.
+
+- **`JobStartupDB` is nil-check-guarded but interface-typed.** `PublishJobStartupMetrics` tolerates a nil `dbc`, but callers holding a concrete `*db.Client` must guard the typed-nil trap before assigning it to the interface (a nil pointer in a non-nil interface passes `dbc != nil`); `cmd/server`'s `in_progress` case does exactly this. Also, an empty `source` dimension on `JobStartupSeconds` is not a bug — it is the deliberate degraded output when the job record cannot be resolved.
 
 - **`maxJobRetries = 2` exists in two places.** Both `internal/handler/webhook.go` and `internal/worker/ec2.go` declare it. The intent is the same (cap retries at 2) but the constants are not shared; updating one without the other will silently desync the spot-fallback path from the failure-requeue path.
 

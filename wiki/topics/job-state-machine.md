@@ -1,12 +1,12 @@
 ---
 topic: Job State Machine
-last_compiled: 2026-07-03
-sources_count: 5
+last_compiled: 2026-07-09
+sources_count: 7
 ---
 
 # Job State Machine
 
-## Purpose [coverage: high -- 5 sources]
+## Purpose [coverage: high -- 7 sources]
 
 runs-fleet tracks each GitHub Actions job through a lifecycle in a single backend: DynamoDB. There is no second state store — the K8s backend and its Valkey-based `pkg/state` package were removed in 2026-06, so job state now lives entirely in the `runs-fleet-jobs` table (`pkg/db/jobs.go`), keyed by typed `JobStatus` constants (`pkg/db/job_status.go`).
 
@@ -14,7 +14,7 @@ A second, related concern is runner identity: binding a job to a concrete GitHub
 
 Together these answer two operational questions: "what state is this job in?" (DynamoDB, `pkg/db`) and "which runner is bound to this instance?" (`pkg/runner` + `pkg/github`).
 
-## Architecture [coverage: high -- 5 sources]
+## Architecture [coverage: high -- 7 sources]
 
 **Job status** is a single `JobStatus` string type stored in the `status` attribute of each DynamoDB job record (primary key `job_id`, GSI on `instance_id`). The constants, defined in `pkg/db/job_status.go`, are:
 
@@ -24,7 +24,7 @@ Transitions are driven entirely by conditional DynamoDB writes in `pkg/db/jobs.g
 
 1. `ClaimJob` — compare-and-swap claim as a self-expiring lease (see Key Decisions). Writes `claiming`.
 2. `SaveJob` — instance created, job record written with status `launched`.
-3. `MarkJobStarted` — agent reports the runner registered and began executing; `launched → running`, conditioned on still being `launched`.
+3. `MarkJobStarted` — agent reports the runner registered and began executing; `launched → running`, conditioned on still being `launched`. Returns the post-update record via `ReturnValueAllNew`; since PR #387 the termination handler uses that returned record (its `CreatedAt`/`WarmPoolHit`) to publish the `InstanceProvisionSeconds` metric with no second read.
 4. `MarkJobComplete` — terminal write (`completed`/`success`/`failed`/`error`), unconditional (accepts whatever the caller passes as the final status string).
 5. `MarkJobRequeuedByJobID` — `running`/`launched → requeued`, used on spot interruption or unconfirmed-runner watchdog.
 6. `MarkInstanceTerminating` — looks up the instance's active job and sets `terminating`.
@@ -39,7 +39,7 @@ Transitions are driven entirely by conditional DynamoDB writes in `pkg/db/jobs.g
 
 `CleanupRunner` deletes the secrets entry when the job ends. `pkg/github.Client` (relocated from `pkg/runner/github.go` — see Key Decisions) also exposes `GetWorkflowJobByID`, which translates GitHub's API status (`queued`/`in_progress`/`completed`) plus conclusion into a `WorkflowJobInfo`; this is a separate read path from the DynamoDB status above, used for polling GitHub directly rather than driving job-state transitions.
 
-## Talks To [coverage: high -- 5 sources]
+## Talks To [coverage: high -- 7 sources]
 
 - **DynamoDB** (`pkg/db/jobs.go`) — the `runs-fleet-jobs` table is the sole source of truth for job status. Reads/writes use conditional expressions to make transitions race-safe across concurrent orchestrator instances.
 - **GitHub REST API** (`pkg/github/client.go`) — three endpoints:
@@ -49,9 +49,10 @@ Transitions are driven entirely by conditional DynamoDB writes in `pkg/db/jobs.g
   - `GetWorkflowJobByID` (via `go-github`) for status polling.
 - **Secrets backend** (`secrets.Store`) — `Put`/`Delete` keyed by EC2 instance ID. Holds the `RunnerConfig` the agent reads at boot.
 - **Cache subsystem** (`pkg/cache`) — `cache.GenerateCacheToken` produces a per-job HMAC token scoped to the repo for cache isolation.
-- **`pkg/events`** — `MarkJobComplete`/`MarkJobStarted` return `*events.JobInfo` so callers (worker loops, admin API) can act on the post-update record without a second read.
+- **`pkg/events`** — `MarkJobComplete`/`MarkJobStarted` return `*events.JobInfo` so callers (worker loops, admin API) can act on the post-update record without a second read. Since PR #387, `JobInfo` also surfaces `WarmPoolHit` and `CreatedAt` (assignment time).
+- **`pkg/termination`** — the termination handler is the consumer of the agent's `SendJobStarted` signal: it calls `MarkJobStarted` and, from the returned record, publishes `InstanceProvisionSeconds` (source `warm_pool` vs `cold_start` by `WarmPoolHit`) via `publishProvisionSeconds` in `pkg/termination/handler.go`.
 
-## API Surface [coverage: high -- 5 sources]
+## API Surface [coverage: high -- 7 sources]
 
 From `pkg/db/job_status.go`:
 
@@ -94,9 +95,9 @@ From `pkg/github/client.go`:
 - `(c *Client) GetWorkflowJobByID(ctx, repo string, jobID int64) (*WorkflowJobInfo, error)`
 - Types: `RegistrationResult { Token string; IsOrg bool /* deprecated */ }`, `WorkflowJobInfo { Status, Conclusion string }`.
 
-## Data [coverage: high -- 5 sources]
+## Data [coverage: high -- 7 sources]
 
-**Job record** (`jobRecord` in `pkg/db/jobs.go`, primary key `instance_id` on write / `job_id` as partition key for status ops):
+**Job record** (`jobRecord` in `pkg/db/jobs.go`, partition key `job_id`; `instance_id` is an attribute plus optional GSI key):
 
 ```go
 JobID, RunID           int64/int64
@@ -110,6 +111,22 @@ SpotRequestID          string  // omitempty
 PersistentSpot         bool    // omitempty
 TraceID                string  // omitempty, extracted from W3C traceparent
 ```
+
+**Surfaced read model** (`events.JobInfo`, produced by `unmarshalJobInfo` for `GetJobByJobID`, `GetJobByInstance`, `MarkJobStarted`, `MarkJobComplete`):
+
+```go
+events.JobInfo{
+    JobID, RunID           int64
+    Repo, InstanceType     string
+    Pool                   string
+    Spot                   bool
+    RetryCount             int
+    WarmPoolHit            bool      // since PR #387
+    CreatedAt              time.Time // since PR #387; assignment time (SaveJob stamp)
+}
+```
+
+`WarmPoolHit` and `CreatedAt` were added in PR #387 with **no schema change** — both attributes were already written (`warm_pool_hit` at record creation, `created_at` stamped by `SaveJob` at assignment); they simply weren't surfaced to readers before. `CreatedAt` is RFC3339-parsed with zero-on-error: a malformed `created_at` never fails the unmarshal, and consumers self-guard on the zero value. Note the semantics: during `claiming`, `created_at` is `ClaimJob`'s lease timestamp; `SaveJob`'s PutItem re-stamps it at assignment, so on `launched`-or-later records it means assignment time — which is what `JobInfo.CreatedAt` documents.
 
 **Runner config** (written by `Manager.PrepareRunner` to `secrets.Store` keyed by `instanceID`):
 
@@ -129,18 +146,19 @@ secrets.RunnerConfig{
 - Last 6 chars of `jobID` appended for uniqueness across same-label jobs in one workflow run.
 - Truncated to 64 chars (GitHub's limit).
 
-## Key Decisions [coverage: high -- 5 sources]
+## Key Decisions [coverage: high -- 7 sources]
 
 - **pkg/state (Valkey) removed, 2026-06** — the K8s runner backend was removed from the codebase entirely; its Valkey-backed `ValkeyStateStore` state store went with it. Job state is now DynamoDB-only. There is no dual-backend split to reconcile; `pkg/db/jobs.go` is the single source of truth.
 - **pkg/github relocation, 2026-07 (PR #380)** — `pkg/runner/github.go` moved to `pkg/github/client.go`; `GitHubClient` renamed to `Client`, `NewGitHubClient` renamed to `NewClient`. This is a package-boundary fix: the GitHub API client is not runner-specific logic, and giving it its own package makes room for a possible future second git-hosting provider without overloading `pkg/runner`. No second provider exists today.
 - **`registrationTokenGetter` interface seam** — `pkg/runner.Manager` depends on the unexported `registrationTokenGetter` interface (single method, `GetRegistrationToken`), not a concrete `*github.Client`. `*github.Client` satisfies it today; the seam exists so a future non-GitHub git-hosting provider could satisfy the same interface without any change to `Manager`.
 - **Self-expiring claim lease** — `ClaimJob` is a compare-and-swap on `created_at`: a claim is re-claimable if the prior record is `requeued`/`terminating`, or a stale `claiming` lease older than `claimStaleThreshold` (100s, above the 90s message-process timeout and below the 120s SQS visibility timeout, so the first redelivery finds the lease already expired). Re-claims are capped at `claimMaxAttempts` (3); beyond that `ClaimJob` returns `ErrJobClaimExhausted` and the caller calls `FailExhaustedClaim` to mark the job terminal.
+- **DB record as cross-instance rendezvous (PR #387)** — the job record joins two processes with no direct channel: the orchestrator stamps `created_at` at assignment (`SaveJob`), the on-instance agent reports its `StartedAt` in the `SendJobStarted` message on the termination queue, and the termination handler joins them — `MarkJobStarted`'s `ReturnValueAllNew` response carries `CreatedAt` and `WarmPoolHit`, from which `publishProvisionSeconds` computes `InstanceProvisionSeconds` (labeled `warm_pool` or `cold_start`) without a second read. Zero or non-positive spans are dropped, so a malformed `created_at` (parsed to zero) or cross-host clock skew (bounded by chrony) can't emit a negative or bogus latency. See [state-storage](state-storage.md) and [events-and-termination](events-and-termination.md).
 - **Repo-level registration only** — `GetRegistrationToken` always hits `/repos/{owner}/{repo}/actions/runners/registration-token`. Org-level registration was rejected because runners would otherwise pick up jobs from any repo in the org, causing misassignment (commented at the call site in `pkg/github/client.go`).
 - **Bearer for JWT, token for installation** — JWT requests use `Authorization: Bearer`, installation-token requests use `Authorization: token`. Mixing them silently fails because `go-github`'s `WithAuthToken` only emits the `token` prefix.
 - **Isolated `http.Client` for go-github calls** — `GetWorkflowJobByID` constructs a new `http.Client` per call rather than reusing `c.httpClient`; `WithAuthToken` mutates the transport with a token-injecting `RoundTripper`, which would corrupt subsequent calls on a shared client.
 - **Idempotent cleanup** — `CleanupRunner` is just `secrets.Delete`; safe to call on any path (job done, instance terminated, spot interruption).
 
-## Gotchas [coverage: high -- 5 sources]
+## Gotchas [coverage: high -- 7 sources]
 
 - **`JITToken` field name is misleading** — `secrets.RunnerConfig.JITToken` holds a plain repo-level registration token returned by `GetRegistrationToken`, not an actual JIT (`--jitconfig`) config. A real `GetJITConfig` method existed at one point, calling GitHub's `GenerateOrgJITConfig` API, but was deleted as dead code — it was never called in production; GitHub runner registration in this codebase has always used the registration-token flow. The field name is a holdover from that earlier design and should not be taken as a sign the JIT API is in use.
 - **Clock skew on JWT** — `generateJWT` backdates `iat` by 60 seconds. Without that buffer, GitHub rejects tokens from hosts with even slight clock drift.
@@ -150,6 +168,8 @@ secrets.RunnerConfig{
 - **User vs Org installations** — `getInstallationInfo` first tries `/orgs/{owner}/installation`, falls back to `/users/{owner}/installation` on 404. Personal-account repos work, but only via the fallback path. `RegistrationResult.IsOrg` is documented deprecated and now always `false` because registration is always repo-level.
 - **`MarkJobComplete` takes a bare status string, not `JobStatus`** — unlike every other transition in `pkg/db/jobs.go`, it accepts `status string` directly and writes it unconditionally; callers are responsible for passing one of the typed `JobStatus*` constants (as strings) rather than an arbitrary value.
 - **GitHub job status vs internal job status are different axes** — `WorkflowJobInfo` (from `GetWorkflowJobByID`) carries GitHub's own `Status`/`Conclusion` strings (`queued`/`in_progress`/`completed`, `success`/`failure`/...); this is not the same enum as DynamoDB's `JobStatus` (`launched`/`running`/`claiming`/...). There's no single source of truth combining the two — the orchestrator maps between them at the call site.
+- **`JobInfo.CreatedAt` is zero-on-error, not fail-on-error** — `unmarshalJobInfo` deliberately swallows an RFC3339 parse failure so a malformed `created_at` never blocks a state transition (`MarkJobStarted`/`MarkJobComplete` still succeed). Every consumer of `CreatedAt` must self-guard on the zero value, as `publishProvisionSeconds` does; don't add a consumer that assumes it's always set.
+- **The stale `jobRecord` comment** — the struct comment in `pkg/db/jobs.go` still says "Primary key is instance_id"; the table's hash key is `job_id` (all lifecycle methods key on it). Don't let the comment steer a new query design.
 
 ## Sources [coverage: high]
 - [pkg/db/job_status.go](../../pkg/db/job_status.go)
@@ -157,3 +177,5 @@ secrets.RunnerConfig{
 - [pkg/runner/manager.go](../../pkg/runner/manager.go)
 - [pkg/github/client.go](../../pkg/github/client.go)
 - [pkg/secrets/store.go](../../pkg/secrets/store.go)
+- [pkg/events/handler.go](../../pkg/events/handler.go)
+- [pkg/termination/handler.go](../../pkg/termination/handler.go)

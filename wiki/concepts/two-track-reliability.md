@@ -1,6 +1,6 @@
 ---
 concept: Two-Track Reliability (Spot for Cold-Start, On-Demand for Warm Pools)
-last_compiled: 2026-04-30
+last_compiled: 2026-07-09
 topics_connected: [project-overview, fleet-orchestration, warm-pools, events-and-termination]
 status: active
 ---
@@ -18,11 +18,12 @@ This is unusual. The default industry pattern is "spot everywhere" with diversif
 
 ## Instances
 
-- **Cold-start spot strategy** in [fleet-orchestration](../topics/fleet-orchestration.md): `pkg/fleet/fleet.go` `shouldUseSpot()` decides spot eligibility, `buildLaunchTemplateConfigs` produces price-capacity-optimized fleets across `DefaultFlexibleFamilies` (c7g/m7g/t4g for ARM, c6i/c7i/m6i/m7i/t3 for AMD), and `cpu=N` defaults to a 2x range (N to 2N vCPUs) for spot diversification.
+- **Cold-start spot strategy** in [fleet-orchestration](../topics/fleet-orchestration.md): `pkg/fleet/fleet.go` `shouldUseSpot()` decides spot eligibility, `buildLaunchTemplateConfigs` produces price-capacity-optimized fleets across `DefaultFlexibleFamilies` (c8g/m8g/r8g/c7g/m7g for ARM, c6i/c7i/m6i/m7i for AMD — burstables t3/t4g were dropped from the defaults in PR #385 after price-weighted selection made t3.medium dominate warm pools at a benchmarked 2.25x compute slowdown; explicit `family=t3`/`family=t4g` still opts in), and `cpu=N` defaults to a 2x range (N to 2N vCPUs) for spot diversification.
 - **Warm-pool on-demand-only** in [warm-pools](../topics/warm-pools.md): `Manager.createPoolFleetInstances` always calls `CreateOnDemandInstance` (not the spot Fleet path); pool reconciler maintains `current_running` / `current_stopped` against `desired_*` configured per pool.
 - **Spot interruption recovery** in [events-and-termination](../topics/events-and-termination.md): EventBridge spot warning → `MarkInstanceTerminating` → re-queue with `Spot=false`, `ForceOnDemand=true`, `RetryCount+1`. Once a job has been bitten, it is upgraded to on-demand for its retry. After `maxJobRetries=2`, the job is marked failed.
 - **Circuit breaker per instance type** in [state-storage](../topics/state-storage.md): `circuit.Breaker` opens after 3 spot interruptions in 15min for a given instance type; cooldown 30min. This protects against capacity-pool exhaustion that spot-first would otherwise hide.
 - **`spot=false` label** documented in [project-overview](../topics/project-overview.md): users can opt their cold-start jobs into on-demand explicitly. Warm pool jobs ignore the flag — they are always on-demand by design.
+- **2026-07: price optimization vs hardware quality** in [fleet-orchestration](../topics/fleet-orchestration.md) / [warm-pools](../topics/warm-pools.md): the same cost-first instinct that makes cold-start spot-first also weighted warm-pool instance selection by inverse spot price — which quietly routed ~70% of default-label pool capacity onto burstable t3.medium (2.25x slower on a benchmarked CI suite). PR #385 (sequel to the #376 RAM floor) drew the line: price ranking may pick *among* adequate hardware, but the default candidate set must exclude starvation-grade tiers.
 
 ## What This Means
 
