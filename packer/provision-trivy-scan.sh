@@ -47,7 +47,10 @@ echo "==> Scanning filesystem for HIGH/CRITICAL CVEs (severity / pkg types from 
 # --ignore-unfixed: don't fail on CVEs with no upstream fix available
 # --scanners vuln: skip secrets/misconfig (those would need separate baselines)
 # --skip-dirs: avoid noise from runtime/cache directories that don't represent
-#   packages baked into the AMI
+#   packages baked into the AMI. /var/lib/docker holds pre-baked image layers
+#   (see provision-base.sh) — runtime artifacts scanned upstream by their
+#   publishers, not host software; without the skip their nested package DBs
+#   and Go binaries would flood (or block) the gate.
 # No --exit-code here: the report is emitted as JSON and gate.sh decides
 # pass/fail, failing only on findings we can remediate (OS/apt packages, our
 # own agent binary). CVEs that live only in third-party prebuilt binaries
@@ -65,6 +68,7 @@ sudo trivy filesystem \
   --skip-dirs /dev \
   --skip-dirs /run \
   --skip-dirs /var/cache \
+  --skip-dirs /var/lib/docker \
   --skip-dirs /root/.cache \
   --skip-dirs /home/ec2-user/.cache \
   /
