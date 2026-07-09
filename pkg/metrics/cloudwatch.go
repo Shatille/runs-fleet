@@ -89,6 +89,20 @@ func (p *CloudWatchPublisher) PublishJobWaitSeconds(ctx context.Context, pool, s
 	))
 }
 
+// PublishJobStartupSeconds publishes the end-to-end startup latency as a StatisticSet.
+func (p *CloudWatchPublisher) PublishJobStartupSeconds(ctx context.Context, pool, source string, seconds float64) error {
+	return p.putStatistic(ctx, "JobStartupSeconds", seconds, types.StandardUnitSeconds, dims(
+		"Pool", pool, "Source", source,
+	))
+}
+
+// PublishAgentBootstrapSeconds publishes an agent bootstrap segment as a StatisticSet.
+func (p *CloudWatchPublisher) PublishAgentBootstrapSeconds(ctx context.Context, pool, phase string, seconds float64) error {
+	return p.putStatistic(ctx, "AgentBootstrapSeconds", seconds, types.StandardUnitSeconds, dims(
+		"Pool", pool, "Phase", phase,
+	))
+}
+
 // PublishJobExecutionSeconds publishes the job execution latency as a StatisticSet.
 func (p *CloudWatchPublisher) PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error {
 	return p.putStatistic(ctx, "JobExecutionSeconds", seconds, types.StandardUnitSeconds, dims(

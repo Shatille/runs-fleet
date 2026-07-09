@@ -72,6 +72,18 @@ type Publisher interface {
 	// source.
 	PublishJobWaitSeconds(ctx context.Context, pool, source string, seconds float64) error
 
+	// PublishJobStartupSeconds records the end-to-end job acquisition latency on
+	// the GitHub clock (workflow_job created to started), by pool and source.
+	// source is warm_pool, cold_start, or empty when it cannot be resolved. This
+	// is the headline startup number; it spans strictly more than JobWaitSeconds
+	// (which covers only enqueue to assignment).
+	PublishJobStartupSeconds(ctx context.Context, pool, source string, seconds float64) error
+
+	// PublishAgentBootstrapSeconds records a single agent-side bootstrap segment,
+	// by pool and phase. phase is a closed enum: boot, config, runner_download,
+	// registration, or total.
+	PublishAgentBootstrapSeconds(ctx context.Context, pool, phase string, seconds float64) error
+
 	// PublishJobExecutionSeconds records job execution duration, by pool and
 	// result.
 	PublishJobExecutionSeconds(ctx context.Context, pool, result string, seconds float64) error
@@ -248,6 +260,16 @@ func (NoopPublisher) PublishJobDeduplicated(context.Context, string) error { ret
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishJobWaitSeconds(context.Context, string, string, float64) error {
+	return nil
+}
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishJobStartupSeconds(context.Context, string, string, float64) error {
+	return nil
+}
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishAgentBootstrapSeconds(context.Context, string, string, float64) error {
 	return nil
 }
 

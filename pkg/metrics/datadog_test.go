@@ -100,6 +100,8 @@ func TestDatadogPublisher_PublishMethods(t *testing.T) {
 		{"PublishJobRequeued", func() error { return pub.PublishJobRequeued(ctx, "spot_interruption") }},
 		{"PublishJobDeduplicated", func() error { return pub.PublishJobDeduplicated(ctx, "queue") }},
 		{"PublishJobWaitSeconds", func() error { return pub.PublishJobWaitSeconds(ctx, "default", "cold_start", 12) }},
+		{"PublishJobStartupSeconds", func() error { return pub.PublishJobStartupSeconds(ctx, "default", "cold_start", 38) }},
+		{"PublishAgentBootstrapSeconds", func() error { return pub.PublishAgentBootstrapSeconds(ctx, "default", "total", 20) }},
 		{"PublishJobExecutionSeconds", func() error { return pub.PublishJobExecutionSeconds(ctx, "default", "success", 90) }},
 		{"PublishInstanceProvisionSeconds", func() error { return pub.PublishInstanceProvisionSeconds(ctx, "cold_start", "c7g", 30) }},
 		{"PublishFleetCreate", func() error { return pub.PublishFleetCreate(ctx, "1", "success") }},

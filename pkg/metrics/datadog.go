@@ -142,6 +142,14 @@ func (p *DatadogPublisher) PublishJobWaitSeconds(_ context.Context, pool, source
 	return p.client.Distribution("job_wait_seconds", seconds, ddTag(ddTag(nil, "pool", pool), "source", source), 1)
 }
 
+func (p *DatadogPublisher) PublishJobStartupSeconds(_ context.Context, pool, source string, seconds float64) error { //nolint:revive
+	return p.client.Distribution("job_startup_seconds", seconds, ddTag(ddTag(nil, "pool", pool), "source", source), 1)
+}
+
+func (p *DatadogPublisher) PublishAgentBootstrapSeconds(_ context.Context, pool, phase string, seconds float64) error { //nolint:revive
+	return p.client.Distribution("agent_bootstrap_seconds", seconds, ddTag(ddTag(nil, "pool", pool), "phase", phase), 1)
+}
+
 func (p *DatadogPublisher) PublishJobExecutionSeconds(_ context.Context, pool, result string, seconds float64) error { //nolint:revive
 	return p.client.Distribution("job_execution_seconds", seconds, ddTag(ddTag(nil, "pool", pool), "result", result), 1)
 }

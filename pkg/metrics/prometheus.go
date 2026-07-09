@@ -26,14 +26,16 @@ type PrometheusPublisher struct {
 	registry *prometheus.Registry
 
 	// Job lifecycle
-	jobsEnqueued        *prometheus.CounterVec
-	jobsAssigned        *prometheus.CounterVec
-	runnerConfirmed     *prometheus.CounterVec
-	jobsCompleted       *prometheus.CounterVec
-	jobsRequeued        *prometheus.CounterVec
-	jobsDeduplicated    *prometheus.CounterVec
-	jobWaitSeconds      *prometheus.HistogramVec
-	jobExecutionSeconds *prometheus.HistogramVec
+	jobsEnqueued          *prometheus.CounterVec
+	jobsAssigned          *prometheus.CounterVec
+	runnerConfirmed       *prometheus.CounterVec
+	jobsCompleted         *prometheus.CounterVec
+	jobsRequeued          *prometheus.CounterVec
+	jobsDeduplicated      *prometheus.CounterVec
+	jobWaitSeconds        *prometheus.HistogramVec
+	jobStartupSeconds     *prometheus.HistogramVec
+	agentBootstrapSeconds *prometheus.HistogramVec
+	jobExecutionSeconds   *prometheus.HistogramVec
 
 	// Fleet / provisioning
 	instanceProvisionSeconds *prometheus.HistogramVec
@@ -121,6 +123,14 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "job_wait_seconds",
 			Help: "Time from job enqueue to assignment in seconds", Buckets: latencyBucketsLong,
 		}, []string{"pool", "source"}),
+		jobStartupSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns, Name: "job_startup_seconds",
+			Help: "End-to-end job acquisition latency (GitHub created to started) in seconds", Buckets: latencyBucketsLong,
+		}, []string{"pool", "source"}),
+		agentBootstrapSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns, Name: "agent_bootstrap_seconds",
+			Help: "Agent bootstrap segment latency in seconds, by phase", Buckets: latencyBucketsLong,
+		}, []string{"pool", "phase"}),
 		jobExecutionSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: ns, Name: "job_execution_seconds",
 			Help: "Job execution duration in seconds", Buckets: latencyBucketsLong,
@@ -259,7 +269,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 
 	registry.MustRegister(
 		p.jobsEnqueued, p.jobsAssigned, p.runnerConfirmed, p.jobsCompleted, p.jobsRequeued,
-		p.jobsDeduplicated, p.jobWaitSeconds, p.jobExecutionSeconds,
+		p.jobsDeduplicated, p.jobWaitSeconds, p.jobStartupSeconds, p.agentBootstrapSeconds, p.jobExecutionSeconds,
 		p.instanceProvisionSeconds, p.fleetCreate, p.fleetCreateSeconds, p.instances,
 		p.spotInterruptions, p.circuitBreakerTrip, p.circuitBreakerOpen,
 		p.poolInstances, p.poolDesired, p.poolActions, p.poolReconcileSeconds,
@@ -324,6 +334,16 @@ func (p *PrometheusPublisher) PublishRunnerConfirmed(_ context.Context, pool str
 
 func (p *PrometheusPublisher) PublishJobWaitSeconds(_ context.Context, pool, source string, seconds float64) error { //nolint:revive
 	p.jobWaitSeconds.WithLabelValues(pool, source).Observe(seconds)
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishJobStartupSeconds(_ context.Context, pool, source string, seconds float64) error { //nolint:revive
+	p.jobStartupSeconds.WithLabelValues(pool, source).Observe(seconds)
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishAgentBootstrapSeconds(_ context.Context, pool, phase string, seconds float64) error { //nolint:revive
+	p.agentBootstrapSeconds.WithLabelValues(pool, phase).Observe(seconds)
 	return nil
 }
 
