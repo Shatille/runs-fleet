@@ -59,6 +59,15 @@ aws:
   #   Project: ci-runners
   #   CostCenter: engineering
 
+  # Cost-attribution tag key/value overrides. Every runner instance always
+  # gets one "application" tag and one "service" tag (defaults:
+  # Application=runs-fleet, Service=runner); a fork with a different tag
+  # policy can remap the key name, the value, or both independently.
+  tagKeyApplication: "" # RUNS_FLEET_TAG_KEY_APPLICATION, default: Application
+  tagValueApplication: "" # RUNS_FLEET_TAG_VALUE_APPLICATION, default: runs-fleet
+  tagKeyService: "" # RUNS_FLEET_TAG_KEY_SERVICE, default: Service
+  tagValueService: "" # RUNS_FLEET_TAG_VALUE_SERVICE, default: runner
+
 # Orchestrator configuration
 orchestrator:
   image:
@@ -127,6 +136,46 @@ github:
   privateKey: "" # Required: GitHub App private key (ignored if existingSecret is set)
   webhookSecret: "" # Required: Webhook secret (ignored if existingSecret is set)
   existingSecret: "" # Use existing secret instead of creating one (e.g., from VaultSecretMap)
+
+# Admin API/UI configuration (native OIDC authorization-code + PKCE flow).
+# Leaving oidc.issuerUrl/clientId/clientSecret and sessionSecret all empty
+# disables admin auth entirely -- the admin API/UI is still served on the
+# same port as everything else, just unauthenticated (local-dev ergonomic).
+# Setting auth up requires all of oidc.issuerUrl, oidc.clientId,
+# oidc.clientSecret (or existingSecret), and sessionSecret (or
+# existingSecret) -- validated at orchestrator startup, fail-fast on a
+# partial config.
+admin:
+  rateLimit: 60 # requests/min per IP across /api/* (RUNS_FLEET_ADMIN_RATE_LIMIT)
+
+  # Audit log persistence (RUNS_FLEET_AUDIT_TABLE). Empty = admin actions
+  # are still logged via slog but not persisted/queryable through
+  # GET /api/audit-logs.
+  auditTable: ""
+
+  oidc:
+    issuerUrl: "" # e.g. https://idp.example.com/realms/example
+    clientId: ""
+    # Client secret: set directly, or prefer existingSecret (below) so it
+    # isn't stored in a values file / GitOps manifest in plaintext.
+    clientSecret: ""
+    # Overrides the callback URL; defaults to {aws.baseUrl}/api/auth/callback.
+    redirectUrl: ""
+    scopes: "openid,profile,email"
+    # Keycloak/Okta use "groups"; Auth0 commonly namespaces it; Google has none.
+    groupsClaim: "groups"
+
+  # Session cookie signing secret (RUNS_FLEET_ADMIN_SESSION_SECRET) and TTL.
+  # Required (with the oidc.* fields above) once OIDC auth is configured.
+  sessionSecret: ""
+  sessionTtlMinutes: 480
+
+  # Use an existing Secret (e.g. from a VaultSecretMap) instead of setting
+  # oidc.clientSecret/sessionSecret directly above. Must provide the keys
+  # RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET and RUNS_FLEET_ADMIN_SESSION_SECRET.
+  # Independent of github.existingSecret above -- setting one doesn't
+  # require setting the other; each gates its own Secret object.
+  existingSecret: ""
 
 # Custom runner-label aliases (sets RUNS_FLEET_LABEL_ALIASES).
 # JSON array of rules mapping externally-defined runs-on labels (e.g. labels

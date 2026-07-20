@@ -57,11 +57,14 @@ type Config struct {
 	RunnerImage        string            // Container image for EC2 runners (ECR URL)
 	Tags               map[string]string // Custom tags for EC2 resources
 
-	// Cost-attribution tag keys. The values are fixed ("runs-fleet" / "runner");
-	// only the key names are configurable so a fork with a different tag policy can
-	// remap them (e.g. "cost:application").
-	TagKeyApplication string // Tag key for the fixed "runs-fleet" value (default: "Application")
-	TagKeyService     string // Tag key for the fixed "runner" value (default: "Service")
+	// Cost-attribution tag keys and values. Defaults are "Application"="runs-fleet"
+	// and "Service"="runner"; both the key names and the values are independently
+	// configurable so a fork with a different tag policy can remap either
+	// (e.g. key "cost:application", value "my-org-infra").
+	TagKeyApplication   string // Tag key for the application value (default: "Application")
+	TagValueApplication string // Tag value for the application key (default: "runs-fleet")
+	TagKeyService       string // Tag key for the service value (default: "Service")
+	TagValueService     string // Tag value for the service key (default: "runner")
 
 	CacheSecret    string
 	BaseURL        string
@@ -152,18 +155,20 @@ func Load() (*Config, error) {
 		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
 
 		// EC2-specific
-		VPCID:              getEnv("RUNS_FLEET_VPC_ID", ""),
-		SubnetIDs:          splitAndFilter(getEnv("RUNS_FLEET_SUBNET_IDS", "")),
-		SecurityGroupID:    getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
-		InstanceProfileARN: getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
-		KeyName:            getEnv("RUNS_FLEET_KEY_NAME", ""),
-		SpotEnabled:        getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
-		MaxRuntimeMinutes:  maxRuntimeMinutes,
-		LaunchTemplateName: getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
-		RunnerImage:        getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
-		Tags:               make(map[string]string),
-		TagKeyApplication:  getEnv("RUNS_FLEET_TAG_KEY_APPLICATION", "Application"),
-		TagKeyService:      getEnv("RUNS_FLEET_TAG_KEY_SERVICE", "Service"),
+		VPCID:               getEnv("RUNS_FLEET_VPC_ID", ""),
+		SubnetIDs:           splitAndFilter(getEnv("RUNS_FLEET_SUBNET_IDS", "")),
+		SecurityGroupID:     getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
+		InstanceProfileARN:  getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
+		KeyName:             getEnv("RUNS_FLEET_KEY_NAME", ""),
+		SpotEnabled:         getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
+		MaxRuntimeMinutes:   maxRuntimeMinutes,
+		LaunchTemplateName:  getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
+		RunnerImage:         getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
+		Tags:                make(map[string]string),
+		TagKeyApplication:   getEnv("RUNS_FLEET_TAG_KEY_APPLICATION", "Application"),
+		TagValueApplication: getEnv("RUNS_FLEET_TAG_VALUE_APPLICATION", "runs-fleet"),
+		TagKeyService:       getEnv("RUNS_FLEET_TAG_KEY_SERVICE", "Service"),
+		TagValueService:     getEnv("RUNS_FLEET_TAG_VALUE_SERVICE", "runner"),
 
 		CacheSecret:    getEnv("RUNS_FLEET_CACHE_SECRET", ""),
 		BaseURL:        getEnv("RUNS_FLEET_BASE_URL", ""),

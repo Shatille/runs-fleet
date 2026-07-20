@@ -661,17 +661,17 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 		})
 	}
 
-	// Cost-attribution tags. Values are fixed; only the key names are
-	// configurable so a fork with a different tag policy can remap them. Empty
-	// config keys fall back to the defaults so runner instances are always tagged.
+	// Cost-attribution tags. Both the key names and values are configurable
+	// so a fork with a different tag policy can remap either. Empty config
+	// fields fall back to the defaults so runner instances are always tagged.
 	tags = append(tags,
 		types.Tag{
 			Key:   aws.String(m.applicationTagKey()),
-			Value: aws.String("runs-fleet"),
+			Value: aws.String(m.applicationTagValue()),
 		},
 		types.Tag{
 			Key:   aws.String(m.serviceTagKey()),
-			Value: aws.String("runner"),
+			Value: aws.String(m.serviceTagValue()),
 		},
 	)
 
@@ -742,8 +742,13 @@ func (m *Manager) buildTags(spec *LaunchSpec) []types.Tag {
 	return tags
 }
 
-// applicationTagKey returns the tag key for the fixed "runs-fleet" application
-// value, defaulting to "Application" when not configured.
+const (
+	defaultApplicationTagValue = "runs-fleet"
+	defaultServiceTagValue     = "runner"
+)
+
+// applicationTagKey returns the tag key for the application value,
+// defaulting to "Application" when not configured.
 func (m *Manager) applicationTagKey() string {
 	if m.config.TagKeyApplication != "" {
 		return m.config.TagKeyApplication
@@ -751,13 +756,31 @@ func (m *Manager) applicationTagKey() string {
 	return "Application"
 }
 
-// serviceTagKey returns the tag key for the fixed "runner" service value,
-// defaulting to "Service" when not configured.
+// applicationTagValue returns the tag value for the application key,
+// defaulting to defaultApplicationTagValue when not configured.
+func (m *Manager) applicationTagValue() string {
+	if m.config.TagValueApplication != "" {
+		return m.config.TagValueApplication
+	}
+	return defaultApplicationTagValue
+}
+
+// serviceTagKey returns the tag key for the service value, defaulting to
+// "Service" when not configured.
 func (m *Manager) serviceTagKey() string {
 	if m.config.TagKeyService != "" {
 		return m.config.TagKeyService
 	}
 	return "Service"
+}
+
+// serviceTagValue returns the tag value for the service key, defaulting to
+// defaultServiceTagValue when not configured.
+func (m *Manager) serviceTagValue() string {
+	if m.config.TagValueService != "" {
+		return m.config.TagValueService
+	}
+	return defaultServiceTagValue
 }
 
 // getPrimaryInstanceType returns the primary instance type to use.

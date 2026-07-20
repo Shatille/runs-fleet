@@ -148,6 +148,22 @@ spec:
             - name: RUNS_FLEET_TAGS
               value: {{ .Values.aws.tags | toJson | quote }}
             {{- end }}
+            {{- if .Values.aws.tagKeyApplication }}
+            - name: RUNS_FLEET_TAG_KEY_APPLICATION
+              value: {{ .Values.aws.tagKeyApplication | quote }}
+            {{- end }}
+            {{- if .Values.aws.tagValueApplication }}
+            - name: RUNS_FLEET_TAG_VALUE_APPLICATION
+              value: {{ .Values.aws.tagValueApplication | quote }}
+            {{- end }}
+            {{- if .Values.aws.tagKeyService }}
+            - name: RUNS_FLEET_TAG_KEY_SERVICE
+              value: {{ .Values.aws.tagKeyService | quote }}
+            {{- end }}
+            {{- if .Values.aws.tagValueService }}
+            - name: RUNS_FLEET_TAG_VALUE_SERVICE
+              value: {{ .Values.aws.tagValueService | quote }}
+            {{- end }}
             # Secrets backend configuration
             - name: RUNS_FLEET_SECRETS_BACKEND
               value: {{ .Values.secrets.backend | quote }}
@@ -201,6 +217,35 @@ spec:
             {{- end }}
             - name: RUNS_FLEET_GITHUB_APP_ID
               value: {{ .Values.github.appId | quote }}
+            # Admin API/UI configuration
+            - name: RUNS_FLEET_ADMIN_RATE_LIMIT
+              value: {{ .Values.admin.rateLimit | quote }}
+            {{- if .Values.admin.auditTable }}
+            - name: RUNS_FLEET_AUDIT_TABLE
+              value: {{ .Values.admin.auditTable | quote }}
+            {{- end }}
+            {{- if .Values.admin.oidc.issuerUrl }}
+            - name: RUNS_FLEET_ADMIN_OIDC_ISSUER_URL
+              value: {{ .Values.admin.oidc.issuerUrl | quote }}
+            {{- end }}
+            {{- if .Values.admin.oidc.clientId }}
+            - name: RUNS_FLEET_ADMIN_OIDC_CLIENT_ID
+              value: {{ .Values.admin.oidc.clientId | quote }}
+            {{- end }}
+            {{- if .Values.admin.oidc.redirectUrl }}
+            - name: RUNS_FLEET_ADMIN_OIDC_REDIRECT_URL
+              value: {{ .Values.admin.oidc.redirectUrl | quote }}
+            {{- end }}
+            {{- if .Values.admin.oidc.scopes }}
+            - name: RUNS_FLEET_ADMIN_OIDC_SCOPES
+              value: {{ .Values.admin.oidc.scopes | quote }}
+            {{- end }}
+            {{- if .Values.admin.oidc.groupsClaim }}
+            - name: RUNS_FLEET_ADMIN_OIDC_GROUPS_CLAIM
+              value: {{ .Values.admin.oidc.groupsClaim | quote }}
+            {{- end }}
+            - name: RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES
+              value: {{ .Values.admin.sessionTtlMinutes | quote }}
             {{- if .Values.labelAliases }}
             - name: RUNS_FLEET_LABEL_ALIASES
               value: {{ .Values.labelAliases | quote }}
@@ -240,6 +285,12 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "runs-fleet.secretName" . }}
+            {{- if or .Values.admin.existingSecret .Values.admin.oidc.clientSecret .Values.admin.sessionSecret }}
+            {{- if ne (include "runs-fleet.adminSecretName" .) (include "runs-fleet.secretName" .) }}
+            - secretRef:
+                name: {{ include "runs-fleet.adminSecretName" . }}
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.orchestrator.resources | nindent 12 }}
           livenessProbe:

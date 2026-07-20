@@ -55,8 +55,10 @@ All configuration is via environment variables, set on the orchestrator's runtim
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |
-| `RUNS_FLEET_TAG_KEY_APPLICATION` | `Application` | Tag key for the fixed `runs-fleet` cost-attribution value |
-| `RUNS_FLEET_TAG_KEY_SERVICE` | `Service` | Tag key for the fixed `runner` cost-attribution value |
+| `RUNS_FLEET_TAG_KEY_APPLICATION` | `Application` | Tag key for the application cost-attribution value |
+| `RUNS_FLEET_TAG_VALUE_APPLICATION` | `runs-fleet` | Tag value for the application cost-attribution key |
+| `RUNS_FLEET_TAG_KEY_SERVICE` | `Service` | Tag key for the service cost-attribution value |
+| `RUNS_FLEET_TAG_VALUE_SERVICE` | `runner` | Tag value for the service cost-attribution key |
 
 ## Label Aliases (custom runner labels)
 
