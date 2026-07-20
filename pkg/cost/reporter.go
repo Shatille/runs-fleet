@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
@@ -103,7 +104,6 @@ type Breakdown struct {
 	CloudWatchCost    float64
 	JobsCompleted     int
 	SpotInterruptions int
-	CacheHitRate      float64
 
 	// RunnerVcpuMinutes is the total billable vCPU-minutes this workload ran
 	// (Σ runner-minutes × vCPU), and RunnerMinuteCost is what that usage costs in
@@ -118,7 +118,9 @@ type Reporter struct {
 	cwClient      CloudWatchAPI
 	s3Client      S3API
 	snsClient     SNSAPI
+	jobs          JobLister
 	priceFetcher  PriceFetcherAPI
+	spotPricer    SpotPricer
 	config        *config.Config
 	snsTopicARN   string
 	reportsBucket string
@@ -129,14 +131,22 @@ type PriceFetcherAPI interface {
 	GetPrice(ctx context.Context, instanceType string) (float64, error)
 }
 
+// JobLister lists completed job records for the EC2 cost computation
+// (satisfied by *db.Client).
+type JobLister interface {
+	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
+}
+
 // NewReporter creates a new cost reporter.
 // It initializes a PriceFetcher to attempt dynamic pricing lookups from AWS Pricing API.
-func NewReporter(cfg aws.Config, appConfig *config.Config, snsTopicARN, reportsBucket string) *Reporter {
+func NewReporter(cfg aws.Config, jobs JobLister, spotPricer SpotPricer, appConfig *config.Config, snsTopicARN, reportsBucket string) *Reporter {
 	return &Reporter{
 		cwClient:      cloudwatch.NewFromConfig(cfg),
 		s3Client:      s3.NewFromConfig(cfg),
 		snsClient:     sns.NewFromConfig(cfg),
+		jobs:          jobs,
 		priceFetcher:  NewPriceFetcher(cfg, cfg.Region),
+		spotPricer:    spotPricer,
 		config:        appConfig,
 		snsTopicARN:   snsTopicARN,
 		reportsBucket: reportsBucket,
@@ -144,12 +154,14 @@ func NewReporter(cfg aws.Config, appConfig *config.Config, snsTopicARN, reportsB
 }
 
 // NewReporterWithClients creates a new cost reporter with injected clients for testing.
-func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SNSAPI, priceFetcher PriceFetcherAPI, appConfig *config.Config, snsTopicARN, reportsBucket string) *Reporter {
+func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SNSAPI, jobs JobLister, priceFetcher PriceFetcherAPI, spotPricer SpotPricer, appConfig *config.Config, snsTopicARN, reportsBucket string) *Reporter {
 	return &Reporter{
 		cwClient:      cwClient,
 		s3Client:      s3Client,
 		snsClient:     snsClient,
+		jobs:          jobs,
 		priceFetcher:  priceFetcher,
+		spotPricer:    spotPricer,
 		config:        appConfig,
 		snsTopicARN:   snsTopicARN,
 		reportsBucket: reportsBucket,
@@ -162,7 +174,7 @@ func NewReporterWithClients(cwClient CloudWatchAPI, s3Client S3API, snsClient SN
 func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 	costLog.Info(ctx, "generating daily cost report")
 
-	endTime := time.Now().Truncate(time.Hour)
+	endTime := time.Now().UTC().Truncate(time.Hour)
 	startTime := endTime.Add(-24 * time.Hour)
 
 	breakdown, err := r.getCostMetrics(ctx, startTime, endTime)
@@ -206,148 +218,44 @@ func (r *Reporter) GenerateDailyReport(ctx context.Context) error {
 		}
 	}
 
-	// TODO(metrics): emit cost telemetry from this breakdown once the reporter is
-	// wired to a metrics publisher: PublishEstimatedCost(ctx, breakdown.TotalCost)
-	// and PublishInstanceHours(ctx, capacity, family, hours) per instance family.
 	costLog.Info(ctx, "daily cost report generated", slog.Float64("total_cost", breakdown.TotalCost))
 	return nil
 }
 
-// getCostMetrics retrieves cost-related metrics from CloudWatch.
+// getCostMetrics builds the cost breakdown for the window. The EC2 section is
+// computed from completed DynamoDB job records priced with the shared JobPricer
+// (exact per-job instance types, spot flags, and durations); spot interruptions
+// and runner-minute cost come from CloudWatch metric-math searches.
+//
+// A job-lister error fails the whole run (housekeeping retries; a zeroed-core
+// report is worse than none). CloudWatch errors (interruptions, runner minutes)
+// are informational and only degrade those numbers to zero.
 func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.Time) (*Breakdown, error) {
 	breakdown := &Breakdown{}
 
-	queries := []cwtypes.MetricDataQuery{
-		{
-			Id: aws.String("fleet_size_increment"),
-			MetricStat: &cwtypes.MetricStat{
-				Metric: &cwtypes.Metric{
-					Namespace:  aws.String("RunsFleet"),
-					MetricName: aws.String("FleetSizeIncrement"),
-				},
-				Period: aws.Int32(3600),
-				Stat:   aws.String("Sum"),
-			},
-		},
-		{
-			Id: aws.String("spot_interruptions"),
-			MetricStat: &cwtypes.MetricStat{
-				Metric: &cwtypes.Metric{
-					Namespace:  aws.String("RunsFleet"),
-					MetricName: aws.String("SpotInterruptions"),
-				},
-				Period: aws.Int32(3600),
-				Stat:   aws.String("Sum"),
-			},
-		},
-		{
-			Id: aws.String("job_success"),
-			MetricStat: &cwtypes.MetricStat{
-				Metric: &cwtypes.Metric{
-					Namespace:  aws.String("RunsFleet"),
-					MetricName: aws.String("JobSuccess"),
-				},
-				Period: aws.Int32(3600),
-				Stat:   aws.String("Sum"),
-			},
-		},
-		{
-			Id: aws.String("job_failure"),
-			MetricStat: &cwtypes.MetricStat{
-				Metric: &cwtypes.Metric{
-					Namespace:  aws.String("RunsFleet"),
-					MetricName: aws.String("JobFailure"),
-				},
-				Period: aws.Int32(3600),
-				Stat:   aws.String("Sum"),
-			},
-		},
-		{
-			Id: aws.String("job_duration"),
-			MetricStat: &cwtypes.MetricStat{
-				Metric: &cwtypes.Metric{
-					Namespace:  aws.String("RunsFleet"),
-					MetricName: aws.String("JobDuration"),
-				},
-				Period: aws.Int32(3600),
-				Stat:   aws.String("Sum"),
-			},
-		},
+	if err := r.accumulateEC2Costs(ctx, breakdown, startTime, endTime); err != nil {
+		return nil, err
 	}
 
-	output, err := r.cwClient.GetMetricData(ctx, &cloudwatch.GetMetricDataInput{
-		StartTime:         aws.Time(startTime),
-		EndTime:           aws.Time(endTime),
-		MetricDataQueries: queries,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get metric data: %w", err)
-	}
+	breakdown.SpotInterruptions = r.spotInterruptionCount(ctx, startTime, endTime)
 
-	var totalInstances, spotInterruptions, jobSuccess, jobFailure float64
-	var totalJobDurationSeconds float64
+	// Supporting-service estimates scale off the completed-job count.
+	jobs := float64(breakdown.JobsCompleted)
 
-	for _, result := range output.MetricDataResults {
-		sum := 0.0
-		for _, value := range result.Values {
-			sum += value
-		}
-
-		switch *result.Id {
-		case "fleet_size_increment":
-			totalInstances = sum
-		case "spot_interruptions":
-			spotInterruptions = sum
-		case "job_success":
-			jobSuccess = sum
-		case "job_failure":
-			jobFailure = sum
-		case "job_duration":
-			totalJobDurationSeconds = sum
-		}
-	}
-
-	// Estimate average job duration in hours
-	totalJobs := jobSuccess + jobFailure
-	avgJobHours := 0.5 // Default 30 min if no data
-	if totalJobs > 0 && totalJobDurationSeconds > 0 {
-		avgJobHours = (totalJobDurationSeconds / totalJobs) / 3600
-	}
-
-	// Estimate spot vs on-demand split (assume 80% spot, 20% on-demand)
-	spotInstances := totalInstances * 0.8
-	onDemandInstances := totalInstances * 0.2
-
-	// Calculate instance hours
-	breakdown.EC2SpotHours = spotInstances * avgJobHours
-	breakdown.EC2OnDemandHours = onDemandInstances * avgJobHours
-
-	// Use average instance cost (t4g.medium as default)
-	// Try to get dynamic pricing from AWS Pricing API, fall back to hard-coded
-	avgHourlyCost, err := r.priceFetcher.GetPrice(ctx, "t4g.medium")
-	if err != nil || avgHourlyCost == 0 {
-		avgHourlyCost = defaultInstanceHourlyPrice
-	}
-
-	breakdown.EC2SpotCost = breakdown.EC2SpotHours * avgHourlyCost * (1 - SpotDiscount)
-	breakdown.EC2OnDemandCost = breakdown.EC2OnDemandHours * avgHourlyCost
-	breakdown.SpotSavings = breakdown.EC2SpotHours * avgHourlyCost * SpotDiscount
-
-	// Estimate supporting service costs
 	// Fargate: ~$1.20/day for 1 vCPU, 2GB
 	breakdown.FargateCost = 1.20
 
 	// SQS: ~$0.40 per million requests
-	estimatedSQSRequests := (totalInstances * 10) + 1000 // Instance creates + polling
+	estimatedSQSRequests := (jobs * 10) + 1000 // Instance creates + polling
 	breakdown.SQSCost = (estimatedSQSRequests / 1000000) * 0.40
 
 	// DynamoDB: PAY_PER_REQUEST, ~$1.25 per million writes, $0.25 per million reads
-	estimatedWrites := totalInstances * 3 // Create, update, complete
-	estimatedReads := totalInstances * 5  // Queue lookups, status checks
+	estimatedWrites := jobs * 3 // Create, update, complete
+	estimatedReads := jobs * 5  // Queue lookups, status checks
 	breakdown.DynamoDBCost = (estimatedWrites/1000000)*1.25 + (estimatedReads/1000000)*0.25
 
 	// CloudWatch: Logs ~$0.50/GB, metrics minimal
-	estimatedLogGB := totalInstances * 0.001 // ~1MB per job
+	estimatedLogGB := jobs * 0.001 // ~1MB per job
 	breakdown.CloudWatchCost = estimatedLogGB * 0.50
 
 	// S3: Storage and requests (minimal for cache)
@@ -356,9 +264,6 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	breakdown.TotalCost = breakdown.EC2SpotCost + breakdown.EC2OnDemandCost +
 		breakdown.FargateCost + breakdown.SQSCost + breakdown.DynamoDBCost +
 		breakdown.CloudWatchCost + breakdown.S3Cost
-
-	breakdown.JobsCompleted = int(totalJobs)
-	breakdown.SpotInterruptions = int(spotInterruptions)
 
 	// Best-effort: a runner-minute query failure is logged, not returned, so it
 	// can't sink the whole cost report.
@@ -371,6 +276,82 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	}
 
 	return breakdown, nil
+}
+
+// accumulateEC2Costs prices the window's completed jobs and fills the EC2 fields
+// of the breakdown. A nil lister degrades to zeros (test-path safety); a lister
+// error is returned so the run fails.
+func (r *Reporter) accumulateEC2Costs(ctx context.Context, breakdown *Breakdown, startTime, endTime time.Time) error {
+	if r.jobs == nil {
+		costLog.Warn(ctx, "job lister unavailable, EC2 costs computed from zero jobs")
+		return nil
+	}
+
+	jobs, _, err := r.jobs.ListJobsForAdmin(ctx, db.AdminJobFilter{
+		Status: string(db.JobStatusCompleted),
+		Since:  startTime,
+		Until:  endTime,
+		Limit:  10000,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list completed jobs: %w", err)
+	}
+
+	pricer := NewJobPricer(r.priceFetcher, r.spotPricer)
+	for _, job := range jobs {
+		p := pricer.Price(ctx, job)
+		breakdown.EC2SpotCost += p.Spot
+		breakdown.EC2OnDemandCost += p.OnDemand
+		breakdown.SpotSavings += p.Savings
+		if job.Spot {
+			breakdown.EC2SpotHours += p.Hours
+		} else {
+			breakdown.EC2OnDemandHours += p.Hours
+		}
+	}
+	breakdown.JobsCompleted = len(jobs)
+	return nil
+}
+
+// spotInterruptionCount sums the SpotInterruptions metric across the Family
+// dimension for the window. Zero data yields 0; a CloudWatch error degrades to 0
+// (interruption counts are informational, not core to the cost figure).
+func (r *Reporter) spotInterruptionCount(ctx context.Context, startTime, endTime time.Time) int {
+	output, err := r.cwClient.GetMetricData(ctx, &cloudwatch.GetMetricDataInput{
+		StartTime:         aws.Time(startTime),
+		EndTime:           aws.Time(endTime),
+		MetricDataQueries: spotInterruptionQueries(),
+	})
+	if err != nil {
+		costLog.Warn(ctx, "spot interruption count unavailable", slog.String("error", err.Error()))
+		return 0
+	}
+
+	var sum float64
+	for _, result := range output.MetricDataResults {
+		if result.Id == nil || *result.Id != spotInterruptionQueryID {
+			continue
+		}
+		for _, v := range result.Values {
+			sum += v
+		}
+	}
+	return int(sum)
+}
+
+const spotInterruptionQueryID = "spot_interruptions"
+
+// spotInterruptionQueries builds the metric-math query that sums the
+// SpotInterruptions counter across the Family dimension (the real emissions
+// carry a Family dimension, so a plain undimensioned lookup matches nothing).
+func spotInterruptionQueries() []cwtypes.MetricDataQuery {
+	return []cwtypes.MetricDataQuery{
+		{
+			Id:         aws.String(spotInterruptionQueryID),
+			Expression: aws.String(`SUM(SEARCH('{RunsFleet,Family} MetricName="SpotInterruptions"', 'Sum', 3600))`),
+			ReturnData: aws.Bool(true),
+		},
+	}
 }
 
 // generateMarkdownReport generates a markdown report from the cost breakdown.
