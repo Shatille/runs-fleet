@@ -1174,11 +1174,14 @@ type AdminJobEntry struct {
 	CompletedAt     time.Time
 }
 
-// AdminJobFilter specifies filtering options for job queries.
+// AdminJobFilter specifies filtering options for job queries. Since and Until
+// bound created_at (inclusive lower, exclusive upper); a zero value leaves that
+// side unbounded.
 type AdminJobFilter struct {
 	Status string
 	Pool   string
 	Since  time.Time
+	Until  time.Time
 	Limit  int
 	Offset int
 }
@@ -1219,6 +1222,11 @@ func (c *Client) ListJobsForAdmin(ctx context.Context, filter AdminJobFilter) ([
 	if !filter.Since.IsZero() {
 		filterParts = append(filterParts, "created_at >= :since")
 		exprValues[":since"] = &types.AttributeValueMemberS{Value: filter.Since.Format(time.RFC3339)}
+	}
+
+	if !filter.Until.IsZero() {
+		filterParts = append(filterParts, "created_at < :until")
+		exprValues[":until"] = &types.AttributeValueMemberS{Value: filter.Until.Format(time.RFC3339)}
 	}
 
 	input := &dynamodb.ScanInput{
