@@ -106,7 +106,7 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 |------------|------------|------|------------|---------|
 | `HousekeepingActions` | `housekeeping_actions_total` | counter | Action | Cleanup count by action (`orphaned_instances`, `ssm_params`, `job_records`, `orphaned_jobs`, `stale_jobs`). |
 | `InstanceHours` | `instance_hours_total` | counter | Capacity, Family | Instance-hours consumed. |
-| `EstimatedCost` | `estimated_cost_usd` | gauge | — | Estimated spend in USD (see cost caveats in the root `CLAUDE.md`). |
+| `EstimatedCost` | `estimated_cost_usd` | gauge | — | Estimated spend in USD (see cost caveats in `AGENTS.md`). |
 | `RunnerExecutionSeconds` | `runner_execution_seconds_total` | counter | Arch, Vcpu, Spot, Result | Billable runner seconds on the axis hosted runners bill on; sum reconstructs a per-(arch,vCPU) minutes breakdown. |
 | `RunnerToolCacheMiss` | `runner_tool_cache_miss_total` | counter | Tool, Version, Arch | A GitHub Actions tool-cache entry downloaded on-demand because it was not pre-baked into the AMI. Version is `major.minor`. Used to tune which tool versions to bake. |
 
