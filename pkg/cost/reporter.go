@@ -105,6 +105,11 @@ type Breakdown struct {
 	JobsCompleted     int
 	SpotInterruptions int
 
+	// JobsMatched is the pre-cap count of jobs matching the window; when it
+	// exceeds JobsCompleted the priced set was truncated at jobWindowLimit and
+	// the EC2 figures undercount.
+	JobsMatched int
+
 	// RunnerVcpuMinutes is the total billable vCPU-minutes this workload ran
 	// (Σ runner-minutes × vCPU), and RunnerMinuteCost is what that usage costs in
 	// the standard hosted-runner unit (per-vCPU-minute) — a relative comparison
@@ -278,6 +283,10 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 	return breakdown, nil
 }
 
+// jobWindowLimit caps how many completed jobs one report prices, matching the
+// admin cost endpoints' accepted cap.
+const jobWindowLimit = 10000
+
 // accumulateEC2Costs prices the window's completed jobs and fills the EC2 fields
 // of the breakdown. A nil lister degrades to zeros (test-path safety); a lister
 // error is returned so the run fails.
@@ -287,14 +296,18 @@ func (r *Reporter) accumulateEC2Costs(ctx context.Context, breakdown *Breakdown,
 		return nil
 	}
 
-	jobs, _, err := r.jobs.ListJobsForAdmin(ctx, db.AdminJobFilter{
+	jobs, total, err := r.jobs.ListJobsForAdmin(ctx, db.AdminJobFilter{
 		Status: string(db.JobStatusCompleted),
 		Since:  startTime,
 		Until:  endTime,
-		Limit:  10000,
+		Limit:  jobWindowLimit,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list completed jobs: %w", err)
+	}
+	if total > len(jobs) {
+		costLog.Warn(ctx, "job window truncated, EC2 costs undercount",
+			slog.Int("priced_jobs", len(jobs)), slog.Int("matched_jobs", total))
 	}
 
 	pricer := NewJobPricer(r.priceFetcher, r.spotPricer)
@@ -310,6 +323,7 @@ func (r *Reporter) accumulateEC2Costs(ctx context.Context, breakdown *Breakdown,
 		}
 	}
 	breakdown.JobsCompleted = len(jobs)
+	breakdown.JobsMatched = total
 	return nil
 }
 
@@ -375,7 +389,12 @@ func (r *Reporter) generateMarkdownReport(b *Breakdown) string {
 	buf.WriteString(fmt.Sprintf("- S3: $%.2f\n\n", b.S3Cost))
 
 	buf.WriteString("## Job Statistics\n\n")
-	buf.WriteString(fmt.Sprintf("- Jobs completed: %d\n", b.JobsCompleted))
+	if b.JobsMatched > b.JobsCompleted {
+		buf.WriteString(fmt.Sprintf("- Jobs completed: %d of %d (window truncated at the %d-job cap; EC2 costs undercount)\n",
+			b.JobsCompleted, b.JobsMatched, jobWindowLimit))
+	} else {
+		buf.WriteString(fmt.Sprintf("- Jobs completed: %d\n", b.JobsCompleted))
+	}
 	buf.WriteString(fmt.Sprintf("- Spot interruptions: %d\n", b.SpotInterruptions))
 	if b.JobsCompleted > 0 {
 		costPerJob := b.TotalCost / float64(b.JobsCompleted)

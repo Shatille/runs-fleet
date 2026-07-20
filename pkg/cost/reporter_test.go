@@ -70,6 +70,7 @@ func (m *mockPriceFetcher) GetPrice(ctx context.Context, instanceType string) (f
 
 type mockJobLister struct {
 	jobs         []db.AdminJobEntry
+	total        int // pre-limit match count; defaults to len(jobs) when zero
 	err          error
 	gotFilter    db.AdminJobFilter
 	filterCalled bool
@@ -81,13 +82,20 @@ func (m *mockJobLister) ListJobsForAdmin(_ context.Context, filter db.AdminJobFi
 	if m.err != nil {
 		return nil, 0, m.err
 	}
-	return m.jobs, len(m.jobs), nil
+	total := m.total
+	if total == 0 {
+		total = len(m.jobs)
+	}
+	return m.jobs, total, nil
 }
 
 func captureReport(putObjectBody *string) *mockS3Client {
 	return &mockS3Client{
 		putObjectFunc: func(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-			body, _ := io.ReadAll(params.Body)
+			body, err := io.ReadAll(params.Body)
+			if err != nil {
+				return nil, err
+			}
 			*putObjectBody = string(body)
 			return &s3.PutObjectOutput{}, nil
 		},
@@ -286,6 +294,35 @@ func TestReporter_EC2CostFromJobRecords(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("report missing %q\n---\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "truncated") {
+		t.Errorf("non-truncated report must not carry the truncation note\n---\n%s", body)
+	}
+}
+
+func TestReporter_TruncatedJobWindowNoted(t *testing.T) {
+	// The lister reports more matching jobs than it returned (the 10k cap):
+	// the report must say so instead of presenting the undercount as complete.
+	lister := &mockJobLister{
+		jobs: []db.AdminJobEntry{
+			{JobID: 1, InstanceType: "t4g.medium", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+		},
+		total: 12345,
+	}
+
+	var body string
+	reporter := cost.NewReporterWithClients(
+		&mockCloudWatchClient{}, captureReport(&body), &mockSNSClient{}, lister, nil, nil, &config.Config{}, "", "test-bucket",
+	)
+	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
+		t.Fatalf("GenerateDailyReport() error = %v", err)
+	}
+
+	if !strings.Contains(body, "Jobs completed: 1 of 12345") {
+		t.Errorf("report missing truncated jobs-completed line\n---\n%s", body)
+	}
+	if !strings.Contains(body, "truncated") || !strings.Contains(body, "undercount") {
+		t.Errorf("report missing truncation note\n---\n%s", body)
 	}
 }
 
