@@ -176,87 +176,12 @@ func (h *CostHandler) CostMTD(ctx context.Context) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	odMemo := make(map[string]float64)
-	spotMemo := make(map[string]spotResult)
+	pricer := cost.NewJobPricer(h.onDemand, h.spot)
 	var total float64
 	for _, job := range jobs {
-		total += h.priceJob(ctx, job, odMemo, spotMemo).total
+		total += pricer.Price(ctx, job).Total
 	}
 	return total, nil
-}
-
-// spotResult caches a per-instance-type spot price lookup for one request.
-type spotResult struct {
-	price float64
-	live  bool
-}
-
-// jobPricing is one job's EC2 cost, split for aggregation.
-type jobPricing struct {
-	total    float64
-	spot     float64 // total if the job ran on spot, else 0
-	onDemand float64 // total if the job ran on-demand, else 0
-	savings  float64
-	hours    float64 // billable hours (with the 0.5h minimum applied)
-}
-
-// priceJob computes one job's EC2 cost using live on-demand/spot prices when
-// available (falling back to the hard-coded table and fixed spot discount). The
-// odMemo/spotMemo maps price each distinct instance type once per request. This
-// is the single source of per-job pricing shared by the summary, daily, and
-// by-pool endpoints.
-func (h *CostHandler) priceJob(ctx context.Context, job db.AdminJobEntry, odMemo map[string]float64, spotMemo map[string]spotResult) jobPricing {
-	instanceType := job.InstanceType
-	if instanceType == "" {
-		instanceType = "t4g.medium"
-	}
-
-	durationHours := float64(job.DurationSeconds) / 3600
-	if durationHours <= 0 {
-		durationHours = 0.5
-	}
-
-	onDemandHourly, ok := odMemo[instanceType]
-	if !ok {
-		onDemandHourly = cost.GetInstancePrice(instanceType)
-		if h.onDemand != nil {
-			if live, err := h.onDemand.GetPrice(ctx, instanceType); err != nil {
-				h.log.Warn(ctx, "live on-demand price unavailable, using fallback",
-					slog.String(logging.KeyInstanceType, instanceType),
-					slog.String(logging.KeyError, err.Error()))
-			} else if live > 0 {
-				onDemandHourly = live
-			}
-		}
-		odMemo[instanceType] = onDemandHourly
-	}
-
-	p := jobPricing{hours: durationHours}
-	if job.Spot {
-		sr, seen := spotMemo[instanceType]
-		if !seen {
-			if h.spot != nil {
-				if sp, found := h.spot.SpotPrice(ctx, instanceType); found && sp > 0 {
-					sr = spotResult{price: sp, live: true}
-				}
-			}
-			spotMemo[instanceType] = sr
-		}
-		if sr.live {
-			p.total = durationHours * sr.price
-			if saving := durationHours * (onDemandHourly - sr.price); saving > 0 {
-				p.savings = saving
-			}
-		} else {
-			p.total = durationHours * onDemandHourly * (1 - cost.SpotDiscount)
-			p.savings = durationHours * onDemandHourly * cost.SpotDiscount
-		}
-		p.spot = p.total
-	} else {
-		p.total = durationHours * onDemandHourly
-		p.onDemand = p.total
-	}
-	return p
 }
 
 // archVcpuKey keys the runner-minute matrix by (architecture, vCPU count).
@@ -286,10 +211,9 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 	var totalCost, spotCost, onDemandCost, spotSavings, runnerMinuteCost float64
 	var spotJobCount, onDemandCount int
 
-	// Per-request memoization so each distinct instance type is priced once,
-	// even though the underlying fetchers also cache across requests.
-	odMemo := make(map[string]float64)
-	spotMemo := make(map[string]spotResult)
+	// Per-request pricer so each distinct instance type is priced once, even
+	// though the underlying fetchers also cache across requests.
+	pricer := cost.NewJobPricer(h.onDemand, h.spot)
 
 	for _, job := range jobs {
 		instanceType := job.InstanceType
@@ -297,11 +221,11 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			instanceType = "t4g.medium"
 		}
 
-		p := h.priceJob(ctx, job, odMemo, spotMemo)
-		totalCost += p.total
-		spotCost += p.spot
-		onDemandCost += p.onDemand
-		spotSavings += p.savings
+		p := pricer.Price(ctx, job)
+		totalCost += p.Total
+		spotCost += p.Spot
+		onDemandCost += p.OnDemand
+		spotSavings += p.Savings
 		if job.Spot {
 			spotJobCount++
 		} else {
@@ -315,8 +239,8 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			families[family] = acc
 		}
 		acc.jobCount++
-		acc.hours += p.hours
-		acc.cost += p.total
+		acc.hours += p.Hours
+		acc.cost += p.Total
 		if job.Spot {
 			acc.spotCount++
 		}
@@ -450,19 +374,18 @@ func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry,
 	}
 	days := make(map[string]*dayAccum)
 
-	odMemo := make(map[string]float64)
-	spotMemo := make(map[string]spotResult)
+	pricer := cost.NewJobPricer(h.onDemand, h.spot)
 	for _, job := range jobs {
 		key := job.CreatedAt.UTC().Format("2006-01-02")
-		p := h.priceJob(ctx, job, odMemo, spotMemo)
+		p := pricer.Price(ctx, job)
 		acc, ok := days[key]
 		if !ok {
 			acc = &dayAccum{}
 			days[key] = acc
 		}
-		acc.total += p.total
-		acc.spot += p.spot
-		acc.onDemand += p.onDemand
+		acc.total += p.Total
+		acc.spot += p.Spot
+		acc.onDemand += p.OnDemand
 		acc.count++
 	}
 
@@ -495,22 +418,21 @@ func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry
 	}
 	pools := make(map[string]*poolAccum)
 
-	odMemo := make(map[string]float64)
-	spotMemo := make(map[string]spotResult)
+	pricer := cost.NewJobPricer(h.onDemand, h.spot)
 	for _, job := range jobs {
 		pool := job.Pool
 		if pool == "" {
 			pool = "cold-start"
 		}
-		p := h.priceJob(ctx, job, odMemo, spotMemo)
+		p := pricer.Price(ctx, job)
 		acc, ok := pools[pool]
 		if !ok {
 			acc = &poolAccum{}
 			pools[pool] = acc
 		}
-		acc.total += p.total
-		acc.spot += p.spot
-		acc.onDemand += p.onDemand
+		acc.total += p.Total
+		acc.spot += p.Spot
+		acc.onDemand += p.OnDemand
 		acc.count++
 		if job.Spot {
 			acc.spotCount++
