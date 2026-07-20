@@ -1008,7 +1008,7 @@ func TestBuildTags(t *testing.T) {
 			},
 		},
 		{
-			name: "Cost-attribution tags use configured custom keys with fixed values",
+			name: "Cost-attribution tags use configured custom keys with default values",
 			config: &config.Config{
 				TagKeyApplication: "cost:application",
 				TagKeyService:     "cost:service",
@@ -1022,6 +1022,43 @@ func TestBuildTags(t *testing.T) {
 				"runs-fleet:managed": "true",
 				"cost:application":   "runs-fleet",
 				"cost:service":       "runner",
+			},
+			wantAbsent: []string{"Application", "Service"},
+		},
+		{
+			name: "Cost-attribution tags use default keys with configured custom values",
+			config: &config.Config{
+				TagValueApplication: "my-org-infra",
+				TagValueService:     "ci-runner",
+			},
+			spec: &LaunchSpec{
+				RunID: 12345,
+			},
+			wantTags: map[string]string{
+				"Name":               "runs-fleet-runner",
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+				"Application":        "my-org-infra",
+				"Service":            "ci-runner",
+			},
+		},
+		{
+			name: "Cost-attribution tags use fully configured custom keys and values",
+			config: &config.Config{
+				TagKeyApplication:   "cost:application",
+				TagValueApplication: "my-org-infra",
+				TagKeyService:       "cost:service",
+				TagValueService:     "ci-runner",
+			},
+			spec: &LaunchSpec{
+				RunID: 12345,
+			},
+			wantTags: map[string]string{
+				"Name":               "runs-fleet-runner",
+				"runs-fleet:run-id":  "12345",
+				"runs-fleet:managed": "true",
+				"cost:application":   "my-org-infra",
+				"cost:service":       "ci-runner",
 			},
 			wantAbsent: []string{"Application", "Service"},
 		},
