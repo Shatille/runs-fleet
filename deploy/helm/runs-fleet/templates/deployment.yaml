@@ -285,9 +285,11 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "runs-fleet.secretName" . }}
-            {{- if and .Values.admin.existingSecret (ne .Values.admin.existingSecret (include "runs-fleet.secretName" .)) }}
+            {{- if or .Values.admin.existingSecret .Values.admin.oidc.clientSecret .Values.admin.sessionSecret }}
+            {{- if ne (include "runs-fleet.adminSecretName" .) (include "runs-fleet.secretName" .) }}
             - secretRef:
-                name: {{ .Values.admin.existingSecret }}
+                name: {{ include "runs-fleet.adminSecretName" . }}
+            {{- end }}
             {{- end }}
           resources:
             {{- toYaml .Values.orchestrator.resources | nindent 12 }}

@@ -173,6 +173,8 @@ admin:
   # Use an existing Secret (e.g. from a VaultSecretMap) instead of setting
   # oidc.clientSecret/sessionSecret directly above. Must provide the keys
   # RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET and RUNS_FLEET_ADMIN_SESSION_SECRET.
+  # Independent of github.existingSecret above -- setting one doesn't
+  # require setting the other; each gates its own Secret object.
   existingSecret: ""
 
 # Custom runner-label aliases (sets RUNS_FLEET_LABEL_ALIASES).

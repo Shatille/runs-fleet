@@ -79,12 +79,26 @@ Orchestrator service account name
 {{- end }}
 
 {{/*
-Secret name
+Secret name (GitHub App credentials)
 */}}
 {{- define "runs-fleet.secretName" -}}
 {{- if .Values.github.existingSecret -}}
 {{ .Values.github.existingSecret }}
 {{- else -}}
 {{ include "runs-fleet.fullname" . }}-secrets
+{{- end -}}
+{{- end }}
+
+{{/*
+Admin secret name (OIDC client secret, session signing secret). Independent
+of runs-fleet.secretName -- github.existingSecret and admin.existingSecret
+gate two separate Secret objects, so a deployer bringing their own GitHub
+Secret isn't forced to also bring their own admin Secret, or vice versa.
+*/}}
+{{- define "runs-fleet.adminSecretName" -}}
+{{- if .Values.admin.existingSecret -}}
+{{ .Values.admin.existingSecret }}
+{{- else -}}
+{{ include "runs-fleet.fullname" . }}-admin-secrets
 {{- end -}}
 {{- end }}
