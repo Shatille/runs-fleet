@@ -102,7 +102,7 @@ sudo systemctl enable docker
 sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
-DOCKER_COMPOSE_VERSION="5.1.4"
+DOCKER_COMPOSE_VERSION="5.3.1"
 COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
 COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
 # Download and verify checksum (filenames must match for sha256sum -c)
