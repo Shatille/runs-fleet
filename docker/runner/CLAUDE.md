@@ -22,9 +22,9 @@ When in doubt, ask the user before reaching for option 3.
 ## Docker tooling split
 
 - **`docker-ce`, `docker-ce-cli`, `containerd.io`**: Docker's apt repo (option 2). Docker packages the engine promptly; `apt-get upgrade` on rebuild keeps them current.
-- **`docker-buildx` / `docker-compose` cli-plugins**: pinned upstream GitHub releases (option 3, user-sanctioned 2026-07). Docker's apt plugin packages lag the plugin projects by months and ship builds on long-fixed `golang.org/x/*` and Go stdlib versions (25+ HIGH findings at apt versions vs 1 at upstream releases). Checksums are verified against each release's `checksums.txt`.
+- **`docker-buildx` / `docker-compose` cli-plugins**: pinned upstream GitHub releases (option 3, user-sanctioned 2026-07). Docker's apt plugin packages lag the plugin projects by months and ship builds on long-fixed `golang.org/x/*` and Go stdlib versions (25+ HIGH findings at apt versions vs 1 at upstream releases). Expected SHA256 digests are pinned in the Dockerfile per-arch — the trust anchor is this repo, not the release page (a compromised release could serve a matching same-origin checksums.txt; upstream signs nothing).
 
-**Plugin bump procedure**: update `BUILDX_VERSION` / `COMPOSE_VERSION` in the Dockerfile, run `make scan-runner`, and review `.trivy/vex.json` — the PURL pins there reference the versions these plugins vendor, so a bump may let statements be removed (or require re-pinning). The AMI host has its own compose pin (`DOCKER_COMPOSE_VERSION` in `packer/provision-base.sh`) — keep the two in sync.
+**Plugin bump procedure**: update `BUILDX_VERSION` / `COMPOSE_VERSION` **and all four `*_SHA256_*` ARGs** in the Dockerfile (take the digests from each release's `checksums.txt` at bump time), run `make scan-runner`, and review `.trivy/vex.json` — the PURL pins there reference the versions these plugins vendor, so a bump may let statements be removed (or require re-pinning). The AMI host has its own compose pin + digests (`DOCKER_COMPOSE_VERSION` / `DOCKER_COMPOSE_SHA256` in `packer/provision-base.sh`) — keep them in sync.
 
 ## Refreshing bundled `node_modules`
 

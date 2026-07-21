@@ -103,15 +103,21 @@ sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="5.3.1"
+# Digests pinned in-repo rather than fetched from the release page, so the
+# trust anchor is this repo (upstream publishes no artifact signatures).
+# Update together with the version bump; keep in sync with the runner image
+# COMPOSE_* ARGs in docker/runner/Dockerfile.
+case "${COMPOSE_ARCH}" in
+  x86_64)  DOCKER_COMPOSE_SHA256="f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959" ;;
+  aarch64) DOCKER_COMPOSE_SHA256="aa611e811d0ea25897839c404bfb5bf93ce706dc51c500a4457890f5d0606a86" ;;
+  *) echo "Unsupported compose arch: ${COMPOSE_ARCH}"; exit 1 ;;
+esac
 COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
 COMPOSE_URL="https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}"
-# Download and verify checksum (filenames must match for sha256sum -c)
-dl "${COMPOSE_URL}/${COMPOSE_BINARY}.sha256" -o "/tmp/${COMPOSE_BINARY}.sha256" \
-  || { echo "Failed to download Docker Compose checksum"; exit 1; }
 dl "${COMPOSE_URL}/${COMPOSE_BINARY}" -o "/tmp/${COMPOSE_BINARY}" \
   || { echo "Failed to download Docker Compose"; exit 1; }
-cd /tmp && sha256sum -c "${COMPOSE_BINARY}.sha256" \
-  || { echo "Docker Compose checksum mismatch"; rm -f "/tmp/${COMPOSE_BINARY}" "/tmp/${COMPOSE_BINARY}.sha256"; exit 1; }
+echo "${DOCKER_COMPOSE_SHA256}  /tmp/${COMPOSE_BINARY}" | sha256sum -c \
+  || { echo "Docker Compose checksum mismatch"; rm -f "/tmp/${COMPOSE_BINARY}"; exit 1; }
 # Install as standalone binary (docker-compose)
 sudo mv "/tmp/${COMPOSE_BINARY}" /usr/local/bin/docker-compose \
   || { echo "Failed to install Docker Compose binary"; exit 1; }
@@ -121,7 +127,6 @@ sudo mkdir -p /usr/local/lib/docker/cli-plugins \
   || { echo "Failed to create Docker CLI plugins directory"; exit 1; }
 sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose \
   || { echo "Failed to install Docker Compose plugin"; exit 1; }
-rm -f "/tmp/${COMPOSE_BINARY}.sha256"
 
 echo "==> Installing Node.js ecosystem"
 NODE_VERSION="22.13.1"
