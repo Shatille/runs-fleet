@@ -1,12 +1,12 @@
 ---
 topic: Infrastructure (Docker, Packer, Helm, Nix)
-last_compiled: 2026-07-09
-sources_count: 16
+last_compiled: 2026-07-21
+sources_count: 19
 ---
 
 # Infrastructure (Docker, Packer, Helm, Nix)
 
-## Purpose [coverage: high -- 16 sources]
+## Purpose [coverage: high -- 19 sources]
 
 Build and packaging artifacts for runs-fleet. Three target artifacts ship to
 production: a server image (the orchestrator, run on Fargate or a Kubernetes
@@ -185,7 +185,7 @@ filter `runner-base-{arch}-*`, `owners = ["self"]`, `most_recent = true`.
 - **workflow_dispatch** — manual, with `use_fallback_runners` to bootstrap on
   GitHub-hosted runners when no working fleet AMI exists (chicken/egg).
 
-## Data [coverage: high -- 7 sources]
+## Data [coverage: high -- 9 sources]
 
 ### Image labels and tags
 
@@ -227,12 +227,31 @@ use DynamoDB TTL — ~90-day expiry). All PAY_PER_REQUEST.
 `aws.*` carries the EC2 wiring: `baseUrl` (required, served to runners as
 `ACTIONS_CACHE_URL`), VPC/subnets/SG/instance profile, queue URLs, DynamoDB
 tables and jobs-GSI names, S3 buckets, runner image URL, launch template name,
-spot toggle, max runtime (default 360 min), and a free-form `tags` map.
+spot toggle, max runtime (default 360 min), a free-form `tags` map, and (PR
+#389) the cost-attribution overrides `tagKeyApplication` /
+`tagValueApplication` / `tagKeyService` / `tagValueService` (empty = the
+orchestrator defaults `Application`=`runs-fleet`, `Service`=`runner`).
 `orchestrator.serviceAccount.annotations` is the IRSA hook. Other top-level
 keys: `commonLabels`, `github.*`, `labelAliases`, `secrets.*` (ssm/vault),
-`logging.*`, `metrics.*`, `istio.*`.
+`logging.*`, `metrics.*`, `istio.*`, and (PR #389) `admin.*`.
 
-## Key Decisions [coverage: high -- 9 sources]
+`admin.*` plumbs the native-OIDC admin auth and audit persistence through the
+chart: `rateLimit` (default 60, always rendered), `auditTable` (empty = admin
+actions logged via slog but not persisted/queryable), `oidc.*` (`issuerUrl`,
+`clientId`, `clientSecret`, `redirectUrl` — defaults to
+`{aws.baseUrl}/api/auth/callback` — `scopes` default `openid,profile,email`,
+`groupsClaim` default `groups`), `sessionSecret`, `sessionTtlMinutes`
+(default 480, always rendered), and `existingSecret`. All auth fields default
+to `""`, matching the orchestrator's auth-disabled-when-unset design — a
+fully-unset block renders no admin OIDC env vars. Secrets take one of two
+paths: plain `oidc.clientSecret`/`sessionSecret` values land in a
+chart-created `<fullname>-admin-secrets` Secret, or `admin.existingSecret`
+names a pre-existing Secret carrying `RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET`
+and `RUNS_FLEET_ADMIN_SESSION_SECRET`. The Deployment mounts the admin secret
+as a second `envFrom` secretRef whenever one exists and its name differs from
+the GitHub secret's.
+
+## Key Decisions [coverage: high -- 11 sources]
 
 - **Runner image extends the official `ghcr.io/actions/actions-runner` base.**
   Replaced the earlier `ubuntu:24.04` + from-source docker-cli + SHA-pinned
@@ -290,6 +309,19 @@ keys: `commonLabels`, `github.*`, `labelAliases`, `secrets.*` (ssm/vault),
   Karpenter — it exists for deployments that self-host the control plane on a
   Kubernetes cluster while all runners remain EC2. The chart's pre-render
   checks fail loudly on missing required keys.
+- **Admin secret is its own independently-gated Secret object (PR #389).**
+  Before #389 the chart had no way at all to configure the already-shipped
+  admin OIDC auth or audit persistence — every env var is hardcoded per-field
+  in `deployment.yaml` with no generic passthrough. The PR's first cut nested
+  the admin OIDC/session secrets inside the `github.existingSecret` gate on
+  the chart's single Secret: a deployer bringing their own GitHub Secret but
+  supplying admin secrets as plain values got neither a rendered Secret nor
+  an `envFrom` entry — no template error, then a startup crash-loop on
+  `cfg.Validate()`'s partial-OIDC check, several layers from the cause.
+  `secrets.yaml` now renders two Secret resources gated separately by
+  `github.existingSecret` / `admin.existingSecret`, with a
+  `runs-fleet.adminSecretName` helper mirroring `runs-fleet.secretName` and
+  the `envFrom` secretRef deduplicated when both resolve to the same name.
 - **Static binaries everywhere.** All Go builds are `CGO_ENABLED=0`, `-s -w`,
   static. Server runtime is `alpine:3.19` with a non-root user and `/health`
   HEALTHCHECK.
@@ -369,4 +401,7 @@ keys: `commonLabels`, `github.*`, `labelAliases`, `secrets.*` (ssm/vault),
 - [.github/workflows/build-amis.yml](../../.github/workflows/build-amis.yml)
 - [deploy/helm/runs-fleet/Chart.yaml](../../deploy/helm/runs-fleet/Chart.yaml)
 - [deploy/helm/runs-fleet/values.yaml](../../deploy/helm/runs-fleet/values.yaml)
+- [deploy/helm/runs-fleet/templates/deployment.yaml](../../deploy/helm/runs-fleet/templates/deployment.yaml)
+- [deploy/helm/runs-fleet/templates/secrets.yaml](../../deploy/helm/runs-fleet/templates/secrets.yaml)
+- [deploy/helm/runs-fleet/templates/_helpers.tpl](../../deploy/helm/runs-fleet/templates/_helpers.tpl)
 - [deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf)

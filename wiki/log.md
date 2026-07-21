@@ -50,3 +50,12 @@
 **Sources scanned:** ~120 (all changed files since 2026-07-03 across PRs #383-#387, plus full source re-reads for the 15 recompiled topics)
 **Sources changed:** 66 files since 2026-07-03
 **Notes:** Cleared most of the 2026-04-30 `--full` recompile debt (9 topics had pre-K8s-removal content purged). Compilation surfaced a live bug: pkg/cost/getCostMetrics queries retired metric names — daily cost report EC2 section computes from zeros. Still pending: compute-providers merge decision, cache-service/housekeeping/queue-processing untouched (no source changes).
+
+## 2026-07-21
+
+**Topics updated:** observability, config-bootstrap, infrastructure, fleet-orchestration, state-storage, job-state-machine, admin-ui, cmd-server (8)
+**New topics:** none
+**Concepts:** db-record-as-rendezvous (new instance: cost report), two-track-reliability (cost blind-spot bullet → fixed)
+**Sources scanned:** changed files from PRs #389 + #390, full re-reads for the 8 topics
+**Sources changed:** 12 files since 2026-07-09
+**Notes:** Compiled on the fix/cost-report-job-records branch so the wiki correction merges with the fix it documents (PR #390). CONTEXT.md gotcha and stats updated.

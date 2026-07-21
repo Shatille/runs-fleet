@@ -1,6 +1,6 @@
 ---
 topic: Config + Bootstrap (env vars + AWS clients)
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 sources_count: 3
 ---
 
@@ -43,7 +43,7 @@ Timeouts (`pkg/config/timeouts.go`):
   - **Queues:** `QueueURL`, `QueueDLQURL`, `PoolQueueURL`, `EventsQueueURL`, `TerminationQueueURL`, `HousekeepingQueueURL`.
   - **DynamoDB:** `JobsTableName`, `JobsPoolStatusGSI`, `JobsInstanceIDGSI`, `PoolsTableName`, `AuditTableName` (2026-07, admin audit persistence — unset disables it), `CircuitBreakerTable`.
   - **S3 / SNS:** `CacheBucketName`, `CostReportSNSTopic`, `CostReportBucket`.
-  - **EC2:** `VPCID`, `SubnetIDs`, `SecurityGroupID`, `InstanceProfileARN`, `KeyName`, `SpotEnabled`, `MaxRuntimeMinutes`, `LaunchTemplateName`, `RunnerImage`, `Tags`, plus cost-attribution key remaps `TagKeyApplication`/`TagKeyService` (values are fixed `runs-fleet`/`runner`; only the key names are configurable).
+  - **EC2:** `VPCID`, `SubnetIDs`, `SecurityGroupID`, `InstanceProfileARN`, `KeyName`, `SpotEnabled`, `MaxRuntimeMinutes`, `LaunchTemplateName`, `RunnerImage`, `Tags`, plus cost-attribution tag remaps `TagKeyApplication`/`TagValueApplication`/`TagKeyService`/`TagValueService` (defaults `Application`=`runs-fleet`, `Service`=`runner`; keys and values independently configurable since PR #389 — values were previously fixed).
   - **Cache / Admin:** `CacheSecret`, `BaseURL` (required, absolute https), `AdminRateLimit`, `TraceUIURL`, `OIDCIssuerURL`/`OIDCClientID`/`OIDCClientSecret`/`OIDCRedirectURL` (defaults to `{BaseURL}/api/auth/callback`)/`OIDCScopes`/`OIDCGroupsClaim`, `AdminSessionSecret`, `AdminSessionTTLMinutes` (native OIDC as of 2026-07; superseded the earlier `AdminSecret` toggle).
   - **Metrics:** `MetricsCloudWatchEnabled`, `MetricsPrometheusEnabled`, `MetricsPrometheusPath`, `MetricsDatadogEnabled`, `MetricsDatadogAddr`, `MetricsDatadogTags`, `MetricsDatadogSampleRate`, `MetricsDatadogBufferPoolSize`, `MetricsDatadogWorkersCount`, `MetricsDatadogMaxMsgsPerPayload`. The metric name prefix is fixed in `pkg/metrics` (`RunsFleet` / `runs_fleet`) and is not configurable.
   - **Tracing:** `Tracing tracing.Config` (parsed by `pkg/tracing`, not here).
@@ -80,7 +80,9 @@ Selected env-var → field mappings (full list lives in `docs/CONFIGURATION.md`)
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `LaunchTemplateName` | `runs-fleet-runner` | — |
 | `RUNS_FLEET_TAGS` | `Tags` | — | JSON object |
 | `RUNS_FLEET_TAG_KEY_APPLICATION` | `TagKeyApplication` | `Application` | — |
+| `RUNS_FLEET_TAG_VALUE_APPLICATION` | `TagValueApplication` | `runs-fleet` | — |
 | `RUNS_FLEET_TAG_KEY_SERVICE` | `TagKeyService` | `Service` | — |
+| `RUNS_FLEET_TAG_VALUE_SERVICE` | `TagValueService` | `runner` | — |
 | `RUNS_FLEET_ADMIN_RATE_LIMIT` | `AdminRateLimit` | `60` | — |
 | `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL` (+ `_CLIENT_ID`, `_CLIENT_SECRET`, `_REDIRECT_URL`, `_SCOPES`, `_GROUPS_CLAIM`) | `OIDC*` | scopes `openid,profile,email`; claim `groups` | all-or-nothing with the session secret |
 | `RUNS_FLEET_ADMIN_SESSION_SECRET` / `_TTL_MINUTES` | `AdminSessionSecret` / `AdminSessionTTLMinutes` | TTL `480` | required once any OIDC var is set |
@@ -110,7 +112,7 @@ Selected env-var → field mappings (full list lives in `docs/CONFIGURATION.md`)
 - **`BaseURL` is required and https-only.** It feeds the S3 Actions cache URLs handed to runners (PR #325 made it mandatory to activate the cache) and the OIDC redirect default (`{BaseURL}/api/auth/callback`).
 - **OIDC config is all-or-nothing.** `validateOIDCConfig` treats any one of issuer / client-id / client-secret / session-secret being set as intent to enable admin auth and errors on missing companions — a typo cannot silently disable auth. Checks are explicit (not a map + loop) so the reported missing field is deterministic.
 - **Per-component timeouts as constants.** `MessageProcessTimeout = 90s` is explicitly sized for synchronous EC2 Fleet creation; `MessageReceiveTimeout = 25s` matches SQS long-poll headroom. The AWS transport constants encode their interplay in comments: `AWSSQSResponseHeaderTimeout` must exceed the 20s long-poll, `AWSPerOpTimeout` sits below it (so the middleware exempts ReceiveMessage), and `AWSTCPUserTimeout` stays below `MessageProcessTimeout`.
-- **Reserved tag namespaces.** System owns `runs-fleet:` and rejects `aws:` on custom EC2 tags. Cost-attribution tag *values* are fixed (`runs-fleet`/`runner`); only the key names are remappable (`TagKeyApplication`/`TagKeyService`) for forks with a different tag policy.
+- **Reserved tag namespaces.** System owns `runs-fleet:` and rejects `aws:` on custom EC2 tags. Cost-attribution tag keys *and* values are independently remappable (`TagKeyApplication`/`TagValueApplication`, `TagKeyService`/`TagValueService`) for forks with a different tag policy. PR #389 made the values configurable — previously fixed at `runs-fleet`/`runner`, which remain the defaults, so unset is a no-op. Overriding the value is the only safe path for e.g. `Application=my-org-infra`: a duplicate custom tag on the same key has undocumented EC2 collision behavior within one `CreateFleet` TagSpecification.
 - **Validator is structural, not network.** `Validate` checks shape (regex, ranges, required-ness) but does not contact AWS, Vault, or the OIDC issuer — failures surface only when the client is later constructed and called.
 
 ## Gotchas [coverage: medium -- 3 sources]

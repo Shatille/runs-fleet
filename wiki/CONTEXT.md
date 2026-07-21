@@ -30,8 +30,8 @@ The first compile surfaced several details worth knowing:
 - **Backend abstraction is partial:** only K8s lives behind the `Provider` interface; EC2 wires `pkg/fleet` directly into the orchestrator.
 - **Phase 2 admin actions are not built yet:** docs/ADMIN_UI_PLAN.md lists manual instance termination, circuit reset, forced reconcile, DLQ redrive — only the orphaned-jobs trigger is wired.
 - **Auth model has cut over:** `pkg/admin/auth.go` is fully on Keycloak headers; the `adminSecret` parameter is now a vestigial boolean toggle.
-- **Cost report metric drift:** `pkg/cost/getCostMetrics` queries retired metric names (`FleetSizeIncrement`, `JobSuccess`, `JobFailure`, `JobDuration`) that nothing publishes — the daily report's EC2 section computes from zeros. See observability Gotchas.
+- **Cost report sources job records:** the daily report's EC2 section computes from DynamoDB job records via the shared `pkg/cost/jobpricing.go` pricer (same path as the admin cost page), replacing CloudWatch queries against retired metric names that had zeroed the section. See observability Key Decisions.
 
 ## Stats
 
-Compiled: 2026-07-09 | Topics: 19 | Concepts: 4 | Sources: 92 | Mode: codebase
+Compiled: 2026-07-21 | Topics: 19 | Concepts: 4 | Sources: 96 | Mode: codebase

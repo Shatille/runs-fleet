@@ -1,7 +1,7 @@
 ---
 topic: Admin API + UI
-last_compiled: 2026-07-09
-sources_count: 30
+last_compiled: 2026-07-21
+sources_count: 31
 ---
 
 # Admin API + UI
@@ -26,7 +26,7 @@ unbuilt: only orphaned-job cleanup and hung-job requeue are wired; manual
 instance termination, circuit reset, forced reconciliation, and DLQ redrive
 are still planned.
 
-## Architecture [coverage: high -- 30 sources]
+## Architecture [coverage: high -- 31 sources]
 
 The package is organised one handler file per resource type, all sharing a
 single `AuthMiddleware` instance:
@@ -47,8 +47,12 @@ single `AuthMiddleware` instance:
   names through a shared `queueByName` mapping so they cannot drift.
 - `handler_circuit.go` -- `CircuitHandler`, scans the circuit-state table.
 - `handler_cost.go` -- `CostHandler`, month-to-date cost summary, daily
-  series, and by-pool breakdown, all priced through a single shared
-  `priceJob` (live on-demand/spot prices with hard-coded fallback).
+  series, and by-pool breakdown. Per-job pricing was extracted to the shared
+  `cost.JobPricer` (`pkg/cost/jobpricing.go`, PR #390): each compute func
+  opens with `cost.NewJobPricer(h.onDemand, h.spot)` (live on-demand/spot
+  prices with hard-coded fallback); the handler's former `priceJob` /
+  `jobPricing` / `spotResult` are gone. Family/shape/pool aggregation stayed
+  in the handler.
 - `handler_metrics.go` -- `MetricsHandler`, the aggregate operational
   snapshot (`/api/metrics/summary`); reuses `CostHandler.CostMTD`.
 - `handler_housekeeping.go` -- `HousekeepingHandler`, orphaned-job cleanup.
@@ -91,7 +95,7 @@ formatting helpers (`formatRelativeTime`, `formatTimestamp`,
 `ui/lib/types.ts`. The cost page's daily bar chart is hand-rolled -- no chart
 dependency was added.
 
-## Talks To [coverage: high -- 30 sources]
+## Talks To [coverage: high -- 31 sources]
 
 - **DynamoDB**
   - `runs-fleet-pools` via `PoolDB` (`ListPools`, `GetPoolConfig`,
@@ -116,10 +120,11 @@ dependency was added.
   oldest-message age) on the main, pool, events, termination, and
   housekeeping queues, plus the main queue DLQ. The requeue handler also
   re-enqueues jobs into the main queue via `housekeeping.JobRequeuer`.
-- **Live EC2 pricing** -- `CostHandler` takes an `onDemandPricer` (satisfied
-  by `pkg/cost.PriceFetcher`) and a `spotPricer` (satisfied by
-  `pkg/fleet.Manager.SpotPrice`); both are nil-safe with fallback to the
-  hard-coded price table and fixed spot discount.
+- **Live EC2 pricing via `pkg/cost`** -- `CostHandler` takes an
+  `onDemandPricer` (satisfied by `pkg/cost.PriceFetcher`) and a `spotPricer`
+  (satisfied by `pkg/fleet.Manager.SpotPrice`) and delegates the pricing math
+  to `cost.JobPricer` (PR #390); both pricers are nil-safe with fallback to
+  the hard-coded price table and fixed spot discount.
 - **An OIDC provider** (Keycloak, Auth0, Okta, Google, or any standards-
   compliant issuer) -- the orchestrator is its own OIDC relying party as of
   2026-07 (authorization-code + PKCE, `pkg/admin/oidc.go`). No external
@@ -224,7 +229,7 @@ UI (`ui.go::UIHandler`):
 - `GET /admin/...` -- serves the embedded Next.js export with directory ->
   `index.html` resolution and SPA fallback to root `index.html`.
 
-## Data [coverage: high -- 30 sources]
+## Data [coverage: high -- 31 sources]
 
 **Pool response shape** (`PoolResponse` in `handler.go`) -- the API returns
 both desired and observed counts: `desired_running`, `desired_stopped`,
@@ -272,9 +277,9 @@ runner-minute matrix (`RunnerMinuteEntry` per (arch, vCPU), plus the rate
 map). `CostDailyResponse.Days` is zero-filled `CostDayEntry` rows;
 `CostByPoolResponse.Pools` is `CostPoolEntry` rows. All three endpoints
 share `monthToDateJobs` (completed jobs since the start of the current UTC
-month, `Limit: 10000`) and `priceJob` (per-request memoized live
-on-demand/spot lookups; jobs with no instance type price as `t4g.medium`;
-durations ≤ 0 bill as 0.5h minimum).
+month, `Limit: 10000`) and a per-request `cost.JobPricer` (memoizes live
+on-demand/spot lookups per instance type; jobs with no instance type price
+as `t4g.medium`; durations ≤ 0 bill as 0.5h minimum).
 
 **Metrics summary shape** (`MetricsSummaryResponse` in
 `handler_metrics.go`) -- `jobs_24h` counts from `GetJobStatsForAdmin`,
@@ -295,7 +300,7 @@ real completions; the requeue handler deliberately sweeps only `launched`.
 `interruption_count -> failure_count` and `auto_reset_at -> reset_at` for
 display.
 
-## Key Decisions [coverage: high -- 30 sources]
+## Key Decisions [coverage: high -- 31 sources]
 
 - **Native OIDC, no external gatekeeper (2026-07).** `auth.go`'s
   `AuthMiddleware` validates a self-contained, HMAC-signed session cookie
@@ -340,14 +345,17 @@ display.
   loop while it still holds the pool lock. Where an exact figure would need
   new history (spot interruptions), the API ships an explicitly flagged
   estimate instead of silently wrong data.
-- **One pricing function for all cost endpoints.** `CostHandler.priceJob`
-  is the single source of per-job pricing (live on-demand via
-  `cost.PriceFetcher`, live spot via `fleet.Manager`, hard-coded table +
-  fixed discount as fallback), shared by summary, daily, and by-pool -- and
-  `CostMTD` feeds the metrics summary -- so every surface reports the same
-  dollar figure. Daily buckets by `CreatedAt` deliberately match the
-  `monthToDateJobs` filter dimension so day totals sum to the summary
-  total.
+- **One pricing function for all cost endpoints -- now shared with the
+  daily report (PR #390).** `cost.JobPricer` (extracted behavior-preserving
+  from `CostHandler.priceJob`; `handler_cost_test.go` unchanged) is the
+  single source of per-job pricing (live on-demand via `cost.PriceFetcher`,
+  live spot via `fleet.Manager`, hard-coded table + fixed discount as
+  fallback), shared by summary, daily, and by-pool -- and `CostMTD` feeds
+  the metrics summary -- so every surface reports the same dollar figure.
+  The extraction lets `pkg/cost.Reporter`'s daily cost report price the
+  same job records with the same math. Daily buckets by `CreatedAt`
+  deliberately match the `monthToDateJobs` filter dimension so day totals
+  sum to the summary total.
 - **Embedded Next.js UI for single-binary deployment.** `//go:embed
   all:ui/out` packages the static export into the Go binary; deployment is
   one artifact. If the export is missing, the handler returns a 503 with the
@@ -478,6 +486,7 @@ display.
 - [pkg/admin/handler_queues.go](../../pkg/admin/handler_queues.go)
 - [pkg/admin/handler_circuit.go](../../pkg/admin/handler_circuit.go)
 - [pkg/admin/handler_cost.go](../../pkg/admin/handler_cost.go)
+- [pkg/cost/jobpricing.go](../../pkg/cost/jobpricing.go)
 - [pkg/admin/handler_metrics.go](../../pkg/admin/handler_metrics.go)
 - [pkg/admin/handler_housekeeping.go](../../pkg/admin/handler_housekeeping.go)
 - [pkg/admin/handler_requeue.go](../../pkg/admin/handler_requeue.go)
