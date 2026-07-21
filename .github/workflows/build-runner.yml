@@ -206,7 +206,11 @@ jobs:
           cache-to: type=registry,ref=${{ needs.prepare.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
           sbom: true
           provenance: mode=max
-          no-cache-filters: stage-1
+          # Must match a declared stage name; "stage-1" (BuildKit's synthetic
+          # name for the then-unnamed final stage) never matched, so byte-identical
+          # layers like `npm install -g npm@latest` and `apt-get upgrade` were
+          # served stale from the registry cache instead of running fresh.
+          no-cache-filters: runtime
 
   # Create multi-arch manifest
   manifest:

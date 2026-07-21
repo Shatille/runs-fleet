@@ -14,10 +14,17 @@ In strict order of preference:
 
 1. **Docker's apt repo or Ubuntu's apt** (default). Add to the existing `apt-get install` step. Apt-managed packages get security updates via `apt-get upgrade` on every image rebuild.
 2. **The package's own apt repo** (e.g., NodeSource, deadsnakes, hashicorp). Add its GPG key and `sources.list.d` entry alongside Docker's. Still apt-managed.
-3. **An official upstream binary release** (e.g., a GitHub release tarball) only if no apt path exists. Pin the version. Run `make scan-runner`; document or fix any new findings.
+3. **An official upstream binary release** (e.g., a GitHub release tarball) only if no apt path exists *or the apt packaging demonstrably lags upstream security fixes* (see "Docker tooling split" below). Pin the version. Run `make scan-runner`; document or fix any new findings.
 4. **NEVER**: build from source in the Dockerfile, vendor SHA512-pinned tarballs from npm/PyPI/crates.io, add per-CVE patch RUN steps that overwrite files in place. These created the patch treadmill the previous Dockerfile suffered from — every new CVE became another bump-and-hash commit.
 
 When in doubt, ask the user before reaching for option 3.
+
+## Docker tooling split
+
+- **`docker-ce`, `docker-ce-cli`, `containerd.io`**: Docker's apt repo (option 2). Docker packages the engine promptly; `apt-get upgrade` on rebuild keeps them current.
+- **`docker-buildx` / `docker-compose` cli-plugins**: pinned upstream GitHub releases (option 3, user-sanctioned 2026-07). Docker's apt plugin packages lag the plugin projects by months and ship builds on long-fixed `golang.org/x/*` and Go stdlib versions (25+ HIGH findings at apt versions vs 1 at upstream releases). Checksums are verified against each release's `checksums.txt`.
+
+**Plugin bump procedure**: update `BUILDX_VERSION` / `COMPOSE_VERSION` in the Dockerfile, run `make scan-runner`, and review `.trivy/vex.json` — the PURL pins there reference the versions these plugins vendor, so a bump may let statements be removed (or require re-pinning). The AMI host has its own compose pin (`DOCKER_COMPOSE_VERSION` in `packer/provision-base.sh`) — keep the two in sync.
 
 ## Refreshing bundled `node_modules`
 
@@ -83,7 +90,7 @@ Pushes to `main` touching `docker/runner/**`, `cmd/agent/**`, `pkg/agent/**`, `.
 
 ## What lives where
 
-- `Dockerfile` — image build. Stage 1 builds the agent binary; stage 2 extends the official base, installs apt packages, refreshes npm, copies the agent.
+- `Dockerfile` — image build. Stage 1 builds the agent binary; stage 2 (`runtime` — the name is load-bearing: `build-runner.yml`'s `no-cache-filters: runtime` forces its layers fresh each CI build so `npm@latest` / `apt-get upgrade` can't be served stale from registry cache) extends the official base, installs apt packages, installs pinned buildx/compose plugins, refreshes npm, copies the agent.
 - `entrypoint.sh` — execs the agent binary. Keep it trivial.
 - `../../.trivy/trivy.yaml` — shared Trivy config for local + CI (severity, pkg types).
 - `../../.trivy/vex.json` — OpenVEX statements with per-CVE rationale.
