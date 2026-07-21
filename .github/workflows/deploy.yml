@@ -139,7 +139,10 @@ jobs:
           cache-to: type=registry,ref=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cache-${{ matrix.arch }},mode=max,image-manifest=true
           sbom: true
           provenance: mode=max
-          no-cache-filters: stage-1
+          # Must match a declared stage name; "stage-1" (a synthetic BuildKit
+          # name) matched no stage in this Dockerfile, leaving the final stage's
+          # apk layers eligible for stale registry-cache hits.
+          no-cache-filters: runtime
 
   manifest:
     name: Create Manifest

@@ -50,7 +50,12 @@ echo "==> Scanning filesystem for HIGH/CRITICAL CVEs (severity / pkg types from 
 #   packages baked into the AMI. /var/lib/docker holds pre-baked image layers
 #   (see provision-base.sh) — runtime artifacts scanned upstream by their
 #   publishers, not host software; without the skip their nested package DBs
-#   and Go binaries would flood (or block) the gate.
+#   and Go binaries would flood (or block) the gate. /opt/hostedtoolcache holds
+#   pre-baked toolchain distributions that setup-go/setup-node would otherwise
+#   download at job time; the only hits there are go.mod files inside the Go
+#   toolchains' own source trees (x/crypto pins for internal codegen tools,
+#   the stdlib's vendored x/net) — even the newest patched Go release flags,
+#   so no baked version can ever scan clean.
 # No --exit-code here: the report is emitted as JSON and gate.sh decides
 # pass/fail, failing only on findings we can remediate (OS/apt packages, our
 # own agent binary). CVEs that live only in third-party prebuilt binaries
@@ -69,6 +74,7 @@ sudo trivy filesystem \
   --skip-dirs /run \
   --skip-dirs /var/cache \
   --skip-dirs /var/lib/docker \
+  --skip-dirs /opt/hostedtoolcache \
   --skip-dirs /root/.cache \
   --skip-dirs /home/ec2-user/.cache \
   /
