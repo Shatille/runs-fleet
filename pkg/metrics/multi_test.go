@@ -176,6 +176,7 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 		{"PublishMessageDeletionFailure", func() error { return multi.PublishMessageDeletionFailure(ctx, "events") }},
 		{"PublishInstanceHours", func() error { return multi.PublishInstanceHours(ctx, "4", "c7g", 2) }},
 		{"PublishEstimatedCost", func() error { return multi.PublishEstimatedCost(ctx, 12.5) }},
+		{"PublishRunnerBuildCacheInterception", func() error { return multi.PublishRunnerBuildCacheInterception(ctx, "engaged") }},
 	}
 
 	for _, tt := range tests {

@@ -271,6 +271,19 @@ func TestCloudWatchPublisher_RunnerExecutionSeconds(t *testing.T) {
 	})
 }
 
+func TestCloudWatchPublisher_RunnerBuildCacheInterception(t *testing.T) {
+	t.Parallel()
+	var got capturedDatum
+	p := capturingPublisher(t, &got)
+	if err := p.PublishRunnerBuildCacheInterception(context.Background(), "engaged"); err != nil {
+		t.Fatalf("publish error = %v", err)
+	}
+	if got.name != "RunnerBuildCacheInterception" {
+		t.Errorf("name = %s, want RunnerBuildCacheInterception", got.name)
+	}
+	assertDimMap(t, got.dimensions, map[string]string{"Status": "engaged"})
+}
+
 func TestCloudWatchPublisher_GaugeMetrics(t *testing.T) {
 	t.Parallel()
 

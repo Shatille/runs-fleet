@@ -72,11 +72,12 @@ type PrometheusPublisher struct {
 	messageDeletionFailures *prometheus.CounterVec
 
 	// Cost
-	instanceHours           *prometheus.CounterVec
-	estimatedCost           prometheus.Gauge
-	runnerExecutionSeconds  *prometheus.CounterVec
-	runnerToolCacheMiss     *prometheus.CounterVec
-	runnerCacheInterception *prometheus.CounterVec
+	instanceHours                *prometheus.CounterVec
+	estimatedCost                prometheus.Gauge
+	runnerExecutionSeconds       *prometheus.CounterVec
+	runnerToolCacheMiss          *prometheus.CounterVec
+	runnerCacheInterception      *prometheus.CounterVec
+	runnerBuildCacheInterception *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -265,6 +266,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "runner_cache_interception_total",
 			Help: "Jobs by on-host cache interceptor outcome (engaged, failed, disabled)",
 		}, []string{"status"}),
+		runnerBuildCacheInterception: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_build_cache_interception_total",
+			Help: "Jobs by buildx layer-cache shim outcome (engaged, skipped, failed, disabled)",
+		}, []string{"status"}),
 	}
 
 	registry.MustRegister(
@@ -278,7 +283,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
 		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds, p.runnerToolCacheMiss,
-		p.runnerCacheInterception,
+		p.runnerCacheInterception, p.runnerBuildCacheInterception,
 	)
 
 	return p
@@ -509,6 +514,11 @@ func (p *PrometheusPublisher) PublishRunnerToolCacheMiss(_ context.Context, tool
 
 func (p *PrometheusPublisher) PublishRunnerCacheInterception(_ context.Context, status string) error { //nolint:revive
 	p.runnerCacheInterception.WithLabelValues(status).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerBuildCacheInterception(_ context.Context, status string) error { //nolint:revive
+	p.runnerBuildCacheInterception.WithLabelValues(status).Inc()
 	return nil
 }
 
