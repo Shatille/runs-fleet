@@ -70,27 +70,31 @@ RUN set -ex; \
 # The buildx/compose cli-plugins come from their upstream GitHub releases, not
 # Docker's apt repo: the apt packaging lags the plugin projects by months and
 # ships builds on long-fixed golang.org/x/* and Go stdlib versions (25+ HIGH
-# findings vs 1 at the current upstream releases). Checksums are verified
-# against each release's own checksums.txt. Bump procedure: update the two
-# ARGs and re-run `make scan-runner` (see docker/runner/CLAUDE.md).
+# findings vs 1 at the current upstream releases). Expected digests are pinned
+# here rather than fetched from the release's checksums.txt so the trust
+# anchor is this repo, not the release page (upstream publishes no artifact
+# signatures). Bump procedure: update the version ARGs together with all four
+# digests and re-run `make scan-runner` (see docker/runner/CLAUDE.md).
 ARG BUILDX_VERSION=0.35.0
 ARG COMPOSE_VERSION=5.3.1
+ARG BUILDX_SHA256_AMD64=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda
+ARG BUILDX_SHA256_ARM64=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766
+ARG COMPOSE_SHA256_AMD64=f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959
+ARG COMPOSE_SHA256_ARM64=aa611e811d0ea25897839c404bfb5bf93ce706dc51c500a4457890f5d0606a86
 RUN set -ex; \
     case "${TARGETARCH}" in \
-        amd64) COMPOSE_ARCH=x86_64 ;; \
-        arm64) COMPOSE_ARCH=aarch64 ;; \
+        amd64) COMPOSE_ARCH=x86_64; BUILDX_SHA256="${BUILDX_SHA256_AMD64}"; COMPOSE_SHA256="${COMPOSE_SHA256_AMD64}" ;; \
+        arm64) COMPOSE_ARCH=aarch64; BUILDX_SHA256="${BUILDX_SHA256_ARM64}"; COMPOSE_SHA256="${COMPOSE_SHA256_ARM64}" ;; \
         *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /usr/libexec/docker/cli-plugins /tmp/plugins; \
     cd /tmp/plugins; \
     curl -fsSLO "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${TARGETARCH}"; \
-    curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/checksums.txt" \
-        | grep " \*buildx-v${BUILDX_VERSION}.linux-${TARGETARCH}\$" | sha256sum -c; \
+    echo "${BUILDX_SHA256} *buildx-v${BUILDX_VERSION}.linux-${TARGETARCH}" | sha256sum -c; \
     install -m 0755 "buildx-v${BUILDX_VERSION}.linux-${TARGETARCH}" \
         /usr/libexec/docker/cli-plugins/docker-buildx; \
     curl -fsSLO "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}"; \
-    curl -fsSL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/checksums.txt" \
-        | grep " \*docker-compose-linux-${COMPOSE_ARCH}\$" | sha256sum -c; \
+    echo "${COMPOSE_SHA256} *docker-compose-linux-${COMPOSE_ARCH}" | sha256sum -c; \
     install -m 0755 "docker-compose-linux-${COMPOSE_ARCH}" \
         /usr/libexec/docker/cli-plugins/docker-compose; \
     cd /; \

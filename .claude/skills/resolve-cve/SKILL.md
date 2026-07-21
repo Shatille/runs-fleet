@@ -55,8 +55,10 @@ Follow `docker/runner/CLAUDE.md`. In order:
    the apt/current version. Docker's apt repo lags buildx/compose releases by
    months; the upstream release often already cleared most findings. If it
    scans clean(er), pin it (`BUILDX_VERSION`/`COMPOSE_VERSION` ARGs in
-   `docker/runner/Dockerfile`; checksums verified against the release's
-   `checksums.txt`, format `<sha256> *<filename>`).
+   `docker/runner/Dockerfile`) together with its per-arch SHA256 digests —
+   pin digests in-repo, never verify against a checksums file fetched from
+   the same release page (same-origin trust; a compromised release matches
+   its own checksums).
 4. **VEX** — only with evidence (§4).
 5. **Leave visible non-blocking** — the gate is target-scoped; third-party
    prebuilt binaries never block. Findings clear when upstream republishes.
