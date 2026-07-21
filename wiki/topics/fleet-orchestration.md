@@ -1,6 +1,6 @@
 ---
 topic: Fleet Orchestration (EC2 Fleet API)
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 sources_count: 3
 ---
 
@@ -94,9 +94,9 @@ the next AZ, any other error fails fast.
   `circuit.State`; `circuit.StateOpen` forces on-demand.
 - **`pkg/config`** — `*config.Config` provides `SpotEnabled`,
   `LaunchTemplateName`, `RunnerImage`, `TerminationQueueURL`,
-  `SecretsBackend`, Vault settings, custom `Tags` map, and
-  `TagKeyApplication`/`TagKeyService` remapping. `aws.Config` feeds the EC2
-  client constructor.
+  `SecretsBackend`, Vault settings, custom `Tags` map, and the
+  `TagKeyApplication`/`TagValueApplication`/`TagKeyService`/`TagValueService`
+  cost-attribution remaps. `aws.Config` feeds the EC2 client constructor.
 - **`pkg/metrics`** — optional `MetricsAPI` publishes `fleet_create`
   success/failure counts and CreateFleet latency, dimensioned by capacity
   (`spot`/`on_demand`).
@@ -183,9 +183,12 @@ func (is InstanceSpec) MatchesFlexibleSpec(spec FlexibleSpec) bool
 - `runs-fleet:pool` — when `Pool` is set.
 - `runs-fleet:arch` — when `Arch` is set.
 - `Role` — set to `Repo` for cost allocation.
-- `Application=runs-fleet` and `Service=runner` — cost-attribution tags;
-  values are fixed, key names remappable via `TagKeyApplication` /
-  `TagKeyService` config.
+- `Application=runs-fleet` and `Service=runner` (defaults) — cost-attribution
+  tags; both key names and values configurable via `TagKeyApplication` /
+  `TagValueApplication` and `TagKeyService` / `TagValueService` (PR #389;
+  values were fixed before). The `applicationTagKey`/`applicationTagValue`/
+  `serviceTagKey`/`serviceTagValue` helpers fall back to the defaults on
+  empty config fields, so runner instances are always tagged.
 - `runs-fleet:runner-image`, `runs-fleet:termination-queue-url` — bootstrap script reads these.
 - `runs-fleet:secrets-backend` plus `runs-fleet:vault-*`
   (`vault-addr`, `vault-kv-mount`, `vault-kv-version`, `vault-base-path`,
@@ -280,6 +283,14 @@ them.
 - **AZ rotation in `CreateOnDemandInstance`** — `RunInstances` targets one
   subnet per call, so capacity-class errors rotate to the next AZ while any
   other error (auth, bad config) fails fast without burning attempts.
+- **PR #389 (commit fea609c): cost-attribution tag *values* configurable,
+  mirroring the existing key remaps.** The values were hardcoded
+  (`runs-fleet`/`runner`) with only the key names remappable; a fork needing
+  `Application=my-org-infra` could not safely add a duplicate custom tag on
+  the same key, because EC2 does not document collision behavior for two
+  same-key tags in one `CreateFleet` TagSpecification. New env vars
+  `RUNS_FLEET_TAG_VALUE_APPLICATION`/`RUNS_FLEET_TAG_VALUE_SERVICE` default
+  to the prior hardcoded values, so unset is a no-op.
 - **`CreateTags` fallback after `CreateFleet`** for spot tag propagation
   (commit c7e0a6b). The `TagSpecifications` in `CreateFleetInput` were
   observed to silently drop on spot instances; without

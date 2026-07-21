@@ -1,6 +1,6 @@
 ---
 concept: Two-Track Reliability (Spot for Cold-Start, On-Demand for Warm Pools)
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 topics_connected: [project-overview, fleet-orchestration, warm-pools, events-and-termination]
 status: active
 ---
@@ -32,7 +32,7 @@ The split reflects a strict mental model: **interruption tolerance is a property
 The decision shows up subtly in the code:
 - The 2x default CPU range exists *only* for spot path diversification. If you change spot policy to single-AZ or single-instance-type, the range becomes wasteful.
 - The `ForceOnDemand=true` re-queue in `pkg/events/handler.go` is what makes the system progress monotonically: a job downgrades from spot → on-demand on retry, never the reverse. This means a hot capacity pool degrades the cluster's spot ratio, not its success rate.
-- The cost reporter's hardcoded "70% spot discount" assumption (`pkg/cost/pricing.go`) is calibrated to the cold-start path. When warm-pool usage grows, the report under-reports actual cost — they're paying full on-demand on warm-pool runtime.
+- The old cost-report blind spot here is fixed as of PR #390: the daily report now prices each job by its actual spot/on-demand flag from the job record (live spot feed when available, the fixed "70% discount" in `pkg/cost/pricing.go` only as fallback), so warm-pool on-demand runtime is no longer silently priced as if it were spot.
 
 The choice deliberately leaves money on the table on the warm-pool path. The trade is correct: a warm pool that flips to spot would face a continuous reliability problem (on-demand instances cannot transition to/from spot capacity), whereas a cold-start fleet that occasionally takes an interruption pays only the re-queue cost.
 

@@ -1,6 +1,6 @@
 ---
 topic: Server (Orchestrator Entry Point)
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 sources_count: 6
 ---
 
@@ -21,7 +21,7 @@ Boot sequence in `main()` ([cmd/server/main.go](../../cmd/server/main.go)):
 7. `initCircuitBreaker` (only if `cfg.CircuitBreakerTable` is set and the fleet manager exists) wires `circuit.Breaker` into both fleet and event handler.
 8. `initSecretsStore` builds the secrets backend (SSM or Vault); optional `termination.NewHandler` if `cfg.TerminationQueueURL` is set.
 9. `initGitHubClient(cfg)` builds a single `*gh.Client` (nil if GitHub App credentials are absent) and is threaded into both `initHousekeeping` and `initRunnerManager`.
-10. `initHousekeeping` builds the `housekeeping.Runner` (nil if no pools table); `initRunnerManager` builds `runner.Manager` from the same shared GitHub client (nil if the client is nil).
+10. `initHousekeeping` builds the `housekeeping.Runner` (nil if no pools table). Since PR #390 it also takes the fleet manager: when cost reporting is configured (`cfg.CostReportSNSTopic` or `cfg.CostReportBucket`), it wires `cost.NewReporter(awsCfg, dbClient, spot, cfg, ...)` — `dbClient` as the `cost.JobLister` (the daily report prices completed job records via `ListJobsForAdmin`) and the fleet manager as the `cost.SpotPricer`, guarded against the typed-nil trap before the interface assignment. `initRunnerManager` builds `runner.Manager` from the same shared GitHub client (nil if the client is nil).
 11. Build `worker.DirectProcessor` and a 10-slot semaphore (`directProcessorSem`) for synchronous fast-path processing.
 12. Construct the `webhookServer` struct and call `setupHTTPRoutes` to register handlers on a `http.ServeMux`.
 13. Start `http.Server` on `:8080` (15s read/write, 60s idle timeout).
@@ -72,7 +72,7 @@ Not applicable. The server owns no persistent state directly. All state lives in
 - Direct-processing semaphore is sized to 10; bursts beyond that fall through to normal queue processing (no error, just skipped fast path).
 - Webhook handler always responds 200 OK for any recognized event even when no further action is taken — relies on `gh.ParseWebhook` for HMAC/parse rejection at 400.
 - Job re-queue path (`HandleJobFailure`) requires the runner name to begin with `runs-fleet-`; failures for other runner names are silently skipped. Max retries is enforced inside `internal/handler`, not in `main.go`.
-- The `in_progress` case guards against Go's typed-nil trap: assigning a nil `*db.Client` directly to the `handler.JobStartupDB` interface would make the interface non-nil, defeating the nil check inside `PublishJobStartupMetrics`; `processWebhookEvent` only assigns when `ws.dbClient != nil`.
+- The `in_progress` case guards against Go's typed-nil trap: assigning a nil `*db.Client` directly to the `handler.JobStartupDB` interface would make the interface non-nil, defeating the nil check inside `PublishJobStartupMetrics`; `processWebhookEvent` only assigns when `ws.dbClient != nil`. `initHousekeeping` applies the same guard for a nil `*fleet.Manager` before assigning it to the `cost.SpotPricer` interface.
 - Circuit breaker is only wired when `cfg.CircuitBreakerTable` is set and the EC2 fleet manager exists (`initCircuitBreaker` early-returns otherwise).
 - Termination and housekeeping are gated on config: termination requires `cfg.TerminationQueueURL`; housekeeping requires a pools table name (`cfg.PoolsTableName`) since it needs the table for task locking. Missing config silently disables them (nil handler, not started).
 - Both the runner manager and housekeeping's GitHub job checker are skipped (nil) if GitHub App credentials (`cfg.GitHubAppID` / `cfg.GitHubAppPrivateKey`) are not configured — downstream callers must tolerate a nil `*runner.Manager`, and `housekeeping.Tasks.SetGitHubJobChecker` is only called when the shared client is non-nil.

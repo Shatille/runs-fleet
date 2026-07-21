@@ -147,7 +147,7 @@ func main() {
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, jobQueue, cfg)
 	}
 	githubClient := initGitHubClient(cfg)
-	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, jobQueue, githubClient)
+	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, fleetManager, jobQueue, githubClient)
 
 	runnerManager := initRunnerManager(githubClient, secretsStore, cfg)
 
@@ -370,7 +370,7 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	return store
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, jobQueue queue.Queue, githubClient *gh.Client) *housekeeping.Runner {
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, fleetManager *fleet.Manager, jobQueue queue.Queue, githubClient *gh.Client) *housekeeping.Runner {
 	if dbClient == nil || cfg.PoolsTableName == "" {
 		logging.WithComponent(logging.LogTypeServer, "housekeeping").Warn(context.Background(),
 			"housekeeping disabled: no pools table configured for task locking")
@@ -379,7 +379,13 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 
 	var costReporter housekeeping.CostReporter
 	if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
-		costReporter = cost.NewReporter(awsCfg, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
+		// Guard the typed nil before it is stored in the SpotPricer interface:
+		// a nil *fleet.Manager assigned directly would be a non-nil interface.
+		var spot cost.SpotPricer
+		if fleetManager != nil {
+			spot = fleetManager
+		}
+		costReporter = cost.NewReporter(awsCfg, dbClient, spot, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
 	}
 
 	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, metricsPublisher, costReporter)

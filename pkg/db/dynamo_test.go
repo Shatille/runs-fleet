@@ -3718,6 +3718,74 @@ func TestListJobsForAdmin(t *testing.T) {
 	}
 }
 
+func TestListJobsForAdmin_UntilBoundsTheScan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	since := now.Add(-24 * time.Hour)
+	until := now
+
+	var gotExpr string
+	var gotValues map[string]types.AttributeValue
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			if input.FilterExpression != nil {
+				gotExpr = *input.FilterExpression
+			}
+			gotValues = input.ExpressionAttributeValues
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
+	if _, _, err := client.ListJobsForAdmin(context.Background(), AdminJobFilter{
+		Status: string(JobStatusCompleted),
+		Since:  since,
+		Until:  until,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(gotExpr, "created_at >= :since") {
+		t.Errorf("filter expression missing lower bound: %q", gotExpr)
+	}
+	if !strings.Contains(gotExpr, "created_at < :until") {
+		t.Errorf("filter expression missing upper bound: %q", gotExpr)
+	}
+	untilVal, ok := gotValues[":until"].(*types.AttributeValueMemberS)
+	if !ok {
+		t.Fatalf(":until value missing or wrong type: %#v", gotValues[":until"])
+	}
+	if untilVal.Value != until.Format(time.RFC3339) {
+		t.Errorf(":until = %q, want %q", untilVal.Value, until.Format(time.RFC3339))
+	}
+}
+
+func TestListJobsForAdmin_ZeroUntilIsUnbounded(t *testing.T) {
+	t.Parallel()
+
+	var gotExpr string
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			if input.FilterExpression != nil {
+				gotExpr = *input.FilterExpression
+			}
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
+	if _, _, err := client.ListJobsForAdmin(context.Background(), AdminJobFilter{
+		Since: time.Now().UTC().Add(-24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(gotExpr, ":until") {
+		t.Errorf("zero Until must not add an upper bound: %q", gotExpr)
+	}
+}
+
 func TestListJobsForAdmin_JobsTableNotConfigured(t *testing.T) {
 	t.Parallel()
 

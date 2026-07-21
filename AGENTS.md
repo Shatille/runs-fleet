@@ -347,11 +347,17 @@ Target: ~$55-65/month for 100 jobs/day @ 10 min avg runtime
 Compare to GitHub hosted runners: $80/month
 
 **Cost reporting caveats (pkg/cost/):**
-- Hard-coded pricing for 3 instance families only (t4g, c7g, m7g)
-- 70% spot discount is fixed assumption
-- Regional price variations not included
-- Data transfer and S3 request costs excluded
-- Estimates only, not exact billing
+- The EC2 section (daily report and admin cost page alike) is computed per-job
+  from DynamoDB job records via the shared `JobPricer`: exact instance type,
+  spot flag, and duration per job. Pricing prefers the live AWS Pricing API
+  (on-demand) and live spot feed, falling back to a hard-coded table (t4g, c7g,
+  m7g) and a fixed 70% spot discount when the live feeds are unavailable.
+- Spot-interruption counts come from the CloudWatch `SpotInterruptions` counter
+  (an event that only exists as a metric), summed across the `Family` dimension.
+- Supporting-service costs (Fargate, SQS, DynamoDB, CloudWatch, S3) remain flat
+  per-job estimates, not billed figures.
+- Regional price variations, data transfer, and S3 request costs are excluded.
+- Estimates only, not exact billing.
 
 ## Security
 

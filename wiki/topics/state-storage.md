@@ -1,6 +1,6 @@
 ---
 topic: State Storage (DynamoDB + Circuit + Secrets)
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 sources_count: 12
 ---
 
@@ -149,7 +149,12 @@ Statuses are the typed `JobStatus` constants: `launched`, `running`,
   Scan fallback.
 - Admin API helpers: `ListJobsForAdmin`, `GetJobForAdmin`,
   `GetJobStatsForAdmin` returning `AdminJobEntry`, `AdminJobFilter`,
-  `AdminJobStats`.
+  `AdminJobStats`. `AdminJobFilter` bounds `created_at` with `Since`
+  (inclusive lower, `created_at >= :since`) and — added in PR #390 — `Until`
+  (exclusive upper, `created_at < :until`); a zero value leaves that side
+  unbounded. `ListJobsForAdmin` returns `([]AdminJobEntry, int, error)` where
+  the int is the pre-limit/offset match total, so callers can detect
+  truncation against their `Limit`.
 
 Removed since the 2026-04 compile: `GetPoolPeakConcurrency` and the deprecated
 instance-keyed `MarkJobRequeued`.
@@ -387,7 +392,11 @@ extracts `runner-id` from the parsed path (`extractRunnerID`).
   computed without a second read (PR #387). Zero or negative spans are
   dropped, so a malformed timestamp or cross-host clock skew can't emit bogus
   latency. See [job-state-machine](job-state-machine.md) and
-  [events-and-termination](events-and-termination.md).
+  [events-and-termination](events-and-termination.md). Since PR #390 the
+  daily cost report (`pkg/cost.Reporter`) is another consumer of the same
+  records — it prices completed jobs via `ListJobsForAdmin` (a `Since`/`Until`
+  day window) rather than reading CloudWatch metrics; see the
+  [db-record-as-rendezvous](../concepts/db-record-as-rendezvous.md) concept.
 - **GSI-or-Scan fallback everywhere.** Every GSI-backed query
   (`GetJobByInstance`, `QueryPoolJobHistory`, `GetPoolBusyInstanceIDs`,
   `ListAuditLogs`) catches `ValidationException` and falls back to a paginated

@@ -1,5 +1,5 @@
 {
-  "last_compiled": "2026-07-09",
+  "last_compiled": "2026-07-21",
   "mode": "codebase",
   "topics": [
     "project-overview",
@@ -120,7 +120,11 @@
     "pkg/admin/handler_metrics.go",
     "deploy/terraform/dynamodb.tf",
     "scripts/boot-lib.sh",
-    ".github/workflows/build-amis.yml"
+    ".github/workflows/build-amis.yml",
+    "pkg/cost/jobpricing.go",
+    "deploy/helm/runs-fleet/templates/deployment.yaml",
+    "deploy/helm/runs-fleet/templates/secrets.yaml",
+    "deploy/helm/runs-fleet/templates/_helpers.tpl"
   ],
-  "total_sources_scanned": 92
+  "total_sources_scanned": 96
 }

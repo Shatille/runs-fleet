@@ -1,6 +1,6 @@
 ---
 concept: DB Record as Cross-Instance Rendezvous
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 topics_connected: [job-state-machine, state-storage, events-and-termination, observability, internal-services]
 status: active
 ---
@@ -19,6 +19,7 @@ The pattern's fingerprint is `ReturnValueAllNew` on conditional updates: the wri
 - **2026-07** in [internal-services](../topics/internal-services.md): the `in_progress` webhook path resolves a job's warm/cold `Source` dimension by joining GitHub's payload (timestamps, labels) with the job record's `WarmPoolHit` via one `GetJobByJobID` read — GitHub's clock provides the duration, the record provides the classification.
 - **Ongoing** in [job-state-machine](../topics/job-state-machine.md) / [state-storage](../topics/state-storage.md): the launched→running transition itself is the same shape — the agent's "started" telemetry message triggers a conditional update that only succeeds if the orchestrator previously wrote `status=launched`, making the record the arbiter of which side's view of the world wins.
 - **Ongoing** in [events-and-termination](../topics/events-and-termination.md): agent version skew is handled by the record schema, not negotiation — additive `omitempty` telemetry fields mean an old agent's message simply lacks facts, and every consumer treats zero-as-absent. There is no version handshake anywhere in the system.
+- **2026-07** in [observability](../topics/observability.md): the daily cost report (PR #390) abandoned its CloudWatch-metrics source — which had silently zeroed after a taxonomy rework — for the job records themselves, priced per job via the same `JobPricer` the admin cost page uses. The records-over-derived-signals move made the report both correct and self-consistent with the dashboard, and the failure mode it fixed (queries against retired metric names returning empty, not erroring) is exactly the fragility the record source doesn't have.
 
 ## What This Means
 

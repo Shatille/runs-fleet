@@ -1,6 +1,6 @@
 ---
 topic: Job State Machine
-last_compiled: 2026-07-09
+last_compiled: 2026-07-21
 sources_count: 7
 ---
 
@@ -73,8 +73,8 @@ From `pkg/db/jobs.go`:
 - `func (c *Client) GetPoolBusyInstanceIDs(ctx, poolName string) ([]string, error)`
 - `func (c *Client) QueryPoolJobHistory(ctx, poolName string, since time.Time) ([]JobHistoryEntry, error)`
 - `func (c *Client) GetPoolP90Concurrency(ctx, poolName string, windowHours int) (int, error)`
-- Admin-facing: `ListJobsForAdmin`, `GetJobForAdmin`, `GetJobStatsForAdmin`.
-- Types: `JobRecord`, `JobHistoryEntry`, `AdminJobEntry`, `AdminJobFilter`, `AdminJobStats`.
+- Admin-facing: `ListJobsForAdmin`, `GetJobForAdmin`, `GetJobStatsForAdmin`. `ListJobsForAdmin`'s int return is the pre-limit/offset match total.
+- Types: `JobRecord`, `JobHistoryEntry`, `AdminJobEntry`, `AdminJobFilter` (`Since`/`Until` bound `created_at` — inclusive lower, exclusive upper; `Until` added in PR #390, zero = unbounded), `AdminJobStats`.
 
 From `pkg/runner/manager.go`:
 
@@ -152,7 +152,7 @@ secrets.RunnerConfig{
 - **pkg/github relocation, 2026-07 (PR #380)** — `pkg/runner/github.go` moved to `pkg/github/client.go`; `GitHubClient` renamed to `Client`, `NewGitHubClient` renamed to `NewClient`. This is a package-boundary fix: the GitHub API client is not runner-specific logic, and giving it its own package makes room for a possible future second git-hosting provider without overloading `pkg/runner`. No second provider exists today.
 - **`registrationTokenGetter` interface seam** — `pkg/runner.Manager` depends on the unexported `registrationTokenGetter` interface (single method, `GetRegistrationToken`), not a concrete `*github.Client`. `*github.Client` satisfies it today; the seam exists so a future non-GitHub git-hosting provider could satisfy the same interface without any change to `Manager`.
 - **Self-expiring claim lease** — `ClaimJob` is a compare-and-swap on `created_at`: a claim is re-claimable if the prior record is `requeued`/`terminating`, or a stale `claiming` lease older than `claimStaleThreshold` (100s, above the 90s message-process timeout and below the 120s SQS visibility timeout, so the first redelivery finds the lease already expired). Re-claims are capped at `claimMaxAttempts` (3); beyond that `ClaimJob` returns `ErrJobClaimExhausted` and the caller calls `FailExhaustedClaim` to mark the job terminal.
-- **DB record as cross-instance rendezvous (PR #387)** — the job record joins two processes with no direct channel: the orchestrator stamps `created_at` at assignment (`SaveJob`), the on-instance agent reports its `StartedAt` in the `SendJobStarted` message on the termination queue, and the termination handler joins them — `MarkJobStarted`'s `ReturnValueAllNew` response carries `CreatedAt` and `WarmPoolHit`, from which `publishProvisionSeconds` computes `InstanceProvisionSeconds` (labeled `warm_pool` or `cold_start`) without a second read. Zero or non-positive spans are dropped, so a malformed `created_at` (parsed to zero) or cross-host clock skew (bounded by chrony) can't emit a negative or bogus latency. See [state-storage](state-storage.md) and [events-and-termination](events-and-termination.md).
+- **DB record as cross-instance rendezvous (PR #387)** — the job record joins two processes with no direct channel: the orchestrator stamps `created_at` at assignment (`SaveJob`), the on-instance agent reports its `StartedAt` in the `SendJobStarted` message on the termination queue, and the termination handler joins them — `MarkJobStarted`'s `ReturnValueAllNew` response carries `CreatedAt` and `WarmPoolHit`, from which `publishProvisionSeconds` computes `InstanceProvisionSeconds` (labeled `warm_pool` or `cold_start`) without a second read. Zero or non-positive spans are dropped, so a malformed `created_at` (parsed to zero) or cross-host clock skew (bounded by chrony) can't emit a negative or bogus latency. See [state-storage](state-storage.md) and [events-and-termination](events-and-termination.md). Since PR #390 the daily cost report is another consumer of job records — `pkg/cost.Reporter` prices completed jobs from `ListJobsForAdmin` (a `Since`/`Until` day window) instead of CloudWatch metrics, extending the records-over-metrics pattern.
 - **Repo-level registration only** — `GetRegistrationToken` always hits `/repos/{owner}/{repo}/actions/runners/registration-token`. Org-level registration was rejected because runners would otherwise pick up jobs from any repo in the org, causing misassignment (commented at the call site in `pkg/github/client.go`).
 - **Bearer for JWT, token for installation** — JWT requests use `Authorization: Bearer`, installation-token requests use `Authorization: token`. Mixing them silently fails because `go-github`'s `WithAuthToken` only emits the `token` prefix.
 - **Isolated `http.Client` for go-github calls** — `GetWorkflowJobByID` constructs a new `http.Client` per call rather than reusing `c.httpClient`; `WithAuthToken` mutates the transport with a token-injecting `RoundTripper`, which would corrupt subsequent calls on a shared client.
