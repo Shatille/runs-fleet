@@ -128,6 +128,12 @@ remove them.
 | `RUNS_FLEET_CACHE_SECRET` | HMAC secret for cache auth |
 | `RUNS_FLEET_BASE_URL` | **Required.** Orchestrator's externally-reachable HTTPS base URL; served to runners as `ACTIONS_CACHE_URL` for the S3-backed Actions cache |
 
+## Graceful Shutdown
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS` | `5` | On SIGTERM, seconds to keep serving HTTP after readiness flips to 503, so the load balancer deregisters the task before its listener closes — otherwise webhooks routed during the deregistration window fail and strand jobs. `0` disables. Must fit within the deploy's `stopTimeout`/`terminationGracePeriodSeconds` alongside the worker drain (~`MessageProcessTimeout + 10s`). |
+
 ## Metrics
 
 The metric name prefix is fixed and cannot be configured: `RunsFleet` on

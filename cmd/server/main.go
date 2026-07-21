@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -230,6 +231,18 @@ func main() {
 
 	<-ctx.Done()
 	log.Info(ctx, "shutdown signal received")
+
+	// Fail readiness and keep serving for the drain delay so the load balancer
+	// deregisters this task before the listener closes. Webhooks routed during
+	// the deregistration window still enqueue — they run on the request context,
+	// not the canceled signal context — instead of hitting a closed listener and
+	// 502/500, which would strand the job with no runner. This runs before the
+	// shutdown clock below starts, so it never eats into server.Shutdown's
+	// budget; the delay is bounded by config.MaxShutdownDrainDelay.
+	if d := cfg.ShutdownDrainDelay; d > 0 {
+		log.Info(ctx, "draining before shutdown", slog.Duration("delay", d))
+	}
+	ws.beginDrain(cfg.ShutdownDrainDelay)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.MessageProcessTimeout)
 	defer shutdownCancel()
@@ -469,6 +482,10 @@ type webhookServer struct {
 	poolNotifier       PoolReconcileNotifier
 	labelAliasResolver *gh.AliasResolver
 	fleetManager       *fleet.Manager
+
+	// shuttingDown flips true on SIGTERM so /ready reports 503 and the load
+	// balancer deregisters this task before the listener is closed.
+	shuttingDown atomic.Bool
 }
 
 func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache.Server, prometheusHandler http.Handler) (*http.ServeMux, error) {
@@ -575,7 +592,26 @@ func oidcRedirectURL(cfg *config.Config) string {
 	return strings.TrimSuffix(cfg.BaseURL, "/") + "/api/auth/callback"
 }
 
+// beginDrain flips readiness to 503 so the load balancer stops routing new
+// traffic and deregisters this task, then blocks for the drain delay so that
+// deregistration completes before the caller closes the HTTP listener. Requests
+// the balancer still routes during the window keep being served and enqueued
+// rather than hitting a closed listener. The delay is bounded by config
+// validation (config.MaxShutdownDrainDelay) so it cannot overrun the shutdown
+// budget; SIGKILL at the deploy grace deadline is the only harder stop.
+func (ws *webhookServer) beginDrain(delay time.Duration) {
+	ws.shuttingDown.Store(true)
+	if delay <= 0 {
+		return
+	}
+	<-time.After(delay)
+}
+
 func (ws *webhookServer) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	if ws.shuttingDown.Load() {
+		http.Error(w, "Shutting down", http.StatusServiceUnavailable)
+		return
+	}
 	if pinger, ok := ws.jobQueue.(queue.Pinger); ok {
 		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()

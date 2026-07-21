@@ -140,6 +140,8 @@ spec:
               value: {{ .Values.aws.spotEnabled | quote }}
             - name: RUNS_FLEET_MAX_RUNTIME_MINUTES
               value: {{ .Values.aws.maxRuntimeMinutes | quote }}
+            - name: RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS
+              value: {{ .Values.orchestrator.shutdownDrainDelaySeconds | quote }}
             {{- if .Values.aws.keyName }}
             - name: RUNS_FLEET_KEY_NAME
               value: {{ .Values.aws.keyName | quote }}

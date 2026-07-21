@@ -46,10 +46,21 @@ resource "aws_ecs_task_definition" "orchestrator" {
       protocol      = "tcp"
     }]
 
+    # ECS sends SIGTERM then SIGKILLs after stopTimeout. It must cover the
+    # shutdown budget: RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS (default 5s, holds
+    # the listener open so the ALB deregisters before it closes) + the worker
+    # drain (~100s) + telemetry flush. 120 is the Fargate max. Keep the target
+    # group's deregistration_delay >= the drain delay so in-flight webhooks land.
+    stopTimeout = 120
+
     # Minimum required env vars. The full surface lives in
     # pkg/config/config.go; common optional adds are noted inline.
     environment = [
       { name = "AWS_ap-northeast-1", value = "ap-northeast-1" },
+
+      # Seconds to keep serving after SIGTERM (readiness already 503) so the ALB
+      # deregisters this task before the listener closes. Default 5s; 0 disables.
+      { name = "RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS", value = "5" },
 
       # GitHub App identity. Private key + webhook secret come from
       # Secrets Manager (see `secrets` block below).
