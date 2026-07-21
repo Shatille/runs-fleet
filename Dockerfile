@@ -40,7 +40,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -o /bin/runs-fleet-server ./cmd/server
 
 # Stage 3: Final runtime image
-FROM alpine:3.19
+# Named so deploy.yml's no-cache-filters can force these layers fresh each
+# build (BuildKit filters match declared stage names only).
+FROM alpine:3.19 AS runtime
 
 WORKDIR /app
 
