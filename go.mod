@@ -1,6 +1,6 @@
 module github.com/Shavakan/runs-fleet
 
-go 1.25.8
+go 1.25.12
 
 require (
 	github.com/DataDog/datadog-go/v5 v5.8.3
