@@ -60,6 +60,16 @@ const (
 	// ReceiveMessage (long-poll WaitTimeSeconds=20) or it would abort every empty
 	// poll; the per-operation timeout middleware exempts ReceiveMessage.
 	AWSPerOpTimeout = 15 * time.Second
+
+	// MaxShutdownDrainDelay caps RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS. On
+	// SIGTERM the server waits out the drain delay, then drains workers (up to
+	// MessageProcessTimeout + 10s ≈ 100s), then flushes telemetry — the sum must
+	// stay under the deploy's stopTimeout/terminationGracePeriodSeconds (120s in
+	// deploy/) or the task is SIGKILLed mid-drain. This cap keeps the drain small
+	// enough to hold that budget with margin; raising it requires raising the
+	// deploy grace period to match. It also stays well below MessageProcessTimeout
+	// so the drain can never consume the graceful-shutdown context.
+	MaxShutdownDrainDelay = 15 * time.Second
 )
 
 // HTTP body size limits

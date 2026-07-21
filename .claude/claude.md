@@ -150,45 +150,11 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 
 ## Environment Config
 
-### Core
-- `AWS_REGION` - AWS region (default: ap-northeast-1)
-- `RUNS_FLEET_GITHUB_APP_ID`, `RUNS_FLEET_GITHUB_APP_PRIVATE_KEY` - GitHub App auth
-- `RUNS_FLEET_GITHUB_WEBHOOK_SECRET` - HMAC signature validation
-
-### Fleet
-- `RUNS_FLEET_QUEUE_URL` - Main SQS queue (required)
-- `RUNS_FLEET_POOL_QUEUE_URL` - Pool queue
-- `RUNS_FLEET_EVENTS_QUEUE_URL` - EventBridge events queue
-- `RUNS_FLEET_TERMINATION_QUEUE_URL` - Termination notifications queue
-- `RUNS_FLEET_HOUSEKEEPING_QUEUE_URL` - Housekeeping tasks queue
-- `RUNS_FLEET_JOBS_TABLE`, `RUNS_FLEET_POOLS_TABLE` - DynamoDB tables
-- `RUNS_FLEET_JOBS_POOL_STATUS_GSI` - Optional DynamoDB GSI name for pool busy instance queries
-- `RUNS_FLEET_CACHE_BUCKET` - S3 cache bucket
-- `RUNS_FLEET_VPC_ID`, `RUNS_FLEET_SUBNET_IDS` - Network config
-- `RUNS_FLEET_SECURITY_GROUP_ID`, `RUNS_FLEET_INSTANCE_PROFILE_ARN` - EC2 config
-- `RUNS_FLEET_RUNNER_IMAGE` - ECR image URL for runners
-- `RUNS_FLEET_SPOT_ENABLED` - Enable spot instances (default: true)
-
-### Secrets Backend
-- `RUNS_FLEET_SECRETS_BACKEND` - `ssm` or `vault` (default: ssm)
-- `VAULT_ADDR` - Vault server address (required if vault backend)
-- `VAULT_AUTH_METHOD` - `aws`, `kubernetes`, `approle`, `token` (default: aws)
-
-### Metrics
-- `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` - CloudWatch metrics (default: true)
-- `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` - Prometheus /metrics endpoint
-- `RUNS_FLEET_METRICS_DATADOG_ENABLED` - Datadog DogStatsD metrics
-
-### Tracing
-- `RUNS_FLEET_TRACING_ENABLED` - Enable OpenTelemetry tracing (default: false)
-- `RUNS_FLEET_OTEL_ENDPOINT` - OTLP gRPC collector endpoint (required when tracing enabled)
-- `RUNS_FLEET_OTEL_INSECURE` - Use insecure gRPC connection (default: true)
-- `RUNS_FLEET_OTEL_SERVICE_NAME` - Service name for traces (default: runs-fleet)
-
-### Cache & Admin
-- `RUNS_FLEET_CACHE_SECRET` - HMAC secret for cache auth
-- `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_REDIRECT_URL`, `_SCOPES`, `_GROUPS_CLAIM` - Admin API OIDC auth (native relying party, no external gatekeeper); leave unset to disable auth (local dev)
-- `RUNS_FLEET_ADMIN_SESSION_SECRET`, `RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES` - Admin session cookie signing key and TTL
+All runtime config comes from environment variables. See **`docs/CONFIGURATION.md`**
+for the full reference — required vars, defaults, and per-subsystem tables (core,
+queues, DynamoDB, EC2 fleet, label aliases, cache, shutdown, metrics, tracing,
+secrets, admin OIDC). The loader and validation live in `pkg/config/config.go`; in
+production these are set on the Fargate task definition in the Terraform repo.
 
 ## Development Commands
 

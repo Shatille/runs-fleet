@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/internal/validation"
 	"github.com/Shavakan/runs-fleet/pkg/tracing"
@@ -70,6 +71,16 @@ type Config struct {
 	BaseURL        string
 	AdminRateLimit int
 	TraceUIURL     string
+
+	// ShutdownDrainDelay is how long the server keeps serving HTTP after
+	// SIGTERM (readiness already flipped to 503) before closing the listener,
+	// so the load balancer deregisters this task before it stops accepting
+	// webhooks — otherwise requests routed during the deregistration window hit
+	// a closed listener and 502/500, stranding jobs. Bounded by
+	// MaxShutdownDrainDelay so it fits inside the deploy's shutdown budget:
+	// ShutdownDrainDelay + worker drain + telemetry flush must stay below
+	// terminationGracePeriodSeconds/stopTimeout (see cmd/server, timeouts.go).
+	ShutdownDrainDelay time.Duration
 
 	// Admin OIDC authentication. Auth is required when OIDCIssuerURL is set;
 	// left entirely empty, the admin API runs unauthenticated (local dev).
@@ -175,6 +186,8 @@ func Load() (*Config, error) {
 		AdminRateLimit: getEnvIntDefault("RUNS_FLEET_ADMIN_RATE_LIMIT", 60),
 		TraceUIURL:     getEnv("RUNS_FLEET_TRACE_UI_URL", ""),
 
+		ShutdownDrainDelay: time.Duration(getEnvIntDefault("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS", 5)) * time.Second,
+
 		OIDCIssuerURL:          getEnv("RUNS_FLEET_ADMIN_OIDC_ISSUER_URL", ""),
 		OIDCClientID:           getEnv("RUNS_FLEET_ADMIN_OIDC_CLIENT_ID", ""),
 		OIDCClientSecret:       getEnv("RUNS_FLEET_ADMIN_OIDC_CLIENT_SECRET", ""),
@@ -254,6 +267,12 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxRuntimeMinutes > 1440 {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must not exceed 1440 (24 hours), got %d", c.MaxRuntimeMinutes)
+	}
+	if c.ShutdownDrainDelay < 0 {
+		return fmt.Errorf("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS must not be negative, got %s", c.ShutdownDrainDelay)
+	}
+	if c.ShutdownDrainDelay > MaxShutdownDrainDelay {
+		return fmt.Errorf("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS must not exceed %s, got %s", MaxShutdownDrainDelay, c.ShutdownDrainDelay)
 	}
 
 	if err := c.validateEC2Config(); err != nil {
