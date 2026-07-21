@@ -1,10 +1,10 @@
 {
-  "_note": "PURLs are pinned to the versions Trivy detects in this image so a future rebuild past the fix invalidates the statement and forces re-review. Current pins: docker/docker@v28.5.2 and containerd/v2@v2.2.3 (vendored as library code by docker-buildx-plugin and docker-compose-plugin), containerd/v2@v2.2.4 (vendored by dockerd 29.6.0 — the standalone containerd.io package is 2.2.5 and scans clean), golang.org/x/net@v0.51.0 (docker-compose) and @v0.53.0 (docker-buildx), and Go stdlib@v1.26.3 (the toolchain the docker cli-plugins were built with). When dnf/apt resolves newer docker/containerd, or the plugins bump their vendored libraries / rebuild on a patched Go, this file must be reviewed: if the new versions are past the fixes the entries can be removed; otherwise the PURLs must be updated. NOTE: only genuinely-unreachable (dead-code) paths are suppressed here. Live client code paths in the docker plugins (golang.org/x/crypto/ssh, crypto/x509 hostname verification, golang.org/x/net/http2 + /idna, and npm's undici) are NOT suppressed — they remain visible until Docker/npm rebuild on patched libraries.",
+  "_note": "PURLs are pinned to the versions Trivy detects in this image so a future rebuild past the fix invalidates the statement and forces re-review. Current pins: docker/docker@v28.5.2 (vendored as library code by the docker-buildx 0.35.0 and docker-compose 5.3.1 cli-plugins, installed from their upstream GitHub releases), containerd/v2@v2.2.4 (vendored by dockerd 29.6.0 and docker-buildx 0.35.0 — the standalone containerd.io package is 2.2.5 and scans clean), and Go stdlib@v1.26.4 (the toolchain all five Docker binaries are currently built with; Go 1.26.5 fixes CVE-2026-39822 but no Docker binary has been rebuilt on it yet). When apt resolves newer docker/containerd, the plugin ARGs in docker/runner/Dockerfile are bumped, or upstream rebuilds on a patched Go, this file must be reviewed: if the new versions are past the fixes the entries can be removed; otherwise the PURLs must be updated. NOTE: statements here are per-CVE analyses (dead code, unreachable plugin paths, or no privilege boundary in this deployment) — never blanket package ignores. Live reachable paths with no such analysis stay visible until upstream ships a fixed build.",
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/Shatille/runs-fleet/.trivy/vex.json",
   "author": "runs-fleet maintainers",
-  "timestamp": "2026-06-23T00:00:00Z",
-  "version": 3,
+  "timestamp": "2026-07-21T00:00:00Z",
+  "version": 4,
   "statements": [
     {
       "vulnerability": {
@@ -18,7 +18,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
-      "impact_statement": "Present in docker-buildx-plugin and docker-compose-plugin as vendored library code only. Both binaries are Docker API clients; they do not run dockerd or its authorization handler. The vulnerable code path is dead code in the client binaries. The actual daemon (docker-ce) on this image is at 29.6.0 which contains the fix."
+      "impact_statement": "Present in the docker-buildx 0.35.0 and docker-compose 5.3.1 cli-plugins as vendored library code only. Both binaries are Docker API clients; they do not run dockerd or its authorization handler. The vulnerable code path is dead code in the client binaries. The actual daemon (docker-ce) on this image is at 29.6.0 which contains the fix."
     },
     {
       "vulnerability": {
@@ -32,7 +32,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
-      "impact_statement": "Vendored in docker-buildx-plugin and docker-compose-plugin client binaries. Neither binary serves the /containers/{id}/archive endpoint; only dockerd does. Vulnerable handler code is unreachable from these binaries."
+      "impact_statement": "Vendored in the docker-buildx 0.35.0 and docker-compose 5.3.1 cli-plugin client binaries. Neither binary serves the /containers/{id}/archive endpoint; only dockerd does. Vulnerable handler code is unreachable from these binaries."
     },
     {
       "vulnerability": {
@@ -46,21 +46,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
-      "impact_statement": "Vendored in docker-buildx-plugin and docker-compose-plugin client binaries. The race condition is in the daemon's cp implementation. Plugins talk to the daemon over the API; they do not execute the vulnerable cp handler themselves."
-    },
-    {
-      "vulnerability": {
-        "name": "CVE-2026-46680",
-        "description": "containerd user ID handling bypass allows runAsNonRoot evasion. Vulnerable code lives in containerd's CRI plugin, where a crafted image USER directive can bypass the Kubernetes-set runAsNonRoot SecurityContext check."
-      },
-      "products": [
-        {
-          "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.3"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Trivy reports this against dockerd (real containerd runtime dependency) and docker-buildx / docker-compose plugins (vendored as library code). The exploit requires a runAsNonRoot SecurityContext to flow through containerd's CRI plugin — a Kubernetes-only path. This AMI runs `docker run` via the legacy moby socket; CRI is not loaded and no Kubernetes pod spec is ever applied, so the user-ID resolution code path tied to runAsNonRoot enforcement is never exercised. The plugins are pure API clients that do not host the runtime at all."
+      "impact_statement": "Vendored in the docker-buildx 0.35.0 and docker-compose 5.3.1 cli-plugin client binaries. The race condition is in the daemon's cp implementation. Plugins talk to the daemon over the API; they do not execute the vulnerable cp handler themselves."
     },
     {
       "vulnerability": {
@@ -69,15 +55,12 @@
       },
       "products": [
         {
-          "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.3"
-        },
-        {
           "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.4"
         }
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in containerd's CRI plugin (image LABEL handling). Trivy flags the vendored containerd/v2 library inside dockerd (v2.2.4) and the docker-buildx / docker-compose client plugins (v2.2.3). This image runs containers via dockerd over the legacy moby socket; containerd's CRI plugin is never loaded and no CRI image-pull/LABEL path is exercised. The plugins are pure API clients that do not host the runtime. The standalone containerd.io runtime on this image is 2.2.5, which contains the fix. PURLs pinned so a plugin/daemon rebuild past the fix invalidates this statement."
+      "impact_statement": "Vulnerable code is in containerd's CRI plugin (image LABEL handling). Trivy flags the vendored containerd/v2 v2.2.4 library inside dockerd 29.6.0 and the docker-buildx 0.35.0 client plugin. This image runs containers via dockerd over the legacy moby socket; containerd's CRI plugin is never loaded and no CRI image-pull/LABEL path is exercised. The buildx plugin is a pure API client that does not host the runtime. The standalone containerd.io runtime on this image is 2.2.5, which contains the fix. PURL pinned so a plugin/daemon rebuild past the fix invalidates this statement."
     },
     {
       "vulnerability": {
@@ -86,15 +69,12 @@
       },
       "products": [
         {
-          "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.3"
-        },
-        {
           "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.4"
         }
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in containerd's CRI plugin checkpoint/restore path (container-log symlink validation). Trivy flags the vendored containerd/v2 library inside dockerd (v2.2.4) and the docker-buildx / docker-compose client plugins (v2.2.3). This image runs `docker run` via the legacy moby socket; the CRI plugin is never loaded and CRI checkpoint/restore is never invoked. The plugins are API clients that do not host the runtime. The standalone containerd.io runtime is 2.2.5 (fixed). PURLs pinned so a rebuild past the fix invalidates this statement."
+      "impact_statement": "Vulnerable code is in containerd's CRI plugin checkpoint/restore path (container-log symlink validation). Trivy flags the vendored containerd/v2 v2.2.4 library inside dockerd 29.6.0 and the docker-buildx 0.35.0 client plugin. This image runs `docker run` via the legacy moby socket; the CRI plugin is never loaded and CRI checkpoint/restore is never invoked. The buildx plugin is an API client that does not host the runtime. The standalone containerd.io runtime is 2.2.5 (fixed). PURL pinned so a rebuild past the fix invalidates this statement."
     },
     {
       "vulnerability": {
@@ -103,114 +83,26 @@
       },
       "products": [
         {
-          "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.3"
-        },
-        {
           "@id": "pkg:golang/github.com/containerd/containerd/v2@v2.2.4"
         }
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in containerd's CRI plugin CDI annotation handling during checkpoint restore. Trivy flags the vendored containerd/v2 library inside dockerd (v2.2.4) and the docker-buildx / docker-compose client plugins (v2.2.3). This image runs `docker run` via the legacy moby socket; the CRI plugin is never loaded, no checkpoint/restore occurs, and CDI device injection is never exercised. The plugins are API clients that do not host the runtime. The standalone containerd.io runtime is 2.2.5 (fixed). PURLs pinned so a rebuild past the fix invalidates this statement."
+      "impact_statement": "Vulnerable code is in containerd's CRI plugin CDI annotation handling during checkpoint restore. Trivy flags the vendored containerd/v2 v2.2.4 library inside dockerd 29.6.0 and the docker-buildx 0.35.0 client plugin. This image runs `docker run` via the legacy moby socket; the CRI plugin is never loaded, no checkpoint/restore occurs, and CDI device injection is never exercised. The buildx plugin is an API client that does not host the runtime. The standalone containerd.io runtime is 2.2.5 (fixed). PURL pinned so a rebuild past the fix invalidates this statement."
     },
     {
       "vulnerability": {
-        "name": "CVE-2026-25680",
-        "description": "golang.org/x/net/html: parsing arbitrary HTML which is then rendered via html.Render can consume excessive resources / produce incorrect output."
+        "name": "CVE-2026-39822",
+        "description": "os: Root escape via symlink plus trailing slash. os.Root.Open/Create/OpenFile follow a final-component symlink outside the Root when the path ends in '/'. Fixed in Go 1.25.12 / 1.26.5 (GO-2026-4970)."
       },
       "products": [
         {
-          "@id": "pkg:golang/golang.org/x/net@v0.51.0"
-        },
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.53.0"
+          "@id": "pkg:golang/stdlib@v1.26.4"
         }
       ],
       "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in golang.org/x/net/html (HTML parse + Render). Trivy flags x/net vendored transitively in the docker-buildx (v0.53.0) and docker-compose (v0.51.0) client plugins. These are container build/orchestration CLIs; their x/net usage is HTTP/2 transport and dialer machinery, not html.Parse/Render. They never parse or render HTML documents, so the vulnerable html code path is never invoked. PURLs pinned to the vendored versions; a plugin rebuild past the fix invalidates this statement."
-    },
-    {
-      "vulnerability": {
-        "name": "CVE-2026-25681",
-        "description": "golang.org/x/net/html: parsing arbitrary HTML which is then rendered via html.Render can result in incorrect output / resource use."
-      },
-      "products": [
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.51.0"
-        },
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.53.0"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in golang.org/x/net/html (HTML parse + Render). Trivy flags x/net vendored transitively in the docker-buildx (v0.53.0) and docker-compose (v0.51.0) client plugins. Neither binary parses or renders HTML; their x/net usage is HTTP/2 / dialer machinery only. The vulnerable html code path is never invoked. PURLs pinned; a rebuild past the fix invalidates this statement."
-    },
-    {
-      "vulnerability": {
-        "name": "CVE-2026-27136",
-        "description": "golang.org/x/net/html: parsing arbitrary HTML which is then rendered via html.Render can result in incorrect output / resource use."
-      },
-      "products": [
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.51.0"
-        },
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.53.0"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in golang.org/x/net/html (HTML parse + Render). Trivy flags x/net vendored transitively in the docker-buildx (v0.53.0) and docker-compose (v0.51.0) client plugins. Neither binary parses or renders HTML; their x/net usage is HTTP/2 / dialer machinery only. The vulnerable html code path is never invoked. PURLs pinned; a rebuild past the fix invalidates this statement."
-    },
-    {
-      "vulnerability": {
-        "name": "CVE-2026-42502",
-        "description": "golang.org/x/net/html: parsing arbitrary HTML which is then rendered via html.Render can result in incorrect output / resource use."
-      },
-      "products": [
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.51.0"
-        },
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.53.0"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in golang.org/x/net/html (HTML parse + Render). Trivy flags x/net vendored transitively in the docker-buildx (v0.53.0) and docker-compose (v0.51.0) client plugins. Neither binary parses or renders HTML; their x/net usage is HTTP/2 / dialer machinery only. The vulnerable html code path is never invoked. PURLs pinned; a rebuild past the fix invalidates this statement."
-    },
-    {
-      "vulnerability": {
-        "name": "CVE-2026-42506",
-        "description": "golang.org/x/net/html: parsing arbitrary HTML which is then rendered via html.Render can result in incorrect output / resource use."
-      },
-      "products": [
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.51.0"
-        },
-        {
-          "@id": "pkg:golang/golang.org/x/net@v0.53.0"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Vulnerable code is in golang.org/x/net/html (HTML parse + Render). Trivy flags x/net vendored transitively in the docker-buildx (v0.53.0) and docker-compose (v0.51.0) client plugins. Neither binary parses or renders HTML; their x/net usage is HTTP/2 / dialer machinery only. The vulnerable html code path is never invoked. PURLs pinned; a rebuild past the fix invalidates this statement."
-    },
-    {
-      "vulnerability": {
-        "name": "CVE-2026-42504",
-        "description": "Quadratic complexity in the Go stdlib mime.(*WordDecoder).DecodeHeader: decoding a maliciously-crafted MIME header with many invalid RFC 2047 encoded-words consumes excessive CPU (Go advisory GO-2026-5038, go.dev/issue/79217; fixed in Go 1.25.11 / 1.26.4)."
-      },
-      "products": [
-        {
-          "@id": "pkg:golang/stdlib@v1.26.3"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Trivy flags the Go 1.26.3 stdlib only in the docker-buildx and docker-compose cli-plugins; dockerd, docker-proxy, containerd and the runs-fleet-agent build on a fixed/different Go and scan clean. The vulnerable function, mime.WordDecoder.DecodeHeader, performs RFC 2047 encoded-word decoding used by email/MIME parsing; it is not invoked by normal HTTP request/response header parsing (net/http and net/textproto.Reader.ReadMIMEHeader do not call it). buildx and compose are BuildKit/registry/daemon API clients that do no RFC 2047 MIME header decoding, so the quadratic-complexity path is never reached. Fixed upstream in Go 1.25.11/1.26.4; Docker has not yet republished these plugins on the patched toolchain. PURL pinned to stdlib@v1.26.3 so a future plugin rebuild on patched Go changes the detected version, invalidates this statement, and forces re-review."
+      "justification": "inline_mitigations_already_exist",
+      "impact_statement": "Trivy flags the Go 1.26.4 stdlib in five Docker binaries (dockerd 29.6.0, docker, docker-proxy, docker-buildx 0.35.0, docker-compose 5.3.1); none has been rebuilt on a fixed Go yet — the fix shipped days ago. govulncheck -mode=binary symbol analysis shows the vulnerable os.Root symbols are absent from docker, docker-proxy, and docker-compose (dead code). dockerd and docker-buildx do contain os.Root usage, but on these runner hosts the only untrusted principal is workflow code, which by design already holds full Docker-socket access — root-equivalent on a single-tenant, ephemeral, self-terminating instance — so the escape crosses no privilege boundary the deployment doesn't already concede. PURL pinned to stdlib@v1.26.4: when Docker republishes on Go 1.26.5+ the detected version changes, this statement stops matching, and the fixed binaries scan clean."
     }
   ]
 }
