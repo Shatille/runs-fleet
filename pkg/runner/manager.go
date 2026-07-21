@@ -21,6 +21,12 @@ type ManagerConfig struct {
 	CacheSecret         string
 	BaseURL             string
 	TerminationQueueURL string
+	// BuildkitCacheBucket enables transparent Docker layer caching. Empty =
+	// disabled: the manager then leaves the runner config's Buildkit* fields
+	// empty and the whole feature stays inert. BuildkitCacheRegion is the S3
+	// region for the cache backend.
+	BuildkitCacheBucket string
+	BuildkitCacheRegion string
 }
 
 // registrationTokenGetter is the subset of a git-hosting provider's API that
@@ -88,6 +94,16 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		cacheToken = cache.GenerateCacheToken(m.config.CacheSecret, req.JobID, req.InstanceID, req.Repo)
 	}
 
+	// Transparent Docker layer cache: only populated when the bucket is
+	// configured. The buildkit/<org>/<repo>/ prefix scopes the layer cache to
+	// this repo (conventional, not enforced — same-org trust domain).
+	buildkitBucket, buildkitRegion, buildkitPrefix := "", "", ""
+	if m.config.BuildkitCacheBucket != "" {
+		buildkitBucket = m.config.BuildkitCacheBucket
+		buildkitRegion = m.config.BuildkitCacheRegion
+		buildkitPrefix = fmt.Sprintf("buildkit/%s/%s/", org, repoName)
+	}
+
 	// Build runner config with dynamic org from repo
 	config := &secrets.RunnerConfig{
 		Org:                 org,
@@ -101,6 +117,9 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		CacheURL:            m.config.BaseURL,
 		TerminationQueueURL: m.config.TerminationQueueURL,
 		IsOrg:               regResult.IsOrg,
+		BuildkitCacheBucket: buildkitBucket,
+		BuildkitCacheRegion: buildkitRegion,
+		BuildkitCachePrefix: buildkitPrefix,
 	}
 
 	runnerLog.Info(ctx, "storing runner config")

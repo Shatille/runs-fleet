@@ -45,6 +45,15 @@ type Config struct {
 	CostReportSNSTopic   string
 	CostReportBucket     string
 
+	// BuildkitCacheBucket enables transparent Docker layer caching: when set,
+	// the orchestrator injects S3 buildkit-cache config into each runner so the
+	// on-host buildx shim can add --cache-from/--cache-to. Empty = disabled
+	// everywhere (the feature is inert). Operators typically point it at the
+	// existing cache bucket (a sibling buildkit/ prefix is hardcoded; the
+	// caches/ layout is untouched). BuildkitCacheRegion defaults from AWS_REGION.
+	BuildkitCacheBucket string
+	BuildkitCacheRegion string
+
 	// EC2 fleet configuration
 	VPCID              string
 	SubnetIDs          []string
@@ -164,6 +173,8 @@ func Load() (*Config, error) {
 		CacheBucketName:      getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
 		CostReportSNSTopic:   getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
 		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
+		BuildkitCacheBucket:  getEnv("RUNS_FLEET_BUILDKIT_CACHE_BUCKET", ""),
+		BuildkitCacheRegion:  getEnv("RUNS_FLEET_BUILDKIT_CACHE_REGION", getEnv("AWS_REGION", "ap-northeast-1")),
 
 		// EC2-specific
 		VPCID:               getEnv("RUNS_FLEET_VPC_ID", ""),

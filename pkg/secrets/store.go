@@ -27,6 +27,13 @@ type RunnerConfig struct {
 	CacheURL            string   `json:"cache_url,omitempty"`
 	TerminationQueueURL string   `json:"termination_queue_url,omitempty"`
 	IsOrg               bool     `json:"is_org"`
+	// BuildkitCache* carry the transparent Docker layer-cache config the agent
+	// writes into the runner .env so the on-host buildx shim can add S3
+	// cache-from/cache-to. All omitempty: absent (feature disabled, or an older
+	// orchestrator) is inert both directions.
+	BuildkitCacheBucket string `json:"buildkit_cache_bucket,omitempty"`
+	BuildkitCacheRegion string `json:"buildkit_cache_region,omitempty"`
+	BuildkitCachePrefix string `json:"buildkit_cache_prefix,omitempty"`
 }
 
 // Store defines operations for storing and retrieving runner configuration.
