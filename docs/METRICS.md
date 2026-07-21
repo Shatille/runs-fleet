@@ -99,6 +99,7 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 | `CacheErrors` | `cache_errors_total` | counter | Operation | Cache server error. |
 | `CacheAuthRejected` | `cache_auth_rejected_total` | counter | Reason | Rejected cache auth attempt. |
 | `RunnerCacheInterception` | `runner_cache_interception_total` | counter | Status | Per-job cache-interceptor outcome (`engaged` \| `failed` \| `disabled`). See below. |
+| `RunnerBuildCacheInterception` | `runner_build_cache_interception_total` | counter | Status | Per-job transparent buildx layer-cache shim outcome (`engaged` \| `skipped` \| `failed` \| `disabled`). See below. |
 
 ### Housekeeping / cost
 
@@ -172,6 +173,24 @@ One count per job, tagging the interceptor outcome:
 `engaged` should dominate. Any sustained `failed` is the fail-open alarm — cache
 traffic is leaking to GitHub's (flaky) cache and the orchestrator is doing no
 work for it.
+
+### `RunnerBuildCacheInterception{Status}`
+
+One count per job, tagging the transparent buildx layer-cache shim's outcome for
+the most recent `docker buildx build` in the job (or `disabled` when no build
+ran). This is the rollout observability gate:
+
+| Status | Meaning |
+|--------|---------|
+| `engaged` | The shim injected S3 `--cache-from`/`--cache-to` into a build. |
+| `skipped` | A build ran but injection was deliberately declined (user already set cache flags, opt-out env, or a default/docker-driver builder that can't export a cache). |
+| `failed` | The shim wanted to inject but couldn't (IMDS creds fetch failed) — the build still ran, uncached. |
+| `disabled` | No cache bucket configured for the deployment, or the shim never ran (no docker build in the job). |
+
+During rollout, watch `engaged` climb as workflows exercise builds; a spike in
+`failed` surfaces a broken IMDS/creds path before it silently disables caching
+fleet-wide. `skipped` is benign (the client opted out or is on an unsupported
+builder).
 
 ### v2 write bytes → `CacheBytesStored`
 

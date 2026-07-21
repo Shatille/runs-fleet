@@ -134,6 +134,37 @@ remove them.
 |----------|---------|-------------|
 | `RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS` | `5` | On SIGTERM, seconds to keep serving HTTP after readiness flips to 503, so the load balancer deregisters the task before its listener closes — otherwise webhooks routed during the deregistration window fail and strand jobs. `0` disables. Must fit within the deploy's `stopTimeout`/`terminationGracePeriodSeconds` alongside the worker drain (~`MessageProcessTimeout + 10s`). |
 
+## Docker Layer Cache (transparent buildx caching)
+
+Optional, off by default. When set, the orchestrator injects S3 buildkit-cache
+config into each runner so a runner-side shim transparently adds
+`--cache-from`/`--cache-to` to `docker buildx build` (and `docker build`)
+invocations — no workflow changes required. See the "Automatic Docker layer
+caching" section in [USAGE.md](USAGE.md) for the client experience and opt-out.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_BUILDKIT_CACHE_BUCKET` | | S3 bucket for buildkit layer cache. **Empty disables the feature everywhere** (the shim passes builds through unchanged). Typically the existing `RUNS_FLEET_CACHE_BUCKET`; a sibling `buildkit/` prefix is used, leaving the `caches/` layout untouched. |
+| `RUNS_FLEET_BUILDKIT_CACHE_REGION` | `AWS_REGION` | S3 region for the buildkit cache backend. Defaults to `AWS_REGION`. |
+
+**Deploy prerequisites (feature stays inert until both land):**
+
+1. **IaC grant:** the EC2 instance profile needs S3 read/write on the bucket's
+   `buildkit/*` prefix (instances have no direct S3 access today; this is a
+   separate IaC change). Until granted, injected builds would fail to reach the
+   cache — so enable the orchestrator var only after the grant is live.
+2. **AMI rebuild:** the runner AMI must carry the buildx shim (ships with this
+   change's runner-image + AMI rebuild). Before the rebuild, the injected env
+   vars are harmless unused variables.
+
+**Rollback:** unset `RUNS_FLEET_BUILDKIT_CACHE_BUCKET` — all new jobs revert to
+byte-identical passthrough builds instantly, no AMI rollback needed.
+
+**Trust note:** unlike the HMAC-token-scoped Actions cache, the layer cache's
+per-repo prefix scoping is conventional, not enforced — every job on any
+runs-fleet runner shares the same bucket IAM grant. This is acceptable for a
+same-org internal fleet; cross-repo layer-cache poisoning is the theoretical
+risk and cannot be mitigated with a single shared instance profile.
 ## Metrics
 
 The metric name prefix is fixed and cannot be configured: `RunsFleet` on

@@ -5,7 +5,7 @@ Two-layer AMI build:
 | Layer | Template | Provisioner | What it contains |
 |---|---|---|---|
 | **Base** | `runner-base-{amd64,arm64}.pkr.hcl` | `provision-base.sh` | OS + every package that's stable across runner-image revs: docker, git/git-lfs, node, vault, yq, pinned buildx cli-plugin (AL2023's bundled 0.12.1 predates the GHA cache v2 protocol), gh, runner OS deps, dev tools, language toolchains, the actions/runner binary, CloudWatch agent. |
-| **Runner** | `runs-fleet-runner-{amd64,arm64}.pkr.hcl` | `provision-runs-fleet.sh` | The diff over base: the `runs-fleet-agent` binary extracted from the ECR runner image, its systemd unit, the bootstrap shim, the per-boot cloud-init script, and the runs-fleet-specific CloudWatch override. |
+| **Runner** | `runs-fleet-runner-{amd64,arm64}.pkr.hcl` | `provision-runs-fleet.sh` | The diff over base: the `runs-fleet-agent` binary extracted from the ECR runner image, the `runs-fleet-buildx-shim` installed as the `docker-buildx` CLI plugin, its systemd unit, the bootstrap shim, the per-boot cloud-init script, and the runs-fleet-specific CloudWatch override. |
 
 Both layers are built by a single workflow at `.github/workflows/build-amis.yml`. The runner-AMI job declares `needs: build-base`, so when a single push touches both `provision-base.sh` and `provision-runs-fleet.sh`, the runner AMI waits for the new base to register before starting Packer (its `source_ami_filter` then resolves to the fresh base). When a push only touches one layer, the other layer's job is skipped.
 
@@ -21,6 +21,7 @@ Both layers are built by a single workflow at `.github/workflows/build-amis.yml`
 **Runner AMI only when:** the thing is genuinely part of the `runs-fleet` orchestration layer and not a CI-workload concern. The current list is small and exhaustive:
 
 - Extracting the `runs-fleet-agent` binary from the ECR runner image (this is the project's actual artifact).
+- Extracting the `runs-fleet-buildx-shim` from the same image and installing it as the `docker-buildx` CLI plugin at `/usr/local/lib/docker/cli-plugins/docker-buildx` (this dir precedes the OS plugin dir in docker's search order, so it shadows the packaged buildx without replacing it). The real plugin path is recorded to `/opt/runs-fleet/buildx-real-path`. Like the agent, this is a runs-fleet orchestration artifact, not a CI-workload package — the shim is inert until the orchestrator injects the cache env vars.
 - Installing the `runs-fleet-agent.service` systemd unit.
 - Installing `agent-bootstrap.sh` and the per-boot cloud-init script.
 - The CloudWatch agent JSON override that points at `/opt/actions-runner/_diag/*.log`.
