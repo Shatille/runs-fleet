@@ -17,14 +17,10 @@ func main() {
 	// argv[0] is the plugin binary path; the CLI-plugin protocol passes the
 	// subcommand and flags as os.Args[1:].
 	pluginArgs := os.Args[1:]
-	env := environ()
-
-	fetcher := buildxshim.NewIMDSClient()
-	finalArgs, outcome := plan(context.Background(), pluginArgs, env, fetcher)
-	recordOutcome(env, outcome)
+	finalArgs := safePlan(context.Background(), pluginArgs, buildxshim.NewIMDSClient())
 
 	realPlugin := buildxshim.DiscoverRealPlugin(
-		firstNonEmpty(env["RUNS_FLEET_BUILDKIT_REAL_PLUGIN"], buildxshim.DefaultRealPathFile),
+		firstNonEmpty(os.Getenv("RUNS_FLEET_BUILDKIT_REAL_PLUGIN"), buildxshim.DefaultRealPathFile),
 		buildxshim.DefaultPluginSearch,
 	)
 	if realPlugin == "" {
@@ -41,6 +37,24 @@ func main() {
 		_, _ = os.Stderr.WriteString("docker-buildx: " + err.Error() + "\n")
 		os.Exit(1)
 	}
+}
+
+// safePlan runs the whole decision path under a last-resort recover for the
+// never-break-a-build invariant: if anything in it panics, the real plugin is
+// still exec'd with the ORIGINAL argv (pure passthrough), so a shim bug
+// degrades to unmodified behavior rather than a failed build.
+func safePlan(ctx context.Context, argv []string, fetcher buildxshim.CredsFetcher) (finalArgs []string) {
+	finalArgs = argv
+	defer func() {
+		if r := recover(); r != nil {
+			_, _ = os.Stderr.WriteString("docker-buildx shim: recovered, passing through\n")
+			finalArgs = argv
+		}
+	}()
+	env := environ()
+	args, outcome := plan(ctx, argv, env, fetcher)
+	recordOutcome(env, outcome)
+	return args
 }
 
 // plan decides the final argv to exec and the outcome for telemetry. It fetches

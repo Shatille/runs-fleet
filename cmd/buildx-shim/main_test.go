@@ -100,6 +100,42 @@ func (p panicFetcher) FetchCredentials(context.Context) (buildxshim.Credentials,
 	return buildxshim.Credentials{}, nil
 }
 
+type crashFetcher struct{}
+
+func (crashFetcher) FetchCredentials(context.Context) (buildxshim.Credentials, error) {
+	panic("injected decision-path panic")
+}
+
+func setEligibleEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("RUNS_FLEET_BUILDKIT_CACHE_BUCKET", "b")
+	t.Setenv("RUNS_FLEET_BUILDKIT_CACHE_REGION", "ap-northeast-1")
+	t.Setenv("RUNS_FLEET_BUILDKIT_CACHE_PREFIX", "buildkit/o/r/")
+	t.Setenv("RUNS_FLEET_BUILD_CACHE", "")
+	t.Setenv("BUILDX_BUILDER", "multiarch")
+}
+
+func TestSafePlan_PanicRecoversToOriginalArgv(t *testing.T) {
+	setEligibleEnv(t)
+	argv := []string{"buildx", "build", "."}
+	got := safePlan(context.Background(), argv, crashFetcher{})
+	if !reflect.DeepEqual(got, argv) {
+		t.Errorf("safePlan after panic = %v, want original argv %v", got, argv)
+	}
+}
+
+func TestSafePlan_NormalPathInjects(t *testing.T) {
+	setEligibleEnv(t)
+	argv := []string{"buildx", "build", "."}
+	got := safePlan(context.Background(), argv, fakeFetcher{creds: fullCreds()})
+	if len(got) <= len(argv) {
+		t.Fatalf("expected flags appended, got %v", got)
+	}
+	if !reflect.DeepEqual(got[:len(argv)], argv) {
+		t.Errorf("original argv not preserved: %v", got)
+	}
+}
+
 func TestPlan_WritesOutcomeToEnvFile(t *testing.T) {
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "_rf_buildkit_cache_outcome")
