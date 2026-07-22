@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/internal/validation"
 )
@@ -255,6 +256,70 @@ func TestLoadCostAttributionTagKeys(t *testing.T) {
 			}
 			if cfg.TagKeyService != tt.wantServiceKey {
 				t.Errorf("TagKeyService = %q, want %q", cfg.TagKeyService, tt.wantServiceKey)
+			}
+		})
+	}
+}
+
+func TestLoadShutdownDrainDelay(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	baseEnv := map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
+	}
+
+	tests := []struct {
+		name      string
+		envValue  string
+		want      time.Duration
+		wantError bool
+	}{
+		{name: "default when unset", envValue: "", want: 5 * time.Second},
+		{name: "override in seconds", envValue: "10", want: 10 * time.Second},
+		{name: "at max allowed", envValue: "15", want: MaxShutdownDrainDelay},
+		{name: "zero disables drain", envValue: "0", want: 0},
+		{name: "negative rejected", envValue: "-1", wantError: true},
+		{name: "exceeds max rejected", envValue: "120", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			for k, v := range baseEnv {
+				_ = os.Setenv(k, v)
+			}
+			if tt.envValue != "" {
+				_ = os.Setenv("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS", tt.envValue)
+			}
+
+			cfg, err := Load()
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("Load() expected error for drain delay %q, got nil", tt.envValue)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.ShutdownDrainDelay != tt.want {
+				t.Errorf("ShutdownDrainDelay = %s, want %s", cfg.ShutdownDrainDelay, tt.want)
 			}
 		})
 	}

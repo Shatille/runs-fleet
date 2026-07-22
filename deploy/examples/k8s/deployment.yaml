@@ -30,13 +30,17 @@ spec:
         app.kubernetes.io/name: runs-fleet-orchestrator
     spec:
       serviceAccountName: runs-fleet-orchestrator
-      # On SIGTERM the orchestrator stops accepting new work but lets in-flight
-      # message processing run to completion (bounded by the ~90s
-      # MessageProcessTimeout). This must exceed the internal worker drain
-      # timeout (MessageProcessTimeout + 10s) plus the HTTP/telemetry shutdown
-      # steps, or k8s SIGKILLs the pod mid-drain and reintroduces the rollout
-      # error burst. Tradeoff: each old pod can take up to this long to leave
-      # during a rollout, though typical drains finish in seconds.
+      # On SIGTERM the orchestrator fails readiness and keeps serving for
+      # RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS (default 5s) so the endpoints
+      # controller deregisters this pod before the listener closes — otherwise
+      # webhooks routed during that window 502 and strand jobs. It then lets
+      # in-flight message processing run to completion (bounded by the ~90s
+      # MessageProcessTimeout). This must exceed the drain delay plus the
+      # internal worker drain timeout (MessageProcessTimeout + 10s) plus the
+      # HTTP/telemetry shutdown steps, or k8s SIGKILLs the pod mid-drain and
+      # reintroduces the rollout error burst. Tradeoff: each old pod can take up
+      # to this long to leave during a rollout, though typical drains finish in
+      # seconds.
       terminationGracePeriodSeconds: 120
       containers:
         - name: orchestrator

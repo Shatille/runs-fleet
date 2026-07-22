@@ -24,9 +24,18 @@ resource "aws_ecs_service" "orchestrator" {
     container_port   = 8080
   }
 
-  # Rolling deploy. The orchestrator handles graceful shutdown (SIGTERM
-  # drains in-flight reconciles before exit), so the standard rolling
-  # update strategy is safe.
+  # Rolling deploy. On SIGTERM the orchestrator fails readiness and holds the
+  # listener open for RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS so the ALB
+  # deregisters this task before it stops accepting webhooks, then drains
+  # in-flight reconciles before exit. Set the target group's
+  # deregistration_delay >= that drain delay, and keep
+  # deployment_minimum_healthy_percent = 100 so old tasks keep serving until
+  # replacements are healthy (a capacity-constrained placement must not leave
+  # zero healthy tasks behind the ALB — that returns 5xx to GitHub webhooks and
+  # strands jobs with no runner).
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
   deployment_circuit_breaker {
     enable   = true
     rollback = true

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/internal/handler"
@@ -904,4 +905,106 @@ func waitFor(t *testing.T, cond func() bool, msg string) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal(msg)
+}
+
+// TestHandleReadiness_ServingReturnsOK asserts a healthy server reports ready so
+// the load balancer routes traffic to it.
+func TestHandleReadiness_ServingReturnsOK(t *testing.T) {
+	ws := &webhookServer{jobQueue: &mockQueue{}}
+
+	rec := httptest.NewRecorder()
+	ws.handleReadiness(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleReadiness() status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestHandleReadiness_DrainingReturns503 asserts that once shutdown begins the
+// readiness probe fails, so the load balancer deregisters this task before its
+// listener closes — the fix for webhooks 500ing mid-deploy and stranding jobs.
+func TestHandleReadiness_DrainingReturns503(t *testing.T) {
+	ws := &webhookServer{jobQueue: &mockQueue{}}
+	ws.shuttingDown.Store(true)
+
+	rec := httptest.NewRecorder()
+	ws.handleReadiness(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("handleReadiness() during drain = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+// TestBeginDrain_FlipsReadinessThenWaits asserts the drain flips readiness to 503
+// immediately (so the load balancer starts deregistering) and only returns after
+// the delay elapses — the window that keeps webhooks landing on an open listener.
+func TestBeginDrain_FlipsReadinessThenWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ws := &webhookServer{jobQueue: &mockQueue{}}
+
+		done := make(chan struct{})
+		go func() {
+			ws.beginDrain(5 * time.Second)
+			close(done)
+		}()
+
+		synctest.Wait()
+		if !ws.shuttingDown.Load() {
+			t.Fatal("beginDrain did not flip readiness before waiting")
+		}
+		select {
+		case <-done:
+			t.Fatal("beginDrain returned before the drain delay elapsed")
+		default:
+		}
+
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("beginDrain did not return after the drain delay elapsed")
+		}
+	})
+}
+
+// TestBeginDrain_ZeroDelayFlipsReadinessAndReturns asserts a disabled drain
+// (delay 0) still reports 503 so readiness reflects shutdown, and returns without
+// blocking.
+func TestBeginDrain_ZeroDelayFlipsReadinessAndReturns(t *testing.T) {
+	ws := &webhookServer{jobQueue: &mockQueue{}}
+	ws.beginDrain(0)
+	if !ws.shuttingDown.Load() {
+		t.Fatal("beginDrain(0) must still flip readiness to 503")
+	}
+}
+
+// TestHandleWebhook_EnqueuesWhileDraining asserts webhooks are still accepted and
+// durably enqueued after shutdown has begun. The drain window keeps the listener
+// open precisely so requests the load balancer routes before it finishes
+// deregistering reach the queue instead of a closed socket.
+func TestHandleWebhook_EnqueuesWhileDraining(t *testing.T) {
+	const secret = "test-secret"
+	body := []byte(`{"action":"queued","workflow_job":{"id":12345,"labels":["runs-fleet=67890/cpu=4"]},"repository":{"full_name":"owner/repo"}}`)
+
+	q := &mockQueue{}
+	ws := &webhookServer{
+		cfg:              &config.Config{GitHubWebhookSecret: secret},
+		jobQueue:         q,
+		metricsPublisher: &recordingMetrics{},
+	}
+	ws.shuttingDown.Store(true)
+
+	rec := httptest.NewRecorder()
+	ws.handleWebhook(rec, signWebhook(t, secret, body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleWebhook() while draining = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if len(q.sentMessages) != 1 {
+		t.Fatalf("durable enqueue count while draining = %d, want 1", len(q.sentMessages))
+	}
+	if got := q.sentMessages[0].JobID; got != 12345 {
+		t.Errorf("enqueued JobID = %d, want 12345", got)
+	}
 }
