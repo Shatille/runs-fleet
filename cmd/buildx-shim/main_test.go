@@ -25,6 +25,19 @@ func fullCreds() buildxshim.Credentials {
 	return buildxshim.Credentials{AccessKeyID: "AKIA", SecretAccessKey: "sec", SessionToken: "tok"}
 }
 
+func capableLoader() func() buildxshim.BuildxState {
+	return func() buildxshim.BuildxState {
+		return buildxshim.BuildxState{Drivers: map[string]string{"multiarch": "docker-container"}}
+	}
+}
+
+func mustNotLoadState(t *testing.T) func() buildxshim.BuildxState {
+	return func() buildxshim.BuildxState {
+		t.Error("buildx state must not be loaded for this invocation")
+		return buildxshim.BuildxState{}
+	}
+}
+
 func TestPlan_InjectsWhenEligible(t *testing.T) {
 	argv := []string{"buildx", "build", "--platform", "linux/arm64", "."}
 	env := map[string]string{
@@ -33,7 +46,7 @@ func TestPlan_InjectsWhenEligible(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX": "buildkit/o/r/",
 		"BUILDX_BUILDER":                   "multiarch",
 	}
-	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()})
+	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()}, capableLoader())
 
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
@@ -49,7 +62,7 @@ func TestPlan_InjectsWhenEligible(t *testing.T) {
 
 func TestPlan_PassthroughWhenBucketAbsent(t *testing.T) {
 	argv := []string{"buildx", "build", "."}
-	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, fakeFetcher{creds: fullCreds()})
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, fakeFetcher{creds: fullCreds()}, mustNotLoadState(t))
 	if !reflect.DeepEqual(finalArgv, argv) {
 		t.Errorf("expected byte-identical argv, got %v", finalArgv)
 	}
@@ -66,7 +79,7 @@ func TestPlan_PassthroughOnCredsFailure(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX": "buildkit/o/r/",
 		"BUILDX_BUILDER":                   "multiarch",
 	}
-	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{err: context.DeadlineExceeded})
+	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{err: context.DeadlineExceeded}, capableLoader())
 	if !reflect.DeepEqual(finalArgv, argv) {
 		t.Errorf("expected passthrough argv on creds failure, got %v", finalArgv)
 	}
@@ -83,8 +96,9 @@ func TestPlan_MetadataHandshakeNeverFetchesCreds(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX": "buildkit/o/r/",
 		"BUILDX_BUILDER":                   "multiarch",
 	}
-	// A fetcher that fails the test if called: metadata handshake is pure passthrough.
-	finalArgv, outcome := plan(context.Background(), argv, env, panicFetcher{t})
+	// A fetcher and state loader that fail the test if called: the metadata
+	// handshake is pure passthrough and touches neither IMDS nor the filesystem.
+	finalArgv, outcome := plan(context.Background(), argv, env, panicFetcher{t}, mustNotLoadState(t))
 	if !reflect.DeepEqual(finalArgv, argv) {
 		t.Errorf("metadata handshake must be byte-identical, got %v", finalArgv)
 	}
@@ -113,6 +127,17 @@ func setEligibleEnv(t *testing.T) {
 	t.Setenv("RUNS_FLEET_BUILDKIT_CACHE_PREFIX", "buildkit/o/r/")
 	t.Setenv("RUNS_FLEET_BUILD_CACHE", "")
 	t.Setenv("BUILDX_BUILDER", "multiarch")
+	// safePlan resolves the builder driver from real buildx state files, so
+	// provision an isolated store naming multiarch as a container builder.
+	confDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(confDir, "instances"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	instance := filepath.Join(confDir, "instances", "multiarch")
+	if err := os.WriteFile(instance, []byte(`{"Driver":"docker-container"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BUILDX_CONFIG", confDir)
 }
 
 func TestSafePlan_PanicRecoversToOriginalArgv(t *testing.T) {
@@ -146,7 +171,7 @@ func TestPlan_WritesOutcomeToEnvFile(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX":  "buildkit/o/r/",
 		"RUNS_FLEET_BUILDKIT_CACHE_OUTCOME": outFile,
 	}
-	_, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()})
+	_, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()}, capableLoader())
 	recordOutcome(env, outcome)
 
 	b, err := os.ReadFile(outFile)

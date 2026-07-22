@@ -52,20 +52,22 @@ func safePlan(ctx context.Context, argv []string, fetcher buildxshim.CredsFetche
 		}
 	}()
 	env := environ()
-	args, outcome := plan(ctx, argv, env, fetcher)
+	loadState := func() buildxshim.BuildxState { return buildxshim.LoadBuildxState(env) }
+	args, outcome := plan(ctx, argv, env, fetcher, loadState)
 	recordOutcome(env, outcome)
 	return args
 }
 
 // plan decides the final argv to exec and the outcome for telemetry. It fetches
 // credentials only when the invocation is otherwise injection-eligible, so
-// non-build invocations (and the metadata handshake) never touch IMDS.
-func plan(ctx context.Context, argv []string, env map[string]string, fetcher buildxshim.CredsFetcher) (finalArgv []string, outcome string) {
-	// Fast passthrough decision without creds first: Decide is pure and will
-	// tell us not-build / disabled / opt-out / user-flags / default-builder
-	// before we ever reach IMDS. We pass empty creds; if Decide would otherwise
-	// engage it returns failed:no-creds, which is our signal to fetch.
-	_, pre := buildxshim.Decide(argv, env, buildxshim.Credentials{})
+// non-build invocations (and the metadata handshake) never touch IMDS; Decide
+// likewise consults loadState only past its cheap gates.
+func plan(ctx context.Context, argv []string, env map[string]string, fetcher buildxshim.CredsFetcher, loadState func() buildxshim.BuildxState) (finalArgv []string, outcome string) {
+	// Fast passthrough decision without creds first: Decide will tell us
+	// not-build / disabled / opt-out / user-flags / no-cache-builder before we
+	// ever reach IMDS. We pass empty creds; if Decide would otherwise engage it
+	// returns failed:no-creds, which is our signal to fetch.
+	_, pre := buildxshim.Decide(argv, env, buildxshim.Credentials{}, loadState)
 	if pre != buildxshim.OutcomeNeedsCreds {
 		// Terminal decision that needs no creds (passthrough of every kind).
 		return argv, pre
@@ -75,7 +77,7 @@ func plan(ctx context.Context, argv []string, env map[string]string, fetcher bui
 	if err != nil {
 		return argv, "failed:imds"
 	}
-	extra, outcome := buildxshim.Decide(argv, env, creds)
+	extra, outcome := buildxshim.Decide(argv, env, creds, loadState)
 	if len(extra) == 0 {
 		return argv, outcome
 	}

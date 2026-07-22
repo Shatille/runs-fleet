@@ -29,6 +29,15 @@ const (
 	outcomeDisabled = "disabled"
 )
 
+// Builder driver names from the buildx store; only the non-docker drivers can
+// export a cache. The default builder name marks the docker driver.
+const (
+	driverDockerContainer = "docker-container"
+	driverKubernetes      = "kubernetes"
+	driverRemote          = "remote"
+	defaultBuilderName    = "default"
+)
+
 // OutcomeNeedsCreds is the exact outcome Decide returns when an invocation is
 // injection-eligible in every respect except that no credentials were supplied.
 // The shim uses it as the single signal to attempt an IMDS fetch, keeping the
@@ -53,16 +62,21 @@ func (c Credentials) complete() bool {
 // append (nil for pure passthrough) plus an outcome string for telemetry. It is
 // inert by default and fails safe: any uncertainty yields no injection.
 //
+// loadState supplies the buildx store state (see LoadBuildxState) and is
+// invoked lazily, only after the cheap gates pass — the metadata handshake and
+// non-build invocations never touch the filesystem.
+//
 // Injection happens only when ALL hold:
 //  1. argv is a buildx `build` invocation
 //  2. envCacheBucket + envCacheRegion + envCachePrefix are all present
 //  3. no --cache-from/--cache-to already in argv (explicit user config wins)
 //  4. opt-out (RUNS_FLEET_BUILD_CACHE=off) not set
-//  5. a non-default builder is selected (--builder <name!=default> OR
-//     BUILDX_BUILDER non-empty and != "default") — the docker driver does not
-//     support --cache-to, so injecting there would fail the build
+//  5. the effective builder (--builder argv > BUILDX_BUILDER env > buildx
+//     store current file) is a user-created instance whose driver supports
+//     cache export — the docker driver does not support --cache-to, so
+//     injecting there would fail the build
 //  6. complete instance-profile session creds are available
-func Decide(argv []string, env map[string]string, creds Credentials) (extraArgs []string, outcome string) {
+func Decide(argv []string, env map[string]string, creds Credentials, loadState func() BuildxState) (extraArgs []string, outcome string) {
 	if !isBuild(argv) {
 		return nil, outcomeSkipped + ":not-build"
 	}
@@ -82,8 +96,8 @@ func Decide(argv []string, env map[string]string, creds Credentials) (extraArgs 
 		return nil, outcomeSkipped + ":user-cache-flags"
 	}
 
-	if !nonDefaultBuilderSelected(argv, env) {
-		return nil, outcomeSkipped + ":default-builder"
+	if !cacheCapableBuilder(argv, env, loadState) {
+		return nil, outcomeSkipped + ":no-cache-builder"
 	}
 
 	if !creds.complete() {
@@ -196,15 +210,32 @@ func hasCacheFlag(argv []string) bool {
 	return false
 }
 
-// nonDefaultBuilderSelected reports whether the invocation targets a builder
-// that supports cache export. --builder in argv wins over BUILDX_BUILDER env.
-// Absent/empty/"default" → the docker driver → NO injection.
-func nonDefaultBuilderSelected(argv []string, env map[string]string) bool {
-	if b, ok := builderFromArgv(argv); ok {
-		return b != "" && b != "default"
+// cacheCapableBuilder reports whether the invocation's effective builder is a
+// user-created instance whose driver can export a cache. The builder name is
+// resolved with buildx's own precedence (--builder argv > BUILDX_BUILDER env >
+// the store's current file) and must map to an instance record with a
+// cache-capable driver. Context-backed builders and the default docker driver
+// have no instance record, so they correctly fail the driver lookup — a name
+// alone is never trusted, since injecting --cache-to on the docker driver
+// fails the build.
+func cacheCapableBuilder(argv []string, env map[string]string, loadState func() BuildxState) bool {
+	state := loadState()
+	name, ok := builderFromArgv(argv)
+	if !ok {
+		name = env["BUILDX_BUILDER"]
 	}
-	b := env["BUILDX_BUILDER"]
-	return b != "" && b != "default"
+	if name == "" {
+		name = state.CurrentBuilder
+	}
+	if name == "" || name == defaultBuilderName {
+		return false
+	}
+	switch state.Drivers[name] {
+	case driverDockerContainer, driverKubernetes, driverRemote:
+		return true
+	default:
+		return false
+	}
 }
 
 func builderFromArgv(argv []string) (string, bool) {

@@ -16,7 +16,8 @@ func testCreds() Credentials {
 }
 
 // enabledEnv is the baseline environment for an injection-eligible invocation:
-// bucket present, opt-out unset, a non-default container builder selected.
+// bucket present, opt-out unset, a container builder named by BUILDX_BUILDER
+// whose driver capableState() vouches for.
 func enabledEnv() map[string]string {
 	return map[string]string{
 		envCacheBucket:   "runs-fleet-cache",
@@ -26,12 +27,29 @@ func enabledEnv() map[string]string {
 	}
 }
 
+func stateWith(current string, drivers map[string]string) func() BuildxState {
+	return func() BuildxState {
+		return BuildxState{CurrentBuilder: current, Drivers: drivers}
+	}
+}
+
+// capableState vouches a docker-container driver for the "multiarch" builder
+// that enabledEnv selects.
+func capableState() func() BuildxState {
+	return stateWith("", map[string]string{"multiarch": driverDockerContainer})
+}
+
+func noState() func() BuildxState {
+	return func() BuildxState { return BuildxState{} }
+}
+
 func TestDecide_Passthrough(t *testing.T) {
 	tests := []struct {
 		name  string
 		argv  []string
 		env   map[string]string
 		creds Credentials
+		state func() BuildxState
 	}{
 		{
 			name:  "metadata handshake returns nothing to inject",
@@ -122,7 +140,7 @@ func TestDecide_Passthrough(t *testing.T) {
 			creds: testCreds(),
 		},
 		{
-			name: "no builder in argv and BUILDX_BUILDER empty (docker driver)",
+			name: "no builder anywhere (default docker driver)",
 			argv: []string{"buildx", "build", "."},
 			env: map[string]string{
 				envCacheBucket: "runs-fleet-cache",
@@ -130,6 +148,7 @@ func TestDecide_Passthrough(t *testing.T) {
 				envCachePrefix: "buildkit/acme/widgets/",
 			},
 			creds: testCreds(),
+			state: noState(),
 		},
 		{
 			name: "BUILDX_BUILDER=default (docker driver)",
@@ -141,6 +160,7 @@ func TestDecide_Passthrough(t *testing.T) {
 				"BUILDX_BUILDER": "default",
 			},
 			creds: testCreds(),
+			state: noState(),
 		},
 		{
 			name: "--builder default in argv (docker driver)",
@@ -151,6 +171,32 @@ func TestDecide_Passthrough(t *testing.T) {
 				envCachePrefix: "buildkit/acme/widgets/",
 			},
 			creds: testCreds(),
+			state: noState(),
+		},
+		{
+			name: "current builder from state runs the docker driver",
+			argv: []string{"buildx", "build", "."},
+			env: map[string]string{
+				envCacheBucket: "runs-fleet-cache",
+				envCacheRegion: "ap-northeast-1",
+				envCachePrefix: "buildkit/acme/widgets/",
+			},
+			creds: testCreds(),
+			state: stateWith("ctx-builder", map[string]string{"ctx-builder": "docker"}),
+		},
+		{
+			name:  "named builder missing an instance record",
+			argv:  []string{"buildx", "build", "."},
+			env:   enabledEnv(),
+			creds: testCreds(),
+			state: noState(),
+		},
+		{
+			name:  "named builder with unrecognized driver",
+			argv:  []string{"buildx", "build", "."},
+			env:   enabledEnv(),
+			creds: testCreds(),
+			state: stateWith("", map[string]string{"multiarch": "experimental"}),
 		},
 		{
 			name:  "empty creds (IMDS fetch failed) suppresses injection",
@@ -184,7 +230,11 @@ func TestDecide_Passthrough(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			extra, outcome := Decide(tt.argv, tt.env, tt.creds)
+			state := tt.state
+			if state == nil {
+				state = capableState()
+			}
+			extra, outcome := Decide(tt.argv, tt.env, tt.creds, state)
 			if len(extra) != 0 {
 				t.Errorf("expected no extra args (passthrough), got %v", extra)
 			}
@@ -197,7 +247,7 @@ func TestDecide_Passthrough(t *testing.T) {
 
 func TestDecide_InjectsCacheFlags(t *testing.T) {
 	argv := []string{"buildx", "build", "--platform", "linux/arm64", "-t", "img:latest", "."}
-	extra, outcome := Decide(argv, enabledEnv(), testCreds())
+	extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want %q", outcome, outcomeEngaged)
@@ -246,7 +296,7 @@ func TestDecide_InjectsCacheFlags(t *testing.T) {
 
 func TestDecide_PlatformSlugFromArgvEqualsForm(t *testing.T) {
 	argv := []string{"buildx", "build", "--platform=linux/amd64", "."}
-	extra, outcome := Decide(argv, enabledEnv(), testCreds())
+	extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
 	}
@@ -257,7 +307,7 @@ func TestDecide_PlatformSlugFromArgvEqualsForm(t *testing.T) {
 
 func TestDecide_PlatformSlugFirstOfMulti(t *testing.T) {
 	argv := []string{"buildx", "build", "--platform", "linux/arm64,linux/amd64", "."}
-	extra, outcome := Decide(argv, enabledEnv(), testCreds())
+	extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
 	}
@@ -268,7 +318,7 @@ func TestDecide_PlatformSlugFirstOfMulti(t *testing.T) {
 
 func TestDecide_PlatformSlugFallsBackToRuntimeArch(t *testing.T) {
 	argv := []string{"buildx", "build", "."}
-	extra, outcome := Decide(argv, enabledEnv(), testCreds())
+	extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
 	}
@@ -279,19 +329,20 @@ func TestDecide_PlatformSlugFallsBackToRuntimeArch(t *testing.T) {
 }
 
 func TestDecide_BuilderFromArgvEnablesInjection(t *testing.T) {
-	// No BUILDX_BUILDER env, but --builder names a non-default builder.
+	// No BUILDX_BUILDER env, but --builder names an instance the state vouches
+	// a container driver for.
 	env := map[string]string{
 		envCacheBucket: "runs-fleet-cache",
 		envCacheRegion: "ap-northeast-1",
 		envCachePrefix: "buildkit/acme/widgets/",
 	}
 	argv := []string{"buildx", "build", "--builder", "multiarch", "."}
-	extra, outcome := Decide(argv, env, testCreds())
+	extra, outcome := Decide(argv, env, testCreds(), capableState())
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
 	}
 	if len(extra) == 0 {
-		t.Error("expected injected flags when --builder names a non-default builder")
+		t.Error("expected injected flags when --builder names a container builder")
 	}
 }
 
@@ -300,7 +351,7 @@ func TestDecide_RepoSlugSanitizedFromPrefix(t *testing.T) {
 		envCachePrefix: "buildkit/Acme-Org/My.Weird_Repo/",
 	})
 	argv := []string{"buildx", "build", "--platform", "linux/arm64", "."}
-	extra, outcome := Decide(argv, env, testCreds())
+	extra, outcome := Decide(argv, env, testCreds(), capableState())
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
 	}
@@ -319,7 +370,7 @@ func TestDecide_BuildAliasFirstArg(t *testing.T) {
 		envCacheRegion: "ap-northeast-1",
 		envCachePrefix: "buildkit/acme/widgets/",
 	}
-	extra, outcome := Decide(argv, env, testCreds())
+	extra, outcome := Decide(argv, env, testCreds(), capableState())
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged for build-alias argv, got extra=%v", extra, outcome)
 	}
@@ -331,7 +382,7 @@ func TestDecide_BuildShortAlias(t *testing.T) {
 		{"b", "."},
 		{"buildx", "b", "."},
 	} {
-		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 		if outcome != outcomeEngaged {
 			t.Errorf("argv %v: outcome = %q, want engaged", argv, outcome)
 		}
@@ -354,7 +405,7 @@ func TestDecide_GlobalDockerFlagsBeforeSubcommand(t *testing.T) {
 		{"--debug", "build", "."},
 		{"-D", "b", "."},
 	} {
-		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 		if outcome != outcomeEngaged {
 			t.Errorf("argv %v: outcome = %q, want engaged", argv, outcome)
 		}
@@ -375,7 +426,7 @@ func TestDecide_UnknownLeadingFlagFailsSafe(t *testing.T) {
 		{"-Z", "b", "."},
 		{"--", "build", "."},
 	} {
-		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 		if len(extra) != 0 {
 			t.Errorf("argv %v: expected passthrough, got %v", argv, extra)
 		}
@@ -390,7 +441,7 @@ func TestDecide_KnownBoolFlagsBeforeSubcommand(t *testing.T) {
 		{"--tlsverify", "buildx", "build", "."},
 		{"--tls", "build", "."},
 	} {
-		_, outcome := Decide(argv, enabledEnv(), testCreds())
+		_, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 		if outcome != outcomeEngaged {
 			t.Errorf("argv %v: outcome = %q, want engaged", argv, outcome)
 		}
@@ -403,13 +454,113 @@ func TestDecide_GlobalFlagsNonBuildStillPassthrough(t *testing.T) {
 		{"--config", "/etc/docker-cfg", "buildx", "inspect"},
 		{"-D", "buildx", "prune", "-f"},
 	} {
-		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		extra, outcome := Decide(argv, enabledEnv(), testCreds(), capableState())
 		if len(extra) != 0 {
 			t.Errorf("argv %v: expected passthrough, got %v", argv, extra)
 		}
 		if outcome == outcomeEngaged {
 			t.Errorf("argv %v: must not engage", argv)
 		}
+	}
+}
+
+func TestDecide_CurrentBuilderFromStateEngages(t *testing.T) {
+	// The docker/setup-buildx-action pattern: `docker buildx create --use`
+	// persists the current builder in the buildx store, no --builder flag and
+	// no BUILDX_BUILDER env anywhere. Detection must come from state files.
+	env := map[string]string{
+		envCacheBucket: "runs-fleet-cache",
+		envCacheRegion: "ap-northeast-1",
+		envCachePrefix: "buildkit/acme/widgets/",
+	}
+	argv := []string{"buildx", "build", "."}
+	state := stateWith("builder-abc", map[string]string{"builder-abc": driverDockerContainer})
+	extra, outcome := Decide(argv, env, testCreds(), state)
+	if outcome != outcomeEngaged {
+		t.Fatalf("outcome = %q, want engaged for state-selected container builder", outcome)
+	}
+	if len(extra) == 0 {
+		t.Error("expected injected flags for state-selected container builder")
+	}
+}
+
+func TestDecide_KubernetesAndRemoteDriversEngage(t *testing.T) {
+	for _, driver := range []string{"kubernetes", "remote"} {
+		state := stateWith("", map[string]string{"multiarch": driver})
+		_, outcome := Decide([]string{"buildx", "build", "."}, enabledEnv(), testCreds(), state)
+		if outcome != outcomeEngaged {
+			t.Errorf("driver %q: outcome = %q, want engaged", driver, outcome)
+		}
+	}
+}
+
+func TestDecide_ArgvBuilderWinsOverEnvAndState(t *testing.T) {
+	env := mergeEnv(enabledEnv(), map[string]string{"BUILDX_BUILDER": "container-builder"})
+	drivers := map[string]string{
+		"container-builder": driverDockerContainer,
+		"docker-builder":    "docker",
+	}
+
+	// argv names the docker-driver builder: env/state must not resurrect
+	// injection for it.
+	argv := []string{"buildx", "build", "--builder", "docker-builder", "."}
+	extra, outcome := Decide(argv, env, testCreds(), stateWith("container-builder", drivers))
+	if len(extra) != 0 || outcome == outcomeEngaged {
+		t.Errorf("argv docker-driver builder must win: outcome %q extra %v", outcome, extra)
+	}
+
+	// argv names the container builder while env names the docker one.
+	env["BUILDX_BUILDER"] = "docker-builder"
+	argv = []string{"buildx", "build", "--builder", "container-builder", "."}
+	_, outcome = Decide(argv, env, testCreds(), stateWith("", drivers))
+	if outcome != outcomeEngaged {
+		t.Errorf("argv container builder must win over env: outcome %q", outcome)
+	}
+}
+
+func TestDecide_StateNotLoadedForEarlyGates(t *testing.T) {
+	mustNotLoad := func() BuildxState {
+		t.Error("buildx state must not be loaded before the cheap gates pass")
+		return BuildxState{}
+	}
+	tests := []struct {
+		name string
+		argv []string
+		env  map[string]string
+	}{
+		{
+			name: "metadata handshake",
+			argv: []string{"docker-cli-plugin-metadata"},
+			env:  enabledEnv(),
+		},
+		{
+			name: "non-build subcommand",
+			argv: []string{"buildx", "ls"},
+			env:  enabledEnv(),
+		},
+		{
+			name: "cache env absent",
+			argv: []string{"buildx", "build", "."},
+			env:  map[string]string{},
+		},
+		{
+			name: "opt-out set",
+			argv: []string{"buildx", "build", "."},
+			env:  mergeEnv(enabledEnv(), map[string]string{envOptOut: "off"}),
+		},
+		{
+			name: "user cache flags present",
+			argv: []string{"buildx", "build", "--cache-from", "type=gha", "."},
+			env:  enabledEnv(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extra, _ := Decide(tt.argv, tt.env, testCreds(), mustNotLoad)
+			if len(extra) != 0 {
+				t.Errorf("expected passthrough, got %v", extra)
+			}
+		})
 	}
 }
 
@@ -437,7 +588,7 @@ func TestDecide_ExtraArgsAreIndependentSlices(t *testing.T) {
 	// Guard against the shim mutating the caller's argv; extraArgs must be a
 	// fresh slice the caller appends to original argv.
 	argv := []string{"buildx", "build", "."}
-	extra, _ := Decide(argv, enabledEnv(), testCreds())
+	extra, _ := Decide(argv, enabledEnv(), testCreds(), capableState())
 	if reflect.ValueOf(extra).Pointer() == reflect.ValueOf(argv).Pointer() {
 		t.Error("extraArgs must not alias argv")
 	}

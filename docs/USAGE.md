@@ -147,10 +147,14 @@ What to know:
   invocation — your config always wins.
 - **Opt out per workflow:** set `RUNS_FLEET_BUILD_CACHE=off` (env at the job or
   step level) to disable injection for that job.
-- **Fail-safe:** every uncertain or unsupported case is a pure passthrough. In
-  particular, a build on the default Docker driver (which cannot export a cache)
-  is left untouched — you need a container/BuildKit builder (e.g. via
-  `docker/setup-buildx-action`) for caching to engage.
+- **Fail-safe:** every uncertain or unsupported case is a pure passthrough. The
+  shim resolves the active builder the same way buildx does (`--builder` flag,
+  then `BUILDX_BUILDER`, then the builder selected via `docker buildx create
+  --use`) and engages only when that builder's driver can export a cache
+  (`docker-container`, `kubernetes`, `remote`). A build on the default Docker
+  driver (which cannot export a cache) is left untouched — the
+  `docker/setup-buildx-action` step in the example above is what provides the
+  container builder.
 - **Scope:** the layer cache is keyed per repository and per platform. Scoping is
   conventional (shared bucket IAM), not cryptographically enforced like the
   Actions cache above — appropriate for a same-org fleet.

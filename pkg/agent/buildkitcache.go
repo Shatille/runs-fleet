@@ -50,7 +50,7 @@ func (r *Registrar) WriteBuildkitCacheEnv(runnerPath string, cfg *secrets.Runner
 // disabled) recorded by the shim for this job, reading the last non-empty line
 // of the outcome file. An empty path or a missing/unreadable file — the shim
 // was never invoked (no docker build ran) — reports "disabled". The shim writes
-// finer detail after a colon (e.g. "skipped:default-builder"); only the prefix
+// finer detail after a colon (e.g. "skipped:no-cache-builder"); only the prefix
 // is kept so the metric stays low-cardinality.
 func ReadBuildCacheOutcome(outcomeFile string) string {
 	if outcomeFile == "" {
