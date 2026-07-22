@@ -110,9 +110,41 @@ func Decide(argv []string, env map[string]string, creds Credentials) (extraArgs 
 	}, outcomeEngaged
 }
 
+// dockerValueFlags are docker/buildx pre-subcommand flags that take a value
+// (the next argv token in the `--flag value` form, inline in `--flag=value`).
+// docker forwards its full os.Args[1:] to the plugin, so these can precede
+// the buildx/build tokens. The set is docker's stable global flags plus
+// buildx's root --builder. A dash token in NEITHER table makes the subcommand
+// position ambiguous (it might consume the next token as its value), so
+// parsing stops as "not a build" — under-inject, never inject on a guess.
+var dockerValueFlags = map[string]bool{
+	"--config":    true,
+	"-c":          true,
+	"--context":   true,
+	"-H":          true,
+	"--host":      true,
+	"-l":          true,
+	"--log-level": true,
+	"--tlscacert": true,
+	"--tlscert":   true,
+	"--tlskey":    true,
+	"--builder":   true,
+}
+
+var dockerBoolFlags = map[string]bool{
+	"-D":          true,
+	"--debug":     true,
+	"--tls":       true,
+	"--tlsverify": true,
+	"-v":          true,
+	"--version":   true,
+}
+
 // isBuild reports whether argv is a buildx build invocation. docker invokes the
-// plugin with the subcommand as argv[0] when the plugin name is stripped
-// ("build ...") and as argv[1] when the plugin name leads ("buildx build ...").
+// plugin with the subcommand leading ("build ...", plugin name stripped via the
+// `docker build` alias) or after the plugin name ("buildx build ..."), possibly
+// preceded by global docker flags (forwarded verbatim). buildx also registers
+// "b" as a short alias for "build".
 func isBuild(argv []string) bool {
 	if len(argv) == 0 {
 		return false
@@ -120,11 +152,35 @@ func isBuild(argv []string) bool {
 	if argv[0] == "docker-cli-plugin-metadata" {
 		return false
 	}
-	sub := argv[0]
-	if sub == "buildx" && len(argv) > 1 {
-		sub = argv[1]
+	sub := subcommand(argv)
+	return sub == "build" || sub == "b"
+}
+
+// subcommand returns the first bare token of argv, skipping the "buildx"
+// plugin token and leading flags known from dockerValueFlags/dockerBoolFlags.
+// Returns "" when argv holds no bare token or an unrecognized flag makes the
+// subcommand position ambiguous.
+func subcommand(argv []string) string {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if a == "buildx" {
+			continue
+		}
+		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+		name, _, inlineValue := strings.Cut(a, "=")
+		switch {
+		case dockerValueFlags[name]:
+			if !inlineValue {
+				i++
+			}
+		case dockerBoolFlags[name]:
+		default:
+			return ""
+		}
 	}
-	return sub == "build"
+	return ""
 }
 
 // hasCacheFlag reports whether the user already specified cache flags, in either

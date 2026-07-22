@@ -325,6 +325,94 @@ func TestDecide_BuildAliasFirstArg(t *testing.T) {
 	}
 }
 
+func TestDecide_BuildShortAlias(t *testing.T) {
+	// buildx registers `b` as a short alias for `build`.
+	for _, argv := range [][]string{
+		{"b", "."},
+		{"buildx", "b", "."},
+	} {
+		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		if outcome != outcomeEngaged {
+			t.Errorf("argv %v: outcome = %q, want engaged", argv, outcome)
+		}
+		if len(extra) == 0 {
+			t.Errorf("argv %v: expected injected flags", argv)
+		}
+	}
+}
+
+func TestDecide_GlobalDockerFlagsBeforeSubcommand(t *testing.T) {
+	// docker forwards its full os.Args[1:] to the plugin, so global docker
+	// flags can precede the buildx/build tokens. Boolean flags and
+	// value-taking flags (both separate-arg and = forms) must all be skipped.
+	for _, argv := range [][]string{
+		{"-D", "buildx", "build", "."},
+		{"--debug", "buildx", "build", "."},
+		{"--config", "/etc/docker-cfg", "buildx", "build", "."},
+		{"--config=/etc/docker-cfg", "buildx", "build", "."},
+		{"-H", "unix:///var/run/docker.sock", "buildx", "build", "."},
+		{"--debug", "build", "."},
+		{"-D", "b", "."},
+	} {
+		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		if outcome != outcomeEngaged {
+			t.Errorf("argv %v: outcome = %q, want engaged", argv, outcome)
+		}
+		if len(extra) == 0 {
+			t.Errorf("argv %v: expected injected flags", argv)
+		}
+	}
+}
+
+func TestDecide_UnknownLeadingFlagFailsSafe(t *testing.T) {
+	// A leading flag the shim does not recognize makes the subcommand position
+	// ambiguous (the flag might consume the next token as its value). The only
+	// safe reading is "not a build": under-inject, never risk injecting into a
+	// non-build invocation.
+	for _, argv := range [][]string{
+		{"--future-flag", "buildx", "build", "."},
+		{"--future-flag=x", "build", "."},
+		{"-Z", "b", "."},
+		{"--", "build", "."},
+	} {
+		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		if len(extra) != 0 {
+			t.Errorf("argv %v: expected passthrough, got %v", argv, extra)
+		}
+		if outcome == outcomeEngaged {
+			t.Errorf("argv %v: must not engage on unknown leading flag", argv)
+		}
+	}
+}
+
+func TestDecide_KnownBoolFlagsBeforeSubcommand(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--tlsverify", "buildx", "build", "."},
+		{"--tls", "build", "."},
+	} {
+		_, outcome := Decide(argv, enabledEnv(), testCreds())
+		if outcome != outcomeEngaged {
+			t.Errorf("argv %v: outcome = %q, want engaged", argv, outcome)
+		}
+	}
+}
+
+func TestDecide_GlobalFlagsNonBuildStillPassthrough(t *testing.T) {
+	for _, argv := range [][]string{
+		{"-D", "buildx", "ls"},
+		{"--config", "/etc/docker-cfg", "buildx", "inspect"},
+		{"-D", "buildx", "prune", "-f"},
+	} {
+		extra, outcome := Decide(argv, enabledEnv(), testCreds())
+		if len(extra) != 0 {
+			t.Errorf("argv %v: expected passthrough, got %v", argv, extra)
+		}
+		if outcome == outcomeEngaged {
+			t.Errorf("argv %v: must not engage", argv)
+		}
+	}
+}
+
 func cacheAttrContains(args []string, want string) bool {
 	for _, a := range args {
 		if strings.Contains(a, want) {
