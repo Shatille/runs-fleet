@@ -124,10 +124,10 @@ What to know:
 
 ### Automatic Docker layer caching
 
-When the fleet is set up for it (see the Docker Layer Cache section
-in [CONFIGURATION.md](CONFIGURATION.md)), `docker buildx build` (and `docker build`,
-which aliases to it) gets S3-backed layer caching with **zero workflow changes** —
-no `cache-from`/`cache-to`, no registry, no extra steps:
+The same cache system also covers Docker layer caches: `docker buildx build`
+(and `docker build`, which aliases to it) gets S3-backed layer caching with
+**zero workflow changes** — no `cache-from`/`cache-to`, no registry, no extra
+steps:
 
 ```yaml
 steps:
