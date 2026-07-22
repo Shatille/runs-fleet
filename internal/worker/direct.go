@@ -108,7 +108,9 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, job)
 		if err != nil {
-			directLog.Error(ctx, "warm pool assignment failed",
+			// Non-terminal: a cold-start fleet creation follows below. Reserve ERROR
+			// for that terminal path so warm-pool capacity blips don't page.
+			directLog.Warn(ctx, "warm pool assignment failed; falling back to cold start",
 				slog.String(logging.KeyPoolName, job.Pool),
 				slog.String("error", err.Error()))
 		} else if result.Assigned {
@@ -139,8 +141,15 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 
 	instanceIDs, err := p.createFleet(ctx, spec)
 	if err != nil {
-		directLog.Error(ctx, "fleet creation failed",
-			slog.String("error", err.Error()))
+		// When the job can fall back to on-demand, this is a transient, self-healing
+		// condition (WARN); reserve ERROR for the terminal give-up in recoverFleetFailure.
+		if onDemandFallbackEligible(job) {
+			directLog.Warn(ctx, "fleet creation failed; retrying on-demand",
+				slog.String("error", err.Error()))
+		} else {
+			directLog.Error(ctx, "fleet creation failed; no fallback available",
+				slog.String("error", err.Error()))
+		}
 		p.recoverFleetFailure(ctx, job)
 		return false
 	}
@@ -216,7 +225,7 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 // terminal (status "error") so it surfaces in the admin UI and stale-job
 // recovery instead of hanging until cancellation.
 func (p *DirectProcessor) recoverFleetFailure(ctx context.Context, job *queue.JobMessage) {
-	eligible := job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries
+	eligible := onDemandFallbackEligible(job)
 	if eligible && p.Queue != nil {
 		// Release the claim first so the requeued message can re-claim the job;
 		// a leaked claim would make the ec2-worker treat the requeue as

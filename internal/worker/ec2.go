@@ -33,6 +33,14 @@ const (
 	maxJobRetries         = 2
 )
 
+// onDemandFallbackEligible reports whether a fleet-creation failure for this job
+// will be recovered by an on-demand requeue (a transient, self-healing condition)
+// rather than being terminal. Shared by the direct and ec2-worker paths so their
+// failure-log level and their recovery branch stay in lockstep.
+func onDemandFallbackEligible(job *queue.JobMessage) bool {
+	return job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries
+}
+
 // Metric label constants for the job-assignment and queue families.
 const (
 	queueMain                 = "main"
@@ -263,10 +271,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, &job)
 		if err != nil {
-			ec2Log.Error(ctx, "warm pool assignment failed",
+			// Non-terminal: a cold-start fleet creation follows below. Reserve ERROR
+			// for that terminal path so warm-pool capacity blips don't page.
+			ec2Log.Warn(ctx, "warm pool assignment failed; falling back to cold start",
 				slog.String(logging.KeyPoolName, job.Pool),
 				slog.String("error", err.Error()))
-			// Fall through to cold start
 		} else if result.Assigned {
 			jobProcessed = true
 			if deps.Metrics != nil {
@@ -304,8 +313,15 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		ec2Log.Error(ctx, "fleet creation failed",
-			slog.String("error", err.Error()))
+		// When the job can fall back to on-demand, this is a transient, self-healing
+		// condition (WARN); reserve ERROR for the terminal give-up below.
+		if onDemandFallbackEligible(&job) {
+			ec2Log.Warn(ctx, "fleet creation failed; retrying on-demand",
+				slog.String("error", err.Error()))
+		} else {
+			ec2Log.Error(ctx, "fleet creation failed; no fallback available",
+				slog.String("error", err.Error()))
+		}
 		if deps.DB != nil && deps.DB.HasJobsTable() {
 			// Release the claim on a fresh context; the job ctx may already be
 			// expired on a wedged connection, and a leaked claim would block the
@@ -319,7 +335,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			cancel()
 		}
 
-		if job.Spot && !job.ForceOnDemand && job.RetryCount < maxJobRetries {
+		if onDemandFallbackEligible(&job) {
 			handleOnDemandFallback(ctx, deps, &job, msg.Handle)
 			return
 		}

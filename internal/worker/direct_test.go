@@ -466,7 +466,7 @@ func TestProcessJobDirect_WarmPoolFailureLogCarriesPoolName(t *testing.T) {
 
 	processor.ProcessJobDirect(context.Background(), job)
 
-	failedLogs := recordsWithMsg(t, &buf, "warm pool assignment failed")
+	failedLogs := recordsWithMsg(t, &buf, "warm pool assignment failed; falling back to cold start")
 	if len(failedLogs) != 1 {
 		t.Fatalf("expected 1 'warm pool assignment failed' log, got %d", len(failedLogs))
 	}
@@ -474,6 +474,65 @@ func TestProcessJobDirect_WarmPoolFailureLogCarriesPoolName(t *testing.T) {
 	_ = json.Unmarshal([]byte(failedLogs[0]), &rec)
 	if got := rec[logging.KeyPoolName]; got != "default" {
 		t.Errorf("warm pool assignment failed: %s = %v, want default", logging.KeyPoolName, got)
+	}
+	// A warm-pool miss is recoverable via cold start, so it must not page at ERROR.
+	if got := rec["level"]; got != "WARN" {
+		t.Errorf("warm pool assignment failure should log at WARN, got %v", got)
+	}
+}
+
+// A fleet-creation failure logs at WARN when the job can fall back to on-demand
+// (transient, self-healing) and only at ERROR when the failure is terminal.
+func TestProcessJobDirect_FleetFailureLogLevel(t *testing.T) {
+	cases := []struct {
+		name      string
+		job       *queue.JobMessage
+		wantMsg   string
+		wantLevel string
+	}{
+		{
+			name:      "spot under retry cap falls back at WARN",
+			job:       &queue.JobMessage{JobID: 1, RunID: 2, Repo: "owner/repo", Spot: true, RetryCount: 0},
+			wantMsg:   "fleet creation failed; retrying on-demand",
+			wantLevel: "WARN",
+		},
+		{
+			name:      "on-demand has no fallback and logs ERROR",
+			job:       &queue.JobMessage{JobID: 3, RunID: 4, Repo: "owner/repo", Spot: false},
+			wantMsg:   "fleet creation failed; no fallback available",
+			wantLevel: "ERROR",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf syncBuffer
+			captureCtxLogs(t, &buf)
+
+			var subnetIndex uint64
+			processor := &DirectProcessor{
+				Fleet:       &fleet.Manager{},
+				Metrics:     metrics.NoopPublisher{},
+				DB:          db.NewClientWithAPI(&mockDynamoForClaim{}, "pools", "jobs"),
+				Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+				Queue:       &MockQueue{},
+				SubnetIndex: &subnetIndex,
+				CreateFleetFn: func(_ context.Context, _ *fleet.LaunchSpec) ([]string, error) {
+					return nil, errors.New("no capacity")
+				},
+			}
+
+			processor.ProcessJobDirect(context.Background(), tc.job)
+
+			logs := recordsWithMsg(t, &buf, tc.wantMsg)
+			if len(logs) != 1 {
+				t.Fatalf("expected 1 %q log, got %d; buf=%s", tc.wantMsg, len(logs), buf.String())
+			}
+			var rec map[string]any
+			_ = json.Unmarshal([]byte(logs[0]), &rec)
+			if got := rec["level"]; got != tc.wantLevel {
+				t.Errorf("level = %v, want %v", got, tc.wantLevel)
+			}
+		})
 	}
 }
 
