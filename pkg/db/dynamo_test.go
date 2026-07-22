@@ -4415,6 +4415,119 @@ func TestGetPoolBusyInstanceIDs_GSIIncludesLaunched(t *testing.T) {
 	}
 }
 
+// A terminating job still occupies its instance (the record keeps instance_id+pool
+// and the box is being torn down), so reconciliation must treat it as busy. This
+// mirrors occupiesInstance; the transient claiming/requeued windows are covered by
+// the pool manager's dwell guard rather than by this query.
+func TestGetPoolBusyInstanceIDs_GSIIncludesTerminating(t *testing.T) {
+	t.Parallel()
+
+	queriedStatuses := map[string]bool{}
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			status := input.ExpressionAttributeValues[":status"].(*types.AttributeValueMemberS).Value
+			queriedStatuses[status] = true
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{
+					{"instance_id": &types.AttributeValueMemberS{Value: "i-" + status}},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table", jobsPoolStatusGSI: "pool-status-index"}
+
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []JobStatus{JobStatusLaunched, JobStatusRunning, JobStatusTerminating} {
+		if !queriedStatuses[string(want)] {
+			t.Errorf("busy lookup must query status %q; queried %v", want, queriedStatuses)
+		}
+	}
+	got := map[string]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got["i-terminating"] {
+		t.Errorf("busy set must include the terminating instance; got %v", ids)
+	}
+}
+
+// The GSI query must follow LastEvaluatedKey: a single unpaginated page silently
+// drops busy instances past the 1 MB page limit, letting reconciliation stop them.
+func TestGetPoolBusyInstanceIDs_GSIPaginates(t *testing.T) {
+	t.Parallel()
+
+	runningCalls := 0
+	mock := &MockDynamoDBAPI{
+		QueryFunc: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			status := input.ExpressionAttributeValues[":status"].(*types.AttributeValueMemberS).Value
+			if status != string(JobStatusRunning) {
+				return &dynamodb.QueryOutput{}, nil
+			}
+			runningCalls++
+			if input.ExclusiveStartKey == nil {
+				return &dynamodb.QueryOutput{
+					Items:            []map[string]types.AttributeValue{{"instance_id": &types.AttributeValueMemberS{Value: "i-page1"}}},
+					LastEvaluatedKey: map[string]types.AttributeValue{"job_id": &types.AttributeValueMemberN{Value: "1"}},
+				}, nil
+			}
+			return &dynamodb.QueryOutput{
+				Items: []map[string]types.AttributeValue{{"instance_id": &types.AttributeValueMemberS{Value: "i-page2"}}},
+			}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table", jobsPoolStatusGSI: "pool-status-index"}
+
+	ids, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got["i-page1"] || !got["i-page2"] {
+		t.Errorf("must collect instance IDs across all pages; got %v", ids)
+	}
+	if runningCalls < 2 {
+		t.Errorf("expected the running query to paginate (>=2 calls); got %d", runningCalls)
+	}
+}
+
+// The scan fallback must bind the same busy statuses as the GSI path.
+func TestGetPoolBusyInstanceIDs_ScanIncludesTerminating(t *testing.T) {
+	t.Parallel()
+
+	var values map[string]types.AttributeValue
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			values = input.ExpressionAttributeValues
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
+
+	if _, err := client.GetPoolBusyInstanceIDs(context.Background(), testPoolDefault); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	present := map[string]bool{}
+	for _, v := range values {
+		if s, ok := v.(*types.AttributeValueMemberS); ok {
+			present[s.Value] = true
+		}
+	}
+	for _, want := range []JobStatus{JobStatusLaunched, JobStatusRunning, JobStatusTerminating} {
+		if !present[string(want)] {
+			t.Errorf("scan filter must bind status %q; values=%v", want, values)
+		}
+	}
+}
+
 func TestGetPoolBusyInstanceIDs_GSIFallbackToScan(t *testing.T) {
 	t.Parallel()
 

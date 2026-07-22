@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 func hasLogAtLevel(t *testing.T, buf *bytes.Buffer, level, msg string) bool {
@@ -83,6 +84,7 @@ func TestReconcileStopLogCarriesReason(t *testing.T) {
 	}
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 	manager.reconcile(context.Background())
 
@@ -182,5 +184,57 @@ func TestReconcilePoolDowngradesShutdownError(t *testing.T) {
 	}
 	if !hasLogAtLevel(t, &buf, "DEBUG", "reconciliation aborted: shutting down") {
 		t.Errorf("expected DEBUG 'reconciliation aborted: shutting down'; got: %s", buf.String())
+	}
+}
+
+// A stop that races an instance leaving the running state (IncorrectInstanceState)
+// is a benign no-op, not an operator-actionable failure: it must not log ERROR, and
+// the transitioning instance must not be terminated instead.
+func TestReconcileStopIncorrectStateIsBenign(t *testing.T) {
+	var buf bytes.Buffer
+	captureCtxLogs(t, &buf)
+
+	var terminatedIDs []string
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{"warm-pool"}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
+		},
+		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+	}
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+				InstanceId:   aws.String("i-racing"),
+				InstanceType: ec2types.InstanceTypeT3Medium,
+				State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				LaunchTime:   aws.Time(time.Now().Add(-1 * time.Hour)),
+			}}}}}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, _ *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			return nil, &smithy.GenericAPIError{Code: "IncorrectInstanceState", Message: "not in a state from which it can be stopped"}
+		},
+		TerminateInstancesFunc: func(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+			terminatedIDs = append(terminatedIDs, params.InstanceIds...)
+			return &ec2.TerminateInstancesOutput{}, nil
+		},
+	}
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // isolate: exercise the stop path, not the dwell guard
+
+	manager.reconcile(context.Background())
+
+	if hasLogAtLevel(t, &buf, "ERROR", "instances stop failed") {
+		t.Errorf("IncorrectInstanceState stop must not log ERROR; got: %s", buf.String())
+	}
+	if !hasLogAtLevel(t, &buf, "INFO", "skipped stopping instances not in a stoppable state") {
+		t.Errorf("expected the benign-skip Info log; got: %s", buf.String())
+	}
+	for _, id := range terminatedIDs {
+		if id == "i-racing" {
+			t.Errorf("a transitioning instance must not be terminated after a benign stop race, got %v", terminatedIDs)
+		}
 	}
 }
