@@ -292,6 +292,12 @@ func TestDecide_InjectsCacheFlags(t *testing.T) {
 	if !strings.Contains(cacheTo, "mode=max") {
 		t.Errorf("cache-to must contain mode=max: %s", cacheTo)
 	}
+	if strings.Contains(cacheFrom, "ignore-error") {
+		t.Errorf("cache-from must NOT contain ignore-error: %s", cacheFrom)
+	}
+	if !strings.Contains(cacheTo, "ignore-error=true") {
+		t.Errorf("cache-to must contain ignore-error=true so export failures degrade to warnings: %s", cacheTo)
+	}
 }
 
 func TestDecide_PlatformSlugFromArgvEqualsForm(t *testing.T) {

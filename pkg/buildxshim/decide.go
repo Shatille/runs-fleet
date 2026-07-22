@@ -116,7 +116,9 @@ func Decide(argv []string, env map[string]string, creds Credentials, loadState f
 		"session_token=" + creds.SessionToken,
 	}
 	cacheFrom := strings.Join(base, ",")
-	cacheTo := strings.Join(append(append([]string{}, base...), "mode=max"), ",")
+	// ignore-error=true demotes cache-export failures (missing IAM grant, S3
+	// outage) to warnings so an injected build can never fail on cache writes.
+	cacheTo := strings.Join(append(append([]string{}, base...), "mode=max", "ignore-error=true"), ",")
 
 	return []string{
 		"--cache-from", cacheFrom,
