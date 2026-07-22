@@ -136,35 +136,41 @@ remove them.
 
 ## Docker Layer Cache (transparent buildx caching)
 
-Optional, off by default. When set, the orchestrator injects S3 buildkit-cache
-config into each runner so a runner-side shim transparently adds
+No dedicated variables — the layer cache rides `RUNS_FLEET_CACHE_BUCKET` (the
+Actions cache bucket) under a sibling `buildkit/` prefix, leaving the `caches/`
+layout untouched. When the bucket is set, the orchestrator injects S3
+buildkit-cache config into each runner so a runner-side shim transparently adds
 `--cache-from`/`--cache-to` to `docker buildx build` (and `docker build`)
 invocations — no workflow changes required. See the "Automatic Docker layer
 caching" section in [USAGE.md](USAGE.md) for the client experience and opt-out.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUNS_FLEET_BUILDKIT_CACHE_BUCKET` | | S3 bucket for buildkit layer cache. **Empty disables the feature everywhere** (the shim passes builds through unchanged). Typically the existing `RUNS_FLEET_CACHE_BUCKET`; a sibling `buildkit/` prefix is used, leaving the `caches/` layout untouched. |
-| `RUNS_FLEET_BUILDKIT_CACHE_REGION` | `AWS_REGION` | S3 region for the buildkit cache backend. Defaults to `AWS_REGION`. |
+**Activation requires all three (each alone is inert):**
 
-**Deploy prerequisites (feature stays inert until both land):**
+1. `RUNS_FLEET_CACHE_BUCKET` set (already the case wherever the Actions cache
+   runs).
+2. **AMI carries the buildx shim** (ships with this change's runner-image + AMI
+   rebuild). Without it, the injected env vars are harmless unused variables.
+3. **IaC grant:** the EC2 instance profile needs S3 read/write on the bucket's
+   `buildkit/*` prefix (instances have no direct S3 access today; separate IaC
+   change). Until granted, builds still succeed — the shim's `ignore-error=true`
+   demotes cache-export failures to warnings and imports are plain cache
+   misses — at the cost of warning noise and a small failed-S3-attempt latency
+   per build. Watch the `RunnerBuildCacheInterception` metric.
 
-1. **IaC grant:** the EC2 instance profile needs S3 read/write on the bucket's
-   `buildkit/*` prefix (instances have no direct S3 access today; this is a
-   separate IaC change). Until granted, injected builds would fail to reach the
-   cache — so enable the orchestrator var only after the grant is live.
-2. **AMI rebuild:** the runner AMI must carry the buildx shim (ships with this
-   change's runner-image + AMI rebuild). Before the rebuild, the injected env
-   vars are harmless unused variables.
+**Rollback options** (there is no layer-cache-only fleet switch by design —
+one bucket variable drives both caches):
 
-**Rollback:** unset `RUNS_FLEET_BUILDKIT_CACHE_BUCKET` — all new jobs revert to
-byte-identical passthrough builds instantly, no AMI rollback needed.
+- Per-workflow: set `RUNS_FLEET_BUILD_CACHE=off` in the job env (opt-out).
+- Fleet-wide: roll the launch template back to a pre-shim AMI version.
+- Nuclear: unset `RUNS_FLEET_CACHE_BUCKET` — disables the layer cache AND the
+  Actions cache.
 
 **Trust note:** unlike the HMAC-token-scoped Actions cache, the layer cache's
 per-repo prefix scoping is conventional, not enforced — every job on any
 runs-fleet runner shares the same bucket IAM grant. This is acceptable for a
 same-org internal fleet; cross-repo layer-cache poisoning is the theoretical
-risk and cannot be mitigated with a single shared instance profile.
+risk, and per-repo IAM is not possible with a single instance profile.
+
 ## Metrics
 
 The metric name prefix is fixed and cannot be configured: `RunsFleet` on

@@ -187,7 +187,7 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 
 ### Cache & Admin
 - `RUNS_FLEET_CACHE_SECRET` - HMAC secret for cache auth
-- `RUNS_FLEET_BUILDKIT_CACHE_BUCKET` - S3 bucket for transparent Docker layer caching (empty disables; region defaults from `AWS_REGION` via `RUNS_FLEET_BUILDKIT_CACHE_REGION`). Feature stays inert until the instance-profile IAM grant on the `buildkit/*` prefix and the shim-carrying AMI both land; unset to roll back instantly. See docs/CONFIGURATION.md.
+- Transparent Docker layer caching rides `RUNS_FLEET_CACHE_BUCKET` (no dedicated variable) under a `buildkit/` prefix; needs the shim-carrying AMI + instance-profile IAM grant on `buildkit/*` to be effective, degrades to warnings otherwise. Per-workflow opt-out: `RUNS_FLEET_BUILD_CACHE=off`. See docs/CONFIGURATION.md.
 - `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_REDIRECT_URL`, `_SCOPES`, `_GROUPS_CLAIM` - Admin API OIDC auth (native relying party, no external gatekeeper); leave unset to disable auth (local dev)
 - `RUNS_FLEET_ADMIN_SESSION_SECRET`, `RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES` - Admin session cookie signing key and TTL
 
