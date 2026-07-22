@@ -47,8 +47,8 @@ func readRecordedPath(recordFile string) string {
 
 func isExecutableFile(path string) bool {
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	if err != nil {
 		return false
 	}
-	return true
+	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }

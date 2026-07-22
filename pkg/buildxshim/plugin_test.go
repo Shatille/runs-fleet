@@ -64,3 +64,50 @@ func TestDiscoverRealPlugin_ReturnsEmptyWhenNothingFound(t *testing.T) {
 		t.Errorf("expected empty string when nothing found, got %q", got)
 	}
 }
+
+func TestDiscoverRealPlugin_SkipsNonExecutableRecordedPath(t *testing.T) {
+	dir := t.TempDir()
+	recorded := filepath.Join(dir, "real-buildx")
+	if err := os.WriteFile(recorded, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordFile := filepath.Join(dir, "buildx-real-path")
+	if err := os.WriteFile(recordFile, []byte(recorded+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(dir, "docker-buildx")
+	if err := os.WriteFile(candidate, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := DiscoverRealPlugin(recordFile, []string{candidate})
+	if got != candidate {
+		t.Errorf("got %q, want fallback %q when recorded path is not executable", got, candidate)
+	}
+}
+
+func TestDiscoverRealPlugin_SkipsNonExecutableCandidate(t *testing.T) {
+	dir := t.TempDir()
+	nonExec := filepath.Join(dir, "docker-buildx")
+	if err := os.WriteFile(nonExec, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := DiscoverRealPlugin(filepath.Join(dir, "missing"), []string{nonExec})
+	if got != "" {
+		t.Errorf("got %q, want empty when the only candidate is not executable", got)
+	}
+}
+
+func TestDiscoverRealPlugin_SkipsDirectoryCandidate(t *testing.T) {
+	dir := t.TempDir()
+	asDir := filepath.Join(dir, "docker-buildx")
+	if err := os.MkdirAll(asDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := DiscoverRealPlugin(filepath.Join(dir, "missing"), []string{asDir})
+	if got != "" {
+		t.Errorf("got %q, want empty when the candidate is a directory", got)
+	}
+}
