@@ -934,6 +934,25 @@ func (c *Client) GetPoolP90Concurrency(ctx context.Context, poolName string, win
 	return samples[p90Index], nil
 }
 
+// busyJobStatuses are the statuses whose job definitely occupies its instance, so
+// the instance must not be stopped by pool reconciliation:
+//   - launched: instance up, runner not yet confirmed
+//   - running: runner executing the job
+//   - terminating: instance being torn down (e.g. spot interruption)
+//
+// This mirrors occupiesInstance. The transient claiming and requeued windows are
+// deliberately NOT included: a claim stub carries no pool/instance_id so it never
+// appears in this pool-status GSI partition, and a just-requeued instance is instead
+// protected by the pool manager's idle-dwell guard, which keeps any recently-busy
+// instance off the stop list until it has read not-busy for a full dwell. Excluding
+// requeued also avoids reporting a stale requeued record (whose requeue message was
+// lost) as busy forever, since housekeeping does not reconcile that status.
+var busyJobStatuses = []JobStatus{
+	JobStatusLaunched,
+	JobStatusRunning,
+	JobStatusTerminating,
+}
+
 // GetPoolBusyInstanceIDs returns instance IDs that have running jobs in the pool.
 // Used to identify which instances should not be stopped during reconciliation.
 //
@@ -967,37 +986,45 @@ func (c *Client) GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([
 
 func (c *Client) getPoolBusyInstanceIDsViaGSI(ctx context.Context, poolName string) ([]string, error) {
 	// The pool-status GSI is keyed on status (sort key), so one Query can only
-	// match a single status. Both launched (instance up, runner unconfirmed) and
-	// running (runner executing) occupy the instance and must not be stopped, so
-	// query each and union the instance IDs.
+	// match a single status. Every busyJobStatuses value occupies the instance and
+	// must not be stopped, so query each and union the instance IDs. Each status is
+	// paginated via LastEvaluatedKey: without it, busy instances past the 1 MB page
+	// limit are silently dropped and become scale-down candidates.
 	var ids []string
 	seen := make(map[string]struct{})
-	for _, status := range []JobStatus{JobStatusLaunched, JobStatusRunning} {
-		input := &dynamodb.QueryInput{
-			TableName:              aws.String(c.jobsTable),
-			IndexName:              aws.String(c.jobsPoolStatusGSI),
-			KeyConditionExpression: aws.String("#pool = :pool AND #status = :status"),
-			ExpressionAttributeNames: map[string]string{
-				"#pool":   "pool",
-				"#status": "status",
-			},
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":pool":   &types.AttributeValueMemberS{Value: poolName},
-				":status": &types.AttributeValueMemberS{Value: string(status)},
-			},
-			ProjectionExpression: aws.String("instance_id"),
-		}
-
-		output, err := c.dynamoClient.Query(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query GSI: %w", err)
-		}
-		for _, id := range extractInstanceIDs(output.Items) {
-			if _, ok := seen[id]; ok {
-				continue
+	for _, status := range busyJobStatuses {
+		var lastEvaluatedKey map[string]types.AttributeValue
+		for {
+			output, err := c.dynamoClient.Query(ctx, &dynamodb.QueryInput{
+				TableName:              aws.String(c.jobsTable),
+				IndexName:              aws.String(c.jobsPoolStatusGSI),
+				KeyConditionExpression: aws.String("#pool = :pool AND #status = :status"),
+				ExpressionAttributeNames: map[string]string{
+					"#pool":   "pool",
+					"#status": "status",
+				},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":pool":   &types.AttributeValueMemberS{Value: poolName},
+					":status": &types.AttributeValueMemberS{Value: string(status)},
+				},
+				ProjectionExpression: aws.String("instance_id"),
+				ExclusiveStartKey:    lastEvaluatedKey,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to query GSI: %w", err)
 			}
-			seen[id] = struct{}{}
-			ids = append(ids, id)
+			for _, id := range extractInstanceIDs(output.Items) {
+				if _, ok := seen[id]; ok {
+					continue
+				}
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+
+			lastEvaluatedKey = output.LastEvaluatedKey
+			if lastEvaluatedKey == nil {
+				break
+			}
 		}
 	}
 
@@ -1005,19 +1032,27 @@ func (c *Client) getPoolBusyInstanceIDsViaGSI(ctx context.Context, poolName stri
 }
 
 func (c *Client) getPoolBusyInstanceIDsViaScan(ctx context.Context, poolName string) ([]string, error) {
+	// Bind every busyJobStatuses value into the IN(...) filter so the scan fallback
+	// treats the same statuses as busy as the GSI path.
+	placeholders := make([]string, len(busyJobStatuses))
+	exprValues := map[string]types.AttributeValue{
+		":pool": &types.AttributeValueMemberS{Value: poolName},
+	}
+	for i, status := range busyJobStatuses {
+		ph := fmt.Sprintf(":s%d", i)
+		placeholders[i] = ph
+		exprValues[ph] = &types.AttributeValueMemberS{Value: string(status)}
+	}
+
 	input := &dynamodb.ScanInput{
 		TableName:        aws.String(c.jobsTable),
-		FilterExpression: aws.String("#pool = :pool AND #status IN (:running, :launched)"),
+		FilterExpression: aws.String(fmt.Sprintf("#pool = :pool AND #status IN (%s)", strings.Join(placeholders, ", "))),
 		ExpressionAttributeNames: map[string]string{
 			"#pool":   "pool",
 			"#status": "status",
 		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pool":     &types.AttributeValueMemberS{Value: poolName},
-			":running":  &types.AttributeValueMemberS{Value: string(JobStatusRunning)},
-			":launched": &types.AttributeValueMemberS{Value: string(JobStatusLaunched)},
-		},
-		ProjectionExpression: aws.String("instance_id"),
+		ExpressionAttributeValues: exprValues,
+		ProjectionExpression:      aws.String("instance_id"),
 	}
 
 	var ids []string

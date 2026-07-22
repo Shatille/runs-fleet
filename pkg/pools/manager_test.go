@@ -1244,6 +1244,7 @@ func TestReconcileWarmPoolSkipsStoppingSpotInstances(t *testing.T) {
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 	manager.reconcile(context.Background())
 
 	for _, id := range stoppedIDs {
@@ -1377,6 +1378,7 @@ func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
 	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
 	manager.bootstrapGracePeriod = 10 * time.Minute
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 	manager.reconcile(context.Background())
 
 	if len(stoppedIDs) != 1 || stoppedIDs[0] != "i-aged" {
@@ -1384,6 +1386,145 @@ func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
 	}
 	if len(createdReasons) != 0 {
 		t.Errorf("aged-stopped + within-grace fresh should meet the deficit, but created %v", createdReasons)
+	}
+}
+
+// A running on-demand spare that is past the bootstrap grace but has only just been
+// observed not-busy must NOT be stopped in the same pass: the pool-status busy set
+// can momentarily miss a live instance (GSI lag / the claiming window), so a single
+// not-busy observation is not enough. This is the guard that stopped reconcile from
+// killing jobs mid-flight.
+func TestReconcileWarmPoolDefersRecentlyNotBusyInstance(t *testing.T) {
+	t.Parallel()
+
+	var stoppedIDs []string
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{"warm-pool"}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+	aged := time.Now().Add(-1 * time.Hour) // past the bootstrap grace
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+				InstanceId:   aws.String("i-maybe-busy"),
+				InstanceType: ec2types.InstanceTypeT3Medium,
+				State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				LaunchTime:   &aged,
+			}}}}}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedIDs = append(stoppedIDs, params.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+	mockFleet := &MockFleetAPI{
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) { return testInstanceNewID, nil },
+	}
+	manager := NewManager(mockDB, mockFleet, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.bootstrapGracePeriod = time.Minute
+	manager.readyDwellPeriod = 5 * time.Minute
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background()) // first observation: dwell not yet satisfied
+
+	if len(stoppedIDs) != 0 {
+		t.Errorf("an instance not-busy for less than the dwell must not be stopped, got %v", stoppedIDs)
+	}
+}
+
+// Once an instance has been continuously not-busy for longer than the dwell window,
+// it is a genuine idle spare and gets stopped.
+func TestReconcileWarmPoolStopsInstancePastDwell(t *testing.T) {
+	t.Parallel()
+
+	var stoppedIDs []string
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{"warm-pool"}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
+		},
+		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
+		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
+	}
+	aged := time.Now().Add(-1 * time.Hour)
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+				InstanceId:   aws.String("i-idle"),
+				InstanceType: ec2types.InstanceTypeT3Medium,
+				State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				LaunchTime:   &aged,
+			}}}}}, nil
+		},
+		StopInstancesFunc: func(_ context.Context, params *ec2.StopInstancesInput, _ ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+			stoppedIDs = append(stoppedIDs, params.InstanceIds...)
+			return &ec2.StopInstancesOutput{}, nil
+		},
+	}
+	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
+	manager.bootstrapGracePeriod = time.Minute
+	manager.readyDwellPeriod = 90 * time.Second
+	manager.SetEC2Client(mockEC2)
+	// Simulate the instance having already been observed continuously not-busy well
+	// beyond the dwell window; updateReadySince preserves an existing streak.
+	manager.readySince = map[string]map[string]time.Time{"warm-pool": {"i-idle": time.Now().Add(-10 * time.Minute)}}
+
+	manager.reconcile(context.Background())
+
+	if len(stoppedIDs) != 1 || stoppedIDs[0] != "i-idle" {
+		t.Errorf("an instance idle past the dwell must be stopped, got %v", stoppedIDs)
+	}
+}
+
+// A busy observation must reset the not-busy streak, so an instance that flips
+// busy has to re-accrue the full dwell before it can be stopped again.
+func TestReadySinceResetsWhenBusy(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	m.readyDwellPeriod = time.Minute
+	running := []PoolInstance{{InstanceID: "i-1", State: stateRunning}}
+
+	// Observed not-busy starting 2 minutes ago: dwell satisfied.
+	m.updateReadySince("pool-a", running, nil, time.Now().Add(-2*time.Minute))
+	if !m.readyLongEnough("pool-a", "i-1", time.Now()) {
+		t.Fatal("an instance not-busy past the dwell should read ready")
+	}
+
+	// Observed busy: streak cleared.
+	m.updateReadySince("pool-a", running, []string{"i-1"}, time.Now())
+	if m.readyLongEnough("pool-a", "i-1", time.Now()) {
+		t.Error("a busy observation must reset the not-busy streak")
+	}
+
+	// Not-busy again: streak restarts from now, so the dwell is not yet satisfied.
+	m.updateReadySince("pool-a", running, nil, time.Now())
+	if m.readyLongEnough("pool-a", "i-1", time.Now()) {
+		t.Error("streak must restart after busy; dwell should not yet be satisfied")
+	}
+}
+
+// Not-busy streaks must be tracked per pool: reconcile walks every pool in one pass,
+// so reconciling one pool must not wipe another pool's streak (a global map would let
+// the dwell never be satisfied in a multi-pool deployment).
+func TestReadySinceIsPerPool(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(&MockDBClient{}, &MockFleetAPI{}, &config.Config{})
+	m.readyDwellPeriod = time.Minute
+
+	// pool-a's instance has been not-busy for 2 minutes (dwell satisfied).
+	m.updateReadySince("pool-a", []PoolInstance{{InstanceID: "i-a", State: stateRunning}}, nil, time.Now().Add(-2*time.Minute))
+	// Reconciling pool-b in the same tick, with its own instances, must not disturb
+	// pool-a's streak.
+	m.updateReadySince("pool-b", []PoolInstance{{InstanceID: "i-b", State: stateRunning}}, nil, time.Now())
+
+	if !m.readyLongEnough("pool-a", "i-a", time.Now()) {
+		t.Error("pool-a's streak must survive reconciling pool-b (per-pool tracking)")
 	}
 }
 
@@ -1792,6 +1933,7 @@ func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
 		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 	manager.reconcile(context.Background())
 
@@ -3238,6 +3380,7 @@ func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 	manager.reconcile(context.Background())
 
@@ -3291,6 +3434,7 @@ func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{SubnetIDs: []string{"subnet-1"}})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 	manager.reconcile(context.Background())
 
@@ -3373,6 +3517,7 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 	manager.reconcile(context.Background())
 
@@ -3458,6 +3603,7 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 		SubnetIDs: []string{"subnet-1"},
 	})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 	manager.reconcile(context.Background())
 
@@ -4460,6 +4606,7 @@ func TestReconcilePoolStoppedReplenishCreditsSameCycleStops(t *testing.T) {
 				SubnetIDs: []string{"subnet-1"},
 			})
 			manager.SetEC2Client(mockEC2)
+			manager.readyDwellPeriod = 0 // not testing the not-busy dwell guard
 
 			manager.reconcile(context.Background())
 

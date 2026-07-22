@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 )
 
@@ -49,6 +51,16 @@ const reconcileInterval = 60 * time.Second
 // reconcile that slightly overruns its interval. Kept derived from
 // reconcileInterval so the two can't drift out of that ordering.
 const reconcileLockTTL = reconcileInterval + 5*time.Second
+
+// defaultReadyDwellPeriod is how long a running instance must be observed
+// continuously not-busy before reconciliation may stop it. It exceeds one
+// reconcileInterval so a single missed "busy" observation — a brief pool-status
+// GSI consistency lag, or the claiming window before SaveJob writes launched —
+// cannot get a live instance stopped mid-job: the instance would have to read as
+// not-busy across two consecutive reconciles. This guards the case the busy set
+// alone cannot (an instance whose job status is momentarily unqueryable). Held
+// per-Manager (settable in tests) rather than as a mutable global.
+const defaultReadyDwellPeriod = 90 * time.Second
 
 // maxReconcileResultLen caps the persisted last_reconcile_result string so a
 // pathologically long wrapped error can't bloat the pool item.
@@ -188,8 +200,20 @@ type Manager struct {
 	// tests set it per-Manager without racing.
 	bootstrapGracePeriod time.Duration
 
-	idleMu       sync.Mutex           // Guards instanceIdle only
+	// readyDwellPeriod gates how long a running instance must be seen continuously
+	// not-busy before it may be stopped (see defaultReadyDwellPeriod). 0 disables
+	// the dwell so the instance is stoppable as soon as it is otherwise eligible.
+	readyDwellPeriod time.Duration
+
+	idleMu       sync.Mutex           // Guards instanceIdle and readySince
 	instanceIdle map[string]time.Time // Tracks when instances became idle
+	// readySince tracks, per pool and running instance, when the instance's current
+	// continuous not-busy streak began; cleared when the instance reads busy or is
+	// forgotten (stopped, terminated, claimed). Keyed by pool because reconcile walks
+	// every pool in a single pass — a global map would let one pool's prune wipe
+	// another pool's streaks, so the dwell could never be satisfied. Drives the
+	// readyDwellPeriod guard.
+	readySince map[string]map[string]time.Time
 
 	poolLocks sync.Map // poolName -> *poolLock
 
@@ -226,9 +250,11 @@ func NewManager(dbClient DBClient, fleetManager FleetAPI, cfg *config.Config) *M
 		config:               cfg,
 		instanceID:           uuid.New().String(),
 		instanceIdle:         make(map[string]time.Time),
+		readySince:           make(map[string]map[string]time.Time),
 		randIntn:             rand.IntN,
 		demandCh:             make(chan string, 64),
 		bootstrapGracePeriod: defaultBootstrapGracePeriod,
+		readyDwellPeriod:     defaultReadyDwellPeriod,
 	}
 }
 
@@ -452,6 +478,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	busy := len(filterMatchingInstances(runningInstances, busyIDs))
 	ready := running - busy
 
+	// Refresh not-busy streaks every pass (both scale directions) so the dwell guard
+	// has continuous history when a later pass considers scaling down.
+	now := time.Now()
+	m.updateReadySince(poolName, runningInstances, busyIDs, now)
+
 	// Track changes for logging
 	var started, stoppedCount, created, terminated int
 
@@ -498,12 +529,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 			// pool (see defaultBootstrapGracePeriod). They become candidates on a later pass.
 			readyInstances := m.filterReadyInstances(runningInstances, busyIDs)
 			candidateInstances = make([]PoolInstance, 0, len(readyInstances))
-			var deferredSpares int
+			var graceDeferred, dwellDeferred int
 			for _, inst := range readyInstances {
 				// Treat an unknown launch time (zero value) as still-booting: acting on
 				// it could stop a spare mid-boot, the exact churn this guards against.
-				if inst.LaunchTime.IsZero() || time.Since(inst.LaunchTime) < m.bootstrapGracePeriod {
-					deferredSpares++
+				if inst.LaunchTime.IsZero() || now.Sub(inst.LaunchTime) < m.bootstrapGracePeriod {
+					graceDeferred++
 					// Only on-demand spares become stopped spares, so only they may be
 					// credited against the replenish deficit below. A within-grace spot
 					// instance is cold-start overflow that gets terminated once it ages
@@ -513,12 +544,29 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 					}
 					continue
 				}
+				// Defer instances that have not been continuously not-busy for the dwell
+				// window: the busy set can momentarily miss a live instance (GSI lag, the
+				// claiming window), and stopping on a single such observation is what
+				// killed running jobs mid-flight. Credited like within-grace spares since
+				// a genuinely-idle one is a pending stopped-spare.
+				if !m.readyLongEnough(poolName, inst.InstanceID, now) {
+					dwellDeferred++
+					if !inst.Spot {
+						withinGraceSpares++
+					}
+					continue
+				}
 				candidateInstances = append(candidateInstances, inst)
 			}
-			if deferredSpares > 0 {
+			if graceDeferred > 0 {
 				poolLog.Info(ctx, "deferring stop of still-bootstrapping spares",
 					slog.String("pool_name", poolName),
-					slog.Int("within_grace", deferredSpares))
+					slog.Int("within_grace", graceDeferred))
+			}
+			if dwellDeferred > 0 {
+				poolLog.Info(ctx, "deferring stop of recently-active spares",
+					slog.String("pool_name", poolName),
+					slog.Int("within_dwell", dwellDeferred))
 			}
 		} else {
 			// Hot pool: only idle instances that exceeded timeout
@@ -546,7 +594,22 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 				instanceIDs[i] = stoppable[i].InstanceID
 			}
 			if err := m.stopInstances(ctx, poolName, instanceIDs, "excess_ready"); err != nil {
-				poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
+				if isIncorrectInstanceStateError(err) {
+					// An instance can leave the running state between the DescribeInstances
+					// snapshot and this call — it got claimed for a job and is pending/
+					// stopping. EC2 rejects the batch with IncorrectInstanceState; that is a
+					// benign race, not an operator-actionable failure.
+					poolLog.Info(ctx, "skipped stopping instances not in a stoppable state",
+						slog.String("pool_name", poolName),
+						slog.Any("instance_ids", instanceIDs))
+				} else {
+					poolLog.Error(ctx, "instances stop failed", slog.String("error", err.Error()))
+				}
+				// A failed stop (benign race or a transient/retriable error) must not
+				// cascade into terminating these instances: they may be transitioning
+				// (claimed for a job) or the error may clear next pass. Mark them handled
+				// so the terminate path skips them, but do not credit them as banked stops.
+				stoppedNow = canStop
 			} else {
 				stoppedCount += canStop
 				stoppedNow = canStop
@@ -903,6 +966,18 @@ func (m *Manager) publishPoolAction(ctx context.Context, poolName, action, reaso
 	}
 }
 
+// isIncorrectInstanceStateError reports whether err is EC2's IncorrectInstanceState,
+// returned when an instance is no longer in a state from which it can be stopped
+// (already stopping/stopped, or still pending). Modeled on fleet.isCapacityError:
+// prefer the typed smithy code, fall back to a substring match.
+func isIncorrectInstanceStateError(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "IncorrectInstanceState"
+	}
+	return strings.Contains(err.Error(), "IncorrectInstanceState")
+}
+
 func (m *Manager) stopInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {
 	if len(instanceIDs) == 0 {
 		return nil
@@ -959,7 +1034,65 @@ func (m *Manager) forgetInstances(instanceIDs ...string) {
 	defer m.idleMu.Unlock()
 	for _, id := range instanceIDs {
 		delete(m.instanceIdle, id)
+		// An instance belongs to a single pool, so clearing it from every pool's
+		// streak map is correct and cheap (it exists in at most one).
+		for _, streaks := range m.readySince {
+			delete(streaks, id)
+		}
 	}
+}
+
+// updateReadySince refreshes a pool's per-instance not-busy streaks: a busy
+// instance has its streak cleared; a not-busy instance starts a streak when it has
+// none (an existing streak is preserved so the dwell keeps accruing across passes).
+// Streaks for instances no longer running in this pool are pruned so the map stays
+// bounded. Scoped to poolName so reconciling one pool never disturbs another's
+// streaks in the same pass.
+func (m *Manager) updateReadySince(poolName string, running []PoolInstance, busyIDs []string, now time.Time) {
+	busySet := make(map[string]struct{}, len(busyIDs))
+	for _, id := range busyIDs {
+		busySet[id] = struct{}{}
+	}
+
+	m.idleMu.Lock()
+	defer m.idleMu.Unlock()
+	streaks := m.readySince[poolName]
+	if streaks == nil {
+		streaks = make(map[string]time.Time)
+		m.readySince[poolName] = streaks
+	}
+	live := make(map[string]struct{}, len(running))
+	for _, inst := range running {
+		live[inst.InstanceID] = struct{}{}
+		if _, isBusy := busySet[inst.InstanceID]; isBusy {
+			delete(streaks, inst.InstanceID)
+			continue
+		}
+		if _, ok := streaks[inst.InstanceID]; !ok {
+			streaks[inst.InstanceID] = now
+		}
+	}
+	for id := range streaks {
+		if _, ok := live[id]; !ok {
+			delete(streaks, id)
+		}
+	}
+}
+
+// readyLongEnough reports whether an instance in the pool has been continuously
+// not-busy for at least readyDwellPeriod. A disabled dwell (<=0) always passes; a
+// missing streak (never observed not-busy, or just cleared) never passes.
+func (m *Manager) readyLongEnough(poolName, instanceID string, now time.Time) bool {
+	if m.readyDwellPeriod <= 0 {
+		return true
+	}
+	m.idleMu.Lock()
+	defer m.idleMu.Unlock()
+	since, ok := m.readySince[poolName][instanceID]
+	if !ok {
+		return false
+	}
+	return now.Sub(since) >= m.readyDwellPeriod
 }
 
 // MarkInstanceBusy marks an instance as busy (has an assigned job).
