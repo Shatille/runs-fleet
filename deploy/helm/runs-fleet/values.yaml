@@ -193,6 +193,29 @@ admin:
 # Example: '[{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]'
 labelAliases: ""
 
+# Opt-in "hot pools" (sets RUNS_FLEET_HOT_POOLS). After job activity, an allowlisted
+# pool keeps a RUNNING spare (agent alive, polling for config) for a demand-following
+# linger window, so pipeline stages 2..N skip the ~13s stopped-instance boot. This
+# trades a small amount of idle EC2 spend for lower acquisition latency, so it is
+# strictly opt-in and off by default — enabled=false renders NO env var and the
+# orchestrator's behavior is byte-identical to a build without this feature.
+#
+# Cost note: idle waste ~= lingerMinutes x bursts/day. A bursty pool (~6 bursts/day,
+# 15-min linger, one spare) idles ~1.5 instance-hours/day (~$5/mo per c7i.large) for
+# most of the acquisition-latency benefit, versus ~$81/mo for a standing hot instance.
+#
+# Only pools listed under `pools` linger; each entry:
+#   lingerMinutes: 1-120  (how long the pool stays hot after the last job)
+#   maxHot:        1-5     (running spares kept during linger; default 1)
+hotPools:
+  enabled: false
+  pools: {}
+  # Example:
+  # pools:
+  #   portal-api:
+  #     lingerMinutes: 15
+  #     maxHot: 1
+
 # Secrets backend configuration
 secrets:
   # Backend selection: "ssm" (default) or "vault"
