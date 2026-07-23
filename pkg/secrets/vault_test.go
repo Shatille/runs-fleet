@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/hashicorp/vault/api"
@@ -805,6 +806,166 @@ func TestVaultStore_detectKVVersion(t *testing.T) {
 				t.Errorf("got version %d, want %d", version, tt.wantVersion)
 			}
 		})
+	}
+}
+
+// fullyPopulatedRunnerConfig returns a RunnerConfig with every exported string and
+// slice field set to a distinct sentinel and every bool set to boolVal. It uses
+// reflection so a field added to the struct in the future is populated
+// automatically, forcing the round-trip parity tests below to exercise it without a
+// manual edit. boolVal is parameterized so callers can run the round-trip with
+// bools at their zero value — a bool that erroneously gains omitempty vanishes from
+// the payload when false, which the boolVal=true case alone cannot catch.
+func fullyPopulatedRunnerConfig(t *testing.T, boolVal bool) *RunnerConfig {
+	t.Helper()
+
+	cfg := &RunnerConfig{}
+	v := reflect.ValueOf(cfg).Elem()
+	typ := v.Type()
+
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if !field.CanSet() {
+			continue
+		}
+		switch field.Kind() {
+		case reflect.String:
+			field.SetString("sentinel-" + typ.Field(i).Name)
+		case reflect.Bool:
+			field.SetBool(boolVal)
+		case reflect.Slice:
+			if field.Type().Elem().Kind() == reflect.String {
+				field.Set(reflect.ValueOf([]string{"sentinel-" + typ.Field(i).Name}))
+			} else {
+				t.Fatalf("unhandled slice element kind for field %s: %s", typ.Field(i).Name, field.Type().Elem().Kind())
+			}
+		default:
+			t.Fatalf("unhandled field kind for %s: %s (extend fullyPopulatedRunnerConfig)", typ.Field(i).Name, field.Kind())
+		}
+	}
+
+	return cfg
+}
+
+// statefulVaultServer simulates a single-secret Vault KV backend: it captures the
+// payload written by Put and serves it back on Get, so a real Put→Get round-trip
+// through VaultStore can be exercised. It supports both KV v1 and KV v2 path styles.
+func statefulVaultServer(t *testing.T, kvVersion int, runnerID string) *httptest.Server {
+	t.Helper()
+
+	var putPath, getPath string
+	if kvVersion == 2 {
+		putPath = "/v1/secret/data/runs-fleet/runners/" + runnerID
+		getPath = putPath
+	} else {
+		putPath = "/v1/secret/runs-fleet/runners/" + runnerID
+		getPath = putPath
+	}
+
+	var stored map[string]interface{}
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut, http.MethodPost:
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("failed to decode Put body: %v", err)
+			}
+			if kvVersion == 2 {
+				if d, ok := body["data"].(map[string]interface{}); ok {
+					stored = d
+				} else {
+					t.Errorf("KVv2 Put body missing data wrapper: %v", body)
+				}
+			} else {
+				stored = body
+			}
+			w.WriteHeader(http.StatusOK)
+			if kvVersion == 2 {
+				_, _ = w.Write([]byte(`{"data": {}}`))
+			} else {
+				_, _ = w.Write([]byte(`{}`))
+			}
+		case http.MethodGet:
+			if stored == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			var response map[string]interface{}
+			if kvVersion == 2 {
+				response = map[string]interface{}{"data": map[string]interface{}{"data": stored}}
+			} else {
+				response = map[string]interface{}{"data": stored}
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(response)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}
+
+	return mockVaultServer(map[string]http.HandlerFunc{
+		putPath: handler,
+		getPath: handler,
+	})
+}
+
+// TestVaultStore_PutGet_RoundTripParity is the drift guard: it writes a
+// fully-populated RunnerConfig through Put and reads it back through Get, then
+// asserts the result deep-equals the original for both KV v1 and v2. Because the
+// input is populated by reflection over every exported field, any future field
+// that Put drops (as buildkit_cache_* were before this fix) fails this test
+// automatically — no manual test edit required.
+func TestVaultStore_PutGet_RoundTripParity(t *testing.T) {
+	t.Parallel()
+
+	// bools=false exercises the zero-value path so a field that erroneously gains
+	// omitempty (and would then vanish from the payload) is still caught.
+	for _, bools := range []bool{true, false} {
+		for _, kvVersion := range []int{1, 2} {
+			name := fmt.Sprintf("KVv%d/bools=%t", kvVersion, bools)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				const runnerID = "i-123"
+				server := statefulVaultServer(t, kvVersion, runnerID)
+				defer server.Close()
+
+				client, err := api.NewClient(&api.Config{Address: server.URL})
+				if err != nil {
+					t.Fatalf("failed to create client: %v", err)
+				}
+				client.SetToken("test-token")
+
+				store := NewVaultStoreWithClient(client, "secret", "runs-fleet/runners", kvVersion)
+
+				want := fullyPopulatedRunnerConfig(t, bools)
+				if err = store.Put(t.Context(), runnerID, want); err != nil {
+					t.Fatalf("Put() error = %v", err)
+				}
+
+				got, err := store.Get(t.Context(), runnerID)
+				if err != nil {
+					t.Fatalf("Get() error = %v", err)
+				}
+
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("round-trip mismatch:\n got = %+v\nwant = %+v", got, want)
+				}
+
+				// Explicit per-field guard so a failure names the dropped field
+				// rather than dumping the whole struct.
+				gotVal := reflect.ValueOf(got).Elem()
+				wantVal := reflect.ValueOf(want).Elem()
+				for i := 0; i < gotVal.NumField(); i++ {
+					fieldName := gotVal.Type().Field(i).Name
+					if !reflect.DeepEqual(gotVal.Field(i).Interface(), wantVal.Field(i).Interface()) {
+						t.Errorf("field %s lost in Put->Get: got %v, want %v",
+							fieldName, gotVal.Field(i).Interface(), wantVal.Field(i).Interface())
+					}
+				}
+			})
+		}
 	}
 }
 

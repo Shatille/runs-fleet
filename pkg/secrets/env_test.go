@@ -32,6 +32,9 @@ func TestEnvStore_Get(t *testing.T) {
 				"RUNS_FLEET_LABELS":                "self-hosted,linux,arm64",
 				"RUNS_FLEET_IS_ORG":                "true",
 				"RUNS_FLEET_RUNNER_NAME":           "runs-fleet-runner-default",
+				"RUNS_FLEET_BUILDKIT_CACHE_BUCKET": "runs-fleet-cache",
+				"RUNS_FLEET_BUILDKIT_CACHE_REGION": "ap-northeast-1",
+				"RUNS_FLEET_BUILDKIT_CACHE_PREFIX": "buildkit/test-org/test-repo/",
 			},
 			wantErr: false,
 			validate: func(t *testing.T, cfg *RunnerConfig) {
@@ -55,6 +58,15 @@ func TestEnvStore_Get(t *testing.T) {
 				}
 				if cfg.RunnerName != "runs-fleet-runner-default" {
 					t.Errorf("RunnerName = %q, want %q", cfg.RunnerName, "runs-fleet-runner-default")
+				}
+				if cfg.BuildkitCacheBucket != "runs-fleet-cache" {
+					t.Errorf("BuildkitCacheBucket = %q, want %q", cfg.BuildkitCacheBucket, "runs-fleet-cache")
+				}
+				if cfg.BuildkitCacheRegion != "ap-northeast-1" {
+					t.Errorf("BuildkitCacheRegion = %q, want %q", cfg.BuildkitCacheRegion, "ap-northeast-1")
+				}
+				if cfg.BuildkitCachePrefix != "buildkit/test-org/test-repo/" {
+					t.Errorf("BuildkitCachePrefix = %q, want %q", cfg.BuildkitCachePrefix, "buildkit/test-org/test-repo/")
 				}
 			},
 		},
@@ -140,7 +152,8 @@ func TestEnvStore_Get(t *testing.T) {
 				"RUNS_FLEET_RUN_ID", "RUNS_FLEET_JOB_ID", "RUNS_FLEET_CACHE_TOKEN",
 				"RUNS_FLEET_CACHE_URL", "RUNS_FLEET_TERMINATION_QUEUE_URL",
 				"RUNS_FLEET_LABELS", "RUNS_FLEET_IS_ORG", "RUNS_FLEET_RUNNER_GROUP",
-				"RUNS_FLEET_RUNNER_NAME",
+				"RUNS_FLEET_RUNNER_NAME", "RUNS_FLEET_BUILDKIT_CACHE_BUCKET",
+				"RUNS_FLEET_BUILDKIT_CACHE_REGION", "RUNS_FLEET_BUILDKIT_CACHE_PREFIX",
 			}
 			for _, key := range envKeys {
 				_ = os.Unsetenv(key)
