@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      pins: ${{ steps.filter.outputs.pins }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -36,6 +37,21 @@ jobs:
               - 'pkg/admin/ui/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
+            pins:
+              - 'packer/provision-base.sh'
+              - 'docker/runner/Dockerfile'
+              - '.github/scripts/check-pin-sync.sh'
+              - '.github/workflows/ci.yml'
+
+  pin-sync:
+    name: Pin Sync
+    needs: changes
+    if: needs.changes.outputs.pins == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Assert provision-base.sh pins match Dockerfile ARGs
+        run: bash .github/scripts/check-pin-sync.sh
 
   build:
     name: Build

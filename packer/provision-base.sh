@@ -105,8 +105,9 @@ echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="5.3.1"
 # Digests pinned in-repo rather than fetched from the release page, so the
 # trust anchor is this repo (upstream publishes no artifact signatures).
-# Update together with the version bump; keep in sync with the runner image
-# COMPOSE_* ARGs in docker/runner/Dockerfile.
+# Update together with the version bump; must match the runner image
+# COMPOSE_* ARGs in docker/runner/Dockerfile (enforced in CI by
+# .github/scripts/check-pin-sync.sh).
 case "${COMPOSE_ARCH}" in
   x86_64)  DOCKER_COMPOSE_SHA256="f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959" ;;
   aarch64) DOCKER_COMPOSE_SHA256="aa611e811d0ea25897839c404bfb5bf93ce706dc51c500a4457890f5d0606a86" ;;
@@ -133,8 +134,8 @@ echo "==> Installing Docker buildx cli-plugin"
 # Actions cache v1 protocol — decommissioned 2025-04-15 — so any job using
 # --cache-to type=gha fails on the dead endpoint. Cache service v2 needs
 # buildx >= 0.21. Digests pinned in-repo (same trust-anchor rationale as
-# compose above); keep version + digests in sync with the BUILDX_* ARGs in
-# docker/runner/Dockerfile.
+# compose above); version + digests must match the BUILDX_* ARGs in
+# docker/runner/Dockerfile (enforced in CI by .github/scripts/check-pin-sync.sh).
 BUILDX_VERSION="0.35.0"
 if [ "$ARCH" = "x86_64" ]; then
   BUILDX_ARCH="amd64"
