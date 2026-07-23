@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
@@ -61,19 +63,49 @@ func main() {
 		log.Fatal("RUNS_FLEET_INSTANCE_ID environment variable is required")
 	}
 	maxRuntimeMinutes := getEnvInt("RUNS_FLEET_MAX_RUNTIME_MINUTES", 360)
+	standbyDeadline := time.Now().Add(time.Duration(getEnvInt("RUNS_FLEET_STANDBY_DEADLINE_MINUTES", 120)) * time.Minute)
 
-	configStart := time.Now()
-	ac, err := initAgent(ctx, instanceID, logger)
-	timings.config = time.Since(configStart)
+	ac, err := initStore(ctx)
 	if err != nil {
-		if errors.Is(err, secrets.ErrConfigNotFound) {
-			logger.Println("No job config found — instance in pool standby")
-			os.Exit(0)
-		}
-		log.Fatalf("Failed to initialize agent: %v", err)
+		log.Fatalf("Failed to initialize agent store: %v", err)
 	}
 	if closer, ok := ac.secretsStore.(interface{ Close() }); ok {
 		defer closer.Close()
+	}
+
+	// Uniform standby poll: wait for this instance's job config. A cold-start
+	// instance's config appears within the fast-poll window; a hot-pool spare
+	// waits (bounded) until it is assigned. Either sentinel exit is clean (0):
+	// the instance was never given a job, so there is nothing to fail.
+	//
+	// The poll runs under a SIGTERM-aware context so an instance stop (the
+	// reconciler banking an idle spare) cancels the wait and the agent exits 0
+	// promptly instead of being killed mid-sleep. Signal handling is scoped to
+	// standby only: once a job config is found, stop() restores default signal
+	// behavior and the job runs under the plain background context, exactly as
+	// before this feature — a SIGTERM must never abort a job in flight.
+	standbyCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	runnerConfig, err := standbyWaitForConfig(standbyCtx, ac.secretsStore, instanceID, standbyDeadline, logger)
+	stop()
+	if err != nil {
+		if errors.Is(err, errStandbyDeadline) {
+			logger.Println("standby deadline reached without a job — exiting for reconciler to reclaim")
+		} else {
+			logger.Printf("standby ended without a job (%v) — exiting", err)
+		}
+		os.Exit(0)
+	}
+
+	// Config found: the meaningful acquisition latency starts here, not at
+	// process start. Rebasing keeps the standby wait (and a hot spare's long-ago
+	// boot) out of the bootstrap total, so the metric cohort is clean.
+	configFoundAt := time.Now()
+	timings.boot = 0
+	timings.config = 0
+	timings.start = configFoundAt
+
+	if err := completeInit(ctx, ac, instanceID, runnerConfig, logger); err != nil {
+		log.Fatalf("Failed to initialize agent: %v", err)
 	}
 
 	runID := ac.runnerConfig.RunID
@@ -107,31 +139,12 @@ func resolveJobID(ac *agentConfig) string {
 	return ac.runnerConfig.JobID
 }
 
-const configFetchAttempts = 5
-
-var configFetchRetryDelay = 2 * time.Second
-
-// fetchRunnerConfig reads the runner config from the backend, retrying transient
-// failures and the cold-start window before the orchestrator writes the config.
-func fetchRunnerConfig(ctx context.Context, store secrets.Store, instanceID string, logger *stdLogger) (*secrets.RunnerConfig, error) {
-	var lastErr error
-	for attempt := 1; attempt <= configFetchAttempts; attempt++ {
-		config, err := store.Get(ctx, instanceID)
-		if err == nil {
-			return config, nil
-		}
-		lastErr = err
-		if attempt < configFetchAttempts {
-			logger.Printf("config fetch attempt %d/%d failed: %v; retrying in %s",
-				attempt, configFetchAttempts, err, configFetchRetryDelay)
-			time.Sleep(configFetchRetryDelay)
-		}
-	}
-	return nil, fmt.Errorf("config fetch failed after %d attempts: %w", configFetchAttempts, lastErr)
-}
-
-// initAgent initializes the agent components (AWS config, secrets, telemetry, terminator).
-func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agentConfig, error) {
+// initStore initializes the AWS config and secrets store — the components needed
+// to poll for job config during standby. The config-dependent components
+// (telemetry, terminator, CloudWatch logger) are built later by completeInit,
+// once a job config has actually been acquired, so an unassigned standby spare
+// never spins them up.
+func initStore(ctx context.Context) (*agentConfig, error) {
 	ac := &agentConfig{}
 
 	region := os.Getenv("AWS_REGION")
@@ -152,23 +165,27 @@ func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agen
 	}
 	ac.secretsStore = secretsStore
 
-	runnerConfig, err := fetchRunnerConfig(ctx, secretsStore, instanceID, logger)
-	if err != nil {
-		return nil, err
-	}
+	return ac, nil
+}
+
+// completeInit builds the config-dependent agent components (telemetry,
+// terminator, CloudWatch logger) once a job config has been acquired. Split from
+// initStore so a standby spare that is never assigned a job does not create SQS/
+// CloudWatch clients it will never use.
+func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runnerConfig *secrets.RunnerConfig, logger *stdLogger) error {
 	ac.runnerConfig = runnerConfig
 
 	terminationQueueURL := runnerConfig.TerminationQueueURL
 	if terminationQueueURL != "" {
-		ac.telemetry = agent.NewSQSTelemetry(awsCfg, terminationQueueURL, logger)
+		ac.telemetry = agent.NewSQSTelemetry(ac.awsCfg, terminationQueueURL, logger)
 	}
 
-	ac.terminator = agent.NewEC2Terminator(awsCfg, ac.telemetry, logger)
+	ac.terminator = agent.NewEC2Terminator(ac.awsCfg, ac.telemetry, logger)
 
 	logGroup := os.Getenv("RUNS_FLEET_LOG_GROUP")
 	if logGroup != "" {
 		logStream := fmt.Sprintf("%s/%s", instanceID, runnerConfig.RunID)
-		cwLogger := agent.NewCloudWatchLogger(awsCfg, logGroup, logStream, logger)
+		cwLogger := agent.NewCloudWatchLogger(ac.awsCfg, logGroup, logStream, logger)
 		if startErr := cwLogger.Start(ctx); startErr != nil {
 			logger.Printf("Warning: failed to start CloudWatch logger: %v", startErr)
 		} else {
@@ -177,7 +194,7 @@ func initAgent(ctx context.Context, instanceID string, logger *stdLogger) (*agen
 		}
 	}
 
-	return ac, nil
+	return nil
 }
 
 // runAgent executes the agent phases.
