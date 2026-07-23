@@ -61,6 +61,7 @@ type MetricsAPI interface {
 	PublishRunnerExecutionSeconds(ctx context.Context, arch string, vcpu int, spot bool, result string, seconds float64) error
 	PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error
 	PublishRunnerCacheInterception(ctx context.Context, status string) error
+	PublishRunnerBuildCacheInterception(ctx context.Context, status string) error
 	PublishCacheBytesStored(ctx context.Context, bytes int64) error
 }
 
@@ -152,6 +153,9 @@ type Message struct {
 	ToolCacheMisses []string `json:"tool_cache_misses,omitempty"`
 	// CacheInterception is the on-host cache interceptor's outcome (engaged|failed|disabled).
 	CacheInterception string `json:"cache_interception,omitempty"`
+	// BuildCacheInterception is the buildx layer-cache shim's outcome
+	// (engaged|skipped|failed|disabled). Absent from a pre-rollout agent.
+	BuildCacheInterception string `json:"build_cache_interception,omitempty"`
 	// CacheBytesWritten is v2 cache blob bytes stored to S3 through the interceptor
 	// this job (folded into the CacheBytesStored counter — the blob PUT bypasses the
 	// orchestrator, so it can't be counted server-side).
@@ -616,6 +620,12 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		if msg.CacheInterception != "" {
 			if err := h.metrics.PublishRunnerCacheInterception(ctx, msg.CacheInterception); err != nil {
 				termLog.Warn(ctx, "cache interception metric publish failed", slog.String("error", err.Error()))
+			}
+		}
+		// Buildx layer-cache shim outcome: the rollout observability gate.
+		if msg.BuildCacheInterception != "" {
+			if err := h.metrics.PublishRunnerBuildCacheInterception(ctx, msg.BuildCacheInterception); err != nil {
+				termLog.Warn(ctx, "build cache interception metric publish failed", slog.String("error", err.Error()))
 			}
 		}
 		// v2 cache write bytes (blob PUT bypasses the orchestrator; reported by the agent).

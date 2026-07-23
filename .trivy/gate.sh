@@ -6,7 +6,7 @@
 # fails ONLY on findings we can act on:
 #
 #   - OS / apt packages    (Class == "os-pkgs")      -> fixed by apt-get upgrade
-#   - our own agent binary (Target ~ runs-fleet-agent) -> fixed via go.mod
+#   - our own Go binaries  (Target ~ runs-fleet-agent | runs-fleet-buildx-shim) -> fixed via go.mod
 #
 # Findings that live ONLY in third-party prebuilt binaries we install but do not
 # build (Docker/containerd cli-plugins, dockerd) or in upstream-bundled
@@ -15,8 +15,8 @@
 # the AMI rebuild until the upstream project republishes. They clear on their
 # own once upstream ships a fixed build. See docker/runner/CLAUDE.md.
 #
-# This is target-scoped, not CVE-id-scoped: a NEW CVE in our agent or an OS
-# package still fails the gate. It is not a .trivyignore.
+# This is target-scoped, not CVE-id-scoped: a NEW CVE in one of our Go binaries
+# or an OS package still fails the gate. It is not a .trivyignore.
 set -euo pipefail
 
 # Buffer the report to a temp file (jq reads it directly, twice) rather than
@@ -34,13 +34,14 @@ findings() {
   jq -r "$prog" "$report_file"
 }
 
-controlled='select(.Class == "os-pkgs" or (.Target | test("runs-fleet-agent")))'
-third_party='select((.Class == "os-pkgs" or (.Target | test("runs-fleet-agent"))) | not)'
+ours='(.Target | test("runs-fleet-agent|runs-fleet-buildx-shim"))'
+controlled="select(.Class == \"os-pkgs\" or ${ours})"
+third_party="select((.Class == \"os-pkgs\" or ${ours}) | not)"
 
 echo "== Third-party / upstream-bundled CVEs (reported, non-blocking) =="
 findings "$third_party" || true
 echo ""
-echo "== Controllable CVEs (BLOCKING — OS/apt packages or runs-fleet-agent) =="
+echo "== Controllable CVEs (BLOCKING — OS/apt packages or our Go binaries) =="
 blocking="$(findings "$controlled")"
 if [ -n "$blocking" ]; then
   echo "$blocking"

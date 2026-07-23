@@ -90,6 +90,32 @@
           };
         };
 
+        runs-fleet-buildx-shim = arch: pkgs.buildGoModule {
+          pname = "runs-fleet-buildx-shim-${arch}";
+          inherit version;
+          src = ./.;
+
+          vendorHash = null;
+
+          subPackages = [ "cmd/buildx-shim" ];
+
+          ldflags = [
+            "-s"
+            "-w"
+            "-extldflags=-static"
+          ];
+
+          CGO_ENABLED = "0";
+          GOOS = "linux";
+          GOARCH = arch;
+
+          meta = {
+            description = "Transparent buildx layer-cache shim for GitHub Actions runners (${arch})";
+            homepage = "https://github.com/Shavakan/runs-fleet";
+            license = pkgs.lib.licenses.mit;
+          };
+        };
+
         runs-fleet-docker = pkgs.dockerTools.buildImage {
           name = "runs-fleet";
           tag = "latest";
@@ -112,6 +138,8 @@
           server = runs-fleet-server;
           agent-amd64 = runs-fleet-agent "amd64";
           agent-arm64 = runs-fleet-agent "arm64";
+          buildx-shim-amd64 = runs-fleet-buildx-shim "amd64";
+          buildx-shim-arm64 = runs-fleet-buildx-shim "arm64";
           docker = runs-fleet-docker;
           admin-ui = admin-ui;
           default = runs-fleet-server;
@@ -157,6 +185,8 @@
             echo "  nix build .#server      - Build server"
             echo "  nix build .#agent-amd64 - Build AMD64 agent"
             echo "  nix build .#agent-arm64 - Build ARM64 agent"
+            echo "  nix build .#buildx-shim-amd64 - Build AMD64 buildx shim"
+            echo "  nix build .#buildx-shim-arm64 - Build ARM64 buildx shim"
             echo "  nix build .#docker      - Build Docker image"
           '';
 

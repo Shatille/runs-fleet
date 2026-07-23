@@ -23,6 +23,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-agent ./cmd/agent
 
+# The transparent buildx layer-cache shim. Extracted from this image by the
+# runner AMI provisioner and installed as the docker-buildx CLI plugin on the
+# EC2 host; it is not used inside the container itself.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+    -ldflags "-s -w -X main.version=$VERSION" \
+    -o /bin/runs-fleet-buildx-shim ./cmd/buildx-shim
+
 # Stage 2: Official GitHub Actions runner base
 # Provides: actions-runner at /home/runner, Node.js externals, sudo, common
 # workflow tooling. Docker tooling is replaced below with apt-managed packages
@@ -131,6 +138,11 @@ RUN printf 'runner ALL=(ALL) NOPASSWD:/usr/bin/apt-get,/usr/bin/apt\n' \
 
 COPY --from=builder /bin/runs-fleet-agent /usr/local/bin/runs-fleet-agent
 RUN chmod +x /usr/local/bin/runs-fleet-agent
+
+# Carried for the runner AMI provisioner to extract onto the EC2 host; unused in
+# the container. See packer/provision-runs-fleet.sh.
+COPY --from=builder /bin/runs-fleet-buildx-shim /usr/local/bin/runs-fleet-buildx-shim
+RUN chmod +x /usr/local/bin/runs-fleet-buildx-shim
 
 COPY docker/runner/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

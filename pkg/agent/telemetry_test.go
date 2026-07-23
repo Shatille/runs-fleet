@@ -534,6 +534,37 @@ func TestJobStatus_JSONSerialization(t *testing.T) {
 	}
 }
 
+// BuildCacheInterception must round-trip and be omitted when empty (the compat
+// contract: a pre-rollout agent that never sets it produces no wire field, and
+// the orchestrator treats absence as "no measurement").
+func TestJobStatus_BuildCacheInterceptionRoundTrip(t *testing.T) {
+	status := JobStatus{
+		InstanceID:             "i-1",
+		JobID:                  testJobID123,
+		BuildCacheInterception: "engaged",
+	}
+	jsonBytes, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded JobStatus
+	if err = json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BuildCacheInterception != "engaged" {
+		t.Errorf("BuildCacheInterception = %q, want engaged", decoded.BuildCacheInterception)
+	}
+
+	// Zero value must be omitted from the wire.
+	zeroBytes, err := json.Marshal(JobStatus{InstanceID: "i-1", JobID: testJobID123})
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if contains(string(zeroBytes), "build_cache_interception") {
+		t.Errorf("empty BuildCacheInterception must be omitted, got: %s", string(zeroBytes))
+	}
+}
+
 // The bootstrap timing fields must round-trip through JSON so the orchestrator
 // decodes exactly what the agent sent.
 func TestJobStatus_BootstrapTimingsRoundTrip(t *testing.T) {

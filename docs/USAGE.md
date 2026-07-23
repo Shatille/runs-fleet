@@ -122,6 +122,45 @@ What to know:
 - **Architecture:** `arm64` and `amd64` runners keep separate caches (the runner OS/arch folds into the cache key), so a `arch=arm64`/`arch=amd64` matrix won't cross-contaminate — same as GitHub-hosted behavior.
 - **Best-effort:** Caching is fail-open. If the cache backend is unreachable the job still runs (just without a cache hit); it never fails the build.
 
+### Automatic Docker layer caching
+
+The same cache system also covers Docker layer caches: `docker buildx build`
+(and `docker build`, which aliases to it) gets S3-backed layer caching with
+**zero workflow changes** — no `cache-from`/`cache-to`, no registry, no extra
+steps:
+
+```yaml
+steps:
+  - uses: docker/setup-buildx-action@v3
+  - uses: docker/build-push-action@v6
+    with:
+      push: true
+      tags: my-registry/my-image:latest
+      # no cache-from / cache-to needed — layers are cached transparently
+```
+
+What to know:
+
+- **Zero client changes:** a runner-side shim shadows the `docker-buildx` CLI
+  plugin and appends `--cache-from`/`--cache-to type=s3,...` for you. If you
+  already set your own `cache-from`/`cache-to`, the shim never touches the
+  invocation — your config always wins.
+- **Opt out per workflow:** set `RUNS_FLEET_BUILD_CACHE=off` (env at the job or
+  step level) to disable injection for that job.
+- **Fail-safe:** every uncertain or unsupported case is a pure passthrough. The
+  shim resolves the active builder the same way buildx does (`--builder` flag,
+  then `BUILDX_BUILDER`, then the builder selected via `docker buildx create
+  --use`) and engages only when that builder's driver can export a cache
+  (`docker-container`, `kubernetes`, `remote`). A build on the default Docker
+  driver (which cannot export a cache) is left untouched — the
+  `docker/setup-buildx-action` step in the example above is what provides the
+  container builder.
+- **Scope:** the layer cache is keyed per repository and per platform. Scoping is
+  conventional (shared bucket IAM), not cryptographically enforced like the
+  Actions cache above — appropriate for a same-org fleet.
+- **Out of scope:** `docker compose build` does not route through the CLI plugin,
+  so it is not cached by this mechanism.
+
 ## Examples
 
 ### Basic CI workflow

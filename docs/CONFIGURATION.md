@@ -128,6 +128,13 @@ remove them.
 | `RUNS_FLEET_CACHE_SECRET` | HMAC secret for cache auth |
 | `RUNS_FLEET_BASE_URL` | **Required.** Orchestrator's externally-reachable HTTPS base URL; served to runners as `ACTIONS_CACHE_URL` for the S3-backed Actions cache |
 
+The cache bucket (`RUNS_FLEET_CACHE_BUCKET`) also serves transparent Docker
+layer caching for buildx builds, under a `buildkit/` prefix beside the Actions
+cache's `caches/`. This needs no configuration; it becomes effective once the
+instance profile has S3 read/write on `buildkit/*` (until then, builds succeed
+with cache-miss warnings). Per-workflow opt-out: `RUNS_FLEET_BUILD_CACHE=off`.
+See "Build Cache" in [USAGE.md](USAGE.md).
+
 ## Graceful Shutdown
 
 | Variable | Default | Description |

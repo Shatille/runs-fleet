@@ -187,6 +187,7 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 
 ### Cache & Admin
 - `RUNS_FLEET_CACHE_SECRET` - HMAC secret for cache auth
+- Transparent Docker layer caching rides `RUNS_FLEET_CACHE_BUCKET` (no dedicated variable) under a `buildkit/` prefix; needs the shim-carrying AMI + instance-profile IAM grant on `buildkit/*` to be effective, degrades to warnings otherwise. Per-workflow opt-out: `RUNS_FLEET_BUILD_CACHE=off`. See docs/CONFIGURATION.md.
 - `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_REDIRECT_URL`, `_SCOPES`, `_GROUPS_CLAIM` - Admin API OIDC auth (native relying party, no external gatekeeper); leave unset to disable auth (local dev)
 - `RUNS_FLEET_ADMIN_SESSION_SECRET`, `RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES` - Admin session cookie signing key and TTL
 

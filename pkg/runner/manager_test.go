@@ -259,6 +259,70 @@ func TestManager_PrepareRunner_Success(t *testing.T) {
 	}
 }
 
+func TestManager_PrepareRunner_BuildkitCacheFieldsSetWhenBucketPresent(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{regToken: "tok"}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		BuildkitCacheBucket: "runs-fleet-cache",
+		BuildkitCacheRegion: "ap-northeast-1",
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-1",
+		JobID:      "job-1",
+		Repo:       "acme/widgets",
+		Labels:     []string{"self-hosted"},
+	}
+	if err := manager.PrepareRunner(context.Background(), req); err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+	cfg := mockStore.lastPutCfg
+	if cfg == nil {
+		t.Fatal("stored config is nil")
+	}
+	if cfg.BuildkitCacheBucket != "runs-fleet-cache" {
+		t.Errorf("BuildkitCacheBucket = %q, want runs-fleet-cache", cfg.BuildkitCacheBucket)
+	}
+	if cfg.BuildkitCacheRegion != "ap-northeast-1" {
+		t.Errorf("BuildkitCacheRegion = %q, want ap-northeast-1", cfg.BuildkitCacheRegion)
+	}
+	if cfg.BuildkitCachePrefix != "buildkit/acme/widgets/" {
+		t.Errorf("BuildkitCachePrefix = %q, want buildkit/acme/widgets/", cfg.BuildkitCachePrefix)
+	}
+}
+
+func TestManager_PrepareRunner_BuildkitCacheFieldsEmptyWhenBucketAbsent(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{regToken: "tok"}
+
+	// No BuildkitCacheBucket in ManagerConfig → feature disabled → all three
+	// fields must stay empty (inert on the wire).
+	manager := NewManager(mockGH, mockStore, ManagerConfig{})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-1",
+		JobID:      "job-1",
+		Repo:       "acme/widgets",
+		Labels:     []string{"self-hosted"},
+	}
+	if err := manager.PrepareRunner(context.Background(), req); err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+	cfg := mockStore.lastPutCfg
+	if cfg == nil {
+		t.Fatal("stored config is nil")
+	}
+	if cfg.BuildkitCacheBucket != "" || cfg.BuildkitCacheRegion != "" || cfg.BuildkitCachePrefix != "" {
+		t.Errorf("buildkit fields must be empty when bucket absent, got bucket=%q region=%q prefix=%q",
+			cfg.BuildkitCacheBucket, cfg.BuildkitCacheRegion, cfg.BuildkitCachePrefix)
+	}
+}
+
 func TestManager_PrepareRunner_GitHubError(t *testing.T) {
 	t.Parallel()
 

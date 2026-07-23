@@ -229,6 +229,13 @@ type Publisher interface {
 	// outcome (status: engaged | failed | disabled). Makes silent fail-open
 	// interception (cache traffic escaping to GitHub) visible.
 	PublishRunnerCacheInterception(ctx context.Context, status string) error
+
+	// PublishRunnerBuildCacheInterception counts a job by the transparent buildx
+	// layer-cache shim's outcome (status: engaged | skipped | failed | disabled).
+	// It is the rollout observability gate: a healthy rollout shows engaged
+	// climbing, and any spike in failed surfaces a broken shim before it can
+	// silently disable caching fleet-wide.
+	PublishRunnerBuildCacheInterception(ctx context.Context, status string) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -392,6 +399,11 @@ func (NoopPublisher) PublishRunnerToolCacheMiss(context.Context, string, string,
 
 // PublishRunnerCacheInterception is a no-op.
 func (NoopPublisher) PublishRunnerCacheInterception(context.Context, string) error {
+	return nil
+}
+
+// PublishRunnerBuildCacheInterception is a no-op.
+func (NoopPublisher) PublishRunnerBuildCacheInterception(context.Context, string) error {
 	return nil
 }
 

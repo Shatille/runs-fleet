@@ -61,6 +61,7 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 		{"PublishInstanceHours", func() error { return pub.PublishInstanceHours(ctx, "4", "c7g", 2) }},
 		{"PublishEstimatedCost", func() error { return pub.PublishEstimatedCost(ctx, 12.5) }},
 		{"PublishRunnerExecutionSeconds", func() error { return pub.PublishRunnerExecutionSeconds(ctx, "arm64", 4, false, "served", 120) }},
+		{"PublishRunnerBuildCacheInterception", func() error { return pub.PublishRunnerBuildCacheInterception(ctx, "engaged") }},
 	}
 
 	for _, tt := range tests {

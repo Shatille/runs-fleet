@@ -336,3 +336,7 @@ func (p *DatadogPublisher) PublishRunnerToolCacheMiss(_ context.Context, tool, v
 func (p *DatadogPublisher) PublishRunnerCacheInterception(_ context.Context, status string) error { //nolint:revive
 	return p.client.Incr("runner_cache_interception", ddTag(nil, "status", status), 1)
 }
+
+func (p *DatadogPublisher) PublishRunnerBuildCacheInterception(_ context.Context, status string) error { //nolint:revive
+	return p.client.Incr("runner_build_cache_interception", ddTag(nil, "status", status), 1)
+}

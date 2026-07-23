@@ -216,6 +216,11 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		logger.Printf("Warning: failed to set runner environment: %v", envErr)
 	}
 
+	// Transparent Docker layer cache: write the buildkit-cache env vars into the
+	// runner .env so the on-host buildx shim can inject S3 cache flags. Inert
+	// when the orchestrator did not configure a bucket (empty outcome file).
+	buildCacheOutcomeFile := registrar.WriteBuildkitCacheEnv(runnerPath, ac.runnerConfig)
+
 	// Engage the transparent v2 cache interceptor. Best effort and fail-open:
 	// any failure leaves the runner talking to GitHub's cache directly.
 	cacheProxy, cacheInterception, cacheStop := engageCache(ctx, ac, registrar, runnerPath, logger)
@@ -291,15 +296,16 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 
 	jobStatus := agent.JobStatus{
-		InstanceID:        instanceID,
-		JobID:             jobID,
-		ExitCode:          result.ExitCode,
-		StartedAt:         result.StartedAt,
-		CompletedAt:       result.CompletedAt,
-		DurationSeconds:   int(result.Duration.Seconds()),
-		InterruptedBy:     result.InterruptedBy,
-		ToolCacheMisses:   toolCacheMisses,
-		CacheInterception: cacheInterception,
+		InstanceID:             instanceID,
+		JobID:                  jobID,
+		ExitCode:               result.ExitCode,
+		StartedAt:              result.StartedAt,
+		CompletedAt:            result.CompletedAt,
+		DurationSeconds:        int(result.Duration.Seconds()),
+		InterruptedBy:          result.InterruptedBy,
+		ToolCacheMisses:        toolCacheMisses,
+		CacheInterception:      cacheInterception,
+		BuildCacheInterception: agent.ReadBuildCacheOutcome(buildCacheOutcomeFile),
 	}
 	if cacheProxy != nil {
 		jobStatus.CacheBytesWritten = cacheProxy.BytesWritten()

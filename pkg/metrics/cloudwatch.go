@@ -313,6 +313,11 @@ func (p *CloudWatchPublisher) PublishRunnerCacheInterception(ctx context.Context
 	return p.putCounter(ctx, "RunnerCacheInterception", dims("Status", status))
 }
 
+// PublishRunnerBuildCacheInterception counts a job by buildx layer-cache shim outcome (status).
+func (p *CloudWatchPublisher) PublishRunnerBuildCacheInterception(ctx context.Context, status string) error {
+	return p.putCounter(ctx, "RunnerBuildCacheInterception", dims("Status", status))
+}
+
 // --- helpers ---
 
 // dims builds a CloudWatch dimension list from name/value pairs. Empty values are

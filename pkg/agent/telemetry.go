@@ -76,6 +76,11 @@ type JobStatus struct {
 	// "engaged", "failed" (fell open to GitHub's cache), or "disabled" (no cache
 	// configured). Lets the orchestrator surface silent fail-open interception.
 	CacheInterception string `json:"cache_interception,omitempty"`
+	// BuildCacheInterception is the transparent buildx layer-cache shim's outcome
+	// for this job: "engaged", "skipped", "failed", or "disabled". Absent
+	// (omitempty) from a pre-rollout agent, which the orchestrator treats as no
+	// measurement.
+	BuildCacheInterception string `json:"build_cache_interception,omitempty"`
 	// CacheBytesWritten is the blob bytes stored to the S3 cache through the v2
 	// interceptor this job (the blob PUT bypasses the orchestrator, so it can't be
 	// counted server-side). Zero when interception didn't engage.

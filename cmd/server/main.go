@@ -339,6 +339,8 @@ func initRunnerManager(githubClient *gh.Client, secretsStore secrets.Store, cfg 
 		CacheSecret:         cfg.CacheSecret,
 		BaseURL:             cfg.BaseURL,
 		TerminationQueueURL: cfg.TerminationQueueURL,
+		BuildkitCacheBucket: cfg.CacheBucketName,
+		BuildkitCacheRegion: cfg.AWSRegion,
 	})
 }
 

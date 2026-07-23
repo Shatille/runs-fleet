@@ -195,6 +195,9 @@ type mockMetricsAPI struct {
 	cacheBytesStoredCalls  int
 	lastCacheBytesStored   int64
 
+	buildCacheInterceptionCalls int
+	lastBuildCacheInterception  string
+
 	provisionCalls  int
 	lastProvSource  string
 	lastProvFamily  string
@@ -295,6 +298,12 @@ func (m *mockMetricsAPI) PublishRunnerToolCacheMiss(_ context.Context, tool, ver
 func (m *mockMetricsAPI) PublishRunnerCacheInterception(_ context.Context, status string) error {
 	m.cacheInterceptionCalls++
 	m.lastCacheInterception = status
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishRunnerBuildCacheInterception(_ context.Context, status string) error {
+	m.buildCacheInterceptionCalls++
+	m.lastBuildCacheInterception = status
 	return nil
 }
 
@@ -561,6 +570,56 @@ func TestHandler_processMessage_CacheInterceptionFailed(t *testing.T) {
 	}
 	if metrics.cacheBytesStoredCalls != 0 {
 		t.Errorf("cache bytes stored metric fired for 0 bytes: calls = %d, want 0", metrics.cacheBytesStoredCalls)
+	}
+}
+
+func TestHandler_processMessage_BuildCacheInterception(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:             "i-12345",
+		JobID:                  "12345678901",
+		Status:                 "success",
+		DurationSeconds:        120,
+		BuildCacheInterception: "engaged",
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.buildCacheInterceptionCalls != 1 || metrics.lastBuildCacheInterception != "engaged" {
+		t.Errorf("build cache interception metric = (%d, %q), want (1, engaged)",
+			metrics.buildCacheInterceptionCalls, metrics.lastBuildCacheInterception)
+	}
+}
+
+func TestHandler_processMessage_BuildCacheInterceptionAbsentIsSilent(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	// A pre-rollout agent omits the field entirely; the handler must not fire.
+	msg := Message{InstanceID: "i-12345", JobID: "12345678901", Status: "success", DurationSeconds: 5}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if metrics.buildCacheInterceptionCalls != 0 {
+		t.Errorf("build cache interception metric fired for absent field: calls = %d, want 0",
+			metrics.buildCacheInterceptionCalls)
 	}
 }
 
