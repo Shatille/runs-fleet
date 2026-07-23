@@ -239,19 +239,17 @@ func (v *VaultStore) probePathStatus(ctx context.Context, path string) int {
 
 // Put stores runner configuration in Vault.
 func (v *VaultStore) Put(ctx context.Context, runnerID string, config *RunnerConfig) error {
-	data := map[string]interface{}{
-		"org":                   config.Org,
-		"repo":                  config.Repo,
-		"run_id":                config.RunID,
-		"jit_token":             config.JITToken,
-		"labels":                config.Labels,
-		"runner_group":          config.RunnerGroup,
-		"runner_name":           config.RunnerName,
-		"job_id":                config.JobID,
-		"cache_token":           config.CacheToken,
-		"cache_url":             config.CacheURL,
-		"termination_queue_url": config.TerminationQueueURL,
-		"is_org":                config.IsOrg,
+	// Serialize through JSON rather than enumerating fields by hand so the
+	// written payload stays symmetric with Get (which unmarshals the same JSON
+	// shape). A hand-maintained field map silently dropped struct fields added
+	// later; the round-trip cannot.
+	jsonBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal runner config: %w", err)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &data); err != nil {
+		return fmt.Errorf("failed to build Vault secret data: %w", err)
 	}
 
 	path := v.secretPath(runnerID)

@@ -47,6 +47,9 @@ func (s *EnvStore) Get(_ context.Context, _ string) (*RunnerConfig, error) {
 		TerminationQueueURL: os.Getenv("RUNS_FLEET_TERMINATION_QUEUE_URL"),
 		RunnerGroup:         os.Getenv("RUNS_FLEET_RUNNER_GROUP"),
 		RunnerName:          os.Getenv("RUNS_FLEET_RUNNER_NAME"),
+		BuildkitCacheBucket: os.Getenv("RUNS_FLEET_BUILDKIT_CACHE_BUCKET"),
+		BuildkitCacheRegion: os.Getenv("RUNS_FLEET_BUILDKIT_CACHE_REGION"),
+		BuildkitCachePrefix: os.Getenv("RUNS_FLEET_BUILDKIT_CACHE_PREFIX"),
 	}
 
 	// Parse labels from comma-separated string
