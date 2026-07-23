@@ -105,8 +105,9 @@ echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="5.3.1"
 # Digests pinned in-repo rather than fetched from the release page, so the
 # trust anchor is this repo (upstream publishes no artifact signatures).
-# Update together with the version bump; keep in sync with the runner image
-# COMPOSE_* ARGs in docker/runner/Dockerfile.
+# Update together with the version bump; must match the runner image
+# COMPOSE_* ARGs in docker/runner/Dockerfile (enforced in CI by
+# .github/scripts/check-pin-sync.sh).
 case "${COMPOSE_ARCH}" in
   x86_64)  DOCKER_COMPOSE_SHA256="f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959" ;;
   aarch64) DOCKER_COMPOSE_SHA256="aa611e811d0ea25897839c404bfb5bf93ce706dc51c500a4457890f5d0606a86" ;;
@@ -127,6 +128,40 @@ sudo mkdir -p /usr/local/lib/docker/cli-plugins \
   || { echo "Failed to create Docker CLI plugins directory"; exit 1; }
 sudo cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose \
   || { echo "Failed to install Docker Compose plugin"; exit 1; }
+
+echo "==> Installing Docker buildx cli-plugin"
+# AL2023's docker package bundles buildx 0.12.1, which only speaks the GitHub
+# Actions cache v1 protocol — decommissioned 2025-04-15 — so any job using
+# --cache-to type=gha fails on the dead endpoint. Cache service v2 needs
+# buildx >= 0.21. Digests pinned in-repo (same trust-anchor rationale as
+# compose above); version + digests must match the BUILDX_* ARGs in
+# docker/runner/Dockerfile (enforced in CI by .github/scripts/check-pin-sync.sh).
+BUILDX_VERSION="0.35.0"
+if [ "$ARCH" = "x86_64" ]; then
+  BUILDX_ARCH="amd64"
+  BUILDX_SHA256="d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda"
+else
+  BUILDX_ARCH="arm64"
+  BUILDX_SHA256="c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766"
+fi
+BUILDX_BINARY="buildx-v${BUILDX_VERSION}.linux-${BUILDX_ARCH}"
+BUILDX_URL="https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}"
+dl "${BUILDX_URL}/${BUILDX_BINARY}" -o "/tmp/${BUILDX_BINARY}" \
+  || { echo "Failed to download Docker buildx"; exit 1; }
+echo "${BUILDX_SHA256}  /tmp/${BUILDX_BINARY}" | sha256sum -c \
+  || { echo "Docker buildx checksum mismatch"; rm -f "/tmp/${BUILDX_BINARY}"; exit 1; }
+# /usr/libexec/docker/cli-plugins is where the runner image installs the same
+# pin and the first packaged location the runs-fleet buildx shim searches for
+# the real plugin; the distro copy is removed from every higher-precedence
+# system dir so the stale 0.12.1 can never shadow this one.
+sudo rm -f /usr/local/lib/docker/cli-plugins/docker-buildx \
+  /usr/local/libexec/docker/cli-plugins/docker-buildx \
+  /usr/lib/docker/cli-plugins/docker-buildx
+sudo install -D -m 0755 "/tmp/${BUILDX_BINARY}" /usr/libexec/docker/cli-plugins/docker-buildx \
+  || { echo "Failed to install Docker buildx plugin"; exit 1; }
+rm -f "/tmp/${BUILDX_BINARY}"
+docker buildx version | grep -F "v${BUILDX_VERSION}" \
+  || { echo "docker buildx resolves to $(docker buildx version), expected v${BUILDX_VERSION}"; exit 1; }
 
 echo "==> Installing Node.js ecosystem"
 NODE_VERSION="22.13.1"
@@ -622,7 +657,7 @@ echo "    - gh: $(gh --version | head -1)"
 echo "    - yq: $(yq --version)"
 echo "    - curl: $(curl --version | head -1)"
 echo "    - QEMU binfmt: enabled at boot"
-echo "    - Docker buildx: multi-arch builder configured"
+echo "    - Docker buildx: $(docker buildx version) (multi-arch builder configured)"
 echo "    - Pre-baked images: ${PREBAKE_IMAGES[*]}"
 echo "    - SSM Agent: enabled"
 echo "    - Session Manager Plugin: $(session-manager-plugin --version)"

@@ -74,7 +74,9 @@ RUN set -ex; \
 # here rather than fetched from the release's checksums.txt so the trust
 # anchor is this repo, not the release page (upstream publishes no artifact
 # signatures). Bump procedure: update the version ARGs together with all four
-# digests and re-run `make scan-runner` (see docker/runner/CLAUDE.md).
+# digests and re-run `make scan-runner` (see docker/runner/CLAUDE.md). The
+# host AMI pins the same buildx and compose versions in
+# packer/provision-base.sh — bump both places together.
 ARG BUILDX_VERSION=0.35.0
 ARG COMPOSE_VERSION=5.3.1
 ARG BUILDX_SHA256_AMD64=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda
