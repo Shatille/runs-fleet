@@ -104,9 +104,7 @@ func main() {
 	timings.config = 0
 	timings.start = configFoundAt
 
-	if err := completeInit(ctx, ac, instanceID, runnerConfig, logger); err != nil {
-		log.Fatalf("Failed to initialize agent: %v", err)
-	}
+	completeInit(ctx, ac, instanceID, runnerConfig, logger)
 
 	runID := ac.runnerConfig.RunID
 	if runID == "" {
@@ -172,7 +170,7 @@ func initStore(ctx context.Context) (*agentConfig, error) {
 // terminator, CloudWatch logger) once a job config has been acquired. Split from
 // initStore so a standby spare that is never assigned a job does not create SQS/
 // CloudWatch clients it will never use.
-func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runnerConfig *secrets.RunnerConfig, logger *stdLogger) error {
+func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runnerConfig *secrets.RunnerConfig, logger *stdLogger) {
 	ac.runnerConfig = runnerConfig
 
 	terminationQueueURL := runnerConfig.TerminationQueueURL
@@ -193,8 +191,6 @@ func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runne
 			logger.Printf("CloudWatch logging enabled: %s/%s", logGroup, logStream)
 		}
 	}
-
-	return nil
 }
 
 // runAgent executes the agent phases.
