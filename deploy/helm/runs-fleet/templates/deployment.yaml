@@ -252,6 +252,10 @@ spec:
             - name: RUNS_FLEET_LABEL_ALIASES
               value: {{ .Values.labelAliases | quote }}
             {{- end }}
+            {{- if and .Values.hotPools.enabled .Values.hotPools.pools }}
+            - name: RUNS_FLEET_HOT_POOLS
+              value: {{ .Values.hotPools.pools | toJson | quote }}
+            {{- end }}
             - name: RUNS_FLEET_LOG_LEVEL
               value: {{ .Values.logging.level }}
             - name: RUNS_FLEET_LOG_FORMAT

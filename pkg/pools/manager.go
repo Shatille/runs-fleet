@@ -117,6 +117,10 @@ const (
 	poolActionStart     = "start"
 )
 
+// poolActionReasonLinger attributes a scale-up to the hot-pool linger floor
+// (rather than an ordinary ready deficit) on the pool_actions metric.
+const poolActionReasonLinger = "linger"
+
 // EC2API defines EC2 operations for instance management.
 //
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -450,6 +454,10 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		return fmt.Errorf("pool config not found")
 	}
 
+	// Hoisted so the linger floor and the not-busy-streak refresh below share one
+	// timestamp for the whole pass.
+	now := time.Now()
+
 	desiredRunning, desiredStopped := m.getScheduledDesiredCounts(poolConfig)
 
 	// For ephemeral pools, override with auto-scaled values based on peak concurrency
@@ -457,6 +465,17 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	if ephRunning, ephStopped, ok := m.getEphemeralAutoScaledCount(ctx, poolName, poolConfig); ok {
 		desiredRunning = ephRunning
 		desiredStopped = ephStopped
+	}
+
+	// Hot-pool linger floor: for an allowlisted pool with recent job activity,
+	// keep MaxHot running spares until the linger window elapses, then decay. This
+	// composes with schedules/ephemeral via max() — it only ever raises the running
+	// target, never lowers it. Zero (and thus a no-op) unless RUNS_FLEET_HOT_POOLS
+	// names this pool, so the gate-off path is unchanged.
+	lingerHot := m.lingerDesiredRunning(poolConfig, now)
+	lingerActive := lingerHot > desiredRunning
+	if lingerActive {
+		desiredRunning = lingerHot
 	}
 
 	instances, err := m.getPoolInstances(ctx, poolName)
@@ -480,7 +499,6 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 
 	// Refresh not-busy streaks every pass (both scale directions) so the dwell guard
 	// has continuous history when a later pass considers scaling down.
-	now := time.Now()
 	m.updateReadySince(poolName, runningInstances, busyIDs, now)
 
 	// Track changes for logging
@@ -496,6 +514,17 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	if ready < desiredRunning {
 		deficit := desiredRunning - ready
 
+		// Attribute this scale-up to the linger floor when the running target
+		// exists only because of it, so pool_actions distinguishes hot-pool warmth
+		// from ordinary ready-deficit provisioning. Attribution is best-effort at
+		// the margin: if a scheduled/ephemeral target happens to equal MaxHot,
+		// lingerActive is false and a genuinely linger-window start is labeled
+		// "ready_deficit". This mislabels the metric, never the behavior.
+		reason := "ready_deficit"
+		if lingerActive {
+			reason = poolActionReasonLinger
+		}
+
 		stoppedInstances := m.filterByState(instances, stateStopped)
 		toStart := min(deficit, len(stoppedInstances))
 		if toStart > 0 {
@@ -503,7 +532,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 			for i := 0; i < toStart; i++ {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
-			if err := m.startInstances(ctx, poolName, instanceIDs, "ready_deficit"); err != nil {
+			if err := m.startInstances(ctx, poolName, instanceIDs, reason); err != nil {
 				poolLog.Error(ctx, "instances start failed", slog.String("error", err.Error()))
 			} else {
 				started += toStart
@@ -512,7 +541,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		}
 
 		if deficit > 0 {
-			created += m.createPoolFleetInstances(ctx, poolName, "ready_deficit", deficit, poolConfig)
+			created += m.createPoolFleetInstances(ctx, poolName, reason, deficit, poolConfig)
 		}
 	} else if ready > desiredRunning {
 		// Too many ready (idle) instances - stop or terminate excess
@@ -527,7 +556,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 			// Warm pool: ready instances are candidates for stopping, but skip ones
 			// still within the bootstrap grace window — stopping mid-boot churns the
 			// pool (see defaultBootstrapGracePeriod). They become candidates on a later pass.
-			readyInstances := m.filterReadyInstances(runningInstances, busyIDs)
+			// filterNotInFlight also excludes a running instance a concurrent claim has
+			// selected as a hot spare (the assignment path reserves it in-flight before
+			// it flips the DB record to busy), so linger-decay can't race a claim and
+			// stop a spare that's being assigned a job. A no-op when nothing is in-flight,
+			// which is always the case with hot pools off.
+			readyInstances := m.poolLockFor(poolName).filterNotInFlight(m.filterReadyInstances(runningInstances, busyIDs))
 			candidateInstances = make([]PoolInstance, 0, len(readyInstances))
 			var graceDeferred, dwellDeferred int
 			for _, inst := range readyInstances {
@@ -759,6 +793,35 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 	}
 
 	return 0, poolConfig.DesiredStopped, true // Ephemeral pools always have desiredRunning=0
+}
+
+// lingerDesiredRunning returns the hot-pool running floor for this pool: MaxHot
+// while the pool has had job activity within its linger window, else 0. It is a
+// floor, not an override — reconcilePool applies it via max() so it only raises
+// the running target during a burst tail and never lowers a scheduled/admin
+// target.
+//
+// Returns 0 unless the pool is named in the RUNS_FLEET_HOT_POOLS allowlist, so
+// with the feature off (Config.HotPools nil) this reads nothing new and changes
+// no decision — the sole cost gate is the env allowlist. It relies on
+// LastJobTime, which only ephemeral pools stamp; persistent pools never activate
+// linger (they use desired_running/schedules instead), which is intended: hot
+// pools target the label-created ephemeral pools that pay the stopped-boot today.
+func (m *Manager) lingerDesiredRunning(poolConfig *db.PoolConfig, now time.Time) int {
+	if m.config == nil || len(m.config.HotPools) == 0 {
+		return 0
+	}
+	spec, ok := m.config.HotPools[poolConfig.PoolName]
+	if !ok {
+		return 0
+	}
+	if poolConfig.LastJobTime.IsZero() {
+		return 0
+	}
+	if now.Sub(poolConfig.LastJobTime) >= time.Duration(spec.LingerMinutes)*time.Minute {
+		return 0
+	}
+	return spec.MaxHot
 }
 
 // getScheduledDesiredCounts returns the desired running and stopped counts based on schedule.
@@ -1123,6 +1186,13 @@ type AvailableInstance struct {
 	State        string // "stopped" or "running"
 }
 
+// IsFromRunningSpare reports whether this instance was claimed while already
+// running (a hot-pool spare, assigned with no boot) rather than started from
+// stopped. Callers use it to mark the job a hot-pool hit.
+func (a *AvailableInstance) IsFromRunningSpare() bool {
+	return a != nil && a.State == stateRunning
+}
+
 // GetAvailableInstance finds a stopped instance in the pool that can be started for a job.
 // Returns ErrNoAvailableInstance if no stopped instances are available.
 // Running idle instances are not returned - they require agent changes for reuse.
@@ -1172,8 +1242,21 @@ func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID, repo stri
 		return fmt.Errorf("failed to start instance %s: %w", instanceID, err)
 	}
 
-	// Tag the instance with Role for cost allocation
-	// Pool instances are created without this tag since the repo is unknown at creation time
+	m.markInstanceAssigned(ctx, instanceID, repo)
+
+	poolLog.Info(ctx, "pool instance started for job")
+	return nil
+}
+
+// markInstanceAssigned records that an instance has been handed to a job: it
+// tags the instance with Role for cost allocation (best-effort — tagging is not
+// on the critical path) and drops it from idle/ready tracking so the reconciler
+// won't stop or terminate it. Shared by the stopped-instance start path and the
+// hot-pool running-instance claim path, which reuses a live spare and therefore
+// must NOT call StartInstances.
+func (m *Manager) markInstanceAssigned(ctx context.Context, instanceID, repo string) {
+	// Pool instances are created without the Role tag since the repo is unknown
+	// at creation time; it is applied here at assignment.
 	if repo != "" {
 		_, err := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
 			Resources: []string{instanceID},
@@ -1185,17 +1268,15 @@ func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID, repo stri
 			},
 		})
 		if err != nil {
-			// Log but don't fail - tagging is for cost allocation, not critical path
 			poolLog.Warn(ctx, "failed to tag instance with Role",
 				slog.String("error", err.Error()))
 		}
 	}
 
-	// Mark as busy immediately to prevent reconciler from touching it
+	// forgetInstances clears both idle tracking and the not-busy streak so the
+	// reconciler treats the instance as busy immediately (own-replica dwell
+	// protection); the cross-replica race is seconds-wide and watchdog-covered.
 	m.forgetInstances(instanceID)
-
-	poolLog.Info(ctx, "pool instance started for job")
-	return nil
 }
 
 // instanceClaimTTL is the TTL for instance claims in DynamoDB.
@@ -1254,31 +1335,19 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 
 	ctx = logging.ContextWith(ctx, slog.String(logging.KeyPoolName, poolName))
 
-	// Get all stopped instances in the pool (no lock held across this AWS call).
+	// Get all pool instances in the pool (no lock held across this AWS call).
 	instances, err := m.getPoolInstances(ctx, poolName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pool instances: %w", err)
 	}
 
-	// Filter stopped instances matching the spec.
-	var candidates []PoolInstance
-	for _, inst := range instances {
-		if inst.State != stateStopped {
-			continue
-		}
-		if !inst.matchesFlexibleSpec(spec) {
-			continue
-		}
-		candidates = append(candidates, inst)
-	}
-
-	// Sort by CPU ascending (best-fit: smallest instance that meets requirements).
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].CPU != candidates[j].CPU {
-			return candidates[i].CPU < candidates[j].CPU
-		}
-		return candidates[i].RAM < candidates[j].RAM
-	})
+	// Candidate order: for a hot-pool-allowlisted pool, prefer a running∧not-busy
+	// spare (zero boot — the whole point of hot pools) over a stopped instance;
+	// otherwise only stopped instances are eligible, exactly as before. The gate
+	// is m.config.HotPools[poolName]: when the pool is not allowlisted (the common
+	// case, and always when the feature is off) NO busy-instance query is issued,
+	// so the default path makes zero extra DB reads.
+	candidates := m.claimCandidates(ctx, poolName, instances, spec)
 
 	pl := m.poolLockFor(poolName)
 
@@ -1320,12 +1389,26 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 			}
 			return nil, fmt.Errorf("failed to claim instance in DynamoDB: %w", err)
 		}
-		// Claim acquired: record the wait now so the subsequent StartInstances
-		// call is not counted as lock-wait time.
+		// Claim acquired: record the wait now so the subsequent AWS call is not
+		// counted as lock-wait time.
 		emitClaimWait()
 
-		// Start the instance. The DynamoDB claim holds the cross-process lock;
-		// the local reservation can be dropped now that the claim is authoritative.
+		if inst.State == stateRunning {
+			// Hot spare: the instance is already running with a live standby agent
+			// polling for config, so we assign it WITHOUT StartInstances — just tag
+			// it and drop it from ready tracking. The agent picks up the config the
+			// caller writes next and runs the one job, then self-terminates: the
+			// one-shot posture is unchanged (a hot spare serves exactly one job).
+			m.markInstanceAssigned(ctx, instance.InstanceID, repo)
+			poolLog.Info(ctx, "hot pool spare assigned for job",
+				slog.String(logging.KeyInstanceID, instance.InstanceID))
+			pl.release(instance.InstanceID)
+			return instance, nil
+		}
+
+		// Stopped instance: start it. The DynamoDB claim holds the cross-process
+		// lock; the local reservation can be dropped now that the claim is
+		// authoritative.
 		if err := m.StartInstanceForJob(ctx, instance.InstanceID, repo); err != nil {
 			// Release the DynamoDB claim since we failed to start.
 			if releaseErr := m.dbClient.ReleaseInstanceClaim(ctx, instance.InstanceID, jobID); releaseErr != nil {
@@ -1342,6 +1425,87 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 	}
 
 	return nil, ErrNoAvailableInstance
+}
+
+// claimCandidates returns the ordered list of instances eligible to serve a job.
+// For a hot-pool-allowlisted pool it prefers running∧not-busy spares (spec-
+// matched, CPU-ascending) so a job lands on a live agent with zero boot, then
+// falls back to stopped instances. For every other pool — and whenever the
+// feature is off — only stopped instances are returned and NO extra DB read is
+// performed, so the default path is byte-for-byte the prior behavior.
+//
+// Each state group is sorted by CPU-then-RAM ascending (best-fit) and the two
+// groups are concatenated running-first, so a hot spare is always tried before a
+// stopped instance.
+func (m *Manager) claimCandidates(ctx context.Context, poolName string, instances []PoolInstance, spec *fleet.FlexibleSpec) []PoolInstance {
+	stopped := make([]PoolInstance, 0, len(instances))
+	for _, inst := range instances {
+		if inst.State == stateStopped && inst.matchesFlexibleSpec(spec) {
+			stopped = append(stopped, inst)
+		}
+	}
+	sortByBestFit(stopped)
+
+	// Gate: only an allowlisted hot pool considers running spares. This is the
+	// sole place a running instance becomes claimable, and the sole extra DB read
+	// this feature adds — issued only for an allowlisted pool.
+	if m.config == nil || len(m.config.HotPools) == 0 {
+		return stopped
+	}
+	if _, ok := m.config.HotPools[poolName]; !ok {
+		return stopped
+	}
+
+	// GetPoolBusyInstanceIDs is mandatory before reusing a running instance: an
+	// instance's claim can expire mid-job (5-min TTL), so "running" alone does not
+	// mean idle. On a busy-query error we degrade to stopped-only rather than risk
+	// handing out a busy instance.
+	busyIDs, err := m.dbClient.GetPoolBusyInstanceIDs(ctx, poolName)
+	if err != nil {
+		poolLog.Warn(ctx, "busy-instance query failed; hot-pool claim degrading to stopped-only",
+			slog.String("error", err.Error()))
+		return stopped
+	}
+	busy := make(map[string]struct{}, len(busyIDs))
+	for _, id := range busyIDs {
+		busy[id] = struct{}{}
+	}
+
+	running := make([]PoolInstance, 0, len(instances))
+	for _, inst := range instances {
+		if inst.State != stateRunning {
+			continue
+		}
+		// Only reuse on-demand spares: a running spot instance is cold-start
+		// overflow that can be interrupted mid-job, so assigning a job to it would
+		// forfeit the reliability the warm pool exists to provide. A linger spare
+		// is always on-demand (createPoolFleetInstances), so this excludes only
+		// stray overflow, never a real hot spare.
+		if inst.Spot {
+			continue
+		}
+		if _, isBusy := busy[inst.InstanceID]; isBusy {
+			continue
+		}
+		if !inst.matchesFlexibleSpec(spec) {
+			continue
+		}
+		running = append(running, inst)
+	}
+	sortByBestFit(running)
+
+	return append(running, stopped...)
+}
+
+// sortByBestFit sorts instances CPU-ascending then RAM-ascending in place so the
+// smallest instance that meets the spec is tried first.
+func sortByBestFit(insts []PoolInstance) {
+	sort.Slice(insts, func(i, j int) bool {
+		if insts[i].CPU != insts[j].CPU {
+			return insts[i].CPU < insts[j].CPU
+		}
+		return insts[i].RAM < insts[j].RAM
+	})
 }
 
 // reserve marks an instance as being claimed by a local goroutine. It returns

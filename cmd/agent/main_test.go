@@ -737,58 +737,6 @@ const (
 	regressionRunID = "26928632771"
 )
 
-type fakeSecretsStore struct {
-	config    *secrets.RunnerConfig
-	err       error
-	failCalls int
-	calls     int
-}
-
-func (f *fakeSecretsStore) Get(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
-	f.calls++
-	if f.calls <= f.failCalls {
-		return nil, f.err
-	}
-	return f.config, nil
-}
-func (f *fakeSecretsStore) Put(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
-	return nil
-}
-func (f *fakeSecretsStore) Delete(_ context.Context, _ string) error { return nil }
-func (f *fakeSecretsStore) List(_ context.Context) ([]string, error) { return nil, nil }
-
-func TestFetchRunnerConfig_RetriesThenStandby(t *testing.T) {
-	orig := configFetchRetryDelay
-	configFetchRetryDelay = time.Millisecond
-	defer func() { configFetchRetryDelay = orig }()
-
-	store := &fakeSecretsStore{err: secrets.ErrConfigNotFound, failCalls: configFetchAttempts}
-	if _, err := fetchRunnerConfig(context.Background(), store, "i-x", &stdLogger{}); !errors.Is(err, secrets.ErrConfigNotFound) {
-		t.Errorf("fetchRunnerConfig() err = %v, want errors.Is ErrConfigNotFound", err)
-	}
-	if store.calls != configFetchAttempts {
-		t.Errorf("Get calls = %d, want %d", store.calls, configFetchAttempts)
-	}
-}
-
-func TestFetchRunnerConfig_RetriesThenSucceeds(t *testing.T) {
-	orig := configFetchRetryDelay
-	configFetchRetryDelay = time.Millisecond
-	defer func() { configFetchRetryDelay = orig }()
-
-	store := &fakeSecretsStore{config: &secrets.RunnerConfig{RunID: "r1"}, err: errors.New("transient"), failCalls: 2}
-	cfg, err := fetchRunnerConfig(context.Background(), store, "i-x", &stdLogger{})
-	if err != nil {
-		t.Fatalf("fetchRunnerConfig() err = %v", err)
-	}
-	if cfg.RunID != "r1" {
-		t.Errorf("RunID = %q, want r1", cfg.RunID)
-	}
-	if store.calls != 3 {
-		t.Errorf("Get calls = %d, want 3", store.calls)
-	}
-}
-
 func TestResolveJobID_FromConfig(t *testing.T) {
 	_ = os.Unsetenv("RUNS_FLEET_JOB_ID")
 
@@ -939,6 +887,36 @@ func TestBootstrapTimings_ApplyTo(t *testing.T) {
 	}
 	if js.BootstrapTotalSeconds != 20 {
 		t.Errorf("BootstrapTotalSeconds = %v, want 20", js.BootstrapTotalSeconds)
+	}
+}
+
+// After the standby rebase (boot=0, config=0, start=configFoundAt), the bootstrap
+// total measures configFound->jobStarted — the meaningful acquisition latency,
+// with the standby wait and a hot spare's long-ago boot excluded. The zeroed
+// boot/config segments carry no value, so the orchestrator (which skips <=0
+// segments) publishes only runner/register/total.
+func TestBootstrapTimings_StandbyRebase(t *testing.T) {
+	configFoundAt := time.Now()
+	bt := bootstrapTimings{
+		boot:     0,
+		config:   0,
+		runner:   8 * time.Second,
+		register: 5 * time.Second,
+		start:    configFoundAt,
+	}
+	jobStartedAt := configFoundAt.Add(14 * time.Second)
+
+	var js agent.JobStatus
+	bt.applyTo(&js, jobStartedAt)
+
+	if js.BootstrapBootSeconds != 0 {
+		t.Errorf("BootstrapBootSeconds = %v, want 0 after rebase", js.BootstrapBootSeconds)
+	}
+	if js.BootstrapConfigSeconds != 0 {
+		t.Errorf("BootstrapConfigSeconds = %v, want 0 after rebase", js.BootstrapConfigSeconds)
+	}
+	if js.BootstrapTotalSeconds != 14 {
+		t.Errorf("BootstrapTotalSeconds = %v, want 14 (configFound->jobStarted)", js.BootstrapTotalSeconds)
 	}
 }
 

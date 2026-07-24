@@ -29,6 +29,11 @@ type Config struct {
 	// runs-on labels to runs-fleet specs. Parsed and validated at startup.
 	LabelAliasesJSON string
 
+	// HotPools is the per-pool hot-linger allowlist (RUNS_FLEET_HOT_POOLS),
+	// parsed at startup. Nil = feature off (no pool lingers hot); a pool absent
+	// from the map behaves exactly as today. See ParseHotPools.
+	HotPools map[string]HotPoolSpec
+
 	QueueURL             string
 	QueueDLQURL          string
 	PoolQueueURL         string
@@ -234,6 +239,12 @@ func Load() (*Config, error) {
 		}
 		cfg.Tags = tags
 	}
+
+	hotPools, hpErr := ParseHotPools(getEnv("RUNS_FLEET_HOT_POOLS", ""))
+	if hpErr != nil {
+		return nil, fmt.Errorf("config error: %w", hpErr)
+	}
+	cfg.HotPools = hotPools
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)

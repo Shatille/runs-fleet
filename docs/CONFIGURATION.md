@@ -53,6 +53,7 @@ All configuration is via environment variables, set on the orchestrator's runtim
 | `RUNS_FLEET_KEY_NAME` | | EC2 key pair name (optional) |
 | `RUNS_FLEET_SPOT_ENABLED` | `true` | Enable spot instances (cold-start only; warm pool always uses on-demand) |
 | `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
+| `RUNS_FLEET_STANDBY_DEADLINE_MINUTES` | `120` | Agent-side: how long an instance polls for a job config before exiting 0 (failsafe for a leaked spare; the reconciler is the primary decay path). Read on the runner, not the orchestrator. |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |
 | `RUNS_FLEET_TAG_KEY_APPLICATION` | `Application` | Tag key for the application cost-attribution value |
@@ -120,6 +121,80 @@ runners. While both fleets run, they **compete** for queued jobs (whichever
 claims a runner first wins; the loser's ephemeral runner self-terminates). Once
 runs-fleet is proven to serve the jobs, **scale down the old runners**, then
 remove them.
+
+## Hot Pools (opt-in low-latency warmth)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_HOT_POOLS` | | JSON object mapping pool name → `{lingerMinutes, maxHot}`. Empty/unset = disabled. Validated at startup. |
+
+Normally an ephemeral pool sits at `desired_running=0`: every job starts a
+*stopped* instance and pays the full boot + registration (~13s boot). For a
+bursty pipeline whose stages run back-to-back, stages 2..N each pay that boot
+even though a runner was hot moments earlier. Hot pools keep a **running** spare
+alive for a short, demand-following window after job activity, so those later
+stages land on a live agent and skip the stopped-instance boot.
+
+**This is opt-in and off by default.** With `RUNS_FLEET_HOT_POOLS` unset, the
+orchestrator's behavior is byte-identical to a build without the feature: no
+extra DynamoDB reads, no changed reconcile decisions, no running-instance claims.
+In Helm, the value renders **no env var at all** unless `hotPools.enabled=true`
+**and** `hotPools.pools` is non-empty. The env allowlist is the *only* way to
+turn a pool hot — there is deliberately no global default and no admin/DynamoDB
+toggle, so idle spend stays contained by construction.
+
+**Cost.** Idle waste ≈ `lingerMinutes` × bursts/day per hot spare. A bursty pool
+(~6 bursts/day, 15-min linger, one spare) idles ~1.5 instance-hours/day
+(~$5/mo per `c7i.large`) for most of the acquisition-latency benefit, versus
+~$81/mo for a standing 24/7 hot instance. Enable it only for pools whose latency
+matters and whose burst pattern makes the trade worthwhile.
+
+Each pool entry:
+
+| Field | Range | Default | Description |
+|-------|-------|---------|-------------|
+| `lingerMinutes` | 1–120 | (required) | How long after the last job the pool keeps a running spare. Kept inside the 4h ephemeral-cleanup window. |
+| `maxHot` | 1–5 | `1` | Number of running spares to keep during the linger window. |
+
+Example — keep one warm spare for `portal-api` for 15 minutes after activity:
+
+```json
+{ "portal-api": { "lingerMinutes": 15, "maxHot": 1 } }
+```
+
+Helm (`values.yaml`):
+
+```yaml
+hotPools:
+  enabled: true
+  pools:
+    portal-api:
+      lingerMinutes: 15
+      maxHot: 1
+```
+
+**How it works.** For an allowlisted pool with recent job activity, reconciliation
+raises the running target to `maxHot` (a floor applied via `max()`, so it never
+lowers a scheduled/admin target). When a job arrives, it is assigned to a running∧
+not-busy spare (no boot) in preference to starting a stopped instance. Once the
+linger window elapses, the floor drops to 0 and the existing warm-pool stop path
+banks the spare within a couple of reconcile passes. Each spare stays **one-shot**:
+it serves exactly one job, then self-terminates — no multi-job reuse.
+
+**Scope & notes.**
+
+- Only **ephemeral** pools (the label-created pools that pay the stopped-boot
+  today) activate linger; persistent pools use `desired_running`/schedules instead.
+- A hot spare is a running instance whose agent polls for its job config
+  (see `RUNS_FLEET_STANDBY_DEADLINE_MINUTES`). The agent binary must be built from
+  an AMI that includes the standby poll before enabling a pool.
+- Observability adds no new metrics: linger-driven scale-ups carry
+  `reason="linger"` on `pool_actions`, and a hot-spare assignment carries
+  `source="hot_pool"` on `instance_provision_seconds` (a `warm_pool` subset for
+  the sub-10s no-boot cohort).
+- Rollback is instant and needs no AMI change: set `hotPools.enabled=false` and
+  `helm upgrade`. The linger floor drops to 0 on the next pass, spares are banked
+  within ~5 min, assignment reverts to stopped-only, and the standby poll is inert.
 
 ## Cache
 
