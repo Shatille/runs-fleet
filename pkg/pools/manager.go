@@ -117,6 +117,10 @@ const (
 	poolActionStart     = "start"
 )
 
+// poolActionReasonLinger attributes a scale-up to the hot-pool linger floor
+// (rather than an ordinary ready deficit) on the pool_actions metric.
+const poolActionReasonLinger = "linger"
+
 // EC2API defines EC2 operations for instance management.
 //
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
@@ -450,6 +454,10 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		return fmt.Errorf("pool config not found")
 	}
 
+	// Hoisted so the linger floor and the not-busy-streak refresh below share one
+	// timestamp for the whole pass.
+	now := time.Now()
+
 	desiredRunning, desiredStopped := m.getScheduledDesiredCounts(poolConfig)
 
 	// For ephemeral pools, override with auto-scaled values based on peak concurrency
@@ -457,6 +465,17 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	if ephRunning, ephStopped, ok := m.getEphemeralAutoScaledCount(ctx, poolName, poolConfig); ok {
 		desiredRunning = ephRunning
 		desiredStopped = ephStopped
+	}
+
+	// Hot-pool linger floor: for an allowlisted pool with recent job activity,
+	// keep MaxHot running spares until the linger window elapses, then decay. This
+	// composes with schedules/ephemeral via max() — it only ever raises the running
+	// target, never lowers it. Zero (and thus a no-op) unless RUNS_FLEET_HOT_POOLS
+	// names this pool, so the gate-off path is unchanged.
+	lingerHot := m.lingerDesiredRunning(poolConfig, now)
+	lingerActive := lingerHot > desiredRunning
+	if lingerActive {
+		desiredRunning = lingerHot
 	}
 
 	instances, err := m.getPoolInstances(ctx, poolName)
@@ -480,7 +499,6 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 
 	// Refresh not-busy streaks every pass (both scale directions) so the dwell guard
 	// has continuous history when a later pass considers scaling down.
-	now := time.Now()
 	m.updateReadySince(poolName, runningInstances, busyIDs, now)
 
 	// Track changes for logging
@@ -496,6 +514,17 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	if ready < desiredRunning {
 		deficit := desiredRunning - ready
 
+		// Attribute this scale-up to the linger floor when the running target
+		// exists only because of it, so pool_actions distinguishes hot-pool warmth
+		// from ordinary ready-deficit provisioning. Attribution is best-effort at
+		// the margin: if a scheduled/ephemeral target happens to equal MaxHot,
+		// lingerActive is false and a genuinely linger-window start is labeled
+		// "ready_deficit". This mislabels the metric, never the behavior.
+		reason := "ready_deficit"
+		if lingerActive {
+			reason = poolActionReasonLinger
+		}
+
 		stoppedInstances := m.filterByState(instances, stateStopped)
 		toStart := min(deficit, len(stoppedInstances))
 		if toStart > 0 {
@@ -503,7 +532,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 			for i := 0; i < toStart; i++ {
 				instanceIDs[i] = stoppedInstances[i].InstanceID
 			}
-			if err := m.startInstances(ctx, poolName, instanceIDs, "ready_deficit"); err != nil {
+			if err := m.startInstances(ctx, poolName, instanceIDs, reason); err != nil {
 				poolLog.Error(ctx, "instances start failed", slog.String("error", err.Error()))
 			} else {
 				started += toStart
@@ -512,7 +541,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		}
 
 		if deficit > 0 {
-			created += m.createPoolFleetInstances(ctx, poolName, "ready_deficit", deficit, poolConfig)
+			created += m.createPoolFleetInstances(ctx, poolName, reason, deficit, poolConfig)
 		}
 	} else if ready > desiredRunning {
 		// Too many ready (idle) instances - stop or terminate excess
@@ -527,7 +556,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 			// Warm pool: ready instances are candidates for stopping, but skip ones
 			// still within the bootstrap grace window — stopping mid-boot churns the
 			// pool (see defaultBootstrapGracePeriod). They become candidates on a later pass.
-			readyInstances := m.filterReadyInstances(runningInstances, busyIDs)
+			// filterNotInFlight also excludes a running instance a concurrent claim has
+			// selected as a hot spare (the assignment path reserves it in-flight before
+			// it flips the DB record to busy), so linger-decay can't race a claim and
+			// stop a spare that's being assigned a job. A no-op when nothing is in-flight,
+			// which is always the case with hot pools off.
+			readyInstances := m.poolLockFor(poolName).filterNotInFlight(m.filterReadyInstances(runningInstances, busyIDs))
 			candidateInstances = make([]PoolInstance, 0, len(readyInstances))
 			var graceDeferred, dwellDeferred int
 			for _, inst := range readyInstances {
@@ -759,6 +793,35 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 	}
 
 	return 0, poolConfig.DesiredStopped, true // Ephemeral pools always have desiredRunning=0
+}
+
+// lingerDesiredRunning returns the hot-pool running floor for this pool: MaxHot
+// while the pool has had job activity within its linger window, else 0. It is a
+// floor, not an override — reconcilePool applies it via max() so it only raises
+// the running target during a burst tail and never lowers a scheduled/admin
+// target.
+//
+// Returns 0 unless the pool is named in the RUNS_FLEET_HOT_POOLS allowlist, so
+// with the feature off (Config.HotPools nil) this reads nothing new and changes
+// no decision — the sole cost gate is the env allowlist. It relies on
+// LastJobTime, which only ephemeral pools stamp; persistent pools never activate
+// linger (they use desired_running/schedules instead), which is intended: hot
+// pools target the label-created ephemeral pools that pay the stopped-boot today.
+func (m *Manager) lingerDesiredRunning(poolConfig *db.PoolConfig, now time.Time) int {
+	if m.config == nil || len(m.config.HotPools) == 0 {
+		return 0
+	}
+	spec, ok := m.config.HotPools[poolConfig.PoolName]
+	if !ok {
+		return 0
+	}
+	if poolConfig.LastJobTime.IsZero() {
+		return 0
+	}
+	if now.Sub(poolConfig.LastJobTime) >= time.Duration(spec.LingerMinutes)*time.Minute {
+		return 0
+	}
+	return spec.MaxHot
 }
 
 // getScheduledDesiredCounts returns the desired running and stopped counts based on schedule.
