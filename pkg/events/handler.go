@@ -55,6 +55,7 @@ type JobInfo struct {
 	Spot         bool
 	RetryCount   int       // Number of times this job has been retried
 	WarmPoolHit  bool      // Whether the job was served by a warm-pool instance
+	HotPoolHit   bool      // Whether the job was served by a RUNNING hot-pool spare (no boot)
 	CreatedAt    time.Time // Assignment time (SaveJob stamp); zero if unparseable
 }
 

@@ -82,10 +82,13 @@ const reasonBootstrapFailed = "bootstrap_failed"
 const queueTermination = "termination"
 
 // Source labels for the instance-provision-latency metric, matching the
-// worker's enum (internal/worker).
+// worker's enum (internal/worker). hot_pool is a warm_pool subset: the job
+// landed on a RUNNING spare and paid no boot, so its latency should separate
+// cleanly from a stopped-instance resume (warm_pool) in the metric.
 const (
 	sourceWarmPool  = "warm_pool"
 	sourceColdStart = "cold_start"
+	sourceHotPool   = "hot_pool"
 )
 
 // Job-result values for the jobs_completed metric. These describe OUR runner's
@@ -494,6 +497,11 @@ func (h *Handler) publishProvisionSeconds(ctx context.Context, info *events.JobI
 	source := sourceColdStart
 	if info.WarmPoolHit {
 		source = sourceWarmPool
+	}
+	// A hot-pool hit is a warm-pool hit served by a running spare; it takes the
+	// more specific label so the <10s no-boot cohort is observable on its own.
+	if info.HotPoolHit {
+		source = sourceHotPool
 	}
 	if err := h.metrics.PublishInstanceProvisionSeconds(ctx, source, instanceFamily(info.InstanceType), seconds); err != nil {
 		termLog.Warn(ctx, "instance provision metric failed", slog.String("error", err.Error()))

@@ -877,6 +877,17 @@ func TestHandler_processMessage_StartedProvisionSeconds(t *testing.T) {
 			wantSeconds: 30,
 		},
 		{
+			// A hot-pool hit is also a warm-pool hit (served by a running spare);
+			// the more specific hot_pool source wins so the no-boot cohort is visible.
+			name:        "hot pool hit publishes hot_pool source",
+			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "c7g.xlarge", WarmPoolHit: true, HotPoolHit: true, CreatedAt: created},
+			startedAt:   started,
+			wantPublish: true,
+			wantSource:  "hot_pool",
+			wantFamily:  "c7g",
+			wantSeconds: 30,
+		},
+		{
 			name:        "zero created_at does not publish",
 			record:      &events.JobInfo{JobID: 1, Pool: "default", InstanceType: "c7g.xlarge"},
 			startedAt:   started,

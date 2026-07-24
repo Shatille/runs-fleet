@@ -422,6 +422,42 @@ func TestTryAssignToWarmPool_Success_FullFlow(t *testing.T) {
 	if mockPool.stopCalled {
 		t.Error("StopPoolInstance should NOT be called on success")
 	}
+	// A stopped-instance claim (State unset) is a warm-pool hit but NOT a hot-pool hit.
+	if mockDB.lastSavedJob.HotPoolHit {
+		t.Error("HotPoolHit should be false for a stopped-instance claim")
+	}
+}
+
+// A claim served by an already-RUNNING spare records HotPoolHit=true so the job
+// is attributed to the no-boot cohort; a stopped-instance claim does not.
+func TestTryAssignToWarmPool_RunningSpareSetsHotPoolHit(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-hotspare",
+				InstanceType: "c7g.xlarge",
+				State:        "running",
+			}, nil
+		},
+	}
+	mockDB := &mockJobDBClient{hasJobsTable: true}
+	assigner := &WarmPoolAssigner{Pool: mockPool, Runner: &mockRunnerPreparer{}, DB: mockDB}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), &queue.JobMessage{
+		JobID: 1, RunID: 2, Repo: "owner/repo", Pool: "hot",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Assigned {
+		t.Fatal("expected job to be assigned")
+	}
+	if !mockDB.lastSavedJob.WarmPoolHit {
+		t.Error("WarmPoolHit should be true")
+	}
+	if !mockDB.lastSavedJob.HotPoolHit {
+		t.Error("HotPoolHit should be true for a running-spare claim")
+	}
 }
 
 // TestTryAssignToWarmPool_SSMPrepFailure_StopsInstance tests that when

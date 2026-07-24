@@ -153,7 +153,9 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 			Spot:         job.Spot,
 			RetryCount:   job.RetryCount,
 			WarmPoolHit:  true,
-			Traceparent:  job.Traceparent,
+			// A running spare served this job with no boot — the hot-pool win.
+			HotPoolHit:  instance.IsFromRunningSpare(),
+			Traceparent: job.Traceparent,
 		}
 		if err := w.DB.SaveJob(ctx, jobRecord); err != nil {
 			warmPoolLog.Error(ctx, "job record save failed",

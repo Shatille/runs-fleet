@@ -54,6 +54,11 @@ type jobRecord struct {
 	Spot         bool   `dynamodbav:"spot"`
 	RetryCount   int    `dynamodbav:"retry_count"`
 	WarmPoolHit  bool   `dynamodbav:"warm_pool_hit"`
+	// HotPoolHit marks a job served by a RUNNING hot-pool spare (assigned without
+	// a boot), a subset of WarmPoolHit. omitempty so it is absent (and inert) for
+	// every job that did not hit a hot spare, including all jobs when the feature
+	// is off.
+	HotPoolHit bool `dynamodbav:"hot_pool_hit,omitempty"`
 	// omitempty so an (unexpected) empty status is dropped rather than written as
 	// S:"" — the pool-status GSI is keyed on status, and DynamoDB rejects a
 	// PutItem with an empty-string index-key attribute. Mirrors instance_id (#276)
@@ -77,6 +82,7 @@ type JobRecord struct {
 	Spot           bool
 	RetryCount     int
 	WarmPoolHit    bool
+	HotPoolHit     bool
 	SpotRequestID  string
 	PersistentSpot bool
 	Traceparent    string
@@ -119,6 +125,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		Spot:           job.Spot,
 		RetryCount:     job.RetryCount,
 		WarmPoolHit:    job.WarmPoolHit,
+		HotPoolHit:     job.HotPoolHit,
 		Status:         string(JobStatusLaunched),
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		SpotRequestID:  job.SpotRequestID,
@@ -670,6 +677,7 @@ func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, er
 		Spot:         record.Spot,
 		RetryCount:   record.RetryCount,
 		WarmPoolHit:  record.WarmPoolHit,
+		HotPoolHit:   record.HotPoolHit,
 		CreatedAt:    createdAt,
 	}, nil
 }
