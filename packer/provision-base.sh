@@ -259,6 +259,11 @@ PREBAKE_IMAGES=(
   "redis:7"
   "moby/buildkit:buildx-stable-1"
   "tonistiigi/binfmt:${BINFMT_VERSION}"
+  # Unlike the others this is pinned to an exact tag, because Playwright's image tag is
+  # coupled to the @playwright/test version a consumer repo pins in its workflow. A
+  # consumer upgrade makes this entry a miss (it stops being pulled, costing only the
+  # bake) rather than a break, so it needs bumping alongside consumers.
+  "mcr.microsoft.com/playwright:v1.57.0-noble"
 )
 for image in "${PREBAKE_IMAGES[@]}"; do
   echo "==> Pulling ${image}"
@@ -550,26 +555,39 @@ for major in 20 22; do
   rm -f "/tmp/${dist}.tar.xz" /tmp/node-tc-sha.txt
 done
 
-echo "==> Pre-baking Go into the tool cache (1.24, 1.25)"
+GO_PATCHES_PER_LINE=2
+echo "==> Pre-baking Go into the tool cache (1.24, 1.25; newest ${GO_PATCHES_PER_LINE} patches each)"
 if [ "$ARCH" = "x86_64" ]; then GO_ARCH="amd64"; else GO_ARCH="arm64"; fi
 GO_TC_INDEX=$(dl "https://go.dev/dl/?mode=json&include=all") \
   || { echo "Go index download failed"; exit 1; }
 go_default_dir=""
 for minor in 1.24 1.25; do
-  file=$(printf '%s' "$GO_TC_INDEX" | jq -c --arg m "go${minor}." --arg a "$GO_ARCH" \
+  # setup-go resolves a full `go 1.x.y` in go.mod as an exact-patch spec, so a cache
+  # entry for a different patch of the same line does not match and the job re-downloads
+  # the toolchain. Bake the newest few patches so a Go release mid-AMI-cycle (rebuilt
+  # weekly) still hits. The index lists newest first within a line.
+  files=$(printf '%s' "$GO_TC_INDEX" | jq -c --arg m "go${minor}." --arg a "$GO_ARCH" \
+    --argjson n "$GO_PATCHES_PER_LINE" \
     '[ .[] | select(.stable) | select(.version | startswith($m))
-       | .files[] | select(.os=="linux" and .arch==$a and .kind=="archive") ] | first // empty')
-  [ -n "$file" ] || { echo "no Go ${minor}.x archive found"; exit 1; }
-  gfn=$(printf '%s' "$file" | jq -r .filename)
-  gsha=$(printf '%s' "$file" | jq -r .sha256)
-  gfull=$(printf '%s' "$file" | jq -r '.version | ltrimstr("go")')
-  dl "https://go.dev/dl/${gfn}" -o "/tmp/${gfn}" \
-    || { echo "Go ${gfn} download failed"; exit 1; }
-  echo "${gsha}  /tmp/${gfn}" | sha256sum -c \
-    || { echo "Go ${gfn} checksum mismatch"; exit 1; }
-  toolcache_extract go "$gfull" "/tmp/${gfn}"
-  rm -f "/tmp/${gfn}"
-  go_default_dir="/opt/hostedtoolcache/go/${gfull}/${TOOLCACHE_PLATFORM}"
+       | .files[] | select(.os=="linux" and .arch==$a and .kind=="archive") ][:$n][]')
+  [ -n "$files" ] || { echo "no Go ${minor}.x archive found"; exit 1; }
+  line_newest=$(printf '%s\n' "$files" | head -n1 | jq -r '.version | ltrimstr("go")')
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    gfn=$(printf '%s' "$file" | jq -r .filename)
+    gsha=$(printf '%s' "$file" | jq -r .sha256)
+    gfull=$(printf '%s' "$file" | jq -r '.version | ltrimstr("go")')
+    dl "https://go.dev/dl/${gfn}" -o "/tmp/${gfn}" \
+      || { echo "Go ${gfn} download failed"; exit 1; }
+    echo "${gsha}  /tmp/${gfn}" | sha256sum -c \
+      || { echo "Go ${gfn} checksum mismatch"; exit 1; }
+    toolcache_extract go "$gfull" "/tmp/${gfn}"
+    rm -f "/tmp/${gfn}"
+    # Lines run oldest-first and patches newest-first, so the newest patch of the last
+    # line is the overall newest: take the first patch of each line, letting later
+    # lines overwrite.
+    [ "$gfull" = "$line_newest" ] && go_default_dir="/opt/hostedtoolcache/go/${gfull}/${TOOLCACHE_PLATFORM}"
+  done <<< "$files"
 done
 # Host has no `go` on PATH; expose the newest baked one (setup-go adds its own per job).
 # Fail closed: the symlinks must point at a Go we actually extracted, never an empty path.
