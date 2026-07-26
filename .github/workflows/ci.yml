@@ -86,7 +86,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.go', 'go.sum') }}
+          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
           restore-keys: |
             go-build-${{ runner.os }}-${{ runner.arch }}-
 
@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.go', 'go.sum') }}
+          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
           restore-keys: |
             go-build-${{ runner.os }}-${{ runner.arch }}-
 
@@ -159,7 +159,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/go-build
-          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.go', 'go.sum') }}
+          key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
           restore-keys: |
             go-build-${{ runner.os }}-${{ runner.arch }}-
 
