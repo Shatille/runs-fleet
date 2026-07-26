@@ -36,7 +36,13 @@ If you're tempted to add anything else to `provision-runs-fleet.sh`, that's a si
 
 ## Pre-baked Docker images
 
-`provision-base.sh` pulls a small set of common CI images (databases, Redis, buildkit, binfmt) into the AMI's Docker image store so ephemeral runners don't re-pull them from Docker Hub on every job. The list lives in the `PREBAKE_IMAGES` array in `provision-base.sh` — edit it there to add or drop an image. This belongs in the base layer (not the runner layer) because the images are a CI-workload concern that's stable across agent-binary revisions, and because the host dockerd's image store lives on the AMI root volume, so images pulled during base provisioning persist into the snapshot. The weekly base rebuild bounds staleness, and a moved tag at job time re-pulls only changed layers.
+`provision-base.sh` pulls a small set of common CI images (databases, Redis, buildkit, binfmt, Playwright) into the AMI's Docker image store so ephemeral runners don't re-pull them from Docker Hub on every job. The list lives in the `PREBAKE_IMAGES` array in `provision-base.sh` — edit it there to add or drop an image. This belongs in the base layer (not the runner layer) because the images are a CI-workload concern that's stable across agent-binary revisions, and because the host dockerd's image store lives on the AMI root volume, so images pulled during base provisioning persist into the snapshot. The weekly base rebuild bounds staleness, and a moved tag at job time re-pulls only changed layers.
+
+Prefer floating tags so the weekly rebuild picks up updates on its own. The Playwright image is the exception: its tag is coupled to the `@playwright/test` version a consumer repo pins in its workflow (`container: mcr.microsoft.com/playwright:vX.Y.Z-noble`), and only an exact match is a cache hit. When a consumer upgrades Playwright, bump the pin here too — a stale pin degrades to a miss (the job re-pulls, as it did before the prebake), never a break.
+
+## Go tool cache and exact-patch matching
+
+`actions/setup-go` reading a `go.mod` with a full `go 1.x.y` line resolves it as an *exact patch* spec, so a tool-cache entry for a different patch of the same minor line is not a hit and the job downloads the toolchain (~18s) despite the pre-bake. `provision-base.sh` therefore bakes the newest `GO_PATCHES_PER_LINE` patches of each supported line, so a Go patch released mid-AMI-cycle still hits. Raise that constant if upstream patch cadence starts outrunning the weekly rebuild; each extra patch costs one more toolchain download at bake time and its unpacked size on the AMI.
 
 ## Verifying
 
