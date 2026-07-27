@@ -12,9 +12,11 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
@@ -46,17 +48,21 @@ type AuditDB interface {
 
 // Handler provides HTTP endpoints for pool configuration management.
 type Handler struct {
-	db      PoolDB
-	auditDB AuditDB
-	auth    *AuthMiddleware
+	db          PoolDB
+	auditDB     AuditDB
+	auth        *AuthMiddleware
+	hotPoolCaps config.HotPoolCaps
 }
 
-// NewHandler creates a new admin handler.
-func NewHandler(poolDB PoolDB, auditDB AuditDB, auth *AuthMiddleware) *Handler {
+// NewHandler creates a new admin handler. hotPoolCaps is the same fleet-wide cap
+// set the tuner uses, so per-pool override validation bounds against a single
+// source of truth.
+func NewHandler(poolDB PoolDB, auditDB AuditDB, auth *AuthMiddleware, hotPoolCaps config.HotPoolCaps) *Handler {
 	return &Handler{
-		db:      poolDB,
-		auditDB: auditDB,
-		auth:    auth,
+		db:          poolDB,
+		auditDB:     auditDB,
+		auth:        auth,
+		hotPoolCaps: hotPoolCaps,
 	}
 }
 
@@ -83,6 +89,10 @@ type PoolResponse struct {
 	Schedules           []ScheduleResponse `json:"schedules,omitempty"`
 	LastReconcileAt     *time.Time         `json:"last_reconcile_at,omitempty"`
 	LastReconcileResult string             `json:"last_reconcile_result,omitempty"`
+	// Hot-pool override (admin-settable) and the read-only tuner recommendation.
+	OverrideLingerMinutes *int            `json:"override_linger_minutes,omitempty"`
+	OverrideMaxHot        *int            `json:"override_max_hot,omitempty"`
+	AutoTune              *db.AutoTuneRec `json:"auto_tune,omitempty"`
 }
 
 // ScheduleResponse represents a pool schedule in API responses.
@@ -109,6 +119,10 @@ type PoolRequest struct {
 	RAMMax             float64           `json:"ram_max,omitempty"`
 	Families           []string          `json:"families,omitempty"`
 	Schedules          []ScheduleRequest `json:"schedules,omitempty"`
+	// Hot-pool overrides. nil = "use auto"; &0 = "force cold". auto_tune is
+	// never accepted from clients (read-only, tuner-written).
+	OverrideLingerMinutes *int `json:"override_linger_minutes,omitempty"`
+	OverrideMaxHot        *int `json:"override_max_hot,omitempty"`
 }
 
 // ScheduleRequest represents a pool schedule in API requests.
@@ -292,6 +306,11 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	config := h.requestToConfig(&req)
 	config.Ephemeral = existing.Ephemeral
 	config.LastJobTime = existing.LastJobTime
+	// auto_tune is tuner-written and never comes from the request; preserve it so
+	// the returned in-memory config (handler.go response) reflects the real
+	// recommendation. SavePoolConfig also excludes it from its SET list, so this
+	// is response accuracy only, not persistence.
+	config.AutoTune = existing.AutoTune
 
 	if err := h.db.SavePoolConfig(r.Context(), config); err != nil {
 		h.recordAudit(r, "pool.update", name, "error", slog.String(logging.KeyError, err.Error()))
@@ -363,6 +382,10 @@ func (h *Handler) validatePoolRequest(req *PoolRequest, isCreate bool) error {
 		return errors.New("idle_timeout_minutes must be non-negative")
 	}
 
+	if err := h.validateOverrides(req); err != nil {
+		return err
+	}
+
 	if req.Arch != "" && req.Arch != "arm64" && req.Arch != "amd64" {
 		return fmt.Errorf("arch must be 'arm64' or 'amd64', got %q", req.Arch)
 	}
@@ -381,7 +404,12 @@ func (h *Handler) validatePoolRequest(req *PoolRequest, isCreate bool) error {
 		return errors.New("ram_min must not exceed ram_max")
 	}
 
-	for i, sched := range req.Schedules {
+	return validateSchedules(req.Schedules)
+}
+
+// validateSchedules bounds each pool schedule's hours and day-of-week entries.
+func validateSchedules(schedules []ScheduleRequest) error {
+	for i, sched := range schedules {
 		if sched.Name == "" {
 			return fmt.Errorf("schedule[%d].name is required", i)
 		}
@@ -397,7 +425,32 @@ func (h *Handler) validatePoolRequest(req *PoolRequest, isCreate bool) error {
 			}
 		}
 	}
+	return nil
+}
 
+// validateOverrides bounds the three-state hot-pool overrides. nil (use auto) and
+// &0 (force cold) are both allowed; a set value must be non-negative and within
+// the configured cap so an operator can never exceed the fleet-wide ceiling the
+// tuner respects.
+func (h *Handler) validateOverrides(req *PoolRequest) error {
+	if req.OverrideLingerMinutes != nil {
+		v := *req.OverrideLingerMinutes
+		if v < 0 {
+			return errors.New("override_linger_minutes must be non-negative")
+		}
+		if v > h.hotPoolCaps.MaxLingerMinutes {
+			return fmt.Errorf("override_linger_minutes must not exceed the configured cap of %d", h.hotPoolCaps.MaxLingerMinutes)
+		}
+	}
+	if req.OverrideMaxHot != nil {
+		v := *req.OverrideMaxHot
+		if v < 0 {
+			return errors.New("override_max_hot must be non-negative")
+		}
+		if v > h.hotPoolCaps.MaxHot {
+			return fmt.Errorf("override_max_hot must not exceed the configured cap of %d", h.hotPoolCaps.MaxHot)
+		}
+	}
 	return nil
 }
 
@@ -407,22 +460,25 @@ func (h *Handler) configToResponse(config *db.PoolConfig) PoolResponse {
 
 func (h *Handler) configToResponseWithBusy(config *db.PoolConfig, busyCount int) PoolResponse {
 	resp := PoolResponse{
-		PoolName:            config.PoolName,
-		InstanceType:        config.InstanceType,
-		DesiredRunning:      config.DesiredRunning,
-		DesiredStopped:      config.DesiredStopped,
-		CurrentRunning:      config.CurrentRunning,
-		CurrentStopped:      config.CurrentStopped,
-		BusyInstances:       busyCount,
-		IdleTimeoutMinutes:  config.IdleTimeoutMinutes,
-		Ephemeral:           config.Ephemeral,
-		Arch:                config.Arch,
-		CPUMin:              config.CPUMin,
-		CPUMax:              config.CPUMax,
-		RAMMin:              config.RAMMin,
-		RAMMax:              config.RAMMax,
-		Families:            config.Families,
-		LastReconcileResult: config.LastReconcileResult,
+		PoolName:              config.PoolName,
+		InstanceType:          config.InstanceType,
+		DesiredRunning:        config.DesiredRunning,
+		DesiredStopped:        config.DesiredStopped,
+		CurrentRunning:        config.CurrentRunning,
+		CurrentStopped:        config.CurrentStopped,
+		BusyInstances:         busyCount,
+		IdleTimeoutMinutes:    config.IdleTimeoutMinutes,
+		Ephemeral:             config.Ephemeral,
+		Arch:                  config.Arch,
+		CPUMin:                config.CPUMin,
+		CPUMax:                config.CPUMax,
+		RAMMin:                config.RAMMin,
+		RAMMax:                config.RAMMax,
+		Families:              config.Families,
+		LastReconcileResult:   config.LastReconcileResult,
+		OverrideLingerMinutes: config.OverrideLingerMinutes,
+		OverrideMaxHot:        config.OverrideMaxHot,
+		AutoTune:              config.AutoTune,
 	}
 	if !config.LastReconcileAt.IsZero() {
 		t := config.LastReconcileAt
@@ -459,6 +515,10 @@ func (h *Handler) requestToConfig(req *PoolRequest) *db.PoolConfig {
 		RAMMin:             req.RAMMin,
 		RAMMax:             req.RAMMax,
 		Families:           req.Families,
+		// auto_tune is deliberately not mapped from the request: it is
+		// tuner-written and read-only to admin CRUD.
+		OverrideLingerMinutes: req.OverrideLingerMinutes,
+		OverrideMaxHot:        req.OverrideMaxHot,
 	}
 
 	if len(req.Schedules) > 0 {
@@ -642,9 +702,36 @@ func poolDiff(old, updated *db.PoolConfig) string {
 	if !reflect.DeepEqual(old.Schedules, updated.Schedules) {
 		diffs = append(diffs, fmt.Sprintf("schedules: %d -> %d entries", len(old.Schedules), len(updated.Schedules)))
 	}
+	// auto_tune is tuner-written, not an operator change, so it is never diffed.
+	if d := diffIntPtr("override_linger_minutes", old.OverrideLingerMinutes, updated.OverrideLingerMinutes); d != "" {
+		diffs = append(diffs, d)
+	}
+	if d := diffIntPtr("override_max_hot", old.OverrideMaxHot, updated.OverrideMaxHot); d != "" {
+		diffs = append(diffs, d)
+	}
 
 	if len(diffs) == 0 {
 		return "none"
 	}
 	return strings.Join(diffs, "; ")
+}
+
+// diffIntPtr renders a change to a three-state *int field, distinguishing unset
+// (nil) from 0 from N, or returns "" when unchanged. e.g. "override_linger_minutes: unset -> 5".
+func diffIntPtr(field string, old, updated *int) string {
+	if old == nil && updated == nil {
+		return ""
+	}
+	if old != nil && updated != nil && *old == *updated {
+		return ""
+	}
+	return fmt.Sprintf("%s: %s -> %s", field, fmtIntPtr(old), fmtIntPtr(updated))
+}
+
+// fmtIntPtr renders a *int as "unset" (nil) or its decimal value.
+func fmtIntPtr(p *int) string {
+	if p == nil {
+		return "unset"
+	}
+	return strconv.Itoa(*p)
 }

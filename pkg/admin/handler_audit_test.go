@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 )
 
 func TestListAuditLogs_NotConfigured(t *testing.T) {
 	t.Parallel()
 
-	h := NewHandler(newMockDB(), nil, NewAuthMiddleware(""))
+	h := NewHandler(newMockDB(), nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
 	rec := httptest.NewRecorder()
@@ -34,7 +35,7 @@ func TestListAuditLogs_TableUnsetOnConfiguredClient(t *testing.T) {
 	t.Parallel()
 
 	auditDB := &mockAuditDB{tableUnset: true}
-	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""))
+	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
 	rec := httptest.NewRecorder()
@@ -55,7 +56,7 @@ func TestListAuditLogs_ReturnsEntries(t *testing.T) {
 			{ID: "01A", User: "dave", Action: "pool.create", Target: "default", Result: "success", Timestamp: now},
 		},
 	}
-	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""))
+	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
 	rec := httptest.NewRecorder()
@@ -125,7 +126,7 @@ func TestListAuditLogs_QueryParams(t *testing.T) {
 			t.Parallel()
 
 			auditDB := &mockAuditDB{}
-			h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""))
+			h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 			req := httptest.NewRequest(http.MethodGet, "/api/audit-logs?"+tt.query, nil)
 			rec := httptest.NewRecorder()
@@ -150,7 +151,7 @@ func TestListAuditLogs_SinceUntilParsed(t *testing.T) {
 	until := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	auditDB := &mockAuditDB{}
-	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""))
+	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/audit-logs?since="+since.Format(time.RFC3339)+"&until="+until.Format(time.RFC3339), nil)
 	rec := httptest.NewRecorder()
@@ -171,7 +172,7 @@ func TestListAuditLogs_DBError(t *testing.T) {
 	t.Parallel()
 
 	auditDB := &mockAuditDB{listErr: context.DeadlineExceeded}
-	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""))
+	h := NewHandler(newMockDB(), auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
 	rec := httptest.NewRecorder()
