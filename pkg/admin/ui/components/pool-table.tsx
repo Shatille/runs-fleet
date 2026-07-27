@@ -6,6 +6,23 @@ interface PoolTableProps {
   onDelete: (poolName: string) => void;
 }
 
+// HotCell shows the effective hot spec (override > recommendation), with a "*"
+// when an operator override is in force. "-" when the pool resolves cold.
+function HotCell({ pool }: { pool: Pool }) {
+  const overridden = pool.override_linger_minutes != null || pool.override_max_hot != null;
+  const linger = pool.override_linger_minutes ?? pool.auto_tune?.recommended_linger_minutes ?? 0;
+  const maxHot = pool.override_max_hot ?? pool.auto_tune?.recommended_max_hot ?? 0;
+  if (!linger || linger <= 0) {
+    return <span className="text-gray-400 dark:text-gray-500">{overridden ? 'cold*' : '-'}</span>;
+  }
+  return (
+    <span title={overridden ? 'operator override' : 'auto-tuned'}>
+      {linger}m / {maxHot}
+      {overridden && '*'}
+    </span>
+  );
+}
+
 function ReconcileCell({ pool }: { pool: Pool }) {
   if (!pool.last_reconcile_at) {
     return <span className="text-gray-400 dark:text-gray-500">-</span>;
@@ -48,6 +65,9 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Type
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Hot
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Last Reconcile
@@ -103,6 +123,9 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
                     Persistent
                   </span>
                 )}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                <HotCell pool={pool} />
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 <ReconcileCell pool={pool} />

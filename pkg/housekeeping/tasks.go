@@ -108,6 +108,8 @@ type PoolDBAPI interface {
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error)
 	DeletePoolConfig(ctx context.Context, poolName string) error
+	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
+	UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error
 }
 
 // Tasks implements housekeeping task execution.
@@ -1147,6 +1149,69 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 		cleaned++
 	}
 
+	return nil
+}
+
+// ExecutePoolHotTuner recomputes each pool's hot-pool linger/maxHot recommendation
+// from recent run history and persists it via UpdatePoolAutoTune. It runs on the
+// hourly housekeeping timer, deduplicated across replicas by the task lock.
+//
+// It is gated on the master toggle: when hot pools are off it returns immediately
+// without touching DynamoDB, so an upgrade adds no steady-state load to a fleet
+// that never enables the feature — the same "off = zero change" invariant the
+// claim and reconcile paths uphold. When on, a single fully-paginated
+// ListJobsForAdmin over the lookback window is grouped by pool in memory (not a
+// per-pool GSI query, which truncates at one page); every existing pool then gets
+// a fresh recommendation, including the cold ones (insufficient-history /
+// no-burst). Newly enabled pools stay cold (no recommendation) for at most one
+// tick until the first pass populates them — a safe cold→warm direction.
+func (t *Tasks) ExecutePoolHotTuner(ctx context.Context) error {
+	if t.poolDB == nil {
+		return nil
+	}
+	if t.config == nil || !t.config.HotPoolsEnabled {
+		return nil
+	}
+
+	caps := t.config.HotPoolCaps.WithDefaults()
+
+	since := time.Now().Add(-time.Duration(caps.LookbackDays) * 24 * time.Hour)
+	entries, _, err := t.poolDB.ListJobsForAdmin(ctx, db.AdminJobFilter{Since: since})
+	if err != nil {
+		return fmt.Errorf("failed to list jobs for hot tuner: %w", err)
+	}
+
+	byPool := make(map[string][]db.AdminJobEntry)
+	for _, e := range entries {
+		if e.Pool == "" {
+			continue
+		}
+		byPool[e.Pool] = append(byPool[e.Pool], e)
+	}
+
+	pools, err := t.poolDB.ListPools(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list pools for hot tuner: %w", err)
+	}
+
+	var tuned int
+	for _, poolName := range pools {
+		rec := deriveAutoTune(byPool[poolName], caps)
+		if err := t.poolDB.UpdatePoolAutoTune(ctx, poolName, rec); err != nil {
+			if errors.Is(err, db.ErrPoolNotFound) {
+				continue // pool deleted mid-tune; benign
+			}
+			t.logger().Error(ctx, "pool auto-tune update failed",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.String("error", err.Error()))
+			continue
+		}
+		tuned++
+	}
+
+	t.logger().Debug(ctx, "hot tuner pass complete",
+		slog.Int("pools", len(pools)),
+		slog.Int("tuned", tuned))
 	return nil
 }
 

@@ -122,11 +122,12 @@ claims a runner first wins; the loser's ephemeral runner self-terminates). Once
 runs-fleet is proven to serve the jobs, **scale down the old runners**, then
 remove them.
 
-## Hot Pools (opt-in low-latency warmth)
+## Hot Pools (auto-tuned low-latency warmth)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUNS_FLEET_HOT_POOLS` | | JSON object mapping pool name → `{lingerMinutes, maxHot}`. Empty/unset = disabled. Validated at startup. |
+| `RUNS_FLEET_HOT_POOLS_ENABLED` | `false` | Master toggle. The **only** Helm knob that turns hot pools on. When on, the feature applies uniformly to every pool; per-pool warmth is auto-tuned (below), not configured here. |
+| `RUNS_FLEET_HOT_POOL_CAPS` | | JSON object of fleet-wide safety ceilings. Empty/unset = all defaults. Validated at startup. |
 
 Normally an ephemeral pool sits at `desired_running=0`: every job starts a
 *stopped* instance and pays the full boot + registration (~13s boot). For a
@@ -135,51 +136,68 @@ even though a runner was hot moments earlier. Hot pools keep a **running** spare
 alive for a short, demand-following window after job activity, so those later
 stages land on a live agent and skip the stopped-instance boot.
 
-**This is opt-in and off by default.** With `RUNS_FLEET_HOT_POOLS` unset, the
-orchestrator's behavior is byte-identical to a build without the feature: no
-extra DynamoDB reads, no changed reconcile decisions, no running-instance claims.
-In Helm, the value renders **no env var at all** unless `hotPools.enabled=true`
-**and** `hotPools.pools` is non-empty. The env allowlist is the *only* way to
-turn a pool hot — there is deliberately no global default and no admin/DynamoDB
-toggle, so idle spend stays contained by construction.
+**One master toggle, per-pool warmth auto-tuned.** `RUNS_FLEET_HOT_POOLS_ENABLED`
+is the single Helm switch. With it off (default), the orchestrator's pool path is
+byte-identical to a build without the feature: no extra DynamoDB reads, no changed
+reconcile decisions, no running-instance claims. There is deliberately **no
+per-pool Helm config** — most repo users can't touch the deployment chart, so
+per-pool linger/maxHot is instead **auto-deduced from each pool's real run
+history** by an hourly tuner and surfaced in the admin UI, where an operator can
+set a per-pool override that wins.
 
-**Cost.** Idle waste ≈ `lingerMinutes` × bursts/day per hot spare. A bursty pool
-(~6 bursts/day, 15-min linger, one spare) idles ~1.5 instance-hours/day
-(~$5/mo per `c7i.large`) for most of the acquisition-latency benefit, versus
-~$81/mo for a standing 24/7 hot instance. Enable it only for pools whose latency
-matters and whose burst pattern makes the trade worthwhile.
+**Effective spec per pool** resolves as `override > auto-recommendation > off`,
+clamped to `RUNS_FLEET_HOT_POOL_CAPS`, and only when the master toggle is on.
+**Cold-until-proven:** a pool with too little history, or no genuine burst
+pattern, deduces to `linger=0` (fully cold, $0). The hourly tuner is itself gated
+on the master toggle — with hot pools off it does no work and adds no DynamoDB
+load, so an upgrade is behavior- and cost-neutral for fleets that never enable the
+feature. After enabling, pools stay cold for at most one tuner tick until the
+first pass populates recommendations (a safe cold→warm direction).
 
-Each pool entry:
+### Caps (`RUNS_FLEET_HOT_POOL_CAPS`)
 
-| Field | Range | Default | Description |
-|-------|-------|---------|-------------|
-| `lingerMinutes` | 1–120 | (required) | How long after the last job the pool keeps a running spare. Kept inside the 4h ephemeral-cleanup window. |
-| `maxHot` | 1–5 | `1` | Number of running spares to keep during the linger window. |
+Fleet-wide ceilings the auto-tuner and the admin overrides can never exceed. Any
+omitted or zero field takes its default; a negative value or an out-of-range
+ceiling fails startup.
 
-Example — keep one warm spare for `portal-api` for 15 minutes after activity:
-
-```json
-{ "portal-api": { "lingerMinutes": 15, "maxHot": 1 } }
-```
+| Field | Default | Description |
+|-------|---------|-------------|
+| `maxLingerMinutes` | `30` | Ceiling on the linger window (≤120). |
+| `maxHot` | `3` | Ceiling on running spares kept during a linger window (≤10). |
+| `minJobsToActivate` | `20` | Minimum jobs in the lookback window before a pool is eligible for a hot recommendation (cold-until-proven). |
+| `lookbackDays` | `7` | History window the tuner samples each tick (≤90). |
+| `burstGapMinutes` | `20` | Inter-job gap above which two jobs are treated as separate bursts (≤120). |
 
 Helm (`values.yaml`):
 
 ```yaml
 hotPools:
   enabled: true
-  pools:
-    portal-api:
-      lingerMinutes: 15
-      maxHot: 1
+  caps:            # optional; omit for defaults
+    maxLingerMinutes: 30
+    maxHot: 3
 ```
 
-**How it works.** For an allowlisted pool with recent job activity, reconciliation
-raises the running target to `maxHot` (a floor applied via `max()`, so it never
-lowers a scheduled/admin target). When a job arrives, it is assigned to a running∧
-not-busy spare (no boot) in preference to starting a stopped instance. Once the
-linger window elapses, the floor drops to 0 and the existing warm-pool stop path
-banks the spare within a couple of reconcile passes. Each spare stays **one-shot**:
-it serves exactly one job, then self-terminates — no multi-job reuse.
+### Per-pool tuning (admin UI)
+
+Per-pool linger/maxHot is managed in the admin pool editor, never in Helm:
+
+- **Recommendation panel** (read-only): shows the tuner's rationale — e.g.
+  *"Based on 42 jobs over 7d: p90 stage gap 240s, peak concurrency 2, 3 bursts →
+  recommends 5m linger / 2 maxHot"*, or the cold reason (*insufficient history* /
+  *no burst pattern → stays cold*).
+- **Override inputs** for linger and maxHot. Blank = use the recommendation
+  (placeholder shows the recommended value); `0` = force the pool cold; `N` = fix
+  the value (bounded by the caps). Overrides are audited.
+
+**How it works.** For a pool with a live effective linger window (recent job
+activity within the resolved linger), reconciliation raises the running target to
+the effective `maxHot` (a floor applied via `max()`, so it never lowers a
+scheduled/admin target). When a job arrives, it is assigned to a running∧not-busy
+spare (no boot) in preference to starting a stopped instance. Once the linger
+window elapses, the floor drops to 0 and the existing warm-pool stop path banks
+the spare within a couple of reconcile passes. Each spare stays **one-shot**: it
+serves exactly one job, then self-terminates — no multi-job reuse.
 
 **Scope & notes.**
 
@@ -187,14 +205,15 @@ it serves exactly one job, then self-terminates — no multi-job reuse.
   today) activate linger; persistent pools use `desired_running`/schedules instead.
 - A hot spare is a running instance whose agent polls for its job config
   (see `RUNS_FLEET_STANDBY_DEADLINE_MINUTES`). The agent binary must be built from
-  an AMI that includes the standby poll before enabling a pool.
+  an AMI that includes the standby poll before enabling the feature.
 - Observability adds no new metrics: linger-driven scale-ups carry
   `reason="linger"` on `pool_actions`, and a hot-spare assignment carries
   `source="hot_pool"` on `instance_provision_seconds` (a `warm_pool` subset for
   the sub-10s no-boot cohort).
 - Rollback is instant and needs no AMI change: set `hotPools.enabled=false` and
-  `helm upgrade`. The linger floor drops to 0 on the next pass, spares are banked
-  within ~5 min, assignment reverts to stopped-only, and the standby poll is inert.
+  `helm upgrade`. Every effective spec drops to off on the next pass, spares are
+  banked within ~5 min, assignment reverts to stopped-only, and the standby poll
+  is inert. The stored recommendations/overrides go dormant; no cleanup needed.
 
 ## Cache
 

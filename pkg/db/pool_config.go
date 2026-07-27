@@ -48,6 +48,16 @@ type PoolConfig struct {
 	LastReconcileAt     time.Time `dynamodbav:"last_reconcile_at,omitempty"`
 	LastReconcileResult string    `dynamodbav:"last_reconcile_result,omitempty"`
 
+	// Hot-pool override + auto-tune. The overrides are admin-written and three-state
+	// (nil = "use auto", &0 = "force cold", &N = fixed); they ARE part of
+	// SavePoolConfig's SET list so a nil pointer clears the override. AutoTune is
+	// tuner-written and read-only to admin CRUD; it is deliberately EXCLUDED from
+	// SavePoolConfig's SET list (like last_reconcile_*) and only ever set by
+	// UpdatePoolAutoTune, so a pool save can never clobber a recommendation.
+	OverrideLingerMinutes *int         `dynamodbav:"override_linger_minutes,omitempty"`
+	OverrideMaxHot        *int         `dynamodbav:"override_max_hot,omitempty"`
+	AutoTune              *AutoTuneRec `dynamodbav:"auto_tune,omitempty"`
+
 	// Flexible instance spec (inherited from first job for ephemeral pools)
 	Arch     string   `dynamodbav:"arch,omitempty"`     // arm64, amd64
 	CPUMin   int      `dynamodbav:"cpu_min,omitempty"`  // Minimum vCPUs
@@ -60,6 +70,25 @@ type PoolConfig struct {
 	// When enabled, pool creates instances based on recent job demand patterns
 	// rather than fixed pool-level spec. Jobs are matched to compatible instances.
 	MultiSpec bool `dynamodbav:"multi_spec,omitempty"`
+}
+
+// AutoTuneRec is the hot-pool tuner's per-pool recommendation plus the evidence
+// that produced it. The tuner writes it hourly via UpdatePoolAutoTune; the
+// effective-spec resolver reads RecommendedLingerMinutes/RecommendedMaxHot, and
+// the admin UI shows the whole struct so an operator can see why a pool is
+// recommended hot (or kept cold). Every field is persisted, including for the
+// cold cases (Reason "insufficient-history" / "no-burst-pattern"), so the
+// rationale round-trips.
+type AutoTuneRec struct {
+	RecommendedLingerMinutes int       `dynamodbav:"recommended_linger_minutes" json:"recommended_linger_minutes"`
+	RecommendedMaxHot        int       `dynamodbav:"recommended_max_hot" json:"recommended_max_hot"`
+	WindowDays               int       `dynamodbav:"window_days" json:"window_days"`
+	JobCount                 int       `dynamodbav:"job_count" json:"job_count"`
+	BurstCount               int       `dynamodbav:"burst_count" json:"burst_count"`
+	P90IntraBurstGapSeconds  int       `dynamodbav:"p90_intra_burst_gap_seconds" json:"p90_intra_burst_gap_seconds"`
+	PeakConcurrency          int       `dynamodbav:"peak_concurrency" json:"peak_concurrency"`
+	Reason                   string    `dynamodbav:"reason" json:"reason"`
+	TunedAt                  time.Time `dynamodbav:"tuned_at" json:"tuned_at"`
 }
 
 // IsReservedPoolKey reports whether a pools-table partition key is an internal
@@ -216,12 +245,16 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 		Key: map[string]types.AttributeValue{
 			"pool_name": &types.AttributeValueMemberS{Value: config.PoolName},
 		},
+		// auto_tune is intentionally absent from this SET list: it is tuner-written
+		// (UpdatePoolAutoTune) and must never be clobbered by an admin pool save,
+		// the same treatment as last_reconcile_*. The override_* fields ARE set here
+		// via attrOrNull so a nil pointer clears the override (NULL).
 		UpdateExpression: aws.String(
 			"SET instance_type = :it, desired_running = :dr, desired_stopped = :ds, " +
 				"idle_timeout_minutes = :itm, schedules = :sc, " +
 				"ephemeral = :eph, last_job_time = :ljt, arch = :arch, cpu_min = :cpumin, " +
 				"cpu_max = :cpumax, ram_min = :rammin, ram_max = :rammax, families = :fam, " +
-				"multi_spec = :ms"),
+				"multi_spec = :ms, override_linger_minutes = :olm, override_max_hot = :omh"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":it":     attrOrNull(item, "instance_type"),
 			":dr":     attrOrNull(item, "desired_running"),
@@ -237,6 +270,8 @@ func (c *Client) SavePoolConfig(ctx context.Context, config *PoolConfig) error {
 			":rammax": attrOrNull(item, "ram_max"),
 			":fam":    attrOrNull(item, "families"),
 			":ms":     attrOrNull(item, "multi_spec"),
+			":olm":    attrOrNull(item, "override_linger_minutes"),
+			":omh":    attrOrNull(item, "override_max_hot"),
 		},
 	})
 	if err != nil {
@@ -353,6 +388,46 @@ func (c *Client) UpdatePoolReconcileResult(ctx context.Context, poolName, result
 			return ErrPoolNotFound
 		}
 		return fmt.Errorf("failed to update pool reconcile result: %w", err)
+	}
+
+	return nil
+}
+
+// UpdatePoolAutoTune records the hot-pool tuner's recommendation and evidence for
+// a pool. Targeted UpdateItem (like UpdatePoolReconcileResult) writing only
+// auto_tune, so it never clobbers admin pool config or the override_* fields, and
+// SavePoolConfig in turn never clobbers auto_tune. Returns ErrPoolNotFound if the
+// pool was deleted between the tuner's list and this write.
+func (c *Client) UpdatePoolAutoTune(ctx context.Context, poolName string, rec AutoTuneRec) error {
+	if poolName == "" {
+		return fmt.Errorf("pool name cannot be empty")
+	}
+	if c.poolsTable == "" {
+		return fmt.Errorf("pools table not configured")
+	}
+
+	recAttr, err := attributevalue.MarshalMap(rec)
+	if err != nil {
+		return fmt.Errorf("failed to marshal auto-tune recommendation: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: poolName},
+		},
+		UpdateExpression: aws.String("SET auto_tune = :m"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":m": &types.AttributeValueMemberM{Value: recAttr},
+		},
+		ConditionExpression: aws.String("attribute_exists(pool_name)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrPoolNotFound
+		}
+		return fmt.Errorf("failed to update pool auto-tune: %w", err)
 	}
 
 	return nil

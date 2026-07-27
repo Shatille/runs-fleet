@@ -539,7 +539,7 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	authHandler := admin.NewAuthHandler(oidcClient, ws.cfg.AdminSessionSecret, time.Duration(ws.cfg.AdminSessionTTLMinutes)*time.Minute)
 	authHandler.RegisterRoutes(adminMux)
 
-	adminHandler := admin.NewHandler(ws.dbClient, ws.dbClient, adminAuth)
+	adminHandler := admin.NewHandler(ws.dbClient, ws.dbClient, adminAuth, ws.cfg.HotPoolCaps)
 	adminHandler.RegisterRoutes(adminMux)
 
 	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth, ws.cfg.TraceUIURL)
@@ -762,6 +762,14 @@ func (p *poolDBAdapter) GetPoolConfig(ctx context.Context, poolName string) (*ho
 
 func (p *poolDBAdapter) DeletePoolConfig(ctx context.Context, poolName string) error {
 	return p.client.DeletePoolConfig(ctx, poolName)
+}
+
+func (p *poolDBAdapter) ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+	return p.client.ListJobsForAdmin(ctx, filter)
+}
+
+func (p *poolDBAdapter) UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error {
+	return p.client.UpdatePoolAutoTune(ctx, poolName, rec)
 }
 
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.

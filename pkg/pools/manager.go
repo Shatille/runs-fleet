@@ -467,11 +467,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		desiredStopped = ephStopped
 	}
 
-	// Hot-pool linger floor: for an allowlisted pool with recent job activity,
-	// keep MaxHot running spares until the linger window elapses, then decay. This
-	// composes with schedules/ephemeral via max() — it only ever raises the running
-	// target, never lowers it. Zero (and thus a no-op) unless RUNS_FLEET_HOT_POOLS
-	// names this pool, so the gate-off path is unchanged.
+	// Hot-pool linger floor: for a pool with a live effective linger window (recent
+	// job activity within its resolved linger), keep maxHot running spares until the
+	// window elapses, then decay. This composes with schedules/ephemeral via max() —
+	// it only ever raises the running target, never lowers it. Zero (and thus a
+	// no-op) unless the master toggle is on and the pool has an effective spec, so
+	// the gate-off path is unchanged.
 	lingerHot := m.lingerDesiredRunning(poolConfig, now)
 	lingerActive := lingerHot > desiredRunning
 	if lingerActive {
@@ -795,33 +796,73 @@ func (m *Manager) getEphemeralAutoScaledCount(ctx context.Context, poolName stri
 	return 0, poolConfig.DesiredStopped, true // Ephemeral pools always have desiredRunning=0
 }
 
-// lingerDesiredRunning returns the hot-pool running floor for this pool: MaxHot
-// while the pool has had job activity within its linger window, else 0. It is a
-// floor, not an override — reconcilePool applies it via max() so it only raises
-// the running target during a burst tail and never lowers a scheduled/admin
-// target.
-//
-// Returns 0 unless the pool is named in the RUNS_FLEET_HOT_POOLS allowlist, so
-// with the feature off (Config.HotPools nil) this reads nothing new and changes
-// no decision — the sole cost gate is the env allowlist. It relies on
-// LastJobTime, which only ephemeral pools stamp; persistent pools never activate
-// linger (they use desired_running/schedules instead), which is intended: hot
-// pools target the label-created ephemeral pools that pay the stopped-boot today.
-func (m *Manager) lingerDesiredRunning(poolConfig *db.PoolConfig, now time.Time) int {
-	if m.config == nil || len(m.config.HotPools) == 0 {
-		return 0
+// effectiveHotSpec resolves a pool's effective hot spec (lingerMinutes, maxHot)
+// from its PoolConfig using the precedence override > auto-recommendation > off,
+// clamped to the fleet-wide HotPoolCaps. It returns (0, 0) — fully off, the cold
+// path — whenever the master toggle is off, config is absent, or the resolved
+// linger is <= 0 (a nil pool, no recommendation, or an operator's &0 force-cold).
+// When linger is active but maxHot resolves to <1, maxHot floors to 1 (a lingered
+// pool keeps at least one spare, matching the cost-first single-spare default).
+func (m *Manager) effectiveHotSpec(pc *db.PoolConfig) (lingerMinutes, maxHot int) {
+	if m.config == nil || !m.config.HotPoolsEnabled || pc == nil {
+		return 0, 0
 	}
-	spec, ok := m.config.HotPools[poolConfig.PoolName]
-	if !ok {
+
+	if pc.AutoTune != nil {
+		lingerMinutes = pc.AutoTune.RecommendedLingerMinutes
+		maxHot = pc.AutoTune.RecommendedMaxHot
+	}
+	if pc.OverrideLingerMinutes != nil {
+		lingerMinutes = *pc.OverrideLingerMinutes
+	}
+	if pc.OverrideMaxHot != nil {
+		maxHot = *pc.OverrideMaxHot
+	}
+
+	caps := m.config.HotPoolCaps
+	if lingerMinutes < 0 {
+		lingerMinutes = 0
+	}
+	if lingerMinutes > caps.MaxLingerMinutes {
+		lingerMinutes = caps.MaxLingerMinutes
+	}
+	if maxHot > caps.MaxHot {
+		maxHot = caps.MaxHot
+	}
+
+	if lingerMinutes <= 0 {
+		return 0, 0
+	}
+	if maxHot < 1 {
+		maxHot = 1
+	}
+	return lingerMinutes, maxHot
+}
+
+// lingerDesiredRunning returns the hot-pool running floor for this pool: maxHot
+// while the pool has had job activity within its effective linger window, else 0.
+// It is a floor, not an override — reconcilePool applies it via max() so it only
+// raises the running target during a burst tail and never lowers a
+// scheduled/admin target.
+//
+// Returns 0 whenever the master toggle is off or the pool's effective linger is 0
+// (no recommendation, or an operator force-cold), so with the feature off this
+// reads nothing new and changes no decision. It relies on LastJobTime, which only
+// ephemeral pools stamp; persistent pools never activate linger (they use
+// desired_running/schedules instead), which is intended: hot pools target the
+// label-created ephemeral pools that pay the stopped-boot today.
+func (m *Manager) lingerDesiredRunning(poolConfig *db.PoolConfig, now time.Time) int {
+	lingerMinutes, maxHot := m.effectiveHotSpec(poolConfig)
+	if lingerMinutes <= 0 {
 		return 0
 	}
 	if poolConfig.LastJobTime.IsZero() {
 		return 0
 	}
-	if now.Sub(poolConfig.LastJobTime) >= time.Duration(spec.LingerMinutes)*time.Minute {
+	if now.Sub(poolConfig.LastJobTime) >= time.Duration(lingerMinutes)*time.Minute {
 		return 0
 	}
-	return spec.MaxHot
+	return maxHot
 }
 
 // getScheduledDesiredCounts returns the desired running and stopped counts based on schedule.
@@ -1341,12 +1382,12 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		return nil, fmt.Errorf("failed to get pool instances: %w", err)
 	}
 
-	// Candidate order: for a hot-pool-allowlisted pool, prefer a running∧not-busy
-	// spare (zero boot — the whole point of hot pools) over a stopped instance;
-	// otherwise only stopped instances are eligible, exactly as before. The gate
-	// is m.config.HotPools[poolName]: when the pool is not allowlisted (the common
-	// case, and always when the feature is off) NO busy-instance query is issued,
-	// so the default path makes zero extra DB reads.
+	// Candidate order: for a pool with a live effective linger window, prefer a
+	// running∧not-busy spare (zero boot — the whole point of hot pools) over a
+	// stopped instance; otherwise only stopped instances are eligible, exactly as
+	// before. When the master toggle is off (the common case) NO PoolConfig read
+	// and NO busy-instance query are issued, so the default path makes zero extra
+	// DB reads.
 	candidates := m.claimCandidates(ctx, poolName, instances, spec)
 
 	pl := m.poolLockFor(poolName)
@@ -1428,11 +1469,12 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 }
 
 // claimCandidates returns the ordered list of instances eligible to serve a job.
-// For a hot-pool-allowlisted pool it prefers running∧not-busy spares (spec-
-// matched, CPU-ascending) so a job lands on a live agent with zero boot, then
-// falls back to stopped instances. For every other pool — and whenever the
-// feature is off — only stopped instances are returned and NO extra DB read is
-// performed, so the default path is byte-for-byte the prior behavior.
+// For a pool whose effective hot spec has a live linger window it prefers
+// running∧not-busy spares (spec-matched, CPU-ascending) so a job lands on a live
+// agent with zero boot, then falls back to stopped instances. Whenever the master
+// toggle is off, only stopped instances are returned and NO PoolConfig read and
+// NO busy query are performed, so the default path is byte-for-byte the prior
+// behavior.
 //
 // Each state group is sorted by CPU-then-RAM ascending (best-fit) and the two
 // groups are concatenated running-first, so a hot spare is always tried before a
@@ -1446,13 +1488,21 @@ func (m *Manager) claimCandidates(ctx context.Context, poolName string, instance
 	}
 	sortByBestFit(stopped)
 
-	// Gate: only an allowlisted hot pool considers running spares. This is the
-	// sole place a running instance becomes claimable, and the sole extra DB read
-	// this feature adds — issued only for an allowlisted pool.
-	if m.config == nil || len(m.config.HotPools) == 0 {
+	// Free master-off gate: no PoolConfig read, no busy query, no running claim —
+	// exactly the prior behavior. This is the cheap path taken on every claim while
+	// the feature is off.
+	if m.config == nil || !m.config.HotPoolsEnabled {
 		return stopped
 	}
-	if _, ok := m.config.HotPools[poolName]; !ok {
+
+	// Master on: resolve this pool's effective hot spec. A pool that isn't hot
+	// (linger 0 — no recommendation, or an operator force-cold) is stopped-only,
+	// the same as the cold path. Degrade to stopped-only if the config read fails.
+	poolConfig, err := m.dbClient.GetPoolConfig(ctx, poolName)
+	if err != nil || poolConfig == nil {
+		return stopped
+	}
+	if linger, _ := m.effectiveHotSpec(poolConfig); linger <= 0 {
 		return stopped
 	}
 

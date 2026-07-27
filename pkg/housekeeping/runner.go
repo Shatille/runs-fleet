@@ -40,6 +40,9 @@ const (
 	// TaskOrphanedPackerInstances terminates packer builder instances left
 	// running by killed or cancelled AMI-build workflows.
 	TaskOrphanedPackerInstances TaskType = "orphaned_packer_instances"
+	// TaskPoolHotTuner recomputes each pool's hot-pool linger/maxHot
+	// recommendation from recent run history.
+	TaskPoolHotTuner TaskType = "pool_hot_tuner"
 )
 
 // TaskLocker provides distributed locking for housekeeping tasks.
@@ -61,6 +64,7 @@ type TaskExecutor interface {
 	ExecuteDLQRedrive(ctx context.Context) error
 	ExecuteEphemeralPoolCleanup(ctx context.Context) error
 	ExecuteOrphanedPackerInstances(ctx context.Context) error
+	ExecutePoolHotTuner(ctx context.Context) error
 }
 
 // RunnerMetricsAPI publishes the housekeeping runner's per-task execution
@@ -124,6 +128,10 @@ type SchedulerConfig struct {
 	// builder instances left behind by killed AMI-build workflows.
 	// Default: 15 minutes
 	OrphanedPackerInstancesInterval time.Duration
+
+	// PoolHotTunerInterval is how often to recompute per-pool hot-pool
+	// recommendations from run history. Default: 1 hour
+	PoolHotTunerInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default per-task run intervals.
@@ -140,6 +148,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		StaleJobsInterval:               5 * time.Minute,
 		UnconfirmedRunnersInterval:      2 * time.Minute,
 		OrphanedPackerInstancesInterval: 15 * time.Minute,
+		PoolHotTunerInterval:            1 * time.Hour,
 	}
 }
 
@@ -209,6 +218,7 @@ func (r *Runner) taskSpecs() []taskSpec {
 		{taskType: TaskCostReport, interval: c.CostReportInterval, execute: e.ExecuteCostReport},
 		{taskType: TaskEphemeralPoolCleanup, interval: c.EphemeralPoolCleanupInterval, execute: e.ExecuteEphemeralPoolCleanup},
 		{taskType: TaskOrphanedPackerInstances, interval: c.OrphanedPackerInstancesInterval, execute: e.ExecuteOrphanedPackerInstances},
+		{taskType: TaskPoolHotTuner, interval: c.PoolHotTunerInterval, execute: e.ExecutePoolHotTuner},
 	}
 }
 

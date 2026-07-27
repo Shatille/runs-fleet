@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 )
 
@@ -139,7 +140,7 @@ func TestListPools(t *testing.T) {
 			mockDB.pools = tt.pools
 			mockDB.listErr = tt.listErr
 
-			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 			req := httptest.NewRequest(http.MethodGet, "/api/pools", nil)
 			rec := httptest.NewRecorder()
 
@@ -209,7 +210,7 @@ func TestGetPool(t *testing.T) {
 			}
 			mockDB.getErr = tt.getErr
 
-			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("GET /api/pools/{name}", h.GetPool)
@@ -320,7 +321,7 @@ func TestCreatePool(t *testing.T) {
 			}
 			mockDB.saveErr = tt.saveErr
 
-			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
@@ -399,7 +400,7 @@ func TestUpdatePool(t *testing.T) {
 			}
 			mockDB.saveErr = tt.saveErr
 
-			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)
@@ -480,7 +481,7 @@ func TestDeletePool(t *testing.T) {
 			}
 			mockDB.deleteErr = tt.deleteErr
 
-			h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+			h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("DELETE /api/pools/{name}", h.DeletePool)
@@ -506,7 +507,7 @@ func TestDeletePool(t *testing.T) {
 func TestValidatePoolRequest(t *testing.T) {
 	t.Parallel()
 
-	h := NewHandler(nil, nil, NewAuthMiddleware(""))
+	h := NewHandler(nil, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	tests := []struct {
 		name     string
@@ -607,7 +608,7 @@ func TestCreatePoolContentType(t *testing.T) {
 	t.Parallel()
 
 	mockDB := newMockDB()
-	h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	body := []byte(`{"pool_name": "test-pool"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/pools", bytes.NewReader(body))
@@ -705,7 +706,7 @@ func TestCreatePool_PersistsAuditEntry(t *testing.T) {
 
 	mockDB := newMockDB()
 	auditDB := &mockAuditDB{}
-	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/pools", h.CreatePool)
@@ -736,7 +737,7 @@ func TestCreatePool_AuditPersistenceFailureDoesNotFailRequest(t *testing.T) {
 
 	mockDB := newMockDB()
 	auditDB := &mockAuditDB{err: errors.New("dynamodb unavailable")}
-	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/pools", h.CreatePool)
@@ -767,7 +768,7 @@ func TestCreatePool_SkipsPersistenceWhenTableUnset(t *testing.T) {
 
 	mockDB := newMockDB()
 	auditDB := &mockAuditDB{tableUnset: true}
-	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, auditDB, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/pools", h.CreatePool)
@@ -792,7 +793,7 @@ func TestUpdatePoolContentType(t *testing.T) {
 
 	mockDB := newMockDB()
 	mockDB.pools["test-pool"] = &db.PoolConfig{PoolName: "test-pool"}
-	h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /api/pools/{name}", h.UpdatePool)
@@ -821,7 +822,7 @@ func TestGetPool_SurfacesReconcileFields(t *testing.T) {
 		LastReconcileResult: reconcileResultSuccess,
 	}
 
-	h := NewHandler(mockDB, nil, NewAuthMiddleware(""))
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/pools/{name}", h.GetPool)
 
@@ -847,7 +848,7 @@ func TestGetPool_SurfacesReconcileFields(t *testing.T) {
 func TestConfigToResponse_OmitsZeroReconcileTime(t *testing.T) {
 	t.Parallel()
 
-	h := NewHandler(newMockDB(), nil, NewAuthMiddleware(""))
+	h := NewHandler(newMockDB(), nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
 	resp := h.configToResponse(&db.PoolConfig{PoolName: "p"})
 	if resp.LastReconcileAt != nil {
 		t.Errorf("last_reconcile_at = %v, want nil for zero time", resp.LastReconcileAt)

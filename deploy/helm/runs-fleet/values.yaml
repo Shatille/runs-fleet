@@ -193,28 +193,32 @@ admin:
 # Example: '[{"match":"^ci-(\\d+)x-(amd64|arm64)$","regex":true,"spec":"cpu=${1}+${1}/arch=${2}"}]'
 labelAliases: ""
 
-# Opt-in "hot pools" (sets RUNS_FLEET_HOT_POOLS). After job activity, an allowlisted
-# pool keeps a RUNNING spare (agent alive, polling for config) for a demand-following
-# linger window, so pipeline stages 2..N skip the ~13s stopped-instance boot. This
-# trades a small amount of idle EC2 spend for lower acquisition latency, so it is
-# strictly opt-in and off by default — enabled=false renders NO env var and the
-# orchestrator's behavior is byte-identical to a build without this feature.
+# "Hot pools": a single master toggle (sets RUNS_FLEET_HOT_POOLS_ENABLED). When on,
+# every pool's linger/maxHot is AUTO-DEDUCED from its real run history by an hourly
+# tuner and surfaced in the admin UI, where an operator can set a per-pool override
+# that wins. There is deliberately NO per-pool config here: most repo users have no
+# access to this chart, so per-repo tuning lives in the admin UI, not Helm.
 #
-# Cost note: idle waste ~= lingerMinutes x bursts/day. A bursty pool (~6 bursts/day,
-# 15-min linger, one spare) idles ~1.5 instance-hours/day (~$5/mo per c7i.large) for
-# most of the acquisition-latency benefit, versus ~$81/mo for a standing hot instance.
+# enabled=false (default) renders NO enable env var and the orchestrator's pool path
+# is byte-identical to a build without this feature. Rollback = set enabled=false.
+# After job activity a hot pool keeps a RUNNING spare (agent alive, polling for
+# config) for the deduced linger window, so pipeline stages 2..N skip the ~13s
+# stopped-instance boot. Cold-until-proven: a pool with no genuine burst pattern
+# deduces to linger=0 (fully cold, $0).
 #
-# Only pools listed under `pools` linger; each entry:
-#   lingerMinutes: 1-120  (how long the pool stays hot after the last job)
-#   maxHot:        1-5     (running spares kept during linger; default 1)
+# caps are the ONLY other knob: fleet-wide safety ceilings the tuner and admin
+# overrides can never exceed. Omit for defaults (maxLingerMinutes 30, maxHot 3,
+# minJobsToActivate 20, lookbackDays 7, burstGapMinutes 20).
 hotPools:
   enabled: false
-  pools: {}
+  caps: {}
   # Example:
-  # pools:
-  #   portal-api:
-  #     lingerMinutes: 15
-  #     maxHot: 1
+  # caps:
+  #   maxLingerMinutes: 30
+  #   maxHot: 3
+  #   minJobsToActivate: 20
+  #   lookbackDays: 7
+  #   burstGapMinutes: 20
 
 # Secrets backend configuration
 secrets:

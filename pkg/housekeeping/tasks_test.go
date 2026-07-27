@@ -1496,6 +1496,12 @@ type mockPoolDBAPI struct {
 	getErr       error
 	deleteErr    error
 	deletedPools []string
+
+	jobs           []db.AdminJobEntry
+	listJobsErr    error
+	listJobsCalls  int
+	autoTuneErr    error
+	autoTuneByPool map[string]db.AutoTuneRec
 }
 
 func (m *mockPoolDBAPI) ListPools(_ context.Context) ([]string, error) {
@@ -1520,6 +1526,32 @@ func (m *mockPoolDBAPI) DeletePoolConfig(_ context.Context, poolName string) err
 		return m.deleteErr
 	}
 	m.deletedPools = append(m.deletedPools, poolName)
+	return nil
+}
+
+func (m *mockPoolDBAPI) ListJobsForAdmin(_ context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+	m.listJobsCalls++
+	if m.listJobsErr != nil {
+		return nil, 0, m.listJobsErr
+	}
+	filtered := make([]db.AdminJobEntry, 0, len(m.jobs))
+	for _, j := range m.jobs {
+		if !filter.Since.IsZero() && j.CreatedAt.Before(filter.Since) {
+			continue
+		}
+		filtered = append(filtered, j)
+	}
+	return filtered, len(filtered), nil
+}
+
+func (m *mockPoolDBAPI) UpdatePoolAutoTune(_ context.Context, poolName string, rec db.AutoTuneRec) error {
+	if m.autoTuneErr != nil {
+		return m.autoTuneErr
+	}
+	if m.autoTuneByPool == nil {
+		m.autoTuneByPool = map[string]db.AutoTuneRec{}
+	}
+	m.autoTuneByPool[poolName] = rec
 	return nil
 }
 
@@ -1737,6 +1769,132 @@ func TestEphemeralPoolTTL(t *testing.T) {
 
 	if EphemeralPoolTTL != 4*time.Hour {
 		t.Errorf("expected EphemeralPoolTTL to be 4h, got %v", EphemeralPoolTTL)
+	}
+}
+
+func TestExecutePoolHotTuner_NoPoolDB(t *testing.T) {
+	t.Parallel()
+
+	tasks := &Tasks{config: &config.Config{}}
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Master off => the tuner returns immediately without any DynamoDB reads, so an
+// upgrade adds no steady-state Scan load to a fleet that never enables hot pools.
+func TestExecutePoolHotTuner_MasterOff_NoDBCalls(t *testing.T) {
+	t.Parallel()
+
+	poolDB := &mockPoolDBAPI{pools: []string{"p"}, jobs: []db.AdminJobEntry{{Pool: "p"}}}
+	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolsEnabled: false, HotPoolCaps: config.DefaultHotPoolCaps()}}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if poolDB.listJobsCalls != 0 {
+		t.Errorf("ListJobsForAdmin called %d times with master off, want 0", poolDB.listJobsCalls)
+	}
+	if len(poolDB.autoTuneByPool) != 0 {
+		t.Errorf("tuned %d pools with master off, want 0", len(poolDB.autoTuneByPool))
+	}
+}
+
+// Every listed pool gets a recommendation, including a pool with no jobs (cold).
+func TestExecutePoolHotTuner_TunesEveryPool(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now().Add(-24 * time.Hour)
+	// A bursty pool with >= MinJobsToActivate jobs, 5 min apart in one burst.
+	var bursty []db.AdminJobEntry
+	for i := 0; i < 20; i++ {
+		created := base.Add(time.Duration(i) * 5 * time.Minute)
+		bursty = append(bursty, db.AdminJobEntry{
+			Pool:        "bursty",
+			CreatedAt:   created,
+			CompletedAt: created.Add(time.Minute),
+		})
+	}
+
+	poolDB := &mockPoolDBAPI{
+		pools: []string{"bursty", "quiet"},
+		jobs:  bursty,
+	}
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: config.DefaultHotPoolCaps()},
+	}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(poolDB.autoTuneByPool) != 2 {
+		t.Fatalf("tuned %d pools, want 2 (every listed pool)", len(poolDB.autoTuneByPool))
+	}
+	if rec := poolDB.autoTuneByPool["bursty"]; rec.Reason != autoTuneReasonTuned || rec.RecommendedLingerMinutes != 5 {
+		t.Errorf("bursty rec = %+v, want tuned linger 5", rec)
+	}
+	if rec := poolDB.autoTuneByPool["quiet"]; rec.Reason != autoTuneReasonInsufficient || rec.RecommendedLingerMinutes != 0 {
+		t.Errorf("quiet rec = %+v, want insufficient-history cold", rec)
+	}
+}
+
+// Jobs older than the lookback window are excluded: the tuner passes filter.Since
+// and relies on the store to drop out-of-window rows, so a burst that predates the
+// window must not activate the pool.
+func TestExecutePoolHotTuner_ExcludesJobsBeforeLookback(t *testing.T) {
+	t.Parallel()
+
+	caps := config.DefaultHotPoolCaps()
+	stale := time.Now().Add(-time.Duration(caps.LookbackDays+1) * 24 * time.Hour)
+	var jobs []db.AdminJobEntry
+	for i := 0; i < caps.MinJobsToActivate; i++ {
+		created := stale.Add(time.Duration(i) * 5 * time.Minute)
+		jobs = append(jobs, db.AdminJobEntry{
+			Pool:        "bursty",
+			CreatedAt:   created,
+			CompletedAt: created.Add(time.Minute),
+		})
+	}
+
+	poolDB := &mockPoolDBAPI{pools: []string{"bursty"}, jobs: jobs}
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: caps},
+	}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec := poolDB.autoTuneByPool["bursty"]; rec.Reason != autoTuneReasonInsufficient || rec.JobCount != 0 {
+		t.Errorf("bursty rec = %+v, want insufficient-history with 0 in-window jobs", rec)
+	}
+}
+
+func TestExecutePoolHotTuner_ListJobsError(t *testing.T) {
+	t.Parallel()
+
+	poolDB := &mockPoolDBAPI{listJobsErr: errors.New("scan failed")}
+	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: config.DefaultHotPoolCaps()}}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err == nil {
+		t.Fatal("want error when ListJobsForAdmin fails")
+	}
+}
+
+// A pool deleted mid-tune (ErrPoolNotFound) is skipped without failing the pass.
+func TestExecutePoolHotTuner_PoolDeletedSkipped(t *testing.T) {
+	t.Parallel()
+
+	poolDB := &mockPoolDBAPI{
+		pools:       []string{"gone"},
+		autoTuneErr: db.ErrPoolNotFound,
+	}
+	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: config.DefaultHotPoolCaps()}}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

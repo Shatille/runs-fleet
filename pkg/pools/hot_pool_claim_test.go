@@ -41,8 +41,19 @@ func mixedReservation(running, stopped []string) []ec2types.Reservation {
 
 func hotGateConfig() *config.Config {
 	return &config.Config{
-		SubnetIDs: []string{"subnet-1"},
-		HotPools:  map[string]config.HotPoolSpec{"hot": {LingerMinutes: 15, MaxHot: 1}},
+		SubnetIDs:       []string{"subnet-1"},
+		HotPoolsEnabled: true,
+		HotPoolCaps:     config.DefaultHotPoolCaps(),
+	}
+}
+
+// hotPoolCfg is the "hot" pool's DynamoDB config carrying a live recommendation,
+// so effectiveHotSpec resolves linger > 0 and the claim path considers running
+// spares.
+func hotPoolCfg() *db.PoolConfig {
+	return &db.PoolConfig{
+		PoolName: "hot",
+		AutoTune: &db.AutoTuneRec{RecommendedLingerMinutes: 15, RecommendedMaxHot: 1, Reason: "tuned"},
 	}
 }
 
@@ -54,6 +65,7 @@ func TestClaim_PrefersRunningSpare_NoStart(t *testing.T) {
 	var startCalls, tagCalls, busyCalls int64
 
 	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
 			atomic.AddInt64(&busyCalls, 1)
 			return nil, nil
@@ -105,6 +117,7 @@ func TestClaim_BusyRunningSkipped_FallsToStopped(t *testing.T) {
 	var startCalls int64
 
 	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
 			return []string{iRunID}, nil // the only running instance is busy
 		},
@@ -147,6 +160,7 @@ func TestClaim_RunningConflict_FallsToStopped(t *testing.T) {
 
 	claimAttempts := map[string]int{}
 	mockDB := &MockDBClient{
+		GetPoolConfigFunc:          func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) { return nil, nil },
 		ClaimInstanceForJobFunc: func(_ context.Context, instanceID string, _ int64, _ time.Duration) error {
 			claimAttempts[instanceID]++
@@ -185,6 +199,7 @@ func TestClaim_RunningSpotSkipped_FallsToStopped(t *testing.T) {
 	t.Parallel()
 
 	mockDB := &MockDBClient{
+		GetPoolConfigFunc:          func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) { return nil, nil },
 	}
 	mockEC2 := &MockEC2API{
@@ -228,6 +243,7 @@ func TestClaim_BusyQueryError_DegradesToStopped(t *testing.T) {
 	var startCalls int64
 
 	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
 			return nil, errors.New("dynamo throttled")
 		},
@@ -257,16 +273,20 @@ func TestClaim_BusyQueryError_DegradesToStopped(t *testing.T) {
 	}
 }
 
-// The gate-off proof for the claim path: a pool NOT in the hot allowlist makes
-// zero busy-instance queries and never claims a running instance — exactly the
-// prior behavior.
+// The gate-off proof for the claim path: with the master toggle off, the claim
+// makes ZERO GetPoolConfig and ZERO busy-instance queries and never claims a
+// running instance — exactly the prior behavior, byte-for-byte.
 func TestClaim_GateOff_NoBusyQuery_NoRunningClaim(t *testing.T) {
 	t.Parallel()
 
-	var busyCalls, startCalls int64
+	var busyCalls, poolCfgCalls, startCalls int64
 	var claimedIDs []string
 
 	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) {
+			atomic.AddInt64(&poolCfgCalls, 1)
+			return hotPoolCfg(), nil
+		},
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
 			atomic.AddInt64(&busyCalls, 1)
 			return nil, nil
@@ -287,12 +307,12 @@ func TestClaim_GateOff_NoBusyQuery_NoRunningClaim(t *testing.T) {
 		},
 	}
 
-	// Two config variants that both leave "cold" pool ungated.
+	// Two master-off variants: toggle unset, and toggle off with caps configured.
 	for _, cfg := range []*config.Config{
-		{SubnetIDs: []string{"subnet-1"}}, // HotPools nil
-		{SubnetIDs: []string{"subnet-1"}, HotPools: map[string]config.HotPoolSpec{"other": {LingerMinutes: 5, MaxHot: 1}}}, // different pool
+		{SubnetIDs: []string{"subnet-1"}},
+		{SubnetIDs: []string{"subnet-1"}, HotPoolCaps: config.DefaultHotPoolCaps()},
 	} {
-		busyCalls, startCalls, claimedIDs = 0, 0, nil
+		busyCalls, poolCfgCalls, startCalls, claimedIDs = 0, 0, 0, nil
 		m := NewManager(mockDB, &MockFleetAPI{}, cfg)
 		m.SetEC2Client(mockEC2)
 
@@ -305,6 +325,9 @@ func TestClaim_GateOff_NoBusyQuery_NoRunningClaim(t *testing.T) {
 		}
 		if inst.IsFromRunningSpare() {
 			t.Errorf("IsFromRunningSpare() = true, want false with gate off")
+		}
+		if n := atomic.LoadInt64(&poolCfgCalls); n != 0 {
+			t.Errorf("GetPoolConfig called %d times with gate off, want 0 (zero extra DB reads)", n)
 		}
 		if n := atomic.LoadInt64(&busyCalls); n != 0 {
 			t.Errorf("GetPoolBusyInstanceIDs called %d times with gate off, want 0 (zero extra DB reads)", n)
