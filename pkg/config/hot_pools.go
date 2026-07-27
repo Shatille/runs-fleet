@@ -60,6 +60,31 @@ func DefaultHotPoolCaps() HotPoolCaps {
 	}
 }
 
+// WithDefaults returns a copy of the caps with every zero-valued field replaced
+// by its default, independently per field. Idempotent: caps already fully
+// populated (e.g. by ParseHotPoolCaps) are returned unchanged. Callers hold this
+// as the single fill-in rule so no consumer has to guess which fields are
+// optional or use one field as a canary for the rest.
+func (c HotPoolCaps) WithDefaults() HotPoolCaps {
+	d := DefaultHotPoolCaps()
+	if c.MaxLingerMinutes == 0 {
+		c.MaxLingerMinutes = d.MaxLingerMinutes
+	}
+	if c.MaxHot == 0 {
+		c.MaxHot = d.MaxHot
+	}
+	if c.MinJobsToActivate == 0 {
+		c.MinJobsToActivate = d.MinJobsToActivate
+	}
+	if c.LookbackDays == 0 {
+		c.LookbackDays = d.LookbackDays
+	}
+	if c.BurstGapMinutes == 0 {
+		c.BurstGapMinutes = d.BurstGapMinutes
+	}
+	return c
+}
+
 // ParseHotPoolCaps parses the RUNS_FLEET_HOT_POOL_CAPS JSON object into
 // HotPoolCaps. Blank input yields all defaults. Omitted or zero fields take their
 // default; a negative value or an out-of-range ceiling is a startup error so a
@@ -81,22 +106,7 @@ func ParseHotPoolCaps(jsonStr string) (HotPoolCaps, error) {
 		return HotPoolCaps{}, fmt.Errorf("hot pool caps must be non-negative, got %+v", caps)
 	}
 
-	defaults := DefaultHotPoolCaps()
-	if caps.MaxLingerMinutes == 0 {
-		caps.MaxLingerMinutes = defaults.MaxLingerMinutes
-	}
-	if caps.MaxHot == 0 {
-		caps.MaxHot = defaults.MaxHot
-	}
-	if caps.MinJobsToActivate == 0 {
-		caps.MinJobsToActivate = defaults.MinJobsToActivate
-	}
-	if caps.LookbackDays == 0 {
-		caps.LookbackDays = defaults.LookbackDays
-	}
-	if caps.BurstGapMinutes == 0 {
-		caps.BurstGapMinutes = defaults.BurstGapMinutes
-	}
+	caps = caps.WithDefaults()
 
 	if caps.MaxLingerMinutes > maxCapLingerMinutes {
 		return HotPoolCaps{}, fmt.Errorf("maxLingerMinutes must not exceed %d, got %d", maxCapLingerMinutes, caps.MaxLingerMinutes)

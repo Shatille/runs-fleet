@@ -172,3 +172,38 @@ func TestLoadHotPools(t *testing.T) {
 		}
 	})
 }
+
+func TestHotPoolCapsWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   HotPoolCaps
+		want HotPoolCaps
+	}{
+		{
+			name: "zero value fills every field",
+			in:   HotPoolCaps{},
+			want: DefaultHotPoolCaps(),
+		},
+		{
+			name: "single field set fills the rest independently",
+			in:   HotPoolCaps{MaxHot: 2},
+			want: HotPoolCaps{MaxLingerMinutes: 30, MaxHot: 2, MinJobsToActivate: 20, LookbackDays: 7, BurstGapMinutes: 20},
+		},
+		{
+			name: "fully populated is returned unchanged",
+			in:   HotPoolCaps{MaxLingerMinutes: 20, MaxHot: 2, MinJobsToActivate: 10, LookbackDays: 14, BurstGapMinutes: 30},
+			want: HotPoolCaps{MaxLingerMinutes: 20, MaxHot: 2, MinJobsToActivate: 10, LookbackDays: 14, BurstGapMinutes: 30},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.in.WithDefaults(); got != tt.want {
+				t.Errorf("WithDefaults() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

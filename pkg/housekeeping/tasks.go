@@ -1173,10 +1173,7 @@ func (t *Tasks) ExecutePoolHotTuner(ctx context.Context) error {
 		return nil
 	}
 
-	caps := config.DefaultHotPoolCaps()
-	if t.config != nil && t.config.HotPoolCaps.LookbackDays > 0 {
-		caps = t.config.HotPoolCaps
-	}
+	caps := t.config.HotPoolCaps.WithDefaults()
 
 	since := time.Now().Add(-time.Duration(caps.LookbackDays) * 24 * time.Hour)
 	entries, _, err := t.poolDB.ListJobsForAdmin(ctx, db.AdminJobFilter{Since: since})

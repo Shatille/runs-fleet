@@ -1529,12 +1529,19 @@ func (m *mockPoolDBAPI) DeletePoolConfig(_ context.Context, poolName string) err
 	return nil
 }
 
-func (m *mockPoolDBAPI) ListJobsForAdmin(_ context.Context, _ db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+func (m *mockPoolDBAPI) ListJobsForAdmin(_ context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
 	m.listJobsCalls++
 	if m.listJobsErr != nil {
 		return nil, 0, m.listJobsErr
 	}
-	return m.jobs, len(m.jobs), nil
+	filtered := make([]db.AdminJobEntry, 0, len(m.jobs))
+	for _, j := range m.jobs {
+		if !filter.Since.IsZero() && j.CreatedAt.Before(filter.Since) {
+			continue
+		}
+		filtered = append(filtered, j)
+	}
+	return filtered, len(filtered), nil
 }
 
 func (m *mockPoolDBAPI) UpdatePoolAutoTune(_ context.Context, poolName string, rec db.AutoTuneRec) error {
@@ -1830,6 +1837,38 @@ func TestExecutePoolHotTuner_TunesEveryPool(t *testing.T) {
 	}
 	if rec := poolDB.autoTuneByPool["quiet"]; rec.Reason != autoTuneReasonInsufficient || rec.RecommendedLingerMinutes != 0 {
 		t.Errorf("quiet rec = %+v, want insufficient-history cold", rec)
+	}
+}
+
+// Jobs older than the lookback window are excluded: the tuner passes filter.Since
+// and relies on the store to drop out-of-window rows, so a burst that predates the
+// window must not activate the pool.
+func TestExecutePoolHotTuner_ExcludesJobsBeforeLookback(t *testing.T) {
+	t.Parallel()
+
+	caps := config.DefaultHotPoolCaps()
+	stale := time.Now().Add(-time.Duration(caps.LookbackDays+1) * 24 * time.Hour)
+	var jobs []db.AdminJobEntry
+	for i := 0; i < caps.MinJobsToActivate; i++ {
+		created := stale.Add(time.Duration(i) * 5 * time.Minute)
+		jobs = append(jobs, db.AdminJobEntry{
+			Pool:        "bursty",
+			CreatedAt:   created,
+			CompletedAt: created.Add(time.Minute),
+		})
+	}
+
+	poolDB := &mockPoolDBAPI{pools: []string{"bursty"}, jobs: jobs}
+	tasks := &Tasks{
+		poolDB: poolDB,
+		config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: caps},
+	}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec := poolDB.autoTuneByPool["bursty"]; rec.Reason != autoTuneReasonInsufficient || rec.JobCount != 0 {
+		t.Errorf("bursty rec = %+v, want insufficient-history with 0 in-window jobs", rec)
 	}
 }
 
