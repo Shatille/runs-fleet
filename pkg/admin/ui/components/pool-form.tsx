@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Pool, PoolFormData, Schedule } from '@/lib/types';
+import { AutoTuneRec, Pool, PoolFormData, Schedule } from '@/lib/types';
 
 interface PoolFormProps {
   pool?: Pool;
@@ -10,6 +10,26 @@ interface PoolFormProps {
 }
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// recommendationText renders the tuner's read-only rationale for a pool, or a
+// short note when the pool stays cold or has no recommendation yet.
+function recommendationText(rec?: AutoTuneRec): string {
+  if (!rec || !rec.reason) {
+    return 'No recommendation computed yet.';
+  }
+  const jobs = rec.job_count ?? 0;
+  const days = rec.window_days ?? 0;
+  switch (rec.reason) {
+    case 'tuned':
+      return `Based on ${jobs} jobs over ${days}d: p90 stage gap ${rec.p90_intra_burst_gap_seconds ?? 0}s, peak concurrency ${rec.peak_concurrency ?? 0}, ${rec.burst_count ?? 0} bursts → recommends ${rec.recommended_linger_minutes ?? 0}m linger / ${rec.recommended_max_hot ?? 0} maxHot.`;
+    case 'insufficient-history':
+      return `Insufficient history (${jobs} jobs over ${days}d) → stays cold.`;
+    case 'no-burst-pattern':
+      return `No burst pattern over ${days}d (${jobs} jobs) → stays cold.`;
+    default:
+      return `Recommendation: ${rec.reason}.`;
+  }
+}
 
 function emptySchedule(): Schedule {
   return {
@@ -36,6 +56,8 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
     ram_max: pool?.ram_max || 0,
     families: pool?.families || [],
     schedules: pool?.schedules || [],
+    override_linger_minutes: pool?.override_linger_minutes ?? null,
+    override_max_hot: pool?.override_max_hot ?? null,
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -60,6 +82,16 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
     setFormData((prev) => ({
       ...prev,
       [name]: type === 'number' ? (value === '' ? 0 : Number(value)) : value,
+    }));
+  }
+
+  // handleOverrideChange maps an empty input to null ("use the recommendation"),
+  // NOT 0, so clearing the field falls back to auto rather than forcing cold.
+  function handleOverrideChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value === '' ? null : Number(value),
     }));
   }
 
@@ -295,6 +327,53 @@ export default function PoolForm({ pool, onSubmit, isEdit = false }: PoolFormPro
             placeholder="c7g, m7g, r7g"
           />
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Comma-separated list of instance families</p>
+        </div>
+      </div>
+
+      <div className="border-t dark:border-gray-700 pt-6">
+        <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-1">Hot Pool</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          Linger/maxHot are auto-tuned from run history. Leave an override blank to use the
+          recommendation; set 0 to force the pool cold. Overrides only take effect when hot pools
+          are enabled fleet-wide.
+        </p>
+        <div className="rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3 mb-4">
+          <p className="text-sm text-blue-800 dark:text-blue-300">{recommendationText(pool?.auto_tune)}</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <label htmlFor="override_linger_minutes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Override Linger (minutes)
+            </label>
+            <input
+              type="number"
+              id="override_linger_minutes"
+              name="override_linger_minutes"
+              value={formData.override_linger_minutes ?? ''}
+              onChange={handleOverrideChange}
+              min="0"
+              className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              placeholder={pool?.auto_tune?.recommended_linger_minutes != null ? String(pool.auto_tune.recommended_linger_minutes) : 'auto'}
+            />
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Blank = use recommendation; 0 = force cold</p>
+          </div>
+
+          <div>
+            <label htmlFor="override_max_hot" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Override Max Hot
+            </label>
+            <input
+              type="number"
+              id="override_max_hot"
+              name="override_max_hot"
+              value={formData.override_max_hot ?? ''}
+              onChange={handleOverrideChange}
+              min="0"
+              className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              placeholder={pool?.auto_tune?.recommended_max_hot != null ? String(pool.auto_tune.recommended_max_hot) : 'auto'}
+            />
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Running spares kept during the linger window</p>
+          </div>
         </div>
       </div>
 

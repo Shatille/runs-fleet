@@ -17,6 +17,21 @@ export interface Pool {
   schedules?: Schedule[];
   last_reconcile_at?: string;
   last_reconcile_result?: string;
+  override_linger_minutes?: number | null;
+  override_max_hot?: number | null;
+  auto_tune?: AutoTuneRec;
+}
+
+export interface AutoTuneRec {
+  recommended_linger_minutes?: number;
+  recommended_max_hot?: number;
+  window_days?: number;
+  job_count?: number;
+  burst_count?: number;
+  p90_intra_burst_gap_seconds?: number;
+  peak_concurrency?: number;
+  reason?: string;
+  tuned_at?: string;
 }
 
 export interface Schedule {
@@ -41,6 +56,8 @@ export interface PoolFormData {
   ram_max: number;
   families: string[];
   schedules: Schedule[];
+  override_linger_minutes: number | null;
+  override_max_hot: number | null;
 }
 
 export interface Job {
