@@ -108,6 +108,8 @@ type PoolDBAPI interface {
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolConfig(ctx context.Context, poolName string) (*PoolConfig, error)
 	DeletePoolConfig(ctx context.Context, poolName string) error
+	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
+	UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error
 }
 
 // Tasks implements housekeeping task execution.
@@ -1147,6 +1149,67 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 		cleaned++
 	}
 
+	return nil
+}
+
+// ExecutePoolHotTuner recomputes each pool's hot-pool linger/maxHot recommendation
+// from recent run history and persists it via UpdatePoolAutoTune. It runs on the
+// hourly housekeeping timer, deduplicated across replicas by the task lock.
+//
+// It runs regardless of the master toggle: pre-populating recommendations while
+// hot pools are off lets an operator preview per-pool deductions in the admin UI
+// before turning the feature on. The recommendation is inert until the toggle is
+// on — reconcile reads it only then. A single fully-paginated ListJobsForAdmin
+// over the lookback window is grouped by pool in memory (not a per-pool GSI query,
+// which truncates at one page); every existing pool then gets a fresh
+// recommendation, including the cold ones (insufficient-history / no-burst).
+func (t *Tasks) ExecutePoolHotTuner(ctx context.Context) error {
+	if t.poolDB == nil {
+		return nil
+	}
+
+	caps := config.DefaultHotPoolCaps()
+	if t.config != nil && t.config.HotPoolCaps.LookbackDays > 0 {
+		caps = t.config.HotPoolCaps
+	}
+
+	since := time.Now().Add(-time.Duration(caps.LookbackDays) * 24 * time.Hour)
+	entries, _, err := t.poolDB.ListJobsForAdmin(ctx, db.AdminJobFilter{Since: since})
+	if err != nil {
+		return fmt.Errorf("failed to list jobs for hot tuner: %w", err)
+	}
+
+	byPool := make(map[string][]db.AdminJobEntry)
+	for _, e := range entries {
+		if e.Pool == "" {
+			continue
+		}
+		byPool[e.Pool] = append(byPool[e.Pool], e)
+	}
+
+	pools, err := t.poolDB.ListPools(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list pools for hot tuner: %w", err)
+	}
+
+	var tuned int
+	for _, poolName := range pools {
+		rec := deriveAutoTune(byPool[poolName], caps)
+		if err := t.poolDB.UpdatePoolAutoTune(ctx, poolName, rec); err != nil {
+			if errors.Is(err, db.ErrPoolNotFound) {
+				continue // pool deleted mid-tune; benign
+			}
+			t.logger().Error(ctx, "pool auto-tune update failed",
+				slog.String(logging.KeyPoolName, poolName),
+				slog.String("error", err.Error()))
+			continue
+		}
+		tuned++
+	}
+
+	t.logger().Debug(ctx, "hot tuner pass complete",
+		slog.Int("pools", len(pools)),
+		slog.Int("tuned", tuned))
 	return nil
 }
 

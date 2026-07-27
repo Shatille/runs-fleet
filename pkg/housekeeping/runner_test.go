@@ -25,6 +25,7 @@ type mockTaskExecutor struct {
 	dlqErr             error
 	ephemeralPoolErr   error
 	packerErr          error
+	hotTunerErr        error
 	orphanedCall       int
 	ssmCall            int
 	jobsCall           int
@@ -36,6 +37,7 @@ type mockTaskExecutor struct {
 	dlqCall            int
 	ephemeralPoolCall  int
 	packerCall         int
+	hotTunerCall       int
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -91,6 +93,11 @@ func (m *mockTaskExecutor) ExecuteEphemeralPoolCleanup(_ context.Context) error 
 func (m *mockTaskExecutor) ExecuteOrphanedPackerInstances(_ context.Context) error {
 	m.packerCall++
 	return m.packerErr
+}
+
+func (m *mockTaskExecutor) ExecutePoolHotTuner(_ context.Context) error {
+	m.hotTunerCall++
+	return m.hotTunerErr
 }
 
 // mockTaskLocker implements TaskLocker for testing.
@@ -159,6 +166,7 @@ func longIntervals() SchedulerConfig {
 		StaleJobsInterval:               d,
 		UnconfirmedRunnersInterval:      d,
 		OrphanedPackerInstancesInterval: d,
+		PoolHotTunerInterval:            d,
 	}
 }
 
@@ -215,7 +223,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 	want := []TaskType{
 		TaskOrphanedInstances, TaskStaleSecrets, TaskOldJobs, TaskOrphanedJobs,
 		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
-		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances,
+		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances, TaskPoolHotTuner,
 	}
 	r := NewRunner(&mockTaskExecutor{}, DefaultSchedulerConfig())
 	specs := r.taskSpecs()
@@ -567,6 +575,12 @@ func TestRunner_Run_StopsOnCancel(t *testing.T) {
 type countingExecutor struct {
 	mockTaskExecutor
 	staleSecrets atomic.Int64
+	hotTuner     atomic.Int64
+}
+
+func (c *countingExecutor) ExecutePoolHotTuner(_ context.Context) error {
+	c.hotTuner.Add(1)
+	return nil
 }
 
 func (c *countingExecutor) ExecuteStaleSecrets(ctx context.Context) error {
@@ -622,6 +636,44 @@ func TestRunner_Run_FiresTasksOnInterval(t *testing.T) {
 	})
 }
 
+// TestRunner_Run_FiresHotTunerOnInterval proves the hot-tuner task, which has no
+// initial run, fires once per elapsed interval off its own ticker.
+func TestRunner_Run_FiresHotTunerOnInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = time.Minute
+		const n = 3
+
+		cfg := longIntervals()
+		cfg.PoolHotTunerInterval = interval
+
+		exec := &countingExecutor{}
+		r := NewRunner(exec, cfg)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			r.Run(ctx)
+			close(done)
+		}()
+
+		synctest.Wait()
+		time.Sleep(n*interval + interval/2)
+		synctest.Wait()
+
+		if got := exec.hotTuner.Load(); got != int64(n) {
+			t.Errorf("PoolHotTuner fired %d times over %d intervals, want %d", got, n, n)
+		}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("Run did not return after cancel")
+		}
+	})
+}
+
 func TestTaskTypeConstants(t *testing.T) {
 	t.Parallel()
 
@@ -639,6 +691,7 @@ func TestTaskTypeConstants(t *testing.T) {
 		{TaskOrphanedJobs, "orphaned_jobs"},
 		{TaskStaleJobs, "stale_jobs"},
 		{TaskOrphanedPackerInstances, "orphaned_packer_instances"},
+		{TaskPoolHotTuner, "pool_hot_tuner"},
 	}
 
 	for _, tt := range tests {

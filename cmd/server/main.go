@@ -764,6 +764,14 @@ func (p *poolDBAdapter) DeletePoolConfig(ctx context.Context, poolName string) e
 	return p.client.DeletePoolConfig(ctx, poolName)
 }
 
+func (p *poolDBAdapter) ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+	return p.client.ListJobsForAdmin(ctx, filter)
+}
+
+func (p *poolDBAdapter) UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error {
+	return p.client.UpdatePoolAutoTune(ctx, poolName, rec)
+}
+
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
 type githubJobCheckerAdapter struct {
 	client *gh.Client
