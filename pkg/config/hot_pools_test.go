@@ -6,97 +6,69 @@ import (
 	"testing"
 )
 
-func TestParseHotPools(t *testing.T) {
+func TestParseHotPoolCaps(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
 		input   string
-		want    map[string]HotPoolSpec
+		want    HotPoolCaps
 		wantErr string
 	}{
 		{
-			name:  "empty input yields nil map",
+			name:  "empty input yields all defaults",
 			input: "",
-			want:  nil,
+			want:  DefaultHotPoolCaps(),
 		},
 		{
-			name:  "whitespace only yields nil map",
+			name:  "whitespace only yields all defaults",
 			input: "   \n\t ",
-			want:  nil,
+			want:  DefaultHotPoolCaps(),
 		},
 		{
-			name:  "single pool with explicit fields",
-			input: `{"portal-api":{"lingerMinutes":15,"maxHot":2}}`,
-			want:  map[string]HotPoolSpec{"portal-api": {LingerMinutes: 15, MaxHot: 2}},
+			name:  "explicit full object",
+			input: `{"maxLingerMinutes":20,"maxHot":2,"minJobsToActivate":10,"lookbackDays":14,"burstGapMinutes":30}`,
+			want:  HotPoolCaps{MaxLingerMinutes: 20, MaxHot: 2, MinJobsToActivate: 10, LookbackDays: 14, BurstGapMinutes: 30},
 		},
 		{
-			name:  "maxHot defaults to 1 when omitted",
-			input: `{"portal-api":{"lingerMinutes":10}}`,
-			want:  map[string]HotPoolSpec{"portal-api": {LingerMinutes: 10, MaxHot: 1}},
+			name:  "omitted fields take defaults",
+			input: `{"maxLingerMinutes":45}`,
+			want:  HotPoolCaps{MaxLingerMinutes: 45, MaxHot: 3, MinJobsToActivate: 20, LookbackDays: 7, BurstGapMinutes: 20},
 		},
 		{
-			name:  "maxHot defaults to 1 when zero",
-			input: `{"portal-api":{"lingerMinutes":10,"maxHot":0}}`,
-			want:  map[string]HotPoolSpec{"portal-api": {LingerMinutes: 10, MaxHot: 1}},
-		},
-		{
-			name:  "multiple pools",
-			input: `{"a":{"lingerMinutes":5,"maxHot":1},"b":{"lingerMinutes":120,"maxHot":5}}`,
-			want: map[string]HotPoolSpec{
-				"a": {LingerMinutes: 5, MaxHot: 1},
-				"b": {LingerMinutes: 120, MaxHot: 5},
-			},
+			name:  "zero field takes default",
+			input: `{"maxHot":0,"maxLingerMinutes":10}`,
+			want:  HotPoolCaps{MaxLingerMinutes: 10, MaxHot: 3, MinJobsToActivate: 20, LookbackDays: 7, BurstGapMinutes: 20},
 		},
 		{
 			name:    "unknown field rejected",
-			input:   `{"portal-api":{"lingerMinutes":10,"bogus":true}}`,
-			wantErr: "unknown field",
+			input:   `{"bogus":true}`,
+			wantErr: "invalid hot pool caps JSON",
 		},
 		{
 			name:    "malformed JSON rejected",
-			input:   `{"portal-api":`,
-			wantErr: "invalid hot pools JSON",
+			input:   `{"maxHot":`,
+			wantErr: "invalid hot pool caps JSON",
 		},
 		{
-			name:    "lingerMinutes below 1 rejected",
-			input:   `{"portal-api":{"lingerMinutes":0}}`,
-			wantErr: "lingerMinutes",
+			name:    "negative rejected",
+			input:   `{"maxHot":-1}`,
+			wantErr: "non-negative",
 		},
 		{
-			name:    "lingerMinutes above 120 rejected",
-			input:   `{"portal-api":{"lingerMinutes":121}}`,
-			wantErr: "lingerMinutes",
+			name:    "maxLingerMinutes above ceiling rejected",
+			input:   `{"maxLingerMinutes":121}`,
+			wantErr: "maxLingerMinutes",
 		},
 		{
-			name:    "maxHot above 5 rejected",
-			input:   `{"portal-api":{"lingerMinutes":10,"maxHot":6}}`,
+			name:    "maxHot above ceiling rejected",
+			input:   `{"maxHot":11}`,
 			wantErr: "maxHot",
 		},
 		{
-			name:    "maxHot below 0 rejected",
-			input:   `{"portal-api":{"lingerMinutes":10,"maxHot":-1}}`,
-			wantErr: "maxHot",
-		},
-		{
-			name:    "empty pool name rejected",
-			input:   `{"":{"lingerMinutes":10}}`,
-			wantErr: "pool name",
-		},
-		{
-			name:    "invalid pool name rejected",
-			input:   `{"bad name!":{"lingerMinutes":10}}`,
-			wantErr: "pool name",
-		},
-		{
-			name:    "pool name over 63 chars rejected",
-			input:   `{"` + strings.Repeat("a", 64) + `":{"lingerMinutes":10}}`,
-			wantErr: "pool name",
-		},
-		{
-			name:  "pool name exactly 63 chars accepted",
-			input: `{"` + strings.Repeat("a", 63) + `":{"lingerMinutes":10}}`,
-			want:  map[string]HotPoolSpec{strings.Repeat("a", 63): {LingerMinutes: 10, MaxHot: 1}},
+			name:    "lookbackDays above ceiling rejected",
+			input:   `{"lookbackDays":91}`,
+			wantErr: "lookbackDays",
 		},
 	}
 
@@ -104,30 +76,21 @@ func TestParseHotPools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := ParseHotPools(tt.input)
+			got, err := ParseHotPoolCaps(tt.input)
 			if tt.wantErr != "" {
 				if err == nil {
-					t.Fatalf("ParseHotPools(%q) = nil error, want error containing %q", tt.input, tt.wantErr)
+					t.Fatalf("ParseHotPoolCaps(%q) = nil error, want %q", tt.input, tt.wantErr)
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("ParseHotPools(%q) error = %q, want containing %q", tt.input, err.Error(), tt.wantErr)
+					t.Fatalf("ParseHotPoolCaps(%q) error = %q, want containing %q", tt.input, err.Error(), tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("ParseHotPools(%q) unexpected error: %v", tt.input, err)
+				t.Fatalf("ParseHotPoolCaps(%q) unexpected error: %v", tt.input, err)
 			}
-			if len(got) != len(tt.want) {
-				t.Fatalf("ParseHotPools(%q) = %v (len %d), want %v (len %d)", tt.input, got, len(got), tt.want, len(tt.want))
-			}
-			for name, wantSpec := range tt.want {
-				gotSpec, ok := got[name]
-				if !ok {
-					t.Fatalf("ParseHotPools(%q) missing pool %q", tt.input, name)
-				}
-				if gotSpec != wantSpec {
-					t.Errorf("ParseHotPools(%q) pool %q = %+v, want %+v", tt.input, name, gotSpec, wantSpec)
-				}
+			if got != tt.want {
+				t.Errorf("ParseHotPoolCaps(%q) = %+v, want %+v", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -163,38 +126,49 @@ func TestLoadHotPools(t *testing.T) {
 		}
 	}
 
-	t.Run("unset yields nil HotPools", func(t *testing.T) {
+	t.Run("unset yields disabled with default caps", func(t *testing.T) {
 		setBase()
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load() unexpected error: %v", err)
 		}
-		if cfg.HotPools != nil {
-			t.Errorf("HotPools = %v, want nil when unset", cfg.HotPools)
+		if cfg.HotPoolsEnabled {
+			t.Error("HotPoolsEnabled = true, want false when unset")
+		}
+		if cfg.HotPoolCaps != DefaultHotPoolCaps() {
+			t.Errorf("HotPoolCaps = %+v, want defaults", cfg.HotPoolCaps)
 		}
 	})
 
-	t.Run("valid JSON parses into HotPools", func(t *testing.T) {
+	t.Run("enabled toggle parses", func(t *testing.T) {
 		setBase()
-		_ = os.Setenv("RUNS_FLEET_HOT_POOLS", `{"portal-api":{"lingerMinutes":15,"maxHot":2}}`)
+		_ = os.Setenv("RUNS_FLEET_HOT_POOLS_ENABLED", "true")
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load() unexpected error: %v", err)
 		}
-		spec, ok := cfg.HotPools["portal-api"]
-		if !ok {
-			t.Fatalf("HotPools missing portal-api: %v", cfg.HotPools)
-		}
-		if spec.LingerMinutes != 15 || spec.MaxHot != 2 {
-			t.Errorf("HotPools[portal-api] = %+v, want {LingerMinutes:15 MaxHot:2}", spec)
+		if !cfg.HotPoolsEnabled {
+			t.Error("HotPoolsEnabled = false, want true")
 		}
 	})
 
-	t.Run("invalid JSON fails Load fast", func(t *testing.T) {
+	t.Run("caps JSON parses", func(t *testing.T) {
 		setBase()
-		_ = os.Setenv("RUNS_FLEET_HOT_POOLS", `{"portal-api":{"lingerMinutes":999}}`)
+		_ = os.Setenv("RUNS_FLEET_HOT_POOL_CAPS", `{"maxLingerMinutes":20,"maxHot":2}`)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() unexpected error: %v", err)
+		}
+		if cfg.HotPoolCaps.MaxLingerMinutes != 20 || cfg.HotPoolCaps.MaxHot != 2 {
+			t.Errorf("HotPoolCaps = %+v, want maxLinger 20 maxHot 2", cfg.HotPoolCaps)
+		}
+	})
+
+	t.Run("invalid caps JSON fails Load fast", func(t *testing.T) {
+		setBase()
+		_ = os.Setenv("RUNS_FLEET_HOT_POOL_CAPS", `{"maxHot":999}`)
 		if _, err := Load(); err == nil {
-			t.Fatal("Load() = nil error, want failure on out-of-range lingerMinutes")
+			t.Fatal("Load() = nil error, want failure on out-of-range maxHot")
 		}
 	})
 }

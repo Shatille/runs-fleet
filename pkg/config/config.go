@@ -29,10 +29,13 @@ type Config struct {
 	// runs-on labels to runs-fleet specs. Parsed and validated at startup.
 	LabelAliasesJSON string
 
-	// HotPools is the per-pool hot-linger allowlist (RUNS_FLEET_HOT_POOLS),
-	// parsed at startup. Nil = feature off (no pool lingers hot); a pool absent
-	// from the map behaves exactly as today. See ParseHotPools.
-	HotPools map[string]HotPoolSpec
+	// Hot pools: a single master toggle plus fleet-wide safety caps. When
+	// HotPoolsEnabled is false (default) the feature is entirely off and the pool
+	// path is byte-identical to the cold path. When on, per-pool linger/maxHot is
+	// auto-deduced from run history (or operator-overridden in the admin UI),
+	// bounded by HotPoolCaps. There is no per-pool Helm config. See HotPoolCaps.
+	HotPoolsEnabled bool
+	HotPoolCaps     HotPoolCaps
 
 	QueueURL             string
 	QueueDLQURL          string
@@ -240,11 +243,12 @@ func Load() (*Config, error) {
 		cfg.Tags = tags
 	}
 
-	hotPools, hpErr := ParseHotPools(getEnv("RUNS_FLEET_HOT_POOLS", ""))
+	cfg.HotPoolsEnabled = getEnvBool("RUNS_FLEET_HOT_POOLS_ENABLED", false)
+	hotPoolCaps, hpErr := ParseHotPoolCaps(getEnv("RUNS_FLEET_HOT_POOL_CAPS", ""))
 	if hpErr != nil {
 		return nil, fmt.Errorf("config error: %w", hpErr)
 	}
-	cfg.HotPools = hotPools
+	cfg.HotPoolCaps = hotPoolCaps
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)

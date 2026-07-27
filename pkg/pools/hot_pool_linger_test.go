@@ -18,10 +18,22 @@ import (
 
 const lingerPoolName = "portal-api"
 
-func hotPoolConfig(pool string, linger, maxHot int) *config.Config {
+// hotEnabledConfig is the master-on config with default caps. Per-pool linger now
+// lives on the PoolConfig (AutoTune / Override), not the Config.
+func hotEnabledConfig() *config.Config {
 	return &config.Config{
-		SubnetIDs: []string{"subnet-1"},
-		HotPools:  map[string]config.HotPoolSpec{pool: {LingerMinutes: linger, MaxHot: maxHot}},
+		SubnetIDs:       []string{"subnet-1"},
+		HotPoolsEnabled: true,
+		HotPoolCaps:     config.DefaultHotPoolCaps(),
+	}
+}
+
+// autoTuned builds a PoolConfig carrying a tuner recommendation.
+func autoTuned(pool string, linger, maxHot int, lastJob time.Time) *db.PoolConfig {
+	return &db.PoolConfig{
+		PoolName:    pool,
+		LastJobTime: lastJob,
+		AutoTune:    &db.AutoTuneRec{RecommendedLingerMinutes: linger, RecommendedMaxHot: maxHot, Reason: "tuned"},
 	}
 }
 
@@ -29,6 +41,9 @@ func TestLingerDesiredRunning(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
+	enabled := hotEnabledConfig()
+	disabled := &config.Config{SubnetIDs: []string{"subnet-1"}}
+
 	tests := []struct {
 		name string
 		cfg  *config.Config
@@ -36,40 +51,70 @@ func TestLingerDesiredRunning(t *testing.T) {
 		want int
 	}{
 		{
-			name: "nil HotPools returns 0 (gate off)",
-			cfg:  &config.Config{},
+			name: "master off returns 0 (gate off)",
+			cfg:  disabled,
+			pool: autoTuned(lingerPoolName, 15, 2, now.Add(-1*time.Minute)),
+			want: 0,
+		},
+		{
+			name: "no recommendation returns 0",
+			cfg:  enabled,
 			pool: &db.PoolConfig{PoolName: lingerPoolName, LastJobTime: now.Add(-1 * time.Minute)},
 			want: 0,
 		},
 		{
-			name: "pool not in allowlist returns 0",
-			cfg:  hotPoolConfig("other-pool", 15, 2),
-			pool: &db.PoolConfig{PoolName: lingerPoolName, LastJobTime: now.Add(-1 * time.Minute)},
-			want: 0,
-		},
-		{
-			name: "within linger window returns MaxHot",
-			cfg:  hotPoolConfig(lingerPoolName, 15, 2),
-			pool: &db.PoolConfig{PoolName: lingerPoolName, LastJobTime: now.Add(-5 * time.Minute)},
+			name: "within linger window returns recommended maxHot",
+			cfg:  enabled,
+			pool: autoTuned(lingerPoolName, 15, 2, now.Add(-5*time.Minute)),
 			want: 2,
 		},
 		{
 			name: "past linger window returns 0",
-			cfg:  hotPoolConfig(lingerPoolName, 15, 2),
-			pool: &db.PoolConfig{PoolName: lingerPoolName, LastJobTime: now.Add(-16 * time.Minute)},
+			cfg:  enabled,
+			pool: autoTuned(lingerPoolName, 15, 2, now.Add(-16*time.Minute)),
 			want: 0,
 		},
 		{
 			name: "exactly at linger boundary returns 0 (decayed)",
-			cfg:  hotPoolConfig(lingerPoolName, 15, 2),
-			pool: &db.PoolConfig{PoolName: lingerPoolName, LastJobTime: now.Add(-15 * time.Minute)},
+			cfg:  enabled,
+			pool: autoTuned(lingerPoolName, 15, 2, now.Add(-15*time.Minute)),
 			want: 0,
 		},
 		{
 			name: "zero LastJobTime returns 0 (never active)",
-			cfg:  hotPoolConfig(lingerPoolName, 15, 2),
-			pool: &db.PoolConfig{PoolName: lingerPoolName},
+			cfg:  enabled,
+			pool: autoTuned(lingerPoolName, 15, 2, time.Time{}),
 			want: 0,
+		},
+		{
+			name: "override linger wins over auto",
+			cfg:  enabled,
+			pool: func() *db.PoolConfig {
+				pc := autoTuned(lingerPoolName, 15, 2, now.Add(-9*time.Minute))
+				pc.OverrideLingerMinutes = intPtr(5) // auto would be active at -9m; override 5m decays it
+				return pc
+			}(),
+			want: 0,
+		},
+		{
+			name: "override &0 forces cold despite auto>0",
+			cfg:  enabled,
+			pool: func() *db.PoolConfig {
+				pc := autoTuned(lingerPoolName, 15, 2, now.Add(-1*time.Minute))
+				pc.OverrideLingerMinutes = intPtr(0)
+				return pc
+			}(),
+			want: 0,
+		},
+		{
+			name: "override maxHot wins over auto maxHot",
+			cfg:  enabled,
+			pool: func() *db.PoolConfig {
+				pc := autoTuned(lingerPoolName, 15, 2, now.Add(-1*time.Minute))
+				pc.OverrideMaxHot = intPtr(1)
+				return pc
+			}(),
+			want: 1,
 		},
 	}
 
@@ -79,6 +124,89 @@ func TestLingerDesiredRunning(t *testing.T) {
 			m := NewManager(&MockDBClient{}, &MockFleetAPI{}, tt.cfg)
 			if got := m.lingerDesiredRunning(tt.pool, now); got != tt.want {
 				t.Errorf("lingerDesiredRunning() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// intPtr is a local *int helper for override fixtures.
+func intPtr(n int) *int { return &n }
+
+// effectiveHotSpec resolves override > auto > off, clamped to caps.
+func TestEffectiveHotSpec(t *testing.T) {
+	t.Parallel()
+
+	enabled := hotEnabledConfig() // caps: linger 30, maxHot 3
+
+	tests := []struct {
+		name       string
+		cfg        *config.Config
+		pool       *db.PoolConfig
+		wantLinger int
+		wantMaxHot int
+	}{
+		{
+			name:       "master off => off",
+			cfg:        &config.Config{HotPoolsEnabled: false},
+			pool:       autoTuned("p", 10, 2, time.Time{}),
+			wantLinger: 0, wantMaxHot: 0,
+		},
+		{
+			name:       "nil pool => off",
+			cfg:        enabled,
+			pool:       nil,
+			wantLinger: 0, wantMaxHot: 0,
+		},
+		{
+			name:       "auto only",
+			cfg:        enabled,
+			pool:       autoTuned("p", 10, 2, time.Time{}),
+			wantLinger: 10, wantMaxHot: 2,
+		},
+		{
+			name: "override linger wins, auto maxHot kept",
+			cfg:  enabled,
+			pool: func() *db.PoolConfig {
+				pc := autoTuned("p", 10, 2, time.Time{})
+				pc.OverrideLingerMinutes = intPtr(7)
+				return pc
+			}(),
+			wantLinger: 7, wantMaxHot: 2,
+		},
+		{
+			name: "override &0 linger => off",
+			cfg:  enabled,
+			pool: func() *db.PoolConfig {
+				pc := autoTuned("p", 10, 2, time.Time{})
+				pc.OverrideLingerMinutes = intPtr(0)
+				return pc
+			}(),
+			wantLinger: 0, wantMaxHot: 0,
+		},
+		{
+			name:       "caps clamp linger and maxHot",
+			cfg:        enabled,
+			pool:       autoTuned("p", 999, 99, time.Time{}),
+			wantLinger: 30, wantMaxHot: 3,
+		},
+		{
+			name: "linger active but maxHot 0 floors to 1",
+			cfg:  enabled,
+			pool: func() *db.PoolConfig {
+				pc := autoTuned("p", 10, 0, time.Time{})
+				return pc
+			}(),
+			wantLinger: 10, wantMaxHot: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := NewManager(&MockDBClient{}, &MockFleetAPI{}, tt.cfg)
+			linger, maxHot := m.effectiveHotSpec(tt.pool)
+			if linger != tt.wantLinger || maxHot != tt.wantMaxHot {
+				t.Errorf("effectiveHotSpec() = (%d, %d), want (%d, %d)", linger, maxHot, tt.wantLinger, tt.wantMaxHot)
 			}
 		})
 	}
@@ -100,6 +228,7 @@ func TestReconcileLingerStartsSpare(t *testing.T) {
 				Ephemeral:    true,
 				LastJobTime:  time.Now().Add(-2 * time.Minute), // within a 15-min linger
 				InstanceType: "c7g.large",
+				AutoTune:     &db.AutoTuneRec{RecommendedLingerMinutes: 15, RecommendedMaxHot: 1, Reason: "tuned"},
 			}, nil
 		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) { return 0, nil },
@@ -122,7 +251,7 @@ func TestReconcileLingerStartsSpare(t *testing.T) {
 	}
 
 	recordingMetrics := &lingerMetrics{}
-	m := NewManager(mockDB, &MockFleetAPI{}, hotPoolConfig(lingerPoolName, 15, 1))
+	m := NewManager(mockDB, &MockFleetAPI{}, hotEnabledConfig())
 	m.SetEC2Client(mockEC2)
 	m.SetMetrics(recordingMetrics)
 
@@ -153,6 +282,7 @@ func TestReconcileLingerExpiryBanksSpare(t *testing.T) {
 				Ephemeral:    true,
 				LastJobTime:  time.Now().Add(-30 * time.Minute), // past a 15-min linger
 				InstanceType: "c7g.large",
+				AutoTune:     &db.AutoTuneRec{RecommendedLingerMinutes: 15, RecommendedMaxHot: 1, Reason: "tuned"},
 			}, nil
 		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) { return 0, nil },
@@ -175,7 +305,7 @@ func TestReconcileLingerExpiryBanksSpare(t *testing.T) {
 		},
 	}
 
-	m := NewManager(mockDB, &MockFleetAPI{}, hotPoolConfig(lingerPoolName, 15, 1))
+	m := NewManager(mockDB, &MockFleetAPI{}, hotEnabledConfig())
 	m.SetEC2Client(mockEC2)
 	m.readyDwellPeriod = 0 // exercise decay in a single pass
 
@@ -394,23 +524,25 @@ func TestReconcileGateOffNoRegression(t *testing.T) {
 		},
 	}
 
-	// The gate-off baseline (HotPools nil) versus two "configured but not for this
-	// pool" variants. All three MUST produce identical call sequences: the feature
-	// is inert unless RUNS_FLEET_HOT_POOLS names the pool being reconciled.
+	// The master-off baseline versus two variants that leave every pool cold: master
+	// off with caps configured, and master ON but no pool carries a recommendation
+	// (linger resolves to 0). All three MUST produce identical call sequences: the
+	// feature is inert unless a pool's effective linger is active.
 	variants := []struct {
 		name string
 		cfg  func() *config.Config
 	}{
-		{name: "HotPools nil (gate off)", cfg: func() *config.Config {
+		{name: "master off (gate off)", cfg: func() *config.Config {
 			return &config.Config{SubnetIDs: []string{"subnet-1"}}
 		}},
-		{name: "HotPools empty map", cfg: func() *config.Config {
-			return &config.Config{SubnetIDs: []string{"subnet-1"}, HotPools: map[string]config.HotPoolSpec{}}
+		{name: "master off with caps set", cfg: func() *config.Config {
+			return &config.Config{SubnetIDs: []string{"subnet-1"}, HotPoolCaps: config.DefaultHotPoolCaps()}
 		}},
-		{name: "HotPools for a different pool", cfg: func() *config.Config {
+		{name: "master on but no recommendation (stays cold)", cfg: func() *config.Config {
 			return &config.Config{
-				SubnetIDs: []string{"subnet-1"},
-				HotPools:  map[string]config.HotPoolSpec{"portal-api": {LingerMinutes: 15, MaxHot: 3}},
+				SubnetIDs:       []string{"subnet-1"},
+				HotPoolsEnabled: true,
+				HotPoolCaps:     config.DefaultHotPoolCaps(),
 			}
 		}},
 	}
