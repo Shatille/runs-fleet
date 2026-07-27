@@ -148,9 +148,11 @@ set a per-pool override that wins.
 **Effective spec per pool** resolves as `override > auto-recommendation > off`,
 clamped to `RUNS_FLEET_HOT_POOL_CAPS`, and only when the master toggle is on.
 **Cold-until-proven:** a pool with too little history, or no genuine burst
-pattern, deduces to `linger=0` (fully cold, $0). The hourly tuner runs even while
-the master toggle is off, so operators can preview recommendations in the admin UI
-before enabling the feature.
+pattern, deduces to `linger=0` (fully cold, $0). The hourly tuner is itself gated
+on the master toggle — with hot pools off it does no work and adds no DynamoDB
+load, so an upgrade is behavior- and cost-neutral for fleets that never enable the
+feature. After enabling, pools stay cold for at most one tuner tick until the
+first pass populates recommendations (a safe cold→warm direction).
 
 ### Caps (`RUNS_FLEET_HOT_POOL_CAPS`)
 

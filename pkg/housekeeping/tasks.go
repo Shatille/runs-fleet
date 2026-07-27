@@ -1156,15 +1156,20 @@ func (t *Tasks) ExecuteEphemeralPoolCleanup(ctx context.Context) error {
 // from recent run history and persists it via UpdatePoolAutoTune. It runs on the
 // hourly housekeeping timer, deduplicated across replicas by the task lock.
 //
-// It runs regardless of the master toggle: pre-populating recommendations while
-// hot pools are off lets an operator preview per-pool deductions in the admin UI
-// before turning the feature on. The recommendation is inert until the toggle is
-// on — reconcile reads it only then. A single fully-paginated ListJobsForAdmin
-// over the lookback window is grouped by pool in memory (not a per-pool GSI query,
-// which truncates at one page); every existing pool then gets a fresh
-// recommendation, including the cold ones (insufficient-history / no-burst).
+// It is gated on the master toggle: when hot pools are off it returns immediately
+// without touching DynamoDB, so an upgrade adds no steady-state load to a fleet
+// that never enables the feature — the same "off = zero change" invariant the
+// claim and reconcile paths uphold. When on, a single fully-paginated
+// ListJobsForAdmin over the lookback window is grouped by pool in memory (not a
+// per-pool GSI query, which truncates at one page); every existing pool then gets
+// a fresh recommendation, including the cold ones (insufficient-history /
+// no-burst). Newly enabled pools stay cold (no recommendation) for at most one
+// tick until the first pass populates them — a safe cold→warm direction.
 func (t *Tasks) ExecutePoolHotTuner(ctx context.Context) error {
 	if t.poolDB == nil {
+		return nil
+	}
+	if t.config == nil || !t.config.HotPoolsEnabled {
 		return nil
 	}
 

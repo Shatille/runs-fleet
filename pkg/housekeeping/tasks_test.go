@@ -1499,6 +1499,7 @@ type mockPoolDBAPI struct {
 
 	jobs           []db.AdminJobEntry
 	listJobsErr    error
+	listJobsCalls  int
 	autoTuneErr    error
 	autoTuneByPool map[string]db.AutoTuneRec
 }
@@ -1529,6 +1530,7 @@ func (m *mockPoolDBAPI) DeletePoolConfig(_ context.Context, poolName string) err
 }
 
 func (m *mockPoolDBAPI) ListJobsForAdmin(_ context.Context, _ db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+	m.listJobsCalls++
 	if m.listJobsErr != nil {
 		return nil, 0, m.listJobsErr
 	}
@@ -1772,6 +1774,25 @@ func TestExecutePoolHotTuner_NoPoolDB(t *testing.T) {
 	}
 }
 
+// Master off => the tuner returns immediately without any DynamoDB reads, so an
+// upgrade adds no steady-state Scan load to a fleet that never enables hot pools.
+func TestExecutePoolHotTuner_MasterOff_NoDBCalls(t *testing.T) {
+	t.Parallel()
+
+	poolDB := &mockPoolDBAPI{pools: []string{"p"}, jobs: []db.AdminJobEntry{{Pool: "p"}}}
+	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolsEnabled: false, HotPoolCaps: config.DefaultHotPoolCaps()}}
+
+	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if poolDB.listJobsCalls != 0 {
+		t.Errorf("ListJobsForAdmin called %d times with master off, want 0", poolDB.listJobsCalls)
+	}
+	if len(poolDB.autoTuneByPool) != 0 {
+		t.Errorf("tuned %d pools with master off, want 0", len(poolDB.autoTuneByPool))
+	}
+}
+
 // Every listed pool gets a recommendation, including a pool with no jobs (cold).
 func TestExecutePoolHotTuner_TunesEveryPool(t *testing.T) {
 	t.Parallel()
@@ -1794,7 +1815,7 @@ func TestExecutePoolHotTuner_TunesEveryPool(t *testing.T) {
 	}
 	tasks := &Tasks{
 		poolDB: poolDB,
-		config: &config.Config{HotPoolCaps: config.DefaultHotPoolCaps()},
+		config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: config.DefaultHotPoolCaps()},
 	}
 
 	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
@@ -1816,7 +1837,7 @@ func TestExecutePoolHotTuner_ListJobsError(t *testing.T) {
 	t.Parallel()
 
 	poolDB := &mockPoolDBAPI{listJobsErr: errors.New("scan failed")}
-	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolCaps: config.DefaultHotPoolCaps()}}
+	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: config.DefaultHotPoolCaps()}}
 
 	if err := tasks.ExecutePoolHotTuner(context.Background()); err == nil {
 		t.Fatal("want error when ListJobsForAdmin fails")
@@ -1831,7 +1852,7 @@ func TestExecutePoolHotTuner_PoolDeletedSkipped(t *testing.T) {
 		pools:       []string{"gone"},
 		autoTuneErr: db.ErrPoolNotFound,
 	}
-	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolCaps: config.DefaultHotPoolCaps()}}
+	tasks := &Tasks{poolDB: poolDB, config: &config.Config{HotPoolsEnabled: true, HotPoolCaps: config.DefaultHotPoolCaps()}}
 
 	if err := tasks.ExecutePoolHotTuner(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)

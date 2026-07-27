@@ -467,11 +467,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		desiredStopped = ephStopped
 	}
 
-	// Hot-pool linger floor: for an allowlisted pool with recent job activity,
-	// keep MaxHot running spares until the linger window elapses, then decay. This
-	// composes with schedules/ephemeral via max() — it only ever raises the running
-	// target, never lowers it. Zero (and thus a no-op) unless RUNS_FLEET_HOT_POOLS
-	// names this pool, so the gate-off path is unchanged.
+	// Hot-pool linger floor: for a pool with a live effective linger window (recent
+	// job activity within its resolved linger), keep maxHot running spares until the
+	// window elapses, then decay. This composes with schedules/ephemeral via max() —
+	// it only ever raises the running target, never lowers it. Zero (and thus a
+	// no-op) unless the master toggle is on and the pool has an effective spec, so
+	// the gate-off path is unchanged.
 	lingerHot := m.lingerDesiredRunning(poolConfig, now)
 	lingerActive := lingerHot > desiredRunning
 	if lingerActive {
