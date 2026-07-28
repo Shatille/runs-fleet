@@ -3786,6 +3786,64 @@ func TestListJobsForAdmin_ZeroUntilIsUnbounded(t *testing.T) {
 	}
 }
 
+func TestListJobsForAdmin_CompletedOnlyFilter(t *testing.T) {
+	t.Parallel()
+
+	const completedClause = "attribute_exists(completed_at)"
+
+	tests := []struct {
+		name       string
+		filter     AdminJobFilter
+		wantClause bool
+		wantStatus bool
+	}{
+		{
+			name:       "CompletedOnly emits the completed_at predicate",
+			filter:     AdminJobFilter{CompletedOnly: true},
+			wantClause: true,
+		},
+		{
+			name:       "Status-only filter is unchanged",
+			filter:     AdminJobFilter{Status: string(JobStatusCompleted)},
+			wantStatus: true,
+		},
+		{
+			name:       "Status and CompletedOnly compose",
+			filter:     AdminJobFilter{Status: string(JobStatusCompleted), CompletedOnly: true},
+			wantClause: true,
+			wantStatus: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotExpr string
+			mock := &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					if input.FilterExpression != nil {
+						gotExpr = *input.FilterExpression
+					}
+					return &dynamodb.ScanOutput{}, nil
+				},
+			}
+
+			client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
+			if _, _, err := client.ListJobsForAdmin(context.Background(), tt.filter); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if got := strings.Contains(gotExpr, completedClause); got != tt.wantClause {
+				t.Errorf("filter expression %q contains %q = %v, want %v", gotExpr, completedClause, got, tt.wantClause)
+			}
+			if got := strings.Contains(gotExpr, "#status = :status"); got != tt.wantStatus {
+				t.Errorf("filter expression %q contains status clause = %v, want %v", gotExpr, got, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestListJobsForAdmin_JobsTableNotConfigured(t *testing.T) {
 	t.Parallel()
 

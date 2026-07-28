@@ -1227,6 +1227,13 @@ type AdminJobFilter struct {
 	Until  time.Time
 	Limit  int
 	Offset int
+
+	// CompletedOnly restricts results to jobs that reached a terminal state,
+	// keyed on the presence of completed_at rather than a status value: the
+	// stored status is GitHub's raw conclusion (success/failure/interrupted/...),
+	// a vocabulary that drifts, while completed_at is written only by
+	// MarkJobComplete alongside duration_seconds.
+	CompletedOnly bool
 }
 
 // AdminJobStats contains aggregate job statistics.
@@ -1254,6 +1261,10 @@ func (c *Client) ListJobsForAdmin(ctx context.Context, filter AdminJobFilter) ([
 		filterParts = append(filterParts, "#status = :status")
 		exprNames["#status"] = "status"
 		exprValues[":status"] = &types.AttributeValueMemberS{Value: filter.Status}
+	}
+
+	if filter.CompletedOnly {
+		filterParts = append(filterParts, "attribute_exists(completed_at)")
 	}
 
 	if filter.Pool != "" {
