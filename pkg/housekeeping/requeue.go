@@ -269,17 +269,18 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 // instance whose runner never came up, so a fresh runner does not contend with it.
 // Spot-request cancellation is best-effort: a failure there does not block termination.
 func terminateDeadAgentInstance(ctx context.Context, deps RequeueDeps, instanceID string, log *logging.Logger) error {
-	cancelSpotRequestForInstance(ctx, deps.TerminateEC2, instanceID, log)
+	CancelSpotRequestForInstance(ctx, deps.TerminateEC2, instanceID, log)
 	_, err := deps.TerminateEC2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
 	return err
 }
 
-// cancelSpotRequestForInstance cancels the persistent spot request backing an instance
+// CancelSpotRequestForInstance cancels the persistent spot request backing an instance
 // (if any) so a terminated instance is not resurrected. Best-effort: errors are logged
-// and swallowed.
-func cancelSpotRequestForInstance(ctx context.Context, ec2Client EC2API, instanceID string, log *logging.Logger) {
+// and swallowed. Exported so every terminate path — including the admin API's manual
+// termination — cancels the request before killing the instance.
+func CancelSpotRequestForInstance(ctx context.Context, ec2Client EC2API, instanceID string, log *logging.Logger) {
 	out, err := ec2Client.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{
 		Filters: []ec2types.Filter{
 			{Name: aws.String("instance-id"), Values: []string{instanceID}},

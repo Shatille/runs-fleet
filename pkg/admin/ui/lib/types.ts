@@ -110,6 +110,21 @@ export interface InstanceDetail extends Instance {
   tags?: Record<string, string>;
 }
 
+export interface ActiveJobRef {
+  job_id: number;
+  run_id: number;
+  repo: string;
+}
+
+export interface TerminateInstanceResult {
+  instance_id: string;
+  pool?: string;
+  state?: string;
+  forced: boolean;
+  active_job?: ActiveJobRef;
+  message: string;
+}
+
 export interface QueueStatus {
   name: string;
   url: string;

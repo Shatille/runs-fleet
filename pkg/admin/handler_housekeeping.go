@@ -76,7 +76,7 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		}
 	}
 
-	dryRun := r.URL.Query().Get("dry_run") == "true"
+	dryRun := r.URL.Query().Get("dry_run") == queryTrue
 
 	candidates, err := housekeeping.FindOrphanedJobCandidates(ctx, h.dynamoClient, h.jobsTableName, threshold)
 	if err != nil {
