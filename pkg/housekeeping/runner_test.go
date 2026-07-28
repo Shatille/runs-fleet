@@ -26,6 +26,7 @@ type mockTaskExecutor struct {
 	ephemeralPoolErr   error
 	packerErr          error
 	hotTunerErr        error
+	expiredClaimsErr   error
 	orphanedCall       int
 	ssmCall            int
 	jobsCall           int
@@ -38,6 +39,7 @@ type mockTaskExecutor struct {
 	ephemeralPoolCall  int
 	packerCall         int
 	hotTunerCall       int
+	expiredClaimsCall  int
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -98,6 +100,11 @@ func (m *mockTaskExecutor) ExecuteOrphanedPackerInstances(_ context.Context) err
 func (m *mockTaskExecutor) ExecutePoolHotTuner(_ context.Context) error {
 	m.hotTunerCall++
 	return m.hotTunerErr
+}
+
+func (m *mockTaskExecutor) ExecuteExpiredInstanceClaims(_ context.Context) error {
+	m.expiredClaimsCall++
+	return m.expiredClaimsErr
 }
 
 // mockTaskLocker implements TaskLocker for testing.
@@ -167,6 +174,7 @@ func longIntervals() SchedulerConfig {
 		UnconfirmedRunnersInterval:      d,
 		OrphanedPackerInstancesInterval: d,
 		PoolHotTunerInterval:            d,
+		ExpiredInstanceClaimsInterval:   d,
 	}
 }
 
@@ -224,6 +232,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 		TaskOrphanedInstances, TaskStaleSecrets, TaskOldJobs, TaskOrphanedJobs,
 		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
 		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances, TaskPoolHotTuner,
+		TaskExpiredInstanceClaims,
 	}
 	r := NewRunner(&mockTaskExecutor{}, DefaultSchedulerConfig())
 	specs := r.taskSpecs()
@@ -267,6 +276,7 @@ func TestRunner_TryRunTask_DispatchesToExecutor(t *testing.T) {
 		{TaskDLQRedrive, func(m *mockTaskExecutor) int { return m.dlqCall }},
 		{TaskEphemeralPoolCleanup, func(m *mockTaskExecutor) int { return m.ephemeralPoolCall }},
 		{TaskOrphanedPackerInstances, func(m *mockTaskExecutor) int { return m.packerCall }},
+		{TaskExpiredInstanceClaims, func(m *mockTaskExecutor) int { return m.expiredClaimsCall }},
 	}
 
 	for _, c := range cases {
@@ -692,6 +702,7 @@ func TestTaskTypeConstants(t *testing.T) {
 		{TaskStaleJobs, "stale_jobs"},
 		{TaskOrphanedPackerInstances, "orphaned_packer_instances"},
 		{TaskPoolHotTuner, "pool_hot_tuner"},
+		{TaskExpiredInstanceClaims, "expired_instance_claims"},
 	}
 
 	for _, tt := range tests {
@@ -720,6 +731,8 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 		{"EphemeralPoolCleanup", cfg.EphemeralPoolCleanupInterval, 1 * time.Hour},
 		{"StaleJobs", cfg.StaleJobsInterval, 5 * time.Minute},
 		{"OrphanedPackerInstances", cfg.OrphanedPackerInstancesInterval, 15 * time.Minute},
+		{"PoolHotTuner", cfg.PoolHotTunerInterval, 1 * time.Hour},
+		{"ExpiredInstanceClaims", cfg.ExpiredInstanceClaimsInterval, 15 * time.Minute},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

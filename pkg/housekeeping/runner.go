@@ -43,6 +43,9 @@ const (
 	// TaskPoolHotTuner recomputes each pool's hot-pool linger/maxHot
 	// recommendation from recent run history.
 	TaskPoolHotTuner TaskType = "pool_hot_tuner"
+	// TaskExpiredInstanceClaims reaps expired instance-claim rows from the pools
+	// table so they cannot accumulate and bloat it past the Scan page limit.
+	TaskExpiredInstanceClaims TaskType = "expired_instance_claims"
 )
 
 // TaskLocker provides distributed locking for housekeeping tasks.
@@ -65,6 +68,7 @@ type TaskExecutor interface {
 	ExecuteEphemeralPoolCleanup(ctx context.Context) error
 	ExecuteOrphanedPackerInstances(ctx context.Context) error
 	ExecutePoolHotTuner(ctx context.Context) error
+	ExecuteExpiredInstanceClaims(ctx context.Context) error
 }
 
 // RunnerMetricsAPI publishes the housekeeping runner's per-task execution
@@ -132,6 +136,10 @@ type SchedulerConfig struct {
 	// PoolHotTunerInterval is how often to recompute per-pool hot-pool
 	// recommendations from run history. Default: 1 hour
 	PoolHotTunerInterval time.Duration
+
+	// ExpiredInstanceClaimsInterval is how often to reap expired instance-claim
+	// rows from the pools table. Default: 15 minutes
+	ExpiredInstanceClaimsInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default per-task run intervals.
@@ -149,6 +157,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		UnconfirmedRunnersInterval:      2 * time.Minute,
 		OrphanedPackerInstancesInterval: 15 * time.Minute,
 		PoolHotTunerInterval:            1 * time.Hour,
+		ExpiredInstanceClaimsInterval:   15 * time.Minute,
 	}
 }
 
@@ -219,6 +228,7 @@ func (r *Runner) taskSpecs() []taskSpec {
 		{taskType: TaskEphemeralPoolCleanup, interval: c.EphemeralPoolCleanupInterval, execute: e.ExecuteEphemeralPoolCleanup},
 		{taskType: TaskOrphanedPackerInstances, interval: c.OrphanedPackerInstancesInterval, execute: e.ExecuteOrphanedPackerInstances},
 		{taskType: TaskPoolHotTuner, interval: c.PoolHotTunerInterval, execute: e.ExecutePoolHotTuner},
+		{taskType: TaskExpiredInstanceClaims, interval: c.ExpiredInstanceClaimsInterval, execute: e.ExecuteExpiredInstanceClaims},
 	}
 }
 
