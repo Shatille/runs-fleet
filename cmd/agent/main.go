@@ -118,6 +118,22 @@ func main() {
 
 	downloader := agent.NewDownloader()
 	safetyMonitor := agent.NewSafetyMonitor(time.Duration(maxRuntimeMinutes)*time.Minute, logger)
+	// Without this the monitor only logs the violation: an instance that outlives
+	// max runtime bills until the orchestrator's age sweep notices it 10 minutes later.
+	safetyMonitor.SetTimeoutCallback(func() {
+		logger.Println("SAFETY: terminating instance after max runtime exceeded")
+		completedAt := time.Now()
+		if termErr := ac.terminator.TerminateOnTimeout(ctx, instanceID, agent.JobStatus{
+			InstanceID:  instanceID,
+			JobID:       jobID,
+			ExitCode:    -1,
+			StartedAt:   completedAt,
+			CompletedAt: completedAt,
+			Error:       fmt.Sprintf("max runtime %dm exceeded", maxRuntimeMinutes),
+		}); termErr != nil {
+			logger.Printf("SAFETY: failed to terminate after max runtime: %v", termErr)
+		}
+	})
 	executor := agent.NewExecutor(logger, safetyMonitor)
 	cleanup := agent.NewCleanup(logger)
 

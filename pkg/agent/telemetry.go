@@ -14,6 +14,7 @@ import (
 type TelemetryClient interface {
 	SendJobStarted(ctx context.Context, status JobStatus) error
 	SendJobCompleted(ctx context.Context, status JobStatus) error
+	SendJobTimeout(ctx context.Context, status JobStatus) error
 }
 
 // Job status constants.

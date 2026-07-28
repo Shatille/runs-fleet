@@ -168,6 +168,31 @@ func TestSafetyMonitor_check_TimeoutCallback(t *testing.T) {
 	mu.Unlock()
 }
 
+func TestSafetyMonitor_check_TimeoutCallbackFiresOnce(t *testing.T) {
+	logger := &mockLogger{}
+	monitor := NewSafetyMonitor(1*time.Minute, logger)
+	monitor.startTime = time.Now().Add(-2 * time.Minute)
+
+	var mu sync.Mutex
+	calls := 0
+	monitor.SetTimeoutCallback(func() {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	for range 5 {
+		monitor.check()
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("timeout callback fired %d times, want 1: termination is already in flight after "+
+			"the first trip, so re-firing every check re-issues TerminateInstance in a loop", calls)
+	}
+}
+
 func TestSafetyMonitor_check_NoTimeoutYet(t *testing.T) {
 	logger := &mockLogger{}
 	monitor := NewSafetyMonitor(1*time.Hour, logger)

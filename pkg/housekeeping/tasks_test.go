@@ -204,6 +204,7 @@ func TestExecuteOrphanedInstances_ReapsUnclaimedColdStart(t *testing.T) {
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
 	tasks.SetPoolDB(&mockPoolDBAPI{})
@@ -215,6 +216,149 @@ func TestExecuteOrphanedInstances_ReapsUnclaimedColdStart(t *testing.T) {
 	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-unclaimed" {
 		t.Errorf("terminated = %v, want [i-unclaimed]: a cold-start instance with no job row "+
 			"past the grace period is surplus and bills until the 6h age cutoff", ec2Client.terminatedIDs)
+	}
+}
+
+func completedSweepTasks(ec2Client *mockEC2API, poolDB *mockPoolDBAPI) *Tasks {
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			CompletedInstanceGraceMinutes: 15,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(poolDB)
+	return tasks
+}
+
+func TestExecuteOrphanedInstances_ReapsCompletedJobInstance(t *testing.T) {
+	t.Parallel()
+
+	// 45m old with a job that finished 20m ago: far short of the age cutoff, and
+	// it holds a job record so the unclaimed sweep skips it.
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-done", time.Now().Add(-45*time.Minute)),
+	}}}}
+	poolDB := &mockPoolDBAPI{lastCompletion: map[string]time.Time{
+		"i-done": time.Now().Add(-20 * time.Minute),
+	}}
+
+	tasks := completedSweepTasks(ec2Client, poolDB)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-done" {
+		t.Errorf("terminated = %v, want [i-done]: an ephemeral runner whose job reached a terminal "+
+			"state has no further work and otherwise bills until the 6h age cutoff",
+			ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_ReapsCompletedPoolInstance(t *testing.T) {
+	t.Parallel()
+
+	poolTag := ec2types.Tag{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")}
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-pool-done", time.Now().Add(-45*time.Minute), poolTag),
+		managedInstance("i-pool-idle", time.Now().Add(-45*time.Minute), poolTag),
+	}}}}
+	poolDB := &mockPoolDBAPI{lastCompletion: map[string]time.Time{
+		"i-pool-done": time.Now().Add(-20 * time.Minute),
+	}}
+
+	tasks := completedSweepTasks(ec2Client, poolDB)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The pool tag is never removed after assignment, so a member that finished a
+	// job and hung is leaked exactly like a cold-start instance. i-pool-idle holds
+	// no job and is legitimately awaiting work, so it must survive.
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-pool-done" {
+		t.Errorf("terminated = %v, want [i-pool-done]", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_SparesRestartedPoolInstanceMidAssignment(t *testing.T) {
+	t.Parallel()
+
+	// A stopped pool member is claimed and restarted for its next job. Between
+	// StartInstances and SaveJob (which spans a GitHub registration-token call)
+	// its only job record is the terminal one from the previous job. EC2 refreshes
+	// LaunchTime on restart, so the boot postdating the completion is what tells
+	// the sweep that record belongs to a previous life.
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-restarted", time.Now().Add(-2*time.Minute),
+			ec2types.Tag{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")}),
+	}}}}
+	poolDB := &mockPoolDBAPI{lastCompletion: map[string]time.Time{
+		"i-restarted": time.Now().Add(-40 * time.Minute),
+	}}
+
+	tasks := completedSweepTasks(ec2Client, poolDB)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: the instance rebooted after that job finished, so "+
+			"the terminal record is stale and reaping would kill a job mid-assignment",
+			ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_SparesRecentlyCompletedAndLiveJobs(t *testing.T) {
+	t.Parallel()
+
+	// Younger than UnclaimedInstanceGraceMinutes so only the completed sweep can
+	// act on them; this isolates the completion grace window from the age gate.
+	young := time.Now().Add(-20 * time.Minute)
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-just-done", young),
+		managedInstance("i-still-running", young),
+	}}}}
+	poolDB := &mockPoolDBAPI{
+		// Inside the grace window: the agent is still doing cleanup/self-termination.
+		lastCompletion: map[string]time.Time{"i-just-done": time.Now().Add(-2 * time.Minute)},
+		// A live job reports no completion at all.
+		activeJobInstances: map[string]bool{"i-still-running": true},
+	}
+
+	tasks := completedSweepTasks(ec2Client, poolDB)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a job inside the grace window is still cleaning up, "+
+			"and a running job may still do work", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_CompletedSweepLookupFailureSparesInstance(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unknown", time.Now().Add(-45*time.Minute)),
+	}}}}
+	poolDB := &mockPoolDBAPI{
+		activeJobInstances: map[string]bool{"i-unknown": true},
+		lastCompletionErr:  errors.New("ProvisionedThroughputExceeded"),
+	}
+
+	tasks := completedSweepTasks(ec2Client, poolDB)
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err == nil {
+		t.Fatal("expected the lookup failure to surface")
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a DynamoDB fault must never read as \"job finished\"",
+			ec2Client.terminatedIDs)
 	}
 }
 
@@ -297,6 +441,7 @@ func TestExecuteOrphanedInstances_UnclaimedSweepDoesNotQueryJobsTableDirectly(t 
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
 	tasks.SetPoolDB(&mockPoolDBAPI{})
@@ -538,6 +683,7 @@ func TestExecuteOrphanedInstances_JobLookupFailureSparesInstance(t *testing.T) {
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
 	tasks.SetPoolDB(&mockPoolDBAPI{activeJobErr: errors.New("ProvisionedThroughputExceeded")})
@@ -565,6 +711,7 @@ func TestExecuteOrphanedInstances_ReportsJobLookupFailure(t *testing.T) {
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
 	tasks.SetPoolDB(&mockPoolDBAPI{activeJobErr: errors.New("ProvisionedThroughputExceeded")})
@@ -623,18 +770,28 @@ func TestExecuteOrphanedInstances_LookupFailureReportIsBounded(t *testing.T) {
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
+			CompletedInstanceGraceMinutes: 15,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
-	tasks.SetPoolDB(&mockPoolDBAPI{activeJobErr: errors.New("ProvisionedThroughputExceeded")})
+	// A table-wide fault fails both job-driven sweeps, not just one.
+	tasks.SetPoolDB(&mockPoolDBAPI{
+		activeJobErr:      errors.New("ProvisionedThroughputExceeded"),
+		lastCompletionErr: errors.New("ProvisionedThroughputExceeded"),
+	})
 
 	err := tasks.ExecuteOrphanedInstances(context.Background())
 	if err == nil {
 		t.Fatal("expected an error when every job lookup failed")
 	}
-	if n := strings.Count(err.Error(), "ProvisionedThroughputExceeded"); n != 1 {
-		t.Errorf("error repeats the underlying cause %d times; a table-wide outage must summarise "+
-			"rather than accumulate one entry per instance", n)
+	// Exactly one summary per job-driven sweep (unclaimed, completed) — bounded by
+	// the number of sweeps, never by the number of instances. Asserting equality
+	// rather than an upper bound also catches a sweep dropping its summary
+	// entirely, which is the fail-unsafe direction.
+	if n := strings.Count(err.Error(), "ProvisionedThroughputExceeded"); n != 2 {
+		t.Errorf("error repeats the underlying cause %d times, want 2 (one per sweep); a "+
+			"table-wide outage must summarise rather than accumulate one entry per instance", n)
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("error = %q, want the number of unchecked instances so the scale of the "+
@@ -657,6 +814,7 @@ func TestExecuteOrphanedInstances_PropagatesUnclaimedSweepError(t *testing.T) {
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
 	tasks.SetPoolDB(&mockPoolDBAPI{})
@@ -682,6 +840,7 @@ func TestExecuteOrphanedInstances_UnclaimedSweepErrorStillReapsAgedOrphans(t *te
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
+			JobsInstanceIDGSI:             "instance-id-index",
 		},
 	}
 	tasks.SetPoolDB(&mockPoolDBAPI{})
@@ -1894,6 +2053,9 @@ type mockPoolDBAPI struct {
 
 	activeJobInstances map[string]bool
 	activeJobErr       error
+
+	lastCompletion    map[string]time.Time
+	lastCompletionErr error
 }
 
 func (m *mockPoolDBAPI) ListPools(_ context.Context) ([]string, error) {
@@ -1960,6 +2122,13 @@ func (m *mockPoolDBAPI) HasActiveJobForInstance(_ context.Context, instanceID st
 		return false, m.activeJobErr
 	}
 	return m.activeJobInstances[instanceID], nil
+}
+
+func (m *mockPoolDBAPI) LastJobCompletionForInstance(_ context.Context, instanceID string) (time.Time, error) {
+	if m.lastCompletionErr != nil {
+		return time.Time{}, m.lastCompletionErr
+	}
+	return m.lastCompletion[instanceID], nil
 }
 
 func TestExecuteExpiredInstanceClaims_NoPoolDB(t *testing.T) {
