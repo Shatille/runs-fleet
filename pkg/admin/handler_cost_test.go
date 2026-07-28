@@ -369,6 +369,61 @@ func TestCostHandler_PricesEveryFinishedJobConclusion(t *testing.T) {
 	}
 }
 
+func TestCostHandler_FilterNeverUsesAStatusString(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"/api/cost/summary", "/api/cost/daily", "/api/cost/by-pool"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			mockDB := &mockCostDB{}
+			handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+			mux := http.NewServeMux()
+			handler.RegisterRoutes(mux)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			f := mockDB.gotFilter
+			if !f.CompletedOnly {
+				t.Error("filter must select finished jobs via CompletedOnly")
+			}
+			if f.Status != "" {
+				t.Errorf("filter status = %q, want empty (status strings drift)", f.Status)
+			}
+			if f.Limit != 0 {
+				t.Errorf("filter limit = %d, want 0 (a cap would silently undercount)", f.Limit)
+			}
+			if f.Since.IsZero() {
+				t.Error("filter must bound the window with Since")
+			}
+		})
+	}
+}
+
+func TestCostHandler_CostMTD_UsesTheFinishedJobPredicate(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
+		{JobID: 1, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "success", CompletedAt: testCompletedAt},
+		{JobID: 2, InstanceType: "t4g.medium", Status: string(db.JobStatusRunning)},
+	}}
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+
+	total, err := handler.CostMTD(context.Background())
+	if err != nil {
+		t.Fatalf("CostMTD: %v", err)
+	}
+	if !mockDB.gotFilter.CompletedOnly || mockDB.gotFilter.Status != "" {
+		t.Errorf("filter = %+v, want CompletedOnly with no status string", mockDB.gotFilter)
+	}
+	if want := cost.GetInstancePrice("t4g.medium"); !approx(total, want) {
+		t.Errorf("CostMTD = %v, want %v (only the finished job priced)", total, want)
+	}
+}
+
 func TestCostHandler_GetCostSummary_Empty(t *testing.T) {
 	t.Parallel()
 
