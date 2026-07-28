@@ -111,6 +111,16 @@ type PoolDBAPI interface {
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
 	UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error
 	DeleteExpiredInstanceClaims(ctx context.Context, now time.Time) (int, error)
+	// HasActiveJobForInstance reports whether the instance holds a job that is
+	// running or launched. Backed by db.GetJobByInstance, which knows to query the
+	// instance_id GSI: instance_id is not the jobs table's key, so a query against
+	// the base table is rejected outright.
+	//
+	// Narrower than busyJobStatuses on purpose. A terminating record only ever comes
+	// from a spot interruption warning, so that instance is already condemned by AWS
+	// and reaping it early costs nothing; a claiming record carries no instance_id at
+	// all and so never reaches the GSI.
+	HasActiveJobForInstance(ctx context.Context, instanceID string) (bool, error)
 }
 
 // Tasks implements housekeeping task execution.
@@ -430,13 +440,17 @@ func unclaimedOrphanCandidates(output *ec2.DescribeInstancesOutput, cutoff time.
 }
 
 // findUnclaimedOrphans returns cold-start instances past the grace period that
-// have no job record at all. A lookup failure is treated as "claimed" so a
+// hold no active job. A lookup failure is treated as "claimed" so a
 // DynamoDB problem can never escalate into terminating live instances, but it is
 // still reported: whatever was confirmed unclaimed comes back alongside the
 // errors for everything the sweep could not check.
 func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]string, error) {
 	if t.config.JobsTableName == "" {
 		t.logger().Warn(ctx, "unclaimed sweep skipped: no jobs table configured")
+		return nil, nil
+	}
+	if t.poolDB == nil {
+		t.logger().Warn(ctx, "unclaimed sweep skipped: no job lookup configured")
 		return nil, nil
 	}
 
@@ -459,7 +473,7 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		}
 
 		for _, id := range unclaimedOrphanCandidates(output, cutoff) {
-			claimed, err := t.hasJobRecord(ctx, id)
+			claimed, err := t.poolDB.HasActiveJobForInstance(ctx, id)
 			if err != nil {
 				unchecked++
 				if firstLookupErr == nil {
@@ -484,21 +498,6 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		errs = append(errs, fmt.Errorf("%d instances left unchecked, first: %w", unchecked, firstLookupErr))
 	}
 	return unclaimed, errors.Join(errs...)
-}
-
-func (t *Tasks) hasJobRecord(ctx context.Context, instanceID string) (bool, error) {
-	output, err := t.dynamoClient.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(t.config.JobsTableName),
-		KeyConditionExpression: aws.String("instance_id = :instance_id"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
-		},
-		Limit: aws.Int32(1),
-	})
-	if err != nil {
-		return false, err
-	}
-	return len(output.Items) > 0, nil
 }
 
 func mergeUniqueIDs(lists ...[]string) []string {

@@ -145,28 +145,12 @@ type mockTaskDynamoDBAPI struct {
 	batchCalls    int
 	updateCalls   int
 	scanInputs    []*dynamodb.ScanInput
-
-	jobRowsByInstance map[string][]map[string]types.AttributeValue
 }
 
-func (m *mockTaskDynamoDBAPI) Query(_ context.Context, params *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+func (m *mockTaskDynamoDBAPI) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 	m.queryCalls++
 	if m.queryErr != nil {
 		return nil, m.queryErr
-	}
-	// Per-instance job rows let a test model "this instance claimed a job, that
-	// one never did" in the same sweep.
-	if m.jobRowsByInstance != nil {
-		for _, v := range params.ExpressionAttributeValues {
-			s, ok := v.(*types.AttributeValueMemberS)
-			if !ok {
-				continue
-			}
-			if rows, found := m.jobRowsByInstance[s.Value]; found {
-				return &dynamodb.QueryOutput{Items: rows}, nil
-			}
-		}
-		return &dynamodb.QueryOutput{Items: nil}, nil
 	}
 	return &dynamodb.QueryOutput{
 		Items: m.items,
@@ -213,17 +197,16 @@ func TestExecuteOrphanedInstances_ReapsUnclaimedColdStart(t *testing.T) {
 	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
 		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
 	}}}}
-	dynamoClient := &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}}
-
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
-		dynamoClient: dynamoClient,
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
 		},
 	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
 
 	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -243,13 +226,101 @@ func TestExecuteOrphanedInstances_SparesClaimedAndPoolInstances(t *testing.T) {
 		managedInstance("i-claimed", old),
 		managedInstance("i-pool-idle", old, ec2types.Tag{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")}),
 	}}}}
-	dynamoClient := &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{
-		"i-claimed": {{"instance_id": &types.AttributeValueMemberS{Value: "i-claimed"}}},
-	}}
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{activeJobInstances: map[string]bool{"i-claimed": true}})
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: i-claimed is running a recorded job and "+
+			"i-pool-idle is a warm pool member awaiting work", ec2Client.terminatedIDs)
+	}
+}
+
+// A late retry launches an instance for a job that already finished elsewhere, so
+// the record exists but is terminal. Existence alone must not read as "working",
+// or the instance bills until the far later age-based cutoff.
+func TestExecuteOrphanedInstances_ReapsInstanceWhoseJobAlreadyFinished(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-late-retry", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{activeJobInstances: map[string]bool{"i-late-retry": false}})
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-late-retry" {
+		t.Errorf("terminated = %v, want [i-late-retry]: a job record in a terminal state means "+
+			"the instance has no work left, not that it is claimed", ec2Client.terminatedIDs)
+	}
+}
+
+// The lookup must go through the GSI-aware db path. Hand-rolling a Query on the
+// jobs table keyed by instance_id targets the base table, whose key is job_id, so
+// DynamoDB rejects every call with a ValidationException and the sweep — which
+// counts a failed lookup as claimed — silently reaps nothing.
+func TestExecuteOrphanedInstances_UnclaimedSweepDoesNotQueryJobsTableDirectly(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
+	}}}}
+	dynamoClient := &mockTaskDynamoDBAPI{}
 
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
 		dynamoClient: dynamoClient,
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if dynamoClient.queryCalls != 0 {
+		t.Errorf("queryCalls = %d, want 0: the sweep must delegate the instance lookup to the db "+
+			"client that knows the instance_id GSI, not query the jobs table itself", dynamoClient.queryCalls)
+	}
+}
+
+func TestExecuteOrphanedInstances_SkipsUnclaimedSweepWithoutJobLookup(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
@@ -262,8 +333,8 @@ func TestExecuteOrphanedInstances_SparesClaimedAndPoolInstances(t *testing.T) {
 	}
 
 	if len(ec2Client.terminatedIDs) != 0 {
-		t.Errorf("terminated = %v, want none: i-claimed is running a recorded job and "+
-			"i-pool-idle is a warm pool member awaiting work", ec2Client.terminatedIDs)
+		t.Errorf("terminated = %v, want none: with no job lookup wired the sweep cannot tell "+
+			"unclaimed from working and must not guess", ec2Client.terminatedIDs)
 	}
 }
 
@@ -462,13 +533,14 @@ func TestExecuteOrphanedInstances_JobLookupFailureSparesInstance(t *testing.T) {
 
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
-		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
 		},
 	}
+	tasks.SetPoolDB(&mockPoolDBAPI{activeJobErr: errors.New("ProvisionedThroughputExceeded")})
 
 	_ = tasks.ExecuteOrphanedInstances(context.Background())
 
@@ -488,13 +560,14 @@ func TestExecuteOrphanedInstances_ReportsJobLookupFailure(t *testing.T) {
 
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
-		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
 		},
 	}
+	tasks.SetPoolDB(&mockPoolDBAPI{activeJobErr: errors.New("ProvisionedThroughputExceeded")})
 
 	err := tasks.ExecuteOrphanedInstances(context.Background())
 	if err == nil {
@@ -546,13 +619,14 @@ func TestExecuteOrphanedInstances_LookupFailureReportIsBounded(t *testing.T) {
 
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
-		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
 		},
 	}
+	tasks.SetPoolDB(&mockPoolDBAPI{activeJobErr: errors.New("ProvisionedThroughputExceeded")})
 
 	err := tasks.ExecuteOrphanedInstances(context.Background())
 	if err == nil {
@@ -578,13 +652,14 @@ func TestExecuteOrphanedInstances_PropagatesUnclaimedSweepError(t *testing.T) {
 
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
-		dynamoClient: &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}},
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
 		},
 	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
 
 	if err := tasks.ExecuteOrphanedInstances(context.Background()); err == nil {
 		t.Error("got nil error when the unclaimed sweep's DescribeInstances failed and nothing " +
@@ -602,13 +677,14 @@ func TestExecuteOrphanedInstances_UnclaimedSweepErrorStillReapsAgedOrphans(t *te
 
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
-		dynamoClient: &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}},
+		dynamoClient: &mockTaskDynamoDBAPI{},
 		config: &config.Config{
 			MaxRuntimeMinutes:             360,
 			UnclaimedInstanceGraceMinutes: 30,
 			JobsTableName:                 "jobs-table",
 		},
 	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
 
 	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1815,6 +1891,9 @@ type mockPoolDBAPI struct {
 	expiredClaimsDeleted int
 	expiredClaimsErr     error
 	expiredClaimsCalls   int
+
+	activeJobInstances map[string]bool
+	activeJobErr       error
 }
 
 func (m *mockPoolDBAPI) ListPools(_ context.Context) ([]string, error) {
@@ -1874,6 +1953,13 @@ func (m *mockPoolDBAPI) DeleteExpiredInstanceClaims(_ context.Context, _ time.Ti
 		return 0, m.expiredClaimsErr
 	}
 	return m.expiredClaimsDeleted, nil
+}
+
+func (m *mockPoolDBAPI) HasActiveJobForInstance(_ context.Context, instanceID string) (bool, error) {
+	if m.activeJobErr != nil {
+		return false, m.activeJobErr
+	}
+	return m.activeJobInstances[instanceID], nil
 }
 
 func TestExecuteExpiredInstanceClaims_NoPoolDB(t *testing.T) {

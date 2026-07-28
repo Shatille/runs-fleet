@@ -776,6 +776,14 @@ func (p *poolDBAdapter) DeleteExpiredInstanceClaims(ctx context.Context, now tim
 	return p.client.DeleteExpiredInstanceClaims(ctx, now)
 }
 
+func (p *poolDBAdapter) HasActiveJobForInstance(ctx context.Context, instanceID string) (bool, error) {
+	info, err := p.client.GetJobByInstance(ctx, instanceID)
+	if err != nil {
+		return false, err
+	}
+	return info != nil, nil
+}
+
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
 type githubJobCheckerAdapter struct {
 	client *gh.Client
