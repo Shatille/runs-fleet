@@ -68,6 +68,11 @@ type Config struct {
 	// cross the MaxRuntimeMinutes cutoff.
 	MaxRuntimeMinutes             int
 	UnclaimedInstanceGraceMinutes int
+	// CompletedInstanceGraceMinutes is the window applied to an instance whose job
+	// already reached a terminal state. An ephemeral runner has no further work
+	// once its job ends, so without this it bills until the MaxRuntimeMinutes
+	// cutoff even though every sweep can see the job is done.
+	CompletedInstanceGraceMinutes int
 	LaunchTemplateName            string
 	RunnerImage                   string            // Container image for EC2 runners (ECR URL)
 	Tags                          map[string]string // Custom tags for EC2 resources
@@ -148,6 +153,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
 
+	completedInstanceGraceMinutes, err := getEnvInt("RUNS_FLEET_COMPLETED_INSTANCE_GRACE_MINUTES", 15)
+	if err != nil {
+		return nil, err
+	}
+
 	unclaimedInstanceGraceMinutes, err := getEnvInt("RUNS_FLEET_UNCLAIMED_INSTANCE_GRACE_MINUTES", 30)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
@@ -193,6 +203,7 @@ func Load() (*Config, error) {
 		SpotEnabled:                   getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
 		MaxRuntimeMinutes:             maxRuntimeMinutes,
 		UnclaimedInstanceGraceMinutes: unclaimedInstanceGraceMinutes,
+		CompletedInstanceGraceMinutes: completedInstanceGraceMinutes,
 		LaunchTemplateName:            getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:                   getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:                          make(map[string]string),
@@ -299,6 +310,11 @@ func (c *Config) Validate() error {
 	// instances that are still on their way to claiming a job.
 	if c.UnclaimedInstanceGraceMinutes < 5 {
 		return fmt.Errorf("RUNS_FLEET_UNCLAIMED_INSTANCE_GRACE_MINUTES must be at least 5, got %d", c.UnclaimedInstanceGraceMinutes)
+	}
+	// The job record is written terminal before the agent finishes cleanup and
+	// self-terminates, so this must leave room for that tail.
+	if c.CompletedInstanceGraceMinutes < 5 {
+		return fmt.Errorf("RUNS_FLEET_COMPLETED_INSTANCE_GRACE_MINUTES must be at least 5, got %d", c.CompletedInstanceGraceMinutes)
 	}
 	if c.ShutdownDrainDelay < 0 {
 		return fmt.Errorf("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS must not be negative, got %s", c.ShutdownDrainDelay)

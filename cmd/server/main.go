@@ -784,6 +784,10 @@ func (p *poolDBAdapter) HasActiveJobForInstance(ctx context.Context, instanceID 
 	return info != nil, nil
 }
 
+func (p *poolDBAdapter) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error) {
+	return p.client.LastJobCompletionForInstance(ctx, instanceID)
+}
+
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
 type githubJobCheckerAdapter struct {
 	client *gh.Client

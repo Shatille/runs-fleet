@@ -121,6 +121,12 @@ type PoolDBAPI interface {
 	// and reaping it early costs nothing; a claiming record carries no instance_id at
 	// all and so never reaches the GSI.
 	HasActiveJobForInstance(ctx context.Context, instanceID string) (bool, error)
+	// LastJobCompletionForInstance returns when the instance's most recent job
+	// reached a terminal state, or the zero time when it holds no job or any of
+	// them is still live. Goes through the same instance_id GSI as
+	// HasActiveJobForInstance, which reports only running/launched work and so
+	// cannot answer when a finished job ended.
+	LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error)
 }
 
 // Tasks implements housekeeping task execution.
@@ -189,12 +195,18 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	unclaimedOrphans, unclaimedErr := t.findUnclaimedOrphans(ctx,
 		time.Now().Add(-time.Duration(t.config.UnclaimedInstanceGraceMinutes)*time.Minute))
 
-	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans, unclaimedOrphans)
+	// Phase 4: Completed detection. Phases 1-3 all miss an instance that claimed a
+	// job, finished it, and then failed to self-terminate: it has a job record, so
+	// the unclaimed sweep skips it, and it bills until the whole-job-timeout cutoff.
+	completedOrphans, completedErr := t.findCompletedOrphans(ctx,
+		time.Now().Add(-time.Duration(t.config.CompletedInstanceGraceMinutes)*time.Minute))
+
+	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans, unclaimedOrphans, completedOrphans)
 
 	// A detection failure that reaped nothing is indistinguishable from a clean
 	// sweep, so it has to surface. When some orphans were confirmed, terminating
 	// them takes priority over reporting the partial failure.
-	if sweepErr := errors.Join(tagErr, unclaimedErr); sweepErr != nil {
+	if sweepErr := errors.Join(tagErr, unclaimedErr, completedErr); sweepErr != nil {
 		if len(orphanedIDs) == 0 {
 			return sweepErr
 		}
@@ -412,6 +424,24 @@ func extractOrphanIDs(output *ec2.DescribeInstancesOutput, cutoffTime time.Time)
 	return ids
 }
 
+// completedOrphanCandidates narrows a DescribeInstances page for the completed
+// sweep, pairing each instance with its launch time. Unlike
+// unclaimedOrphanCandidates it keeps pool-tagged instances: the pool tag is never
+// removed once a member is assigned, and a member that has finished a job and
+// failed to self-terminate is leaked exactly like a cold-start one.
+func completedOrphanCandidates(output *ec2.DescribeInstancesOutput) map[string]time.Time {
+	launched := make(map[string]time.Time)
+	for _, reservation := range output.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.InstanceId == nil || instance.LaunchTime == nil {
+				continue
+			}
+			launched[*instance.InstanceId] = *instance.LaunchTime
+		}
+	}
+	return launched
+}
+
 // unclaimedOrphanCandidates narrows a DescribeInstances page to cold-start
 // instances launched before cutoff. Pool-tagged instances are excluded because a
 // warm or hot pool member is meant to sit idle without a job until one arrives;
@@ -498,6 +528,83 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		errs = append(errs, fmt.Errorf("%d instances left unchecked, first: %w", unchecked, firstLookupErr))
 	}
 	return unclaimed, errors.Join(errs...)
+}
+
+// findCompletedOrphans returns instances whose every job row is terminal and
+// whose most recent completion is older than cutoff. Instances are ephemeral, so
+// a finished job means the box has no further work; the grace window covers the
+// gap between the record being written terminal and the agent self-terminating.
+// A lookup failure is reported rather than treated as "done", so a DynamoDB fault
+// can never escalate into terminating live instances.
+func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]string, error) {
+	if t.config.JobsTableName == "" || t.poolDB == nil {
+		return nil, nil
+	}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("tag:runs-fleet:managed"), Values: []string{"true"}},
+			{Name: aws.String("instance-state-name"), Values: []string{"running"}},
+		},
+	}
+
+	var completed []string
+	var errs []error
+	var unchecked int
+	var firstLookupErr error
+	for {
+		output, err := t.ec2Client.DescribeInstances(ctx, input)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to describe instances for completed sweep: %w", err))
+			break
+		}
+
+		for id, launchedAt := range completedOrphanCandidates(output) {
+			done, err := t.jobsFinishedBefore(ctx, id, cutoff, launchedAt)
+			if err != nil {
+				unchecked++
+				if firstLookupErr == nil {
+					firstLookupErr = fmt.Errorf("completed lookup for %s: %w", id, err)
+				}
+				continue
+			}
+			if done {
+				completed = append(completed, id)
+			}
+		}
+
+		if output.NextToken == nil {
+			break
+		}
+		input.NextToken = output.NextToken
+	}
+
+	// A table-wide fault fails every lookup, so the report is summarised rather
+	// than accumulated per instance.
+	if unchecked > 0 {
+		errs = append(errs, fmt.Errorf("%d instances left unchecked by completed sweep, first: %w",
+			unchecked, firstLookupErr))
+	}
+	return completed, errors.Join(errs...)
+}
+
+// jobsFinishedBefore reports whether instanceID's work is done and finished
+// before cutoff.
+//
+// A completion that predates launchedAt belongs to a previous life of the
+// instance: a stopped warm-pool member keeps its old job row, and EC2 refreshes
+// LaunchTime when it is restarted for the next job. Treating that stale row as
+// current would reap the instance during the window between StartInstances and
+// the new job record being written.
+func (t *Tasks) jobsFinishedBefore(ctx context.Context, instanceID string, cutoff, launchedAt time.Time) (bool, error) {
+	completedAt, err := t.poolDB.LastJobCompletionForInstance(ctx, instanceID)
+	if err != nil {
+		return false, err
+	}
+	if completedAt.IsZero() {
+		return false, nil
+	}
+	return completedAt.Before(cutoff) && !completedAt.Before(launchedAt), nil
 }
 
 func mergeUniqueIDs(lists ...[]string) []string {

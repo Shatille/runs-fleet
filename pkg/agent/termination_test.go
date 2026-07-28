@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -250,5 +251,49 @@ func TestTerminator_TerminateOnPanic(t *testing.T) {
 	messages := mockSQS.getMessages()
 	if len(messages) != 1 {
 		t.Errorf("expected 1 telemetry message, got %d", len(messages))
+	}
+}
+
+func TestTerminator_TerminateOnTimeout_ReportsTimeoutStatus(t *testing.T) {
+	mockEC2 := &mockEC2API{}
+	mockSQS := &mockTelemetrySQSAPI{}
+
+	telemetry := &SQSTelemetry{
+		sqsClient: mockSQS,
+		queueURL:  "https://sqs.example.com/test-queue",
+		logger:    &mockLogger{},
+	}
+
+	terminator := &Terminator{
+		ec2Client: mockEC2,
+		telemetry: telemetry,
+		logger:    &mockLogger{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	err := terminator.TerminateOnTimeout(ctx, testInstanceID, JobStatus{
+		InstanceID: testInstanceID,
+		JobID:      "job-123",
+		ExitCode:   -1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	messages := mockSQS.getMessages()
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 telemetry message, got %d", len(messages))
+	}
+	// SendJobCompleted would recompute this to "failure" from the exit code,
+	// collapsing a max-runtime timeout into a generic operational error and
+	// losing the distinct timeout result the termination handler reports on.
+	if !strings.Contains(messages[0], `"status":"timeout"`) {
+		t.Errorf("telemetry = %s, want status \"timeout\"", messages[0])
+	}
+
+	if terminated := mockEC2.getTerminatedInstances(); len(terminated) != 1 {
+		t.Errorf("expected instance to be terminated, got %v", terminated)
 	}
 }

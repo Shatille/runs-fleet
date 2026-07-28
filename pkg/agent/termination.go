@@ -22,6 +22,7 @@ var ec2TerminationDelay = 2 * time.Second
 // Implementations handle instance termination via the EC2 API.
 type InstanceTerminator interface {
 	TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error
+	TerminateOnTimeout(ctx context.Context, instanceID string, status JobStatus) error
 }
 
 // EC2API defines EC2 operations for instance termination.
@@ -50,6 +51,23 @@ func NewEC2Terminator(cfg aws.Config, telemetry TelemetryClient, logger Logger) 
 
 // TerminateInstance sends telemetry and terminates the EC2 instance.
 func (t *EC2Terminator) TerminateInstance(ctx context.Context, instanceID string, status JobStatus) error {
+	return t.terminate(ctx, instanceID, status, func(ctx context.Context, s JobStatus) error {
+		return t.telemetry.SendJobCompleted(ctx, s)
+	})
+}
+
+// TerminateOnTimeout terminates after the max-runtime ceiling was hit. It reports
+// the distinct "timeout" result rather than routing through SendJobCompleted,
+// which recomputes the status from the exit code and would collapse this into a
+// generic operational failure.
+func (t *EC2Terminator) TerminateOnTimeout(ctx context.Context, instanceID string, status JobStatus) error {
+	return t.terminate(ctx, instanceID, status, func(ctx context.Context, s JobStatus) error {
+		return t.telemetry.SendJobTimeout(ctx, s)
+	})
+}
+
+func (t *EC2Terminator) terminate(ctx context.Context, instanceID string, status JobStatus,
+	send func(context.Context, JobStatus) error) error {
 	t.logger.Printf("Preparing to terminate instance %s", instanceID)
 
 	// Send termination notification first
@@ -59,7 +77,7 @@ func (t *EC2Terminator) TerminateInstance(ctx context.Context, instanceID string
 		telemetryCtx, cancel := context.WithTimeout(ctx, TelemetryTimeout)
 		defer cancel()
 
-		if err := t.telemetry.SendJobCompleted(telemetryCtx, status); err != nil {
+		if err := send(telemetryCtx, status); err != nil {
 			t.logger.Printf("Warning: failed to send telemetry: %v", err)
 			// Continue with termination even if telemetry fails
 		} else {

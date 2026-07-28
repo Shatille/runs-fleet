@@ -1531,3 +1531,65 @@ func extractTraceID(traceparent string) string {
 	}
 	return traceID
 }
+
+// LastJobCompletionForInstance returns when the instance's most recent job
+// reached a terminal state, or the zero time when it holds no job record or any
+// of its jobs is still live.
+//
+// Unlike GetJobByInstance this needs the terminal records themselves, so it
+// cannot reuse that status filter. It also declines the scan fallback: the
+// caller uses this to decide whether to terminate an instance, and an unindexed
+// scan could answer off a partial page.
+func (c *Client) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error) {
+	if instanceID == "" {
+		return time.Time{}, fmt.Errorf("instance ID cannot be empty")
+	}
+	if c.jobsTable == "" {
+		return time.Time{}, fmt.Errorf("jobs table not configured")
+	}
+	if c.jobsInstanceIDGSI == "" {
+		return time.Time{}, fmt.Errorf("instance-id GSI not configured")
+	}
+
+	var latest time.Time
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(c.jobsTable),
+		IndexName:              aws.String(c.jobsInstanceIDGSI),
+		KeyConditionExpression: aws.String("instance_id = :instance_id"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
+		},
+	}
+
+	for {
+		output, err := c.dynamoClient.Query(ctx, input)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("failed to query jobs by instance: %w", err)
+		}
+
+		for _, item := range output.Items {
+			status, ok := item["status"].(*types.AttributeValueMemberS)
+			if !ok || !JobStatus(status.Value).IsTerminal() {
+				return time.Time{}, nil
+			}
+			completedAt, ok := item["completed_at"].(*types.AttributeValueMemberS)
+			if !ok {
+				return time.Time{}, nil
+			}
+			ts, parseErr := time.Parse(time.RFC3339, completedAt.Value)
+			if parseErr != nil {
+				return time.Time{}, nil
+			}
+			if ts.After(latest) {
+				latest = ts
+			}
+		}
+
+		if output.LastEvaluatedKey == nil {
+			break
+		}
+		input.ExclusiveStartKey = output.LastEvaluatedKey
+	}
+
+	return latest, nil
+}

@@ -214,12 +214,20 @@ func TestAgentConfig_WithRunnerConfig(t *testing.T) {
 // mockTerminator implements agent.InstanceTerminator for testing
 type mockTerminator struct {
 	terminateCalled bool
+	timeoutCalled   bool
 	terminateErr    error
 	lastStatus      agent.JobStatus
 }
 
 func (m *mockTerminator) TerminateInstance(_ context.Context, _ string, status agent.JobStatus) error {
 	m.terminateCalled = true
+	m.lastStatus = status
+	return m.terminateErr
+}
+
+func (m *mockTerminator) TerminateOnTimeout(_ context.Context, _ string, status agent.JobStatus) error {
+	m.terminateCalled = true
+	m.timeoutCalled = true
 	m.lastStatus = status
 	return m.terminateErr
 }
@@ -463,6 +471,7 @@ func TestAgentConfig_TelemetryField(t *testing.T) {
 type mockTelemetry struct {
 	jobStartedCalled   bool
 	jobCompletedCalled bool
+	jobTimeoutCalled   bool
 	startedStatus      agent.JobStatus
 }
 
@@ -474,6 +483,11 @@ func (m *mockTelemetry) SendJobStarted(_ context.Context, status agent.JobStatus
 
 func (m *mockTelemetry) SendJobCompleted(_ context.Context, _ agent.JobStatus) error {
 	m.jobCompletedCalled = true
+	return nil
+}
+
+func (m *mockTelemetry) SendJobTimeout(_ context.Context, _ agent.JobStatus) error {
+	m.jobTimeoutCalled = true
 	return nil
 }
 

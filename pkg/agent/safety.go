@@ -31,6 +31,7 @@ type SafetyMonitor struct {
 	logger        Logger
 	onTimeout     func()
 	onCheck       func() // Called after each check() for test synchronization
+	timedOut      bool
 }
 
 // NewSafetyMonitor creates a new safety monitor.
@@ -79,6 +80,12 @@ func (s *SafetyMonitor) check() {
 
 	elapsed := time.Since(s.startTime)
 	if elapsed > s.maxRuntime {
+		// Latched: termination is asynchronous, so without this the monitor
+		// re-issues it every check interval for as long as the instance lives.
+		if s.timedOut {
+			return
+		}
+		s.timedOut = true
 		s.logger.Printf("SAFETY: Maximum runtime exceeded (%v > %v)", elapsed, s.maxRuntime)
 		if s.onTimeout != nil {
 			s.onTimeout()
