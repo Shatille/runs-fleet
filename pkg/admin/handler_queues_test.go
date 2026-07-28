@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,12 +12,16 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+var errTotalQueueFailure = errors.New("sqs unavailable")
+
 type mockSQSAPI struct {
-	attrs map[string]map[string]string
-	err   error
+	attrs         map[string]map[string]string
+	err           error
+	requestedAttr [][]sqstypes.QueueAttributeName
 }
 
 func (m *mockSQSAPI) GetQueueAttributes(_ context.Context, params *sqs.GetQueueAttributesInput, _ ...func(*sqs.Options)) (*sqs.GetQueueAttributesOutput, error) {
+	m.requestedAttr = append(m.requestedAttr, params.AttributeNames)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -24,6 +29,89 @@ func (m *mockSQSAPI) GetQueueAttributes(_ context.Context, params *sqs.GetQueueA
 	return &sqs.GetQueueAttributesOutput{
 		Attributes: m.attrs[url],
 	}, nil
+}
+
+// ApproximateAgeOfOldestMessage is a CloudWatch metric, not a GetQueueAttributes
+// attribute. Requesting it made SQS reject the whole call with
+// "InvalidAttributeName", so every queue was skipped and the UI reported
+// "No queues configured".
+func TestQueuesHandler_DoesNotRequestCloudWatchOnlyAttribute(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSQSAPI{attrs: map[string]map[string]string{
+		"https://sqs.us-east-1.amazonaws.com/123456789/main": {
+			string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "1",
+		},
+	}}
+	h := NewQueuesHandler(mock, QueueConfig{
+		MainQueue: "https://sqs.us-east-1.amazonaws.com/123456789/main",
+	}, NewAuthMiddleware(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/queues", nil)
+	h.ListQueues(httptest.NewRecorder(), req)
+
+	if len(mock.requestedAttr) == 0 {
+		t.Fatal("GetQueueAttributes was never called")
+	}
+	for _, names := range mock.requestedAttr {
+		for _, n := range names {
+			if string(n) == "ApproximateAgeOfOldestMessage" {
+				t.Errorf("requested ApproximateAgeOfOldestMessage; SQS rejects the whole "+
+					"GetQueueAttributes call with InvalidAttributeName (requested: %v)", names)
+			}
+		}
+	}
+}
+
+func TestQueuesHandler_ListQueuesReportsTotalFailure(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSQSAPI{err: errTotalQueueFailure}
+	h := NewQueuesHandler(mock, QueueConfig{
+		MainQueue: "https://sqs.us-east-1.amazonaws.com/123456789/main",
+		PoolQueue: "https://sqs.us-east-1.amazonaws.com/123456789/pool",
+	}, NewAuthMiddleware(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/queues", nil)
+	w := httptest.NewRecorder()
+	h.ListQueues(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Errorf("status = 200 with every queue lookup failing; the UI renders that as "+
+			"\"No queues configured\" instead of surfacing the error (body: %s)", w.Body.String())
+	}
+}
+
+func TestQueuesHandler_ListQueuesOmitsOnlyFailedQueues(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSQSAPI{attrs: map[string]map[string]string{
+		"https://sqs.us-east-1.amazonaws.com/123456789/main": {
+			string(sqstypes.QueueAttributeNameApproximateNumberOfMessages): "7",
+		},
+	}}
+	h := NewQueuesHandler(mock, QueueConfig{
+		MainQueue: "https://sqs.us-east-1.amazonaws.com/123456789/main",
+		PoolQueue: "https://sqs.us-east-1.amazonaws.com/123456789/pool",
+	}, NewAuthMiddleware(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/queues", nil)
+	w := httptest.NewRecorder()
+	h.ListQueues(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 when at least one queue resolves", w.Code)
+	}
+
+	var resp struct {
+		Queues []QueueStatusResponse `json:"queues"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Queues) != 2 {
+		t.Fatalf("got %d queues, want 2 (pool resolves with zeroed attributes)", len(resp.Queues))
+	}
 }
 
 func TestQueuesHandler_ListQueues(t *testing.T) {

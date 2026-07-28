@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { CostSkeleton } from '@/components/skeleton';
+import { HelpTip } from '@/components/help-tip';
 import { CostSummary, CostDaily, CostByPool } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
@@ -78,21 +79,25 @@ export default function CostPage() {
               title="Total Cost"
               value={`$${summary.total_cost.toFixed(2)}`}
               subtitle="Current month estimate"
+              help="Estimate only, not billing. Each finished job is priced as its own duration times its instance type's hourly rate, then summed; Spot + On-Demand below add up to this. Because it prices job time rather than instance uptime, it excludes boot time, hot-pool linger, stopped-instance EBS, and any instance still running without a job record — so real EC2 spend is higher."
             />
             <SummaryCard
               title="Avg Cost / Job"
               value={summary.job_count > 0 ? `$${summary.avg_cost_per_job.toFixed(4)}` : '-'}
               subtitle={`${summary.job_count} jobs this month`}
+              help="Total Cost divided by Job Count. Mixes architectures, instance sizes, and job durations, so it is only meaningful as a trend."
             />
             <SummaryCard
               title="Spot Savings"
               value={`$${summary.spot_savings.toFixed(2)}`}
               subtitle={`${summary.spot_job_count} spot / ${summary.on_demand_count} on-demand`}
+              help="Counterfactual, not a component of Total Cost: for each spot job, its duration times (on-demand rate minus spot rate). Clamped at zero per job, so jobs whose fetched spot price met or exceeded on-demand contribute nothing rather than a negative. When no live spot price is available it falls back to assuming a flat 70% discount, which real prices rarely match — treat this as a rough floor."
             />
             <SummaryCard
               title="Job Count"
               value={String(summary.job_count)}
               subtitle={`${formatPeriod(summary.period_start, summary.period_end)}`}
+              help="Finished jobs with a recorded duration in this period. Jobs still running, and instances that never registered a job, are not counted."
             />
           </div>
 
@@ -191,6 +196,7 @@ export default function CostPage() {
               <div className="px-4 py-3 border-b dark:border-gray-700 flex justify-between items-center">
                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
                   Runner-Minute Cost (standard per-vCPU-minute pricing)
+                  <HelpTip text="Comparison baseline, NOT runs-fleet spend and not comparable to Total Cost above. It prices the same work at standard hosted-runner rates (vCPU-minutes times the per-arch rate shown below) to show what these runs would have cost elsewhere. It also draws on a different data source — the RunnerExecutionSeconds CloudWatch metric rather than job records — so its totals will not reconcile with the tiles above." />
                 </h3>
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                   ${summary.runner_minute_cost.toFixed(2)}
@@ -282,10 +288,23 @@ function DailyChart({ daily }: { daily: CostDaily }) {
   );
 }
 
-function SummaryCard({ title, value, subtitle }: { title: string; value: string; subtitle: string }) {
+function SummaryCard({
+  title,
+  value,
+  subtitle,
+  help,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  help?: string;
+}) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
-      <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</dt>
+      <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">
+        {title}
+        {help && <HelpTip text={help} />}
+      </dt>
       <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">{value}</dd>
       <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">{subtitle}</dd>
     </div>
