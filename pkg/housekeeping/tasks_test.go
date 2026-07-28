@@ -1502,6 +1502,10 @@ type mockPoolDBAPI struct {
 	listJobsCalls  int
 	autoTuneErr    error
 	autoTuneByPool map[string]db.AutoTuneRec
+
+	expiredClaimsDeleted int
+	expiredClaimsErr     error
+	expiredClaimsCalls   int
 }
 
 func (m *mockPoolDBAPI) ListPools(_ context.Context) ([]string, error) {
@@ -1553,6 +1557,50 @@ func (m *mockPoolDBAPI) UpdatePoolAutoTune(_ context.Context, poolName string, r
 	}
 	m.autoTuneByPool[poolName] = rec
 	return nil
+}
+
+func (m *mockPoolDBAPI) DeleteExpiredInstanceClaims(_ context.Context, _ time.Time) (int, error) {
+	m.expiredClaimsCalls++
+	if m.expiredClaimsErr != nil {
+		return 0, m.expiredClaimsErr
+	}
+	return m.expiredClaimsDeleted, nil
+}
+
+func TestExecuteExpiredInstanceClaims_NoPoolDB(t *testing.T) {
+	t.Parallel()
+
+	tasks := &Tasks{config: &config.Config{}}
+	if err := tasks.ExecuteExpiredInstanceClaims(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecuteExpiredInstanceClaims_DeletesAndCounts(t *testing.T) {
+	t.Parallel()
+
+	poolDB := &mockPoolDBAPI{expiredClaimsDeleted: 3}
+	tasks := &Tasks{config: &config.Config{}}
+	tasks.SetPoolDB(poolDB)
+
+	if err := tasks.ExecuteExpiredInstanceClaims(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if poolDB.expiredClaimsCalls != 1 {
+		t.Errorf("DeleteExpiredInstanceClaims called %d times, want 1", poolDB.expiredClaimsCalls)
+	}
+}
+
+func TestExecuteExpiredInstanceClaims_Error(t *testing.T) {
+	t.Parallel()
+
+	poolDB := &mockPoolDBAPI{expiredClaimsErr: errors.New("scan failed")}
+	tasks := &Tasks{config: &config.Config{}}
+	tasks.SetPoolDB(poolDB)
+
+	if err := tasks.ExecuteExpiredInstanceClaims(context.Background()); err == nil {
+		t.Error("expected error when DeleteExpiredInstanceClaims fails")
+	}
 }
 
 func TestExecuteEphemeralPoolCleanup_NoPoolDB(t *testing.T) {

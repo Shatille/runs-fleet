@@ -110,6 +110,7 @@ type PoolDBAPI interface {
 	DeletePoolConfig(ctx context.Context, poolName string) error
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
 	UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error
+	DeleteExpiredInstanceClaims(ctx context.Context, now time.Time) (int, error)
 }
 
 // Tasks implements housekeeping task execution.
@@ -1212,6 +1213,30 @@ func (t *Tasks) ExecutePoolHotTuner(ctx context.Context) error {
 	t.logger().Debug(ctx, "hot tuner pass complete",
 		slog.Int("pools", len(pools)),
 		slog.Int("tuned", tuned))
+	return nil
+}
+
+// ExecuteExpiredInstanceClaims reaps expired instance-claim rows from the pools
+// table. Claims are written per warm-pool assignment and only overwritten on the
+// next claim of the same instance, so without a sweep they accumulate and can
+// bloat the table past the 1 MB Scan page that ListPools reads, hiding real
+// pools. Deletion is conditional on claim_expiry so a renewed claim is never
+// dropped (see db.DeleteExpiredInstanceClaims).
+func (t *Tasks) ExecuteExpiredInstanceClaims(ctx context.Context) error {
+	if t.poolDB == nil {
+		return nil
+	}
+
+	deleted, err := t.poolDB.DeleteExpiredInstanceClaims(ctx, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to delete expired instance claims: %w", err)
+	}
+
+	if deleted > 0 {
+		t.logger().Info(ctx, "reaped expired instance claims", slog.Int(logging.KeyCount, deleted))
+	} else {
+		t.logger().Debug(ctx, "no expired instance claims to reap")
+	}
 	return nil
 }
 

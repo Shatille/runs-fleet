@@ -151,26 +151,34 @@ func (c *Client) ListPools(ctx context.Context) ([]string, error) {
 		ProjectionExpression: aws.String("pool_name"),
 	}
 
-	output, err := c.dynamoClient.Scan(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan pools table: %w", err)
-	}
-
 	var pools []string
-	for _, item := range output.Items {
-		if name, ok := item["pool_name"]; ok {
-			var poolName string
-			if err := attributevalue.Unmarshal(name, &poolName); err != nil {
-				continue
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan pools table: %w", err)
+		}
+
+		for _, item := range output.Items {
+			if name, ok := item["pool_name"]; ok {
+				var poolName string
+				if err := attributevalue.Unmarshal(name, &poolName); err != nil {
+					continue
+				}
+				if IsReservedPoolKey(poolName) {
+					continue
+				}
+				pools = append(pools, poolName)
 			}
-			if IsReservedPoolKey(poolName) {
-				continue
-			}
-			pools = append(pools, poolName)
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			return pools, nil
 		}
 	}
-
-	return pools, nil
 }
 
 // UpdatePoolState updates the current state of the pool (e.g., running/stopped counts).

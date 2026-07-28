@@ -80,6 +80,75 @@ func (c *Client) ClaimInstanceForJob(ctx context.Context, instanceID string, job
 	return nil
 }
 
+// DeleteExpiredInstanceClaims sweeps the pools table for instance-claim rows
+// whose claim_expiry has already passed and deletes them, returning the number
+// actually removed. Claims are written by ClaimInstanceForJob but only
+// overwritten on the next claim of the same instance, so without this reaper an
+// ephemeral fleet accumulates one dead claim row per instance forever — the
+// backlog that bloated the pools table past the 1 MB Scan page ListPools reads.
+//
+// Each row is deleted with a conditional DeleteItem (claim_expiry < :now) rather
+// than an unconditional or batch delete: a claim renewed between the scan and the
+// delete would otherwise be dropped while still live, causing double-assignment.
+// A failed condition means the claim was renewed (or is a non-claim row) and is
+// skipped, not counted, not an error.
+func (c *Client) DeleteExpiredInstanceClaims(ctx context.Context, now time.Time) (int, error) {
+	if c.poolsTable == "" {
+		return 0, fmt.Errorf("pools table not configured")
+	}
+
+	nowUnix := fmt.Sprintf("%d", now.Unix())
+	input := &dynamodb.ScanInput{
+		TableName:            aws.String(c.poolsTable),
+		ProjectionExpression: aws.String("pool_name"),
+		FilterExpression:     aws.String("begins_with(pool_name, :p) AND claim_expiry < :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":p":   &types.AttributeValueMemberS{Value: instanceClaimPrefix},
+			":now": &types.AttributeValueMemberN{Value: nowUnix},
+		},
+	}
+
+	var deleted int
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return deleted, fmt.Errorf("failed to scan expired instance claims: %w", err)
+		}
+
+		for _, item := range output.Items {
+			claimKey, ok := item["pool_name"]
+			if !ok {
+				continue
+			}
+
+			_, err := c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+				TableName:           aws.String(c.poolsTable),
+				Key:                 map[string]types.AttributeValue{"pool_name": claimKey},
+				ConditionExpression: aws.String("claim_expiry < :now"),
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":now": &types.AttributeValueMemberN{Value: nowUnix},
+				},
+			})
+			if err != nil {
+				var condErr *types.ConditionalCheckFailedException
+				if errors.As(err, &condErr) {
+					continue
+				}
+				return deleted, fmt.Errorf("failed to delete expired instance claim: %w", err)
+			}
+			deleted++
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			return deleted, nil
+		}
+	}
+}
+
 // ReleaseInstanceClaim releases an instance claim for a specific job.
 // Only releases if the current job is the claim owner.
 // Returns nil even if the claim was already released or owned by another job.

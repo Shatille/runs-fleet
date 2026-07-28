@@ -772,6 +772,10 @@ func (p *poolDBAdapter) UpdatePoolAutoTune(ctx context.Context, poolName string,
 	return p.client.UpdatePoolAutoTune(ctx, poolName, rec)
 }
 
+func (p *poolDBAdapter) DeleteExpiredInstanceClaims(ctx context.Context, now time.Time) (int, error) {
+	return p.client.DeleteExpiredInstanceClaims(ctx, now)
+}
+
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
 type githubJobCheckerAdapter struct {
 	client *gh.Client
