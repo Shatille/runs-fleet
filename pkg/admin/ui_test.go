@@ -1,11 +1,128 @@
 package admin
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func builtUIHandler(t *testing.T) http.Handler {
+	t.Helper()
+
+	handler := UIHandler()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code == http.StatusServiceUnavailable {
+		t.Skip("admin UI not built; run make build-admin-ui")
+	}
+	return handler
+}
+
+func findEmbeddedAsset(t *testing.T, ext string) string {
+	t.Helper()
+
+	subFS, err := fs.Sub(uiFS, "ui/out")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+
+	var found string
+	err = fs.WalkDir(subFS, "_next/static", func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() && strings.HasSuffix(p, ext) {
+			found = p
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk _next/static: %v", err)
+	}
+	if found == "" {
+		t.Skipf("no %s asset in embedded build", ext)
+	}
+	return found
+}
+
+func TestUIHandler_MissingStaticAssetReturns404(t *testing.T) {
+	t.Parallel()
+
+	handler := builtUIHandler(t)
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"stale js chunk", "/admin/_next/static/chunks/stale-build-chunk.js"},
+		{"stale css chunk", "/admin/_next/static/chunks/stale-build-chunk.css"},
+		{"missing icon", "/admin/favicon-missing.ico"},
+		{"missing font", "/admin/fonts/missing.woff2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusNotFound {
+				t.Errorf("UIHandler() %s status = %d, want 404", tt.path, w.Code)
+			}
+			if ct := w.Header().Get("Content-Type"); strings.HasPrefix(ct, "text/html") {
+				t.Errorf("UIHandler() %s Content-Type = %q; serving the HTML shell under an asset URL "+
+					"makes the browser refuse the stylesheet or fail to parse the script", tt.path, ct)
+			}
+		})
+	}
+}
+
+func TestUIHandler_ServesExistingStaticAsset(t *testing.T) {
+	t.Parallel()
+
+	handler := builtUIHandler(t)
+	asset := findEmbeddedAsset(t, ".js")
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/"+asset, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("UIHandler() %s status = %d, want 200", asset, w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Errorf("UIHandler() %s Content-Type = %q, want a javascript type", asset, ct)
+	}
+}
+
+func TestUIHandler_UnknownRouteStillServesShell(t *testing.T) {
+	t.Parallel()
+
+	handler := builtUIHandler(t)
+
+	for _, path := range []string{"/admin/unknown-route", "/admin/pools/deep/route"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("UIHandler() %s status = %d, want 200", path, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), "<!DOCTYPE html>") {
+				t.Errorf("UIHandler() %s did not serve the HTML shell", path)
+			}
+		})
+	}
+}
 
 func TestUIHandler_ServesIndexHTML(t *testing.T) {
 	t.Parallel()
