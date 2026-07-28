@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -78,18 +80,16 @@ func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	results := make([]QueueStatusResponse, 0, len(queueNames))
-	var configured int
-	var lastErr error
+	var lookupErrs []error
 	for _, name := range queueNames {
 		url, dlqURL, ok := h.queueByName(name)
 		if !ok {
 			continue
 		}
-		configured++
 
 		status, err := h.getQueueStatus(ctx, name, url)
 		if err != nil {
-			lastErr = err
+			lookupErrs = append(lookupErrs, fmt.Errorf("%s: %w", name, err))
 			h.log.Warn(ctx, "failed to get queue status",
 				slog.String("queue", name),
 				slog.String(logging.KeyError, err.Error()))
@@ -106,9 +106,10 @@ func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// An empty list is indistinguishable from "nothing configured" in the UI, so
-	// a wholesale lookup failure has to surface as an error instead.
-	if len(results) == 0 && configured > 0 {
-		h.writeError(w, http.StatusBadGateway, "Failed to get queue status", lastErr.Error())
+	// a wholesale lookup failure has to surface as an error instead. Every failure
+	// is reported: the first is usually the root cause, the rest may be side effects.
+	if lookupErr := errors.Join(lookupErrs...); len(results) == 0 && lookupErr != nil {
+		h.writeError(w, http.StatusBadGateway, "Failed to get queue status", lookupErr.Error())
 		return
 	}
 

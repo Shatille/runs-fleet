@@ -176,14 +176,16 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	// outlives a whole job timeout, and every other sweep starts from a job record,
 	// so a cold-start instance that never claimed a job is billed for hours with
 	// nothing looking for it.
-	unclaimedOrphans := t.findUnclaimedOrphans(ctx,
+	unclaimedOrphans, unclaimedErr := t.findUnclaimedOrphans(ctx,
 		time.Now().Add(-time.Duration(t.config.UnclaimedInstanceGraceMinutes)*time.Minute))
 
 	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans, unclaimedOrphans)
 
-	// If tag-based detection failed and profile-based found nothing, propagate the error
-	if tagErr != nil && len(orphanedIDs) == 0 {
-		return tagErr
+	// A detection failure that reaped nothing is indistinguishable from a clean
+	// sweep, so it has to surface. When some orphans were confirmed, terminating
+	// them takes priority over reporting the partial failure.
+	if sweepErr := errors.Join(tagErr, unclaimedErr); sweepErr != nil && len(orphanedIDs) == 0 {
+		return sweepErr
 	}
 	if len(orphanedIDs) == 0 {
 		t.logger().Debug(ctx, "no orphaned instances found")
@@ -425,10 +427,11 @@ func unclaimedOrphanCandidates(output *ec2.DescribeInstancesOutput, cutoff time.
 
 // findUnclaimedOrphans returns cold-start instances past the grace period that
 // have no job record at all. A lookup failure is treated as "claimed" so a
-// DynamoDB problem can never escalate into terminating live instances.
-func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) []string {
+// DynamoDB problem can never escalate into terminating live instances. Instances
+// confirmed unclaimed before a describe failure are returned alongside the error.
+func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]string, error) {
 	if t.config.JobsTableName == "" {
-		return nil
+		return nil, nil
 	}
 
 	input := &ec2.DescribeInstancesInput{
@@ -442,9 +445,7 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) []st
 	for {
 		output, err := t.ec2Client.DescribeInstances(ctx, input)
 		if err != nil {
-			t.logger().Error(ctx, "failed to describe instances for unclaimed sweep",
-				slog.String("error", err.Error()))
-			return unclaimed
+			return unclaimed, fmt.Errorf("failed to describe instances for unclaimed sweep: %w", err)
 		}
 
 		for _, id := range unclaimedOrphanCandidates(output, cutoff) {
@@ -461,7 +462,7 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) []st
 		}
 
 		if output.NextToken == nil {
-			return unclaimed
+			return unclaimed, nil
 		}
 		input.NextToken = output.NextToken
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -17,6 +18,7 @@ var errTotalQueueFailure = errors.New("sqs unavailable")
 type mockSQSAPI struct {
 	attrs         map[string]map[string]string
 	err           error
+	errByURL      map[string]error
 	requestedAttr [][]sqstypes.QueueAttributeName
 }
 
@@ -24,6 +26,9 @@ func (m *mockSQSAPI) GetQueueAttributes(_ context.Context, params *sqs.GetQueueA
 	m.requestedAttr = append(m.requestedAttr, params.AttributeNames)
 	if m.err != nil {
 		return nil, m.err
+	}
+	if err, ok := m.errByURL[*params.QueueUrl]; ok {
+		return nil, err
 	}
 	url := *params.QueueUrl
 	return &sqs.GetQueueAttributesOutput{
@@ -79,6 +84,38 @@ func TestQueuesHandler_ListQueuesReportsTotalFailure(t *testing.T) {
 	if w.Code == http.StatusOK {
 		t.Errorf("status = 200 with every queue lookup failing; the UI renders that as "+
 			"\"No queues configured\" instead of surfacing the error (body: %s)", w.Body.String())
+	}
+}
+
+func TestQueuesHandler_TotalFailureReportsEveryQueueError(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSQSAPI{errByURL: map[string]error{
+		"https://sqs.us-east-1.amazonaws.com/123456789/main": errors.New("first-root-cause"),
+		"https://sqs.us-east-1.amazonaws.com/123456789/pool": errors.New("later-side-effect"),
+	}}
+	h := NewQueuesHandler(mock, QueueConfig{
+		MainQueue: "https://sqs.us-east-1.amazonaws.com/123456789/main",
+		PoolQueue: "https://sqs.us-east-1.amazonaws.com/123456789/pool",
+	}, NewAuthMiddleware(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/queues", nil)
+	w := httptest.NewRecorder()
+	h.ListQueues(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body: %s)", w.Code, w.Body.String())
+	}
+
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, want := range []string{"first-root-cause", "later-side-effect", "main", "pool"} {
+		if !strings.Contains(resp.Details, want) {
+			t.Errorf("details %q omits %q; reporting only one queue's failure hides the "+
+				"root cause when a later failure is a side effect of the first", resp.Details, want)
+		}
 	}
 }
 

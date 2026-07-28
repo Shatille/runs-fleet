@@ -25,6 +25,7 @@ type mockEC2API struct {
 	instances           []ec2types.Reservation
 	spotRequests        []ec2types.SpotInstanceRequest
 	describeErr         error
+	describeErrOnCall   int
 	terminateErr        error
 	describeSpotErr     error
 	cancelSpotErr       error
@@ -42,6 +43,9 @@ func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstan
 	m.describeInput = in
 	if m.describeErr != nil {
 		return nil, m.describeErr
+	}
+	if m.describeErrOnCall == m.describeCalls {
+		return nil, errors.New("throttled")
 	}
 	return &ec2.DescribeInstancesOutput{
 		Reservations: m.instances,
@@ -445,6 +449,58 @@ func (m *mockTaskSQSAPI) ListMessageMoveTasks(_ context.Context, _ *sqs.ListMess
 		return m.listMoveTasksOutput, nil
 	}
 	return &sqs.ListMessageMoveTasksOutput{}, nil
+}
+
+func TestExecuteOrphanedInstances_PropagatesUnclaimedSweepError(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{
+		instances:         []ec2types.Reservation{{Instances: []ec2types.Instance{managedInstance("i-fresh", time.Now())}}},
+		describeErrOnCall: 2,
+	}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err == nil {
+		t.Error("got nil error when the unclaimed sweep's DescribeInstances failed and nothing " +
+			"was reaped; a swallowed failure looks identical to a clean sweep, so instances leak silently")
+	}
+}
+
+func TestExecuteOrphanedInstances_UnclaimedSweepErrorStillReapsAgedOrphans(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{
+		instances:         []ec2types.Reservation{{Instances: []ec2types.Instance{managedInstance("i-aged", time.Now().Add(-8*time.Hour))}}},
+		describeErrOnCall: 2,
+	}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-aged" {
+		t.Errorf("terminated = %v, want [i-aged]: a failed unclaimed sweep must not block "+
+			"reaping the orphans the age-based sweep already confirmed", ec2Client.terminatedIDs)
+	}
 }
 
 func TestExecuteOrphanedInstances_NoOrphans(t *testing.T) {
