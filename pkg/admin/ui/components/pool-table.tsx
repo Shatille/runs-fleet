@@ -1,5 +1,6 @@
 import { Pool } from '@/lib/types';
 import { formatRelativeTime } from '@/lib/format';
+import { HelpTip } from '@/components/help-tip';
 
 interface PoolTableProps {
   pools: Pool[];
@@ -50,27 +51,34 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Instance Type
+              <HelpTip text="Instance type pinned for this pool. '-' means no pin: the fleet picks a type from the catalog per job." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Running
+              <HelpTip text="current / desired. Left: instances running right now. Right: the configured warm floor (desired_running) the reconciler maintains while idle. Busy instances and hot-pool linger sit on top of that floor, so current above desired is normal under load — that is why a pool with desired 0 can show 4 running. Yellow just marks current differing from desired, not an error." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Stopped
+              <HelpTip text="current / desired stopped instances. Stopped instances cost only EBS and can be started faster than a cold boot. Yellow marks current differing from desired." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Busy
+              <HelpTip text="Instances in this pool currently executing a job. Always a subset of Running." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Arch
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Type
+              <HelpTip text="Ephemeral pools are auto-created on first use, inherit their instance spec from the first job, and can be deleted here. Persistent pools are declared in configuration." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Hot
+              <HelpTip text="linger / max hot. Left: minutes an idle instance stays running after finishing a job so the next job skips boot. Right: cap on how many instances may linger. '*' means an operator override, otherwise auto-tuned. '-' means no linger (fully cold)." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Last Reconcile
+              <HelpTip text="When the reconciler last ran for this pool. Green = success, red = failure. Running and Stopped are snapshots written by that run, so they can lag real EC2 state by up to one reconcile interval (60s)." />
             </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Actions

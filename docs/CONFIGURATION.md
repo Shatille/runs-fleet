@@ -52,7 +52,8 @@ All configuration is via environment variables, set on the orchestrator's runtim
 | `RUNS_FLEET_RUNNER_IMAGE` | | ECR image URL for runners (required) |
 | `RUNS_FLEET_KEY_NAME` | | EC2 key pair name (optional) |
 | `RUNS_FLEET_SPOT_ENABLED` | `true` | Enable spot instances (cold-start only; warm pool always uses on-demand) |
-| `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440) |
+| `RUNS_FLEET_MAX_RUNTIME_MINUTES` | `360` | Max job runtime (1-1440). Also gates the age-based orphan sweep, which reaps any managed instance older than this + 10 minutes |
+| `RUNS_FLEET_UNCLAIMED_INSTANCE_GRACE_MINUTES` | `30` | How long a cold-start instance may run without any job record before the orphan sweep terminates it as surplus (minimum 5). Pool-tagged instances are exempt — they are meant to idle awaiting work. Without this, a launch that never claimed a job is invisible to every job-driven sweep and bills until it crosses the `MAX_RUNTIME_MINUTES` cutoff |
 | `RUNS_FLEET_STANDBY_DEADLINE_MINUTES` | `120` | Agent-side: how long an instance polls for a job config before exiting 0 (failsafe for a leaked spare; the reconciler is the primary decay path). Read on the runner, not the orchestrator. |
 | `RUNS_FLEET_LAUNCH_TEMPLATE_NAME` | `runs-fleet-runner` | EC2 launch template |
 | `RUNS_FLEET_TAGS` | | Custom EC2 tags (JSON object) |

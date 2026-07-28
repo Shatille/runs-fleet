@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -14,9 +16,10 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-// attrOldestMessageAge is the SQS queue attribute for the age (seconds) of the
-// oldest message. The SDK's QueueAttributeName enum omits it, so it's passed as
-// a raw string.
+// attrOldestMessageAge is only ever read from a response, never requested:
+// ApproximateAgeOfOldestMessage is a CloudWatch metric rather than a queue
+// attribute, and naming it in GetQueueAttributes makes SQS reject the entire
+// call with InvalidAttributeName.
 const attrOldestMessageAge = "ApproximateAgeOfOldestMessage"
 
 // SQSAPI defines the SQS operations needed for queue status.
@@ -76,7 +79,8 @@ func (h *QueuesHandler) RegisterRoutes(mux *http.ServeMux) {
 func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var results []QueueStatusResponse
+	results := make([]QueueStatusResponse, 0, len(queueNames))
+	var lookupErrs []error
 	for _, name := range queueNames {
 		url, dlqURL, ok := h.queueByName(name)
 		if !ok {
@@ -85,6 +89,7 @@ func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 
 		status, err := h.getQueueStatus(ctx, name, url)
 		if err != nil {
+			lookupErrs = append(lookupErrs, fmt.Errorf("%s: %w", name, err))
 			h.log.Warn(ctx, "failed to get queue status",
 				slog.String("queue", name),
 				slog.String(logging.KeyError, err.Error()))
@@ -98,6 +103,14 @@ func (h *QueuesHandler) ListQueues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		results = append(results, *status)
+	}
+
+	// An empty list is indistinguishable from "nothing configured" in the UI, so
+	// a wholesale lookup failure has to surface as an error instead. Every failure
+	// is reported: the first is usually the root cause, the rest may be side effects.
+	if lookupErr := errors.Join(lookupErrs...); len(results) == 0 && lookupErr != nil {
+		h.writeError(w, http.StatusBadGateway, "Failed to get queue status", lookupErr.Error())
+		return
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -142,7 +155,6 @@ func (h *QueuesHandler) getQueueStatus(ctx context.Context, name, url string) (*
 			sqstypes.QueueAttributeNameApproximateNumberOfMessages,
 			sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
 			sqstypes.QueueAttributeNameApproximateNumberOfMessagesDelayed,
-			sqstypes.QueueAttributeName(attrOldestMessageAge),
 		},
 	})
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ type mockEC2API struct {
 	instances           []ec2types.Reservation
 	spotRequests        []ec2types.SpotInstanceRequest
 	describeErr         error
+	describeErrOnCall   int
 	terminateErr        error
 	describeSpotErr     error
 	cancelSpotErr       error
@@ -42,6 +45,9 @@ func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstan
 	m.describeInput = in
 	if m.describeErr != nil {
 		return nil, m.describeErr
+	}
+	if m.describeErrOnCall == m.describeCalls {
+		return nil, errors.New("throttled")
 	}
 	return &ec2.DescribeInstancesOutput{
 		Reservations: m.instances,
@@ -139,16 +145,152 @@ type mockTaskDynamoDBAPI struct {
 	batchCalls    int
 	updateCalls   int
 	scanInputs    []*dynamodb.ScanInput
+
+	jobRowsByInstance map[string][]map[string]types.AttributeValue
 }
 
-func (m *mockTaskDynamoDBAPI) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+func (m *mockTaskDynamoDBAPI) Query(_ context.Context, params *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 	m.queryCalls++
 	if m.queryErr != nil {
 		return nil, m.queryErr
 	}
+	// Per-instance job rows let a test model "this instance claimed a job, that
+	// one never did" in the same sweep.
+	if m.jobRowsByInstance != nil {
+		for _, v := range params.ExpressionAttributeValues {
+			s, ok := v.(*types.AttributeValueMemberS)
+			if !ok {
+				continue
+			}
+			if rows, found := m.jobRowsByInstance[s.Value]; found {
+				return &dynamodb.QueryOutput{Items: rows}, nil
+			}
+		}
+		return &dynamodb.QueryOutput{Items: nil}, nil
+	}
 	return &dynamodb.QueryOutput{
 		Items: m.items,
 	}, nil
+}
+
+func managedInstance(id string, launched time.Time, extraTags ...ec2types.Tag) ec2types.Instance {
+	tags := append([]ec2types.Tag{
+		{Key: aws.String("runs-fleet:managed"), Value: aws.String("true")},
+	}, extraTags...)
+	return ec2types.Instance{
+		InstanceId: aws.String(id),
+		LaunchTime: aws.Time(launched),
+		Tags:       tags,
+	}
+}
+
+func TestUnclaimedOrphanCandidates(t *testing.T) {
+	t.Parallel()
+
+	cutoff := time.Now().Add(-30 * time.Minute)
+	old := time.Now().Add(-45 * time.Minute)
+	fresh := time.Now().Add(-2 * time.Minute)
+
+	output := &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-old-coldstart", old),
+		managedInstance("i-fresh-coldstart", fresh),
+		managedInstance("i-old-pool", old, ec2types.Tag{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")}),
+	}}}}
+
+	got := unclaimedOrphanCandidates(output, cutoff)
+
+	if len(got) != 1 || got[0] != "i-old-coldstart" {
+		t.Errorf("candidates = %v, want only [i-old-coldstart]: a fresh instance may still be "+
+			"claiming, and a pool-tagged instance is legitimately idle awaiting work", got)
+	}
+}
+
+func TestExecuteOrphanedInstances_ReapsUnclaimedColdStart(t *testing.T) {
+	t.Parallel()
+
+	// 45 minutes old: far short of the MaxRuntimeMinutes-based cutoff, so only the
+	// unclaimed sweep can catch it.
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
+	}}}}
+	dynamoClient := &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: dynamoClient,
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-unclaimed" {
+		t.Errorf("terminated = %v, want [i-unclaimed]: a cold-start instance with no job row "+
+			"past the grace period is surplus and bills until the 6h age cutoff", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_SparesClaimedAndPoolInstances(t *testing.T) {
+	t.Parallel()
+
+	old := time.Now().Add(-45 * time.Minute)
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-claimed", old),
+		managedInstance("i-pool-idle", old, ec2types.Tag{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")}),
+	}}}}
+	dynamoClient := &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{
+		"i-claimed": {{"instance_id": &types.AttributeValueMemberS{Value: "i-claimed"}}},
+	}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: dynamoClient,
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: i-claimed is running a recorded job and "+
+			"i-pool-idle is a warm pool member awaiting work", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_SkipsUnclaimedSweepWithoutJobsTable(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: without a jobs table the sweep cannot tell "+
+			"unclaimed from working and must not guess", ec2Client.terminatedIDs)
+	}
 }
 
 func (m *mockTaskDynamoDBAPI) BatchWriteItem(_ context.Context, _ *dynamodb.BatchWriteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error) {
@@ -309,6 +451,173 @@ func (m *mockTaskSQSAPI) ListMessageMoveTasks(_ context.Context, _ *sqs.ListMess
 		return m.listMoveTasksOutput, nil
 	}
 	return &sqs.ListMessageMoveTasksOutput{}, nil
+}
+
+func TestExecuteOrphanedInstances_JobLookupFailureSparesInstance(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unknown", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	_ = tasks.ExecuteOrphanedInstances(context.Background())
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a DynamoDB failure must count as claimed, "+
+			"otherwise a throttled table escalates into killing instances running live jobs",
+			ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_ReportsJobLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unknown", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err == nil {
+		t.Fatal("got nil error when every job lookup failed and nothing was reaped; a blind " +
+			"sweep must not report success, or a persistent DynamoDB fault leaks instances unnoticed")
+	}
+	if !strings.Contains(err.Error(), "i-unknown") {
+		t.Errorf("error = %q, want the skipped instance ID so the operator can see what went "+
+			"unchecked", err)
+	}
+}
+
+// captureCtxLogs swaps the default logger, so this test cannot be parallel.
+func TestExecuteOrphanedInstances_LogsSkippedUnclaimedSweep(t *testing.T) {
+	var buf bytes.Buffer
+	captureCtxLogs(t, &buf)
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Without a jobs table the sweep cannot run, and an unannounced skip is
+	// indistinguishable from a sweep that legitimately found nothing.
+	findLog(t, &buf, "unclaimed sweep skipped: no jobs table configured")
+}
+
+func TestExecuteOrphanedInstances_LookupFailureReportIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const candidates = 500
+	instances := make([]ec2types.Instance, 0, candidates)
+	for i := range candidates {
+		instances = append(instances, managedInstance(fmt.Sprintf("i-%03d", i), time.Now().Add(-45*time.Minute)))
+	}
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: instances}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err == nil {
+		t.Fatal("expected an error when every job lookup failed")
+	}
+	if n := strings.Count(err.Error(), "ProvisionedThroughputExceeded"); n != 1 {
+		t.Errorf("error repeats the underlying cause %d times; a table-wide outage must summarise "+
+			"rather than accumulate one entry per instance", n)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want the number of unchecked instances so the scale of the "+
+			"outage is visible", err)
+	}
+}
+
+func TestExecuteOrphanedInstances_PropagatesUnclaimedSweepError(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{
+		instances:         []ec2types.Reservation{{Instances: []ec2types.Instance{managedInstance("i-fresh", time.Now())}}},
+		describeErrOnCall: 2,
+	}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err == nil {
+		t.Error("got nil error when the unclaimed sweep's DescribeInstances failed and nothing " +
+			"was reaped; a swallowed failure looks identical to a clean sweep, so instances leak silently")
+	}
+}
+
+func TestExecuteOrphanedInstances_UnclaimedSweepErrorStillReapsAgedOrphans(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{
+		instances:         []ec2types.Reservation{{Instances: []ec2types.Instance{managedInstance("i-aged", time.Now().Add(-8*time.Hour))}}},
+		describeErrOnCall: 2,
+	}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{jobRowsByInstance: map[string][]map[string]types.AttributeValue{}},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-aged" {
+		t.Errorf("terminated = %v, want [i-aged]: a failed unclaimed sweep must not block "+
+			"reaping the orphans the age-based sweep already confirmed", ec2Client.terminatedIDs)
+	}
 }
 
 func TestExecuteOrphanedInstances_NoOrphans(t *testing.T) {
