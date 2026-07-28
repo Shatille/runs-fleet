@@ -101,6 +101,13 @@ resource "aws_dynamodb_table" "pools" {
     type = "S"
   }
 
+  # Only __instance_claim: rows carry claim_expiry, so TTL reaps expired claims
+  # and never touches pool-config or reconcile/task-lock rows (which lack it).
+  ttl {
+    attribute_name = "claim_expiry"
+    enabled        = true
+  }
+
   point_in_time_recovery {
     enabled = true
   }
