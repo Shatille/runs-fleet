@@ -507,6 +507,33 @@ func TestExecuteOrphanedInstances_ReportsJobLookupFailure(t *testing.T) {
 	}
 }
 
+// captureCtxLogs swaps the default logger, so this test cannot be parallel.
+func TestExecuteOrphanedInstances_LogsSkippedUnclaimedSweep(t *testing.T) {
+	var buf bytes.Buffer
+	captureCtxLogs(t, &buf)
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unclaimed", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+		},
+	}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Without a jobs table the sweep cannot run, and an unannounced skip is
+	// indistinguishable from a sweep that legitimately found nothing.
+	findLog(t, &buf, "unclaimed sweep skipped: no jobs table configured")
+}
+
 func TestExecuteOrphanedInstances_LookupFailureReportIsBounded(t *testing.T) {
 	t.Parallel()
 

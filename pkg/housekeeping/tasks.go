@@ -436,6 +436,7 @@ func unclaimedOrphanCandidates(output *ec2.DescribeInstancesOutput, cutoff time.
 // errors for everything the sweep could not check.
 func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]string, error) {
 	if t.config.JobsTableName == "" {
+		t.logger().Warn(ctx, "unclaimed sweep skipped: no jobs table configured")
 		return nil, nil
 	}
 
