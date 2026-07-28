@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -449,6 +450,60 @@ func (m *mockTaskSQSAPI) ListMessageMoveTasks(_ context.Context, _ *sqs.ListMess
 		return m.listMoveTasksOutput, nil
 	}
 	return &sqs.ListMessageMoveTasksOutput{}, nil
+}
+
+func TestExecuteOrphanedInstances_JobLookupFailureSparesInstance(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unknown", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	_ = tasks.ExecuteOrphanedInstances(context.Background())
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a DynamoDB failure must count as claimed, "+
+			"otherwise a throttled table escalates into killing instances running live jobs",
+			ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_ReportsJobLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-unknown", time.Now().Add(-45*time.Minute)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err == nil {
+		t.Fatal("got nil error when every job lookup failed and nothing was reaped; a blind " +
+			"sweep must not report success, or a persistent DynamoDB fault leaks instances unnoticed")
+	}
+	if !strings.Contains(err.Error(), "i-unknown") {
+		t.Errorf("error = %q, want the skipped instance ID so the operator can see what went "+
+			"unchecked", err)
+	}
 }
 
 func TestExecuteOrphanedInstances_PropagatesUnclaimedSweepError(t *testing.T) {

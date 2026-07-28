@@ -184,8 +184,12 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	// A detection failure that reaped nothing is indistinguishable from a clean
 	// sweep, so it has to surface. When some orphans were confirmed, terminating
 	// them takes priority over reporting the partial failure.
-	if sweepErr := errors.Join(tagErr, unclaimedErr); sweepErr != nil && len(orphanedIDs) == 0 {
-		return sweepErr
+	if sweepErr := errors.Join(tagErr, unclaimedErr); sweepErr != nil {
+		if len(orphanedIDs) == 0 {
+			return sweepErr
+		}
+		t.logger().Warn(ctx, "orphan detection partially failed",
+			slog.String("error", sweepErr.Error()))
 	}
 	if len(orphanedIDs) == 0 {
 		t.logger().Debug(ctx, "no orphaned instances found")
@@ -427,8 +431,9 @@ func unclaimedOrphanCandidates(output *ec2.DescribeInstancesOutput, cutoff time.
 
 // findUnclaimedOrphans returns cold-start instances past the grace period that
 // have no job record at all. A lookup failure is treated as "claimed" so a
-// DynamoDB problem can never escalate into terminating live instances. Instances
-// confirmed unclaimed before a describe failure are returned alongside the error.
+// DynamoDB problem can never escalate into terminating live instances, but it is
+// still reported: whatever was confirmed unclaimed comes back alongside the
+// errors for everything the sweep could not check.
 func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]string, error) {
 	if t.config.JobsTableName == "" {
 		return nil, nil
@@ -442,18 +447,18 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 	}
 
 	var unclaimed []string
+	var errs []error
 	for {
 		output, err := t.ec2Client.DescribeInstances(ctx, input)
 		if err != nil {
-			return unclaimed, fmt.Errorf("failed to describe instances for unclaimed sweep: %w", err)
+			errs = append(errs, fmt.Errorf("failed to describe instances for unclaimed sweep: %w", err))
+			break
 		}
 
 		for _, id := range unclaimedOrphanCandidates(output, cutoff) {
 			claimed, err := t.hasJobRecord(ctx, id)
 			if err != nil {
-				t.logger().Warn(ctx, "job record lookup failed; leaving instance alone",
-					slog.String(logging.KeyInstanceID, id),
-					slog.String("error", err.Error()))
+				errs = append(errs, fmt.Errorf("job record lookup for %s: %w", id, err))
 				continue
 			}
 			if !claimed {
@@ -462,10 +467,11 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		}
 
 		if output.NextToken == nil {
-			return unclaimed, nil
+			break
 		}
 		input.NextToken = output.NextToken
 	}
+	return unclaimed, errors.Join(errs...)
 }
 
 func (t *Tasks) hasJobRecord(ctx context.Context, instanceID string) (bool, error) {
