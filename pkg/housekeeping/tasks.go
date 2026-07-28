@@ -172,7 +172,14 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	// Phase 2: Profile-based detection (catches untagged zombies from persistent spot tag failures)
 	untaggedOrphans := t.findOrphansByProfile(ctx, cutoffTime)
 
-	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans)
+	// Phase 3: Unclaimed detection. Phases 1 and 2 only fire once an instance
+	// outlives a whole job timeout, and every other sweep starts from a job record,
+	// so a cold-start instance that never claimed a job is billed for hours with
+	// nothing looking for it.
+	unclaimedOrphans := t.findUnclaimedOrphans(ctx,
+		time.Now().Add(-time.Duration(t.config.UnclaimedInstanceGraceMinutes)*time.Minute))
+
+	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans, unclaimedOrphans)
 
 	// If tag-based detection failed and profile-based found nothing, propagate the error
 	if tagErr != nil && len(orphanedIDs) == 0 {
@@ -187,6 +194,12 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 		t.logger().Warn(ctx, "found untagged orphaned instances (persistent spot tag propagation failure)",
 			slog.Int("untagged_count", len(untaggedOrphans)),
 			slog.Any("untagged_ids", untaggedOrphans))
+	}
+
+	if len(unclaimedOrphans) > 0 {
+		t.logger().Warn(ctx, "found unclaimed cold-start instances (launched but never assigned a job)",
+			slog.Int("unclaimed_count", len(unclaimedOrphans)),
+			slog.Any("unclaimed_ids", unclaimedOrphans))
 	}
 
 	// Cancel persistent spot requests before termination to prevent zombie resurrection
@@ -381,6 +394,92 @@ func extractOrphanIDs(output *ec2.DescribeInstancesOutput, cutoffTime time.Time)
 		}
 	}
 	return ids
+}
+
+// unclaimedOrphanCandidates narrows a DescribeInstances page to cold-start
+// instances launched before cutoff. Pool-tagged instances are excluded because a
+// warm or hot pool member is meant to sit idle without a job until one arrives;
+// only a cold-start instance is launched for one specific job and is therefore
+// pointless once it has none.
+func unclaimedOrphanCandidates(output *ec2.DescribeInstancesOutput, cutoff time.Time) []string {
+	var ids []string
+	for _, reservation := range output.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.InstanceId == nil || instance.LaunchTime == nil || !instance.LaunchTime.Before(cutoff) {
+				continue
+			}
+			pooled := false
+			for _, tag := range instance.Tags {
+				if aws.ToString(tag.Key) == "runs-fleet:pool" && aws.ToString(tag.Value) != "" {
+					pooled = true
+					break
+				}
+			}
+			if !pooled {
+				ids = append(ids, *instance.InstanceId)
+			}
+		}
+	}
+	return ids
+}
+
+// findUnclaimedOrphans returns cold-start instances past the grace period that
+// have no job record at all. A lookup failure is treated as "claimed" so a
+// DynamoDB problem can never escalate into terminating live instances.
+func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) []string {
+	if t.config.JobsTableName == "" {
+		return nil
+	}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("tag:runs-fleet:managed"), Values: []string{"true"}},
+			{Name: aws.String("instance-state-name"), Values: []string{"running", "pending"}},
+		},
+	}
+
+	var unclaimed []string
+	for {
+		output, err := t.ec2Client.DescribeInstances(ctx, input)
+		if err != nil {
+			t.logger().Error(ctx, "failed to describe instances for unclaimed sweep",
+				slog.String("error", err.Error()))
+			return unclaimed
+		}
+
+		for _, id := range unclaimedOrphanCandidates(output, cutoff) {
+			claimed, err := t.hasJobRecord(ctx, id)
+			if err != nil {
+				t.logger().Warn(ctx, "job record lookup failed; leaving instance alone",
+					slog.String(logging.KeyInstanceID, id),
+					slog.String("error", err.Error()))
+				continue
+			}
+			if !claimed {
+				unclaimed = append(unclaimed, id)
+			}
+		}
+
+		if output.NextToken == nil {
+			return unclaimed
+		}
+		input.NextToken = output.NextToken
+	}
+}
+
+func (t *Tasks) hasJobRecord(ctx context.Context, instanceID string) (bool, error) {
+	output, err := t.dynamoClient.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(t.config.JobsTableName),
+		KeyConditionExpression: aws.String("instance_id = :instance_id"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":instance_id": &types.AttributeValueMemberS{Value: instanceID},
+		},
+		Limit: aws.Int32(1),
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(output.Items) > 0, nil
 }
 
 func mergeUniqueIDs(lists ...[]string) []string {

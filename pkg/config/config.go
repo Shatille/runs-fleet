@@ -60,11 +60,17 @@ type Config struct {
 	InstanceProfileARN string
 	KeyName            string
 
-	SpotEnabled        bool
-	MaxRuntimeMinutes  int
-	LaunchTemplateName string
-	RunnerImage        string            // Container image for EC2 runners (ECR URL)
-	Tags               map[string]string // Custom tags for EC2 resources
+	SpotEnabled bool
+	// MaxRuntimeMinutes bounds a single job, and also gates the age-based orphan
+	// sweep. UnclaimedInstanceGraceMinutes is the far shorter window applied to a
+	// cold-start instance that never claimed a job at all: those have no job
+	// record for any job-driven sweep to find, so without it they bill until they
+	// cross the MaxRuntimeMinutes cutoff.
+	MaxRuntimeMinutes             int
+	UnclaimedInstanceGraceMinutes int
+	LaunchTemplateName            string
+	RunnerImage                   string            // Container image for EC2 runners (ECR URL)
+	Tags                          map[string]string // Custom tags for EC2 resources
 
 	// Cost-attribution tag keys and values. Defaults are "Application"="runs-fleet"
 	// and "Service"="runner"; both the key names and the values are independently
@@ -142,6 +148,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
 
+	unclaimedInstanceGraceMinutes, err := getEnvInt("RUNS_FLEET_UNCLAIMED_INSTANCE_GRACE_MINUTES", 30)
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
 	vaultKVVersion, err := getEnvInt("VAULT_KV_VERSION", 0)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
@@ -174,20 +185,21 @@ func Load() (*Config, error) {
 		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
 
 		// EC2-specific
-		VPCID:               getEnv("RUNS_FLEET_VPC_ID", ""),
-		SubnetIDs:           splitAndFilter(getEnv("RUNS_FLEET_SUBNET_IDS", "")),
-		SecurityGroupID:     getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
-		InstanceProfileARN:  getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
-		KeyName:             getEnv("RUNS_FLEET_KEY_NAME", ""),
-		SpotEnabled:         getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
-		MaxRuntimeMinutes:   maxRuntimeMinutes,
-		LaunchTemplateName:  getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
-		RunnerImage:         getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
-		Tags:                make(map[string]string),
-		TagKeyApplication:   getEnv("RUNS_FLEET_TAG_KEY_APPLICATION", "Application"),
-		TagValueApplication: getEnv("RUNS_FLEET_TAG_VALUE_APPLICATION", "runs-fleet"),
-		TagKeyService:       getEnv("RUNS_FLEET_TAG_KEY_SERVICE", "Service"),
-		TagValueService:     getEnv("RUNS_FLEET_TAG_VALUE_SERVICE", "runner"),
+		VPCID:                         getEnv("RUNS_FLEET_VPC_ID", ""),
+		SubnetIDs:                     splitAndFilter(getEnv("RUNS_FLEET_SUBNET_IDS", "")),
+		SecurityGroupID:               getEnv("RUNS_FLEET_SECURITY_GROUP_ID", ""),
+		InstanceProfileARN:            getEnv("RUNS_FLEET_INSTANCE_PROFILE_ARN", ""),
+		KeyName:                       getEnv("RUNS_FLEET_KEY_NAME", ""),
+		SpotEnabled:                   getEnvBool("RUNS_FLEET_SPOT_ENABLED", true),
+		MaxRuntimeMinutes:             maxRuntimeMinutes,
+		UnclaimedInstanceGraceMinutes: unclaimedInstanceGraceMinutes,
+		LaunchTemplateName:            getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
+		RunnerImage:                   getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
+		Tags:                          make(map[string]string),
+		TagKeyApplication:             getEnv("RUNS_FLEET_TAG_KEY_APPLICATION", "Application"),
+		TagValueApplication:           getEnv("RUNS_FLEET_TAG_VALUE_APPLICATION", "runs-fleet"),
+		TagKeyService:                 getEnv("RUNS_FLEET_TAG_KEY_SERVICE", "Service"),
+		TagValueService:               getEnv("RUNS_FLEET_TAG_VALUE_SERVICE", "runner"),
 
 		CacheSecret:    getEnv("RUNS_FLEET_CACHE_SECRET", ""),
 		BaseURL:        getEnv("RUNS_FLEET_BASE_URL", ""),
@@ -282,6 +294,11 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxRuntimeMinutes > 1440 {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must not exceed 1440 (24 hours), got %d", c.MaxRuntimeMinutes)
+	}
+	// A grace period below the EC2 boot + runner-registration budget would reap
+	// instances that are still on their way to claiming a job.
+	if c.UnclaimedInstanceGraceMinutes < 5 {
+		return fmt.Errorf("RUNS_FLEET_UNCLAIMED_INSTANCE_GRACE_MINUTES must be at least 5, got %d", c.UnclaimedInstanceGraceMinutes)
 	}
 	if c.ShutdownDrainDelay < 0 {
 		return fmt.Errorf("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS must not be negative, got %s", c.ShutdownDrainDelay)
