@@ -68,25 +68,35 @@ func (m *mockPriceFetcher) GetPrice(ctx context.Context, instanceType string) (f
 	return 0.0336, nil // Default to t4g.medium price
 }
 
+// testCompletedAt stamps fixture jobs as finished so they survive the
+// CompletedOnly predicate the reporter sends.
+var testCompletedAt = time.Now().UTC()
+
 type mockJobLister struct {
 	jobs         []db.AdminJobEntry
-	total        int // pre-limit match count; defaults to len(jobs) when zero
 	err          error
 	gotFilter    db.AdminJobFilter
 	filterCalled bool
 }
 
+// ListJobsForAdmin mirrors the store's CompletedOnly semantics: only rows
+// carrying a completed_at timestamp are returned.
 func (m *mockJobLister) ListJobsForAdmin(_ context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
 	m.gotFilter = filter
 	m.filterCalled = true
 	if m.err != nil {
 		return nil, 0, m.err
 	}
-	total := m.total
-	if total == 0 {
-		total = len(m.jobs)
+	if !filter.CompletedOnly {
+		return m.jobs, len(m.jobs), nil
 	}
-	return m.jobs, total, nil
+	matched := make([]db.AdminJobEntry, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		if !job.CompletedAt.IsZero() {
+			matched = append(matched, job)
+		}
+	}
+	return matched, len(matched), nil
 }
 
 func captureReport(putObjectBody *string) *mockS3Client {
@@ -269,8 +279,8 @@ func TestReporter_EC2CostFromJobRecords(t *testing.T) {
 	// on-demand 1h. nil pricers -> hard-coded table + fixed 70% spot discount.
 	lister := &mockJobLister{
 		jobs: []db.AdminJobEntry{
-			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
-			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
 		},
 	}
 
@@ -295,19 +305,21 @@ func TestReporter_EC2CostFromJobRecords(t *testing.T) {
 			t.Errorf("report missing %q\n---\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "truncated") {
-		t.Errorf("non-truncated report must not carry the truncation note\n---\n%s", body)
-	}
 }
 
-func TestReporter_TruncatedJobWindowNoted(t *testing.T) {
-	// The lister reports more matching jobs than it returned (the 10k cap):
-	// the report must say so instead of presenting the undercount as complete.
+func TestReporter_PricesEveryFinishedJobConclusion(t *testing.T) {
+	// Terminal rows carry GitHub's raw conclusion, not "completed"; all of them
+	// burned billable EC2 time. Unfinished rows have no duration, so pricing them
+	// would invent cost via the 0.5h fallback.
 	lister := &mockJobLister{
 		jobs: []db.AdminJobEntry{
-			{JobID: 1, InstanceType: "t4g.medium", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "success", CompletedAt: testCompletedAt},
+			{JobID: 2, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "failure", CompletedAt: testCompletedAt},
+			{JobID: 3, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "interrupted", CompletedAt: testCompletedAt},
+			{JobID: 4, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusOrphaned), CompletedAt: testCompletedAt},
+			{JobID: 5, InstanceType: "t4g.medium", Status: string(db.JobStatusRunning)},
+			{JobID: 6, InstanceType: "t4g.medium", Status: string(db.JobStatusRequeued)},
 		},
-		total: 12345,
 	}
 
 	var body string
@@ -318,11 +330,12 @@ func TestReporter_TruncatedJobWindowNoted(t *testing.T) {
 		t.Fatalf("GenerateDailyReport() error = %v", err)
 	}
 
-	if !strings.Contains(body, "Jobs completed: 1 of 12345") {
-		t.Errorf("report missing truncated jobs-completed line\n---\n%s", body)
+	want := "On-demand instances: $" + fmtDollar(4*cost.GetInstancePrice("t4g.medium"))
+	if !strings.Contains(body, want) {
+		t.Errorf("report missing %q (running/requeued must not be priced)\n---\n%s", want, body)
 	}
-	if !strings.Contains(body, "truncated") || !strings.Contains(body, "undercount") {
-		t.Errorf("report missing truncation note\n---\n%s", body)
+	if !strings.Contains(body, "Jobs completed: 4") {
+		t.Errorf("report missing \"Jobs completed: 4\"\n---\n%s", body)
 	}
 }
 
@@ -339,11 +352,14 @@ func TestReporter_EC2SectionUsesRolling24hUTCWindow(t *testing.T) {
 		t.Fatal("expected job lister to be called")
 	}
 	f := lister.gotFilter
-	if f.Status != string(db.JobStatusCompleted) {
-		t.Errorf("filter status = %q, want completed", f.Status)
+	if !f.CompletedOnly {
+		t.Error("filter must select finished jobs via CompletedOnly")
 	}
-	if f.Limit != 10000 {
-		t.Errorf("filter limit = %d, want 10000", f.Limit)
+	if f.Status != "" {
+		t.Errorf("filter status = %q, want empty (status strings drift)", f.Status)
+	}
+	if f.Limit != 0 {
+		t.Errorf("filter limit = %d, want 0 (a cap would silently undercount)", f.Limit)
 	}
 	if f.Since.IsZero() || f.Until.IsZero() {
 		t.Fatalf("expected bounded window, got since=%v until=%v", f.Since, f.Until)
