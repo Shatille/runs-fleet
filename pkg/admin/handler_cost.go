@@ -155,16 +155,19 @@ func (h *CostHandler) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, summary)
 }
 
-// monthToDateJobs fetches all completed jobs since the start of the current UTC
-// month -- the shared query behind every cost endpoint. AdminJobFilter has no
-// upper bound, but "current month" only needs a Since lower bound.
+// monthToDateJobs fetches every finished job since the start of the current UTC
+// month -- the shared query behind every cost endpoint. "Finished" is keyed on
+// completed_at rather than a status value: the stored status is GitHub's raw
+// conclusion (success/failure/interrupted/...), all of which burned billable EC2
+// time, while unfinished rows have no duration and would be priced with the
+// pricer's 0.5h fallback. The query is unlimited on purpose -- aggregation must
+// see every row in the month, and Since already bounds the window.
 func (h *CostHandler) monthToDateJobs(ctx context.Context) ([]db.AdminJobEntry, time.Time, time.Time, error) {
 	now := time.Now().UTC()
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	jobs, _, err := h.db.ListJobsForAdmin(ctx, db.AdminJobFilter{
-		Status: string(db.JobStatusCompleted),
-		Since:  start,
-		Limit:  10000,
+		CompletedOnly: true,
+		Since:         start,
 	})
 	return jobs, start, now, err
 }

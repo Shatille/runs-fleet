@@ -15,16 +15,33 @@ import (
 
 const testArchARM64 = "arm64"
 
+// testCompletedAt stamps fixture jobs as finished so they survive the
+// CompletedOnly predicate the cost endpoints send.
+var testCompletedAt = time.Now().UTC()
+
 type mockCostDB struct {
-	jobs []db.AdminJobEntry
-	err  error
+	jobs      []db.AdminJobEntry
+	err       error
+	gotFilter db.AdminJobFilter
 }
 
-func (m *mockCostDB) ListJobsForAdmin(_ context.Context, _ db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+// ListJobsForAdmin mirrors the store's CompletedOnly semantics: only rows
+// carrying a completed_at timestamp are returned.
+func (m *mockCostDB) ListJobsForAdmin(_ context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+	m.gotFilter = filter
 	if m.err != nil {
 		return nil, 0, m.err
 	}
-	return m.jobs, len(m.jobs), nil
+	if !filter.CompletedOnly {
+		return m.jobs, len(m.jobs), nil
+	}
+	matched := make([]db.AdminJobEntry, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		if !job.CompletedAt.IsZero() {
+			matched = append(matched, job)
+		}
+	}
+	return matched, len(matched), nil
 }
 
 type fakeOnDemandPricer struct{ prices map[string]float64 }
@@ -57,8 +74,8 @@ func TestCostHandler_LivePricing(t *testing.T) {
 	sp := &fakeSpotPricer{prices: map[string]float64{"c7g.xlarge": 0.03}}
 	mockDB := &mockCostDB{
 		jobs: []db.AdminJobEntry{
-			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
-			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
 		},
 	}
 
@@ -99,8 +116,8 @@ func TestCostHandler_NilPricersUseHardcodedFallback(t *testing.T) {
 	// the hard-coded on-demand table + fixed spot discount.
 	mockDB := &mockCostDB{
 		jobs: []db.AdminJobEntry{
-			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
-			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: false, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
 		},
 	}
 
@@ -132,7 +149,7 @@ func TestCostHandler_SpotFallsBackToDiscountWhenNoLiveSpotPrice(t *testing.T) {
 	sp := &fakeSpotPricer{prices: map[string]float64{}}
 	mockDB := &mockCostDB{
 		jobs: []db.AdminJobEntry{
-			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
 		},
 	}
 
@@ -277,8 +294,8 @@ func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testin
 
 	mockDB := &mockCostDB{
 		jobs: []db.AdminJobEntry{
-			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 600, Status: string(db.JobStatusCompleted)},
-			{JobID: 2, InstanceType: "made-up.type", Spot: false, DurationSeconds: 600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
+			{JobID: 2, InstanceType: "made-up.type", Spot: false, DurationSeconds: 600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
 		},
 	}
 
@@ -308,6 +325,47 @@ func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testin
 	}
 	if d := resp.RunnerMinuteCost - 0.05; d > 1e-9 || d < -1e-9 {
 		t.Errorf("runner-minute cost = %v, want 0.05", resp.RunnerMinuteCost)
+	}
+}
+
+func TestCostHandler_PricesEveryFinishedJobConclusion(t *testing.T) {
+	t.Parallel()
+
+	// Terminal rows carry GitHub's raw conclusion, not "completed"; all of them
+	// burned billable EC2 time and must be priced. Unfinished rows have no
+	// duration, so pricing them would invent cost via the 0.5h fallback.
+	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
+		{JobID: 1, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "success", CompletedAt: testCompletedAt},
+		{JobID: 2, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "failure", CompletedAt: testCompletedAt},
+		{JobID: 3, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: "interrupted", CompletedAt: testCompletedAt},
+		{JobID: 4, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusOrphaned), CompletedAt: testCompletedAt},
+		{JobID: 5, InstanceType: "t4g.medium", Status: string(db.JobStatusRunning)},
+		{JobID: 6, InstanceType: "t4g.medium", Status: string(db.JobStatusRequeued)},
+	}}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/cost/summary", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp CostSummaryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.JobCount != 4 {
+		t.Errorf("job_count = %d, want 4 (every finished conclusion, no unfinished job)", resp.JobCount)
+	}
+	want := 4 * cost.GetInstancePrice("t4g.medium")
+	if !approx(resp.OnDemandCost, want) {
+		t.Errorf("on-demand cost = %v, want %v (running/requeued must not be priced)", resp.OnDemandCost, want)
+	}
+	if !approx(resp.TotalCost, want) {
+		t.Errorf("total cost = %v, want %v", resp.TotalCost, want)
 	}
 }
 
@@ -386,6 +444,7 @@ func TestCostHandler_GetCostSummary_MissingInstanceType(t *testing.T) {
 				Spot:            true,
 				DurationSeconds: 600,
 				Status:          string(db.JobStatusCompleted),
+				CompletedAt:     testCompletedAt,
 			},
 		},
 	}
@@ -424,8 +483,8 @@ func TestCostHandler_RunnerMinuteBreakdown_ZeroDurationExcluded(t *testing.T) {
 		jobs: []db.AdminJobEntry{
 			// Zero duration: contributes to the EC2-cost fallback but must NOT
 			// fabricate runner-minutes in the matrix.
-			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 0, Status: string(db.JobStatusCompleted)},
-			{JobID: 2, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 600, Status: string(db.JobStatusCompleted)},
+			{JobID: 1, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 0, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
+			{JobID: 2, InstanceType: "c7g.xlarge", Spot: true, DurationSeconds: 600, Status: string(db.JobStatusCompleted), CompletedAt: testCompletedAt},
 		},
 	}
 
@@ -481,8 +540,8 @@ func TestCostHandler_Daily(t *testing.T) {
 	now := time.Now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 30, 0, 0, time.UTC)
 	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
-		{JobID: 1, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: monthStart},
-		{JobID: 2, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now},
+		{JobID: 1, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: monthStart, CompletedAt: testCompletedAt},
+		{JobID: 2, InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
 	}}
 
 	// nil pricers -> hard-coded fallback (t4g.medium = $0.0336/hr on-demand).
@@ -550,9 +609,9 @@ func TestCostHandler_ByPool(t *testing.T) {
 
 	now := time.Now().UTC()
 	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
-		{JobID: 1, Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Spot: true, Status: string(db.JobStatusCompleted), CreatedAt: now},
-		{JobID: 2, Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now},
-		{JobID: 3, Pool: "", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now},
+		{JobID: 1, Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Spot: true, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+		{JobID: 2, Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+		{JobID: 3, Pool: "", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
 	}}
 
 	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
