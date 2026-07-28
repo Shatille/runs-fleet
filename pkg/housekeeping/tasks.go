@@ -448,6 +448,8 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 
 	var unclaimed []string
 	var errs []error
+	var unchecked int
+	var firstLookupErr error
 	for {
 		output, err := t.ec2Client.DescribeInstances(ctx, input)
 		if err != nil {
@@ -458,7 +460,10 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		for _, id := range unclaimedOrphanCandidates(output, cutoff) {
 			claimed, err := t.hasJobRecord(ctx, id)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("job record lookup for %s: %w", id, err))
+				unchecked++
+				if firstLookupErr == nil {
+					firstLookupErr = fmt.Errorf("job record lookup for %s: %w", id, err)
+				}
 				continue
 			}
 			if !claimed {
@@ -470,6 +475,12 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 			break
 		}
 		input.NextToken = output.NextToken
+	}
+
+	// A table-wide fault fails every lookup, so the report is summarised rather
+	// than accumulated per instance.
+	if unchecked > 0 {
+		errs = append(errs, fmt.Errorf("%d instances left unchecked, first: %w", unchecked, firstLookupErr))
 	}
 	return unclaimed, errors.Join(errs...)
 }

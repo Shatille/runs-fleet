@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -503,6 +504,40 @@ func TestExecuteOrphanedInstances_ReportsJobLookupFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "i-unknown") {
 		t.Errorf("error = %q, want the skipped instance ID so the operator can see what went "+
 			"unchecked", err)
+	}
+}
+
+func TestExecuteOrphanedInstances_LookupFailureReportIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const candidates = 500
+	instances := make([]ec2types.Instance, 0, candidates)
+	for i := range candidates {
+		instances = append(instances, managedInstance(fmt.Sprintf("i-%03d", i), time.Now().Add(-45*time.Minute)))
+	}
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: instances}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{queryErr: errors.New("ProvisionedThroughputExceeded")},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+
+	err := tasks.ExecuteOrphanedInstances(context.Background())
+	if err == nil {
+		t.Fatal("expected an error when every job lookup failed")
+	}
+	if n := strings.Count(err.Error(), "ProvisionedThroughputExceeded"); n != 1 {
+		t.Errorf("error repeats the underlying cause %d times; a table-wide outage must summarise "+
+			"rather than accumulate one entry per instance", n)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want the number of unchecked instances so the scale of the "+
+			"outage is visible", err)
 	}
 }
 
