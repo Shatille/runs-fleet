@@ -72,6 +72,60 @@ func TestListPoolsExcludesReservedKeys(t *testing.T) {
 	}
 }
 
+func TestListPoolsPaginates(t *testing.T) {
+	t.Parallel()
+
+	poolItem := func(name string) map[string]types.AttributeValue {
+		return map[string]types.AttributeValue{"pool_name": &types.AttributeValueMemberS{Value: name}}
+	}
+
+	var calls int
+	client := &Client{
+		poolsTable: testPoolsTable,
+		dynamoClient: &MockDynamoDBAPI{
+			ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+				calls++
+				if calls == 1 {
+					if params.ExclusiveStartKey != nil {
+						t.Error("first page must not set ExclusiveStartKey")
+					}
+					return &dynamodb.ScanOutput{
+						Items: []map[string]types.AttributeValue{
+							poolItem(testPoolDefault),
+							poolItem(instanceClaimPrefix + "i-0abc123"),
+						},
+						LastEvaluatedKey: poolItem(testPoolDefault),
+					}, nil
+				}
+				if params.ExclusiveStartKey == nil {
+					t.Error("second page must carry ExclusiveStartKey")
+				}
+				return &dynamodb.ScanOutput{
+					Items: []map[string]types.AttributeValue{poolItem("ci-arm64")},
+				}, nil
+			},
+		},
+	}
+
+	pools, err := client.ListPools(context.Background())
+	if err != nil {
+		t.Fatalf("ListPools() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 scan pages, got %d", calls)
+	}
+
+	want := []string{testPoolDefault, "ci-arm64"}
+	if len(pools) != len(want) {
+		t.Fatalf("ListPools() = %v, want %v (both pages, reserved key dropped)", pools, want)
+	}
+	for i, p := range want {
+		if pools[i] != p {
+			t.Errorf("ListPools()[%d] = %q, want %q", i, pools[i], p)
+		}
+	}
+}
+
 func TestGetPoolConfigReservedKeyShortCircuits(t *testing.T) {
 	t.Parallel()
 
