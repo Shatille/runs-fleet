@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"path"
 	"strings"
 )
 
@@ -31,27 +32,31 @@ func UIHandler() http.Handler {
 	fileServer := http.FileServer(http.FS(subFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
+		reqPath := r.URL.Path
 
-		if strings.HasPrefix(path, "/admin") {
-			path = strings.TrimPrefix(path, "/admin")
-			if path == "" {
-				path = "/"
+		if strings.HasPrefix(reqPath, "/admin") {
+			reqPath = strings.TrimPrefix(reqPath, "/admin")
+			if reqPath == "" {
+				reqPath = "/"
 			}
 		}
 
-		if path != "/" && !strings.HasSuffix(path, "/") {
-			if f, err := subFS.Open(strings.TrimPrefix(path, "/")); err == nil {
+		if reqPath != "/" && !strings.HasSuffix(reqPath, "/") {
+			if f, err := subFS.Open(strings.TrimPrefix(reqPath, "/")); err == nil {
 				_ = f.Close()
-				r.URL.Path = path
+				r.URL.Path = reqPath
 				fileServer.ServeHTTP(w, r)
+				return
+			}
+			if isStaticAsset(reqPath) {
+				http.NotFound(w, r)
 				return
 			}
 		}
 
 		// For directory paths, serve index.html directly to avoid
 		// http.FileServer's redirect from /index.html -> ./
-		indexPath := strings.TrimPrefix(path, "/")
+		indexPath := strings.TrimPrefix(reqPath, "/")
 		if indexPath == "" {
 			indexPath = "index.html"
 		} else {
@@ -65,6 +70,16 @@ func UIHandler() http.Handler {
 		// Fallback to root index.html for SPA routing
 		_ = serveFile(w, subFS, "index.html")
 	})
+}
+
+// isStaticAsset reports whether a path addresses a build artifact rather than
+// a client-side route. A missing artifact must 404 instead of falling through
+// to the SPA shell: chunk filenames change every build, so a request left over
+// from an older build would otherwise receive HTML under a .js/.css URL, which
+// the browser refuses as a stylesheet and cannot parse as a script -- rendering
+// an unstyled page with no visible error.
+func isStaticAsset(reqPath string) bool {
+	return strings.HasPrefix(reqPath, "/_next/") || path.Ext(reqPath) != ""
 }
 
 func serveFile(w http.ResponseWriter, fsys fs.FS, name string) error {
