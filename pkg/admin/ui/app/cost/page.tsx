@@ -3,23 +3,26 @@
 import { useEffect, useState, useCallback } from 'react';
 import { CostSkeleton } from '@/components/skeleton';
 import { HelpTip } from '@/components/help-tip';
-import { CostSummary, CostDaily, CostByPool } from '@/lib/types';
+import { CostByRepositoryTable } from '@/components/cost-by-repository-table';
+import { CostSummary, CostDaily, CostByPool, CostByRepository } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
 export default function CostPage() {
   const [summary, setSummary] = useState<CostSummary | null>(null);
   const [daily, setDaily] = useState<CostDaily | null>(null);
   const [byPool, setByPool] = useState<CostByPool | null>(null);
+  const [byRepo, setByRepo] = useState<CostByRepository | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchCost = useCallback(async () => {
     try {
       setLoading(true);
-      const [summaryRes, dailyRes, byPoolRes] = await Promise.all([
+      const [summaryRes, dailyRes, byPoolRes, byRepoRes] = await Promise.all([
         apiFetch('/api/cost/summary'),
         apiFetch('/api/cost/daily'),
         apiFetch('/api/cost/by-pool'),
+        apiFetch('/api/cost/by-repository'),
       ]);
       if (!summaryRes.ok) {
         throw new Error(`Failed to fetch cost summary: ${summaryRes.statusText}`);
@@ -27,6 +30,7 @@ export default function CostPage() {
       setSummary(await summaryRes.json());
       if (dailyRes.ok) setDaily(await dailyRes.json());
       if (byPoolRes.ok) setByPool(await byPoolRes.json());
+      if (byRepoRes.ok) setByRepo(await byRepoRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load cost data');
     } finally {
@@ -157,6 +161,10 @@ export default function CostPage() {
                 </tbody>
               </table>
             </div>
+          )}
+
+          {byRepo && byRepo.repositories.length > 0 && (
+            <CostByRepositoryTable repositories={byRepo.repositories} />
           )}
 
           {summary.family_breakdown.length > 0 && (

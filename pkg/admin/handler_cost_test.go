@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -372,7 +373,7 @@ func TestCostHandler_PricesEveryFinishedJobConclusion(t *testing.T) {
 func TestCostHandler_FilterNeverUsesAStatusString(t *testing.T) {
 	t.Parallel()
 
-	for _, path := range []string{"/api/cost/summary", "/api/cost/daily", "/api/cost/by-pool"} {
+	for _, path := range []string{"/api/cost/summary", "/api/cost/daily", "/api/cost/by-pool", "/api/cost/by-repository"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 
@@ -712,5 +713,103 @@ func TestCostHandler_ByPool(t *testing.T) {
 	}
 	if !approx(byName["cold-start"].TotalCost, 0.0336) {
 		t.Errorf("cold-start total_cost = %f, want 0.0336", byName["cold-start"].TotalCost)
+	}
+}
+
+func TestCostHandler_ByRepository(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
+		{JobID: 1, Repo: "org/api", InstanceType: "t4g.medium", DurationSeconds: 3600, Spot: true, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+		{JobID: 2, Repo: "org/api", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+		{JobID: 3, Repo: "org/web", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+		{JobID: 4, Repo: "", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+	}}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/cost/by-repository", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp CostByRepositoryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Repositories) != 3 {
+		t.Fatalf("repositories = %d, want 3", len(resp.Repositories))
+	}
+	// Sorted by total_cost desc: org/api (2 jobs) leads.
+	if resp.Repositories[0].Repository != "org/api" {
+		t.Errorf("repositories[0] = %q, want org/api", resp.Repositories[0].Repository)
+	}
+
+	byName := map[string]CostRepositoryEntry{}
+	for _, r := range resp.Repositories {
+		byName[r.Repository] = r
+	}
+	if byName["org/api"].JobCount != 2 {
+		t.Errorf("org/api job_count = %d, want 2", byName["org/api"].JobCount)
+	}
+	if !approx(byName["org/api"].SpotPercent, 50) {
+		t.Errorf("org/api spot_percent = %f, want 50", byName["org/api"].SpotPercent)
+	}
+	// org/api = one on-demand ($0.0336) + one spot ($0.0336 * 0.3 = $0.01008).
+	wantAPI := 0.0336 + 0.0336*(1-cost.SpotDiscount)
+	if !approx(byName["org/api"].TotalCost, wantAPI) {
+		t.Errorf("org/api total_cost = %f, want %f", byName["org/api"].TotalCost, wantAPI)
+	}
+	if !approx(byName["org/api"].AvgCostPerJob, wantAPI/2) {
+		t.Errorf("org/api avg_cost_per_job = %f, want %f", byName["org/api"].AvgCostPerJob, wantAPI/2)
+	}
+	// Jobs with no recorded repo are grouped under the "unknown" pseudo-repo
+	// rather than dropped, so the rows still sum to the summary's TotalCost.
+	if !approx(byName["unknown"].TotalCost, 0.0336) {
+		t.Errorf("unknown total_cost = %f, want 0.0336", byName["unknown"].TotalCost)
+	}
+}
+
+// The repository breakdown must account for every priced job so the table
+// reconciles with the Total Cost tile -- no silent top-N truncation.
+func TestCostHandler_ByRepositoryReconcilesWithSummary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	jobs := make([]db.AdminJobEntry, 0, 50)
+	for i := 0; i < 50; i++ {
+		jobs = append(jobs, db.AdminJobEntry{
+			JobID:           int64(i),
+			Repo:            fmt.Sprintf("org/repo-%d", i),
+			InstanceType:    "t4g.medium",
+			DurationSeconds: 3600,
+			Spot:            i%2 == 0,
+			Status:          string(db.JobStatusCompleted),
+			CreatedAt:       now,
+			CompletedAt:     testCompletedAt,
+		})
+	}
+	mockDB := &mockCostDB{jobs: jobs}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	ctx := context.Background()
+	byRepo := handler.computeByRepository(ctx, jobs, now, now)
+	summary := handler.computeCostSummary(ctx, jobs, now, now)
+
+	if len(byRepo.Repositories) != 50 {
+		t.Fatalf("repositories = %d, want 50 (no truncation)", len(byRepo.Repositories))
+	}
+	var sum float64
+	for _, r := range byRepo.Repositories {
+		sum += r.TotalCost
+	}
+	if !approx(sum, summary.TotalCost) {
+		t.Errorf("repository costs sum to %f, want %f (summary total)", sum, summary.TotalCost)
 	}
 }
