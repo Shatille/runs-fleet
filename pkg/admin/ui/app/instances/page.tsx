@@ -137,13 +137,13 @@ export default function InstancesPage() {
       </div>
 
       {loading && instances.length === 0 ? (
-        <TableSkeleton rows={5} cols={7} />
+        <TableSkeleton rows={5} cols={8} />
       ) : instances.length === 0 ? (
         <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
           <p className="text-gray-500 dark:text-gray-400">No instances found.</p>
         </div>
       ) : (
-        <InstancesTable instances={instances} />
+        <InstancesTable instances={instances} onTerminated={fetchInstances} />
       )}
     </div>
   );

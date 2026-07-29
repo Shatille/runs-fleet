@@ -546,7 +546,7 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	jobsHandler.RegisterRoutes(adminMux)
 
 	ec2Client := ec2.NewFromConfig(ws.awsCfg)
-	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, adminAuth)
+	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
 	instancesHandler.RegisterRoutes(adminMux)
 
 	sqsClient := sqs.NewFromConfig(ws.sqsCfg)

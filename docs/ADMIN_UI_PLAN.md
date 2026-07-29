@@ -6,7 +6,9 @@ Status and remaining work for the runs-fleet admin UI. The original plan tracked
 
 - **Auth**: ✅ Native OIDC — the orchestrator is its own OIDC relying party (authorization-code flow + PKCE against any standards-compliant issuer). No external gatekeeper or reverse proxy required; a self-hoster points `RUNS_FLEET_ADMIN_OIDC_*` at their IdP directly. Sessions are a self-contained HMAC-signed cookie (no shared session store, no refresh tokens — fixed TTL, re-login on expiry). Superseded the earlier Keycloak-gatekeeper-header-trust model, which in turn had superseded the original Bearer-token auth.
 - **Phase 1 (read dashboards)**: ✅ Complete. Jobs, Pool status (incl. `last_reconcile_at`), Circuit breaker, Audit viewer, Instance/Queue detail, Cost daily + by-pool breakdowns, and the Metrics summary are all built.
-- **Phase 2 (write actions)**: 🟡 Essentially unbuilt — one divergent housekeeping endpoint exists.
+- **Phase 2 (write actions)**: 🟡 Started. Manual instance termination has shipped; four
+  actions remain (circuit reset, force reconcile, DLQ redrive, generalized housekeeping
+  trigger).
 - **Phase 3 (advanced)**: ❌ Not started.
 
 The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedded via `//go:embed` in `pkg/admin/ui.go`. Backend handlers live in `pkg/admin/handler_*.go`, wired in `cmd/server/main.go`.
@@ -32,6 +34,7 @@ The UI is a Next.js (static export) + React + TypeScript + Tailwind app, embedde
 | Queue detail | `GET /api/queues/{queue_name}` (+ oldest-message age) + detail page | `handler_queues.go`, `ui/app/queues/detail/page.tsx` |
 | Cost daily + by-pool | `GET /api/cost/daily`, `GET /api/cost/by-pool` (shared `priceJob`) + chart & table | `handler_cost.go`, `ui/app/cost/page.tsx` |
 | Metrics summary | `GET /api/metrics/summary` (jobs 24h, warm-pool hit rate, avg startup, spot-interruption estimate, cost MTD) + `/admin/metrics/` page | `handler_metrics.go`, `ui/app/metrics/page.tsx` |
+| Manual instance termination | `DELETE /api/instances/{instance_id}[?force=true]` + Terminate action on the instances list and detail pages | `handler_instances.go`, `ui/components/terminate-instance-button.tsx` |
 
 ### Built but not in the original plan
 
@@ -61,11 +64,42 @@ All should call `recordAdminAction` (pkg/admin/handler.go) once implemented, sam
 
 | Action | Endpoint | Notes |
 |--------|----------|-------|
-| Manual instance termination | `DELETE /api/instances/{instance_id}` | Confirm runs-fleet-managed; warn if instance has an active job; UI confirmation |
-| Circuit breaker reset | `POST /api/circuit/{instance_type}/reset` | Reset a tripped breaker |
+| Circuit breaker reset | `POST /api/circuit/{instance_type}/reset` | Reset a tripped breaker. `circuit.Breaker.ResetCircuit` already exists; inject the `*Breaker` rather than reaching for `CircuitHandler`'s direct-DynamoDB client, which would leave the orchestrator's in-process breaker cache stale for up to a minute |
 | Force pool reconciliation | `POST /api/pools/{name}/reconcile` | Enqueue to pool queue or invoke reconciler |
 | DLQ redrive | `POST /api/queues/{queue_name}/redrive` | SQS `StartMessageMoveTask` |
-| Housekeeping trigger | `POST /api/housekeeping/run` | Generalize the existing single-task `POST /api/housekeeping/orphaned-jobs` (which takes `threshold_minutes` / `dry_run`) toward a multi-task `{"tasks":[...]}` body covering orphaned instances, stale SSM, old jobs |
+| Housekeeping trigger | `POST /api/housekeeping/run` | Generalize the existing single-task `POST /api/housekeeping/orphaned-jobs` (which takes `threshold_minutes` / `dry_run`) toward a multi-task `{"tasks":[...]}` body covering orphaned instances, stale SSM, old jobs. Also the moment to fix `RequeueHandler.auditLog`, which is log-only and never reaches the persisted trail |
+
+#### Instance termination semantics (shipped)
+
+`DELETE /api/instances/{instance_id}` refuses with **409** when the jobs table reports an
+active job (`running`/`launched`, via `db.GetJobByInstance`), returning the blocking
+`job_id`/`run_id`/`repo` so the UI can name it in the confirmation. `?force=true` proceeds
+and flips that job to `terminating` — the same `db.MarkInstanceTerminating` call the
+spot-interruption path makes. A persistent spot request is cancelled before the terminate
+so it cannot resurrect the instance (shared
+`housekeeping.CancelSpotRequestForInstance`). The active-job lookup **fails closed**: on a
+DynamoDB error nothing is terminated, since mistaking a lookup failure for "no job running"
+is how a build gets killed silently. Without `RUNS_FLEET_JOBS_TABLE` the endpoint returns
+**503** rather than terminating with its only safeguard disabled.
+
+Ordering is deliberate: the job is marked **after** EC2 accepts the terminate, and a mark
+failure is reported as success (with the reason in `message` and the audit `details`) rather
+than as a failed termination. Marking first would strand the job at `terminating` with a
+live instance if the terminate then failed — a state nothing reconciles, since
+`FindOrphanedJobCandidates` scans `running`/`claiming`/`launched` only while
+`occupiesInstance` counts `terminating` as busy for `maxConcurrencyRuntime`, so
+reconciliation would hold the instance for two hours. In this order the residual state is
+`running`/`launched` with a dead instance, which the orphaned-jobs sweep is built for.
+
+Deliberately out of scope, so they don't read as oversights:
+
+- **No requeue.** A forced kill does not re-dispatch the job; the GitHub job fails when its
+  runner disappears and re-running is the operator's call. Requeue would need the job queue
+  injected plus the `MaxRequeueRetries` accounting that `pkg/housekeeping/requeue.go` owns.
+- **No `ReleaseInstanceClaim`.** `pools.Manager.terminateInstances` doesn't release claims
+  either — the row expires on its 5-minute TTL and `ExecuteExpiredInstanceClaims` sweeps it.
+- **No pool-count writeback.** `UpdatePoolState` self-heals on the next reconcile pass,
+  which also launches the replacement for a pool instance.
 
 ### Phase 3 — advanced
 
@@ -79,17 +113,16 @@ All should call `recordAdminAction` (pkg/admin/handler.go) once implemented, sam
 
 | Priority | Item | Effort |
 |----------|------|--------|
-| 1 | Manual instance termination | S |
-| 2 | Force reconciliation | S |
-| 3 | Circuit breaker reset | S |
-| 4 | DLQ redrive | S |
-| 5 | Generalized housekeeping trigger | S |
-| 6 | SSE real-time updates | L |
-| 7 | Spot interruption history | M |
-| 8 | Cache metrics | S |
+| 1 | Force reconciliation | S |
+| 2 | Circuit breaker reset | S |
+| 3 | DLQ redrive | S |
+| 4 | Generalized housekeeping trigger | S |
+| 5 | SSE real-time updates | L |
+| 6 | Spot interruption history | M |
+| 7 | Cache metrics | S |
 
 Phase 1 (Pool `last_reconcile_at`, Instance/Queue detail, Cost daily + by-pool,
-Metrics summary) is shipped — see the Shipped table above.
+Metrics summary) and manual instance termination are shipped — see the Shipped table above.
 
 **Effort**: S = 1-2 days, M = 3-5 days, L = 1+ week.
 
@@ -106,6 +139,10 @@ Metrics summary) is shipped — see the Shipped table above.
 
 ```
 pkg/admin/
-├── handler_metrics.go   # GET /api/metrics/summary  (shipped)
-└── handler_actions.go   # instance terminate, circuit reset, force reconcile, DLQ redrive
+├── handler_metrics.go     # GET /api/metrics/summary          (shipped)
+├── handler_instances.go   # DELETE /api/instances/{id}        (shipped — the terminate
+│                          #   action lives with the other instance routes rather than in
+│                          #   a separate handler_actions.go: it reuses the same EC2
+│                          #   client, ID regex, and managed-tag 404 semantics)
+└── handler_actions.go     # circuit reset, force reconcile, DLQ redrive
 ```

@@ -89,7 +89,7 @@ func (h *RequeueHandler) RequeueHungJobs(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	dryRun := r.URL.Query().Get("dry_run") == "true"
+	dryRun := r.URL.Query().Get("dry_run") == queryTrue
 
 	result, err := housekeeping.RequeueHungJobs(ctx, housekeeping.RequeueDeps{
 		Scan:         h.dynamoClient,

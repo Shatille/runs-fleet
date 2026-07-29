@@ -1,11 +1,12 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { DetailSkeleton } from '@/components/skeleton';
 import { InstanceDetail } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 import { formatTimestamp } from '@/lib/format';
+import TerminateInstanceButton from '@/components/terminate-instance-button';
 
 export default function InstanceDetailPage() {
   return (
@@ -16,6 +17,7 @@ export default function InstanceDetailPage() {
 }
 
 function InstanceDetailView() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const id = searchParams.get('id');
 
@@ -96,6 +98,16 @@ function InstanceDetailView() {
             Busy
           </span>
         )}
+        <div className="ml-auto">
+          <TerminateInstanceButton
+            instanceId={instance.instance_id}
+            pool={instance.pool}
+            busy={instance.busy}
+            state={instance.state}
+            onTerminated={() => router.push('/admin/instances/')}
+            className="px-4 py-2 text-sm font-medium rounded-md bg-red-600 hover:bg-red-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

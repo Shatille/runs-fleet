@@ -26,6 +26,10 @@ var auditLog = logging.WithComponent(logging.LogTypeAdmin, "audit")
 
 const maxRequestBodySize = 1 << 20 // 1 MB
 
+// queryTrue is the opt-in value for the boolean query params on admin actions
+// (dry_run, force).
+const queryTrue = "true"
+
 // PoolDB defines the database operations required by the admin handler.
 type PoolDB interface {
 	ListPools(ctx context.Context) ([]string, error)

@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/Shavakan/runs-fleet/pkg/events"
+	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -23,14 +25,21 @@ import (
 // are rejected at the boundary; EC2 remains the authoritative validator.
 var instanceIDPattern = regexp.MustCompile(`^i-(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{17})$`)
 
-// EC2API defines the EC2 operations needed for instance listing.
+// EC2API defines the EC2 operations needed for instance listing and manual
+// termination. The method set matches housekeeping.EC2API so the shared
+// spot-request cancellation helper takes it directly.
 type EC2API interface {
 	DescribeInstances(ctx context.Context, params *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	TerminateInstances(ctx context.Context, params *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	DescribeSpotInstanceRequests(ctx context.Context, params *ec2.DescribeSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSpotInstanceRequestsOutput, error)
+	CancelSpotInstanceRequests(ctx context.Context, params *ec2.CancelSpotInstanceRequestsInput, optFns ...func(*ec2.Options)) (*ec2.CancelSpotInstanceRequestsOutput, error)
 }
 
 // InstancesDB defines the database operations for checking instance status.
 type InstancesDB interface {
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
+	GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error)
+	MarkInstanceTerminating(ctx context.Context, instanceID string) error
 }
 
 // InstanceResponse represents an instance in the admin API response.
@@ -57,21 +66,52 @@ type InstanceDetailResponse struct {
 	Tags             map[string]string `json:"tags,omitempty"`
 }
 
+// ActiveJobRef identifies the job occupying an instance.
+type ActiveJobRef struct {
+	JobID int64  `json:"job_id"`
+	RunID int64  `json:"run_id"`
+	Repo  string `json:"repo"`
+}
+
+// TerminateInstanceResponse reports a completed manual termination.
+type TerminateInstanceResponse struct {
+	InstanceID string        `json:"instance_id"`
+	Pool       string        `json:"pool,omitempty"`
+	State      string        `json:"state,omitempty"`
+	Forced     bool          `json:"forced"`
+	ActiveJob  *ActiveJobRef `json:"active_job,omitempty"`
+	Message    string        `json:"message"`
+}
+
+// TerminateInstanceConflict is the 409 body when an instance is still serving a
+// job. It carries the same error/details fields as ErrorResponse so generic
+// error handling keeps working, plus the job the operator needs to see before
+// deciding to force.
+type TerminateInstanceConflict struct {
+	Error     string        `json:"error"`
+	Details   string        `json:"details,omitempty"`
+	ActiveJob *ActiveJobRef `json:"active_job"`
+}
+
 // InstancesHandler provides HTTP endpoints for instance management.
 type InstancesHandler struct {
-	ec2  EC2API
-	db   InstancesDB
-	auth *AuthMiddleware
-	log  *logging.Logger
+	ec2           EC2API
+	db            InstancesDB
+	jobsTableName string
+	auditDB       AuditDB
+	auth          *AuthMiddleware
+	log           *logging.Logger
 }
 
 // NewInstancesHandler creates a new instances handler.
-func NewInstancesHandler(ec2Client EC2API, db InstancesDB, auth *AuthMiddleware) *InstancesHandler {
+func NewInstancesHandler(ec2Client EC2API, db InstancesDB, jobsTableName string, auditDB AuditDB, auth *AuthMiddleware) *InstancesHandler {
 	return &InstancesHandler{
-		ec2:  ec2Client,
-		db:   db,
-		auth: auth,
-		log:  logging.WithComponent(logging.LogTypeAdmin, "instances"),
+		ec2:           ec2Client,
+		db:            db,
+		jobsTableName: jobsTableName,
+		auditDB:       auditDB,
+		auth:          auth,
+		log:           logging.WithComponent(logging.LogTypeAdmin, "instances"),
 	}
 }
 
@@ -79,6 +119,38 @@ func NewInstancesHandler(ec2Client EC2API, db InstancesDB, auth *AuthMiddleware)
 func (h *InstancesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/instances", h.auth.WrapFunc(h.ListInstances))
 	mux.Handle("GET /api/instances/{instance_id}", h.auth.WrapFunc(h.GetInstance))
+	mux.Handle("DELETE /api/instances/{instance_id}", h.auth.WrapFunc(h.TerminateInstance))
+}
+
+// errInstanceNotFound signals that an ID resolved to nothing runs-fleet manages.
+var errInstanceNotFound = errors.New("instance not found")
+
+// describeManagedInstance resolves a single runs-fleet-managed instance. The
+// managed-tag filter is part of the query rather than a post-hoc check, so an
+// unmanaged ID and an unknown ID both come back as errInstanceNotFound.
+func (h *InstancesHandler) describeManagedInstance(ctx context.Context, id string) (*types.Instance, error) {
+	output, err := h.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []string{id},
+		Filters: []types.Filter{
+			{Name: aws.String("tag:runs-fleet:managed"), Values: []string{"true"}},
+		},
+	})
+	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidInstanceID.NotFound" {
+			return nil, errInstanceNotFound
+		}
+		return nil, err
+	}
+
+	// A DescribeInstances query by unique instance ID returns at most one
+	// instance; take the first match and stop.
+	for i := range output.Reservations {
+		if len(output.Reservations[i].Instances) > 0 {
+			return &output.Reservations[i].Instances[0], nil
+		}
+	}
+	return nil, errInstanceNotFound
 }
 
 // GetInstance handles GET /api/instances/{instance_id}. Only runs-fleet-managed
@@ -92,15 +164,9 @@ func (h *InstancesHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := h.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-		InstanceIds: []string{id},
-		Filters: []types.Filter{
-			{Name: aws.String("tag:runs-fleet:managed"), Values: []string{"true"}},
-		},
-	})
+	inst, err := h.describeManagedInstance(ctx, id)
 	if err != nil {
-		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidInstanceID.NotFound" {
+		if errors.Is(err, errInstanceNotFound) {
 			h.writeError(w, http.StatusNotFound, "Instance not found", "")
 			return
 		}
@@ -108,20 +174,6 @@ func (h *InstancesHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 			slog.String(logging.KeyInstanceID, id),
 			slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get instance", err.Error())
-		return
-	}
-
-	// A DescribeInstances query by unique instance ID returns at most one
-	// instance; take the first match and stop.
-	var inst *types.Instance
-	for i := range output.Reservations {
-		if len(output.Reservations[i].Instances) > 0 {
-			inst = &output.Reservations[i].Instances[0]
-			break
-		}
-	}
-	if inst == nil {
-		h.writeError(w, http.StatusNotFound, "Instance not found", "")
 		return
 	}
 
@@ -175,6 +227,145 @@ func instanceDetail(inst *types.Instance, pool string, busy bool) InstanceDetail
 		}
 	}
 	return resp
+}
+
+// TerminateInstance handles DELETE /api/instances/{instance_id}[?force=true].
+//
+// An instance still serving a job is refused with 409 unless force is set, so a
+// mis-click cannot kill a running build. Forcing flips that job to terminating
+// (what the spot-interruption path does) but does not re-dispatch it: the GitHub
+// job fails when its runner disappears, and re-running is the operator's call.
+// Every outcome lands in the persisted audit trail.
+func (h *InstancesHandler) TerminateInstance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Without the jobs table the active-job check cannot run, and terminating
+	// without it would silently drop the only safeguard this endpoint has.
+	if h.jobsTableName == "" {
+		h.writeError(w, http.StatusServiceUnavailable, "Jobs table not configured", "the active-job safety check is unavailable")
+		return
+	}
+
+	id := r.PathValue("instance_id")
+	if !instanceIDPattern.MatchString(id) {
+		h.writeError(w, http.StatusBadRequest, "Invalid instance ID", "must match i-<hex>")
+		return
+	}
+	force := r.URL.Query().Get("force") == queryTrue
+
+	inst, err := h.describeManagedInstance(ctx, id)
+	if err != nil {
+		if errors.Is(err, errInstanceNotFound) {
+			h.recordTerminateAudit(r, id, "", "denied", force, nil, "instance not found or not runs-fleet-managed")
+			h.writeError(w, http.StatusNotFound, "Instance not found", "")
+			return
+		}
+		h.log.Error(ctx, "failed to describe instance for termination",
+			slog.String(logging.KeyInstanceID, id),
+			slog.String(logging.KeyError, err.Error()))
+		h.recordTerminateAudit(r, id, "", "error", force, nil, err.Error())
+		h.writeError(w, http.StatusInternalServerError, "Failed to look up instance", err.Error())
+		return
+	}
+
+	pool := getEC2Tag(inst.Tags, "runs-fleet:pool")
+	state := ""
+	if inst.State != nil {
+		state = string(inst.State.Name)
+	}
+
+	// Fail closed: a lookup failure must not be mistaken for "no job running".
+	job, err := h.db.GetJobByInstance(ctx, id)
+	if err != nil {
+		h.log.Error(ctx, "failed to check for an active job before termination",
+			slog.String(logging.KeyInstanceID, id),
+			slog.String(logging.KeyError, err.Error()))
+		h.recordTerminateAudit(r, id, pool, "error", force, nil, err.Error())
+		h.writeError(w, http.StatusInternalServerError, "Failed to check for an active job", err.Error())
+		return
+	}
+
+	var activeJob *ActiveJobRef
+	if job != nil {
+		activeJob = &ActiveJobRef{JobID: job.JobID, RunID: job.RunID, Repo: job.Repo}
+	}
+
+	if activeJob != nil && !force {
+		details := fmt.Sprintf("job %d (run %d) in %s is still running; retry with force=true to terminate anyway",
+			activeJob.JobID, activeJob.RunID, activeJob.Repo)
+		h.recordTerminateAudit(r, id, pool, "denied", force, activeJob, "instance has an active job")
+		h.writeJSON(w, http.StatusConflict, TerminateInstanceConflict{
+			Error:     "Instance has an active job",
+			Details:   details,
+			ActiveJob: activeJob,
+		})
+		return
+	}
+
+	// Cancel first: a persistent spot request would otherwise replace the
+	// instance we are about to kill.
+	housekeeping.CancelSpotRequestForInstance(ctx, h.ec2, id, h.log)
+
+	if _, err := h.ec2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{id}}); err != nil {
+		h.log.Error(ctx, "failed to terminate instance",
+			slog.String(logging.KeyInstanceID, id),
+			slog.String(logging.KeyError, err.Error()))
+		h.recordTerminateAudit(r, id, pool, "error", force, activeJob, err.Error())
+		h.writeError(w, http.StatusInternalServerError, "Failed to terminate instance", err.Error())
+		return
+	}
+
+	// Mark only after EC2 accepts the terminate. Marking first would strand the job
+	// at "terminating" if the terminate then failed, and nothing sweeps that state:
+	// FindOrphanedJobCandidates scans running/claiming/launched only, while
+	// occupiesInstance counts terminating as busy for maxConcurrencyRuntime, so
+	// reconciliation would hold the still-live instance for two hours. In this order
+	// a failure leaves the job at running/launched with a dead instance, which the
+	// orphaned-jobs sweep is built to reconcile -- so it reports success rather than
+	// asking the operator to retry a termination that already happened.
+	var markErr error
+	if activeJob != nil {
+		if markErr = h.db.MarkInstanceTerminating(ctx, id); markErr != nil {
+			h.log.Error(ctx, "terminated the instance but failed to mark its job terminating",
+				slog.String(logging.KeyInstanceID, id),
+				slog.Int64(logging.KeyJobID, activeJob.JobID),
+				slog.String(logging.KeyError, markErr.Error()))
+		}
+	}
+
+	message := "Termination requested"
+	reason := ""
+	switch {
+	case markErr != nil:
+		message = fmt.Sprintf("Termination requested; job %d could not be marked terminating and will be reconciled by the orphaned-jobs sweep", activeJob.JobID)
+		reason = "job record not updated: " + markErr.Error()
+	case activeJob != nil:
+		message = fmt.Sprintf("Termination requested; job %d marked terminating", activeJob.JobID)
+	}
+
+	h.recordTerminateAudit(r, id, pool, "success", force, activeJob, reason)
+	h.writeJSON(w, http.StatusOK, TerminateInstanceResponse{
+		InstanceID: id,
+		Pool:       pool,
+		State:      state,
+		Forced:     force,
+		ActiveJob:  activeJob,
+		Message:    message,
+	})
+}
+
+func (h *InstancesHandler) recordTerminateAudit(r *http.Request, id, pool, result string, force bool, job *ActiveJobRef, reason string) {
+	attrs := []any{
+		slog.Bool("forced", force),
+		slog.String("pool", pool),
+	}
+	if job != nil {
+		attrs = append(attrs, slog.Int64(logging.KeyJobID, job.JobID), slog.Int64(logging.KeyRunID, job.RunID))
+	}
+	if reason != "" {
+		attrs = append(attrs, slog.String(logging.KeyReason, reason))
+	}
+	recordAdminAction(r, h.auditDB, "instance.terminate", id, result, attrs...)
 }
 
 // ListInstances handles GET /api/instances.

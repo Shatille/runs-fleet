@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { Instance } from '@/lib/types';
 import { useSortable } from '@/hooks/use-sortable';
+import TerminateInstanceButton from '@/components/terminate-instance-button';
 
 type InstanceSortField = 'instance_id' | 'state' | 'pool' | 'instance_type' | 'launch_time';
 
@@ -20,9 +21,10 @@ const INSTANCE_COMPARATORS: Record<InstanceSortField, (a: Instance, b: Instance)
 
 interface InstancesTableProps {
   instances: Instance[];
+  onTerminated: () => void;
 }
 
-export default function InstancesTable({ instances }: InstancesTableProps) {
+export default function InstancesTable({ instances, onTerminated }: InstancesTableProps) {
   const comparators = useMemo(() => INSTANCE_COMPARATORS, []);
   const { sortedData, requestSort, getSortIndicator } = useSortable<Instance, InstanceSortField>(
     instances,
@@ -59,6 +61,9 @@ export default function InstancesTable({ instances }: InstancesTableProps) {
             </th>
             <th className={thSortable} onClick={() => requestSort('launch_time')}>
               Launch Time{getSortIndicator('launch_time')}
+            </th>
+            <th className={`${thBase} text-right`}>
+              Actions
             </th>
           </tr>
         </thead>
@@ -105,6 +110,15 @@ export default function InstancesTable({ instances }: InstancesTableProps) {
               </td>
               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {formatTime(inst.launch_time)}
+              </td>
+              <td className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+                <TerminateInstanceButton
+                  instanceId={inst.instance_id}
+                  pool={inst.pool}
+                  busy={inst.busy}
+                  state={inst.state}
+                  onTerminated={onTerminated}
+                />
               </td>
             </tr>
           ))}
