@@ -49,9 +49,37 @@ func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstan
 	if m.describeErrOnCall == m.describeCalls {
 		return nil, errors.New("throttled")
 	}
-	return &ec2.DescribeInstancesOutput{
-		Reservations: m.instances,
-	}, nil
+	// Honour instance-state-name the way EC2 does. Without this a sweep that asks
+	// for running instances is still handed stopped ones, so a test cannot tell a
+	// state-scoped sweep from an unscoped one.
+	wanted := map[string]bool{}
+	for _, f := range in.Filters {
+		if aws.ToString(f.Name) == "instance-state-name" {
+			for _, v := range f.Values {
+				wanted[v] = true
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return &ec2.DescribeInstancesOutput{Reservations: m.instances}, nil
+	}
+	var out []ec2types.Reservation
+	for _, r := range m.instances {
+		var keep []ec2types.Instance
+		for _, inst := range r.Instances {
+			state := "running"
+			if inst.State != nil && inst.State.Name != "" {
+				state = string(inst.State.Name)
+			}
+			if wanted[state] {
+				keep = append(keep, inst)
+			}
+		}
+		if len(keep) > 0 {
+			out = append(out, ec2types.Reservation{Instances: keep})
+		}
+	}
+	return &ec2.DescribeInstancesOutput{Reservations: out}, nil
 }
 
 // instanceStateFilter returns the values of the instance-state-name filter from
@@ -186,6 +214,111 @@ func TestUnclaimedOrphanCandidates(t *testing.T) {
 	if len(got) != 1 || got[0] != "i-old-coldstart" {
 		t.Errorf("candidates = %v, want only [i-old-coldstart]: a fresh instance may still be "+
 			"claiming, and a pool-tagged instance is legitimately idle awaiting work", got)
+	}
+}
+
+func stoppedInstance(id string, launched time.Time, extraTags ...ec2types.Tag) ec2types.Instance {
+	inst := managedInstance(id, launched, extraTags...)
+	inst.State = &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}
+	return inst
+}
+
+func TestExecuteOrphanedInstances_ReapsAbandonedStoppedInstance(t *testing.T) {
+	t.Parallel()
+
+	// A stopped instance with no pool tag belongs to no reconciler: the pool sweep
+	// never starts it and every running-only sweep filters it out, so it accrues
+	// EBS charges until someone notices by hand.
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		stoppedInstance("i-abandoned", time.Now().Add(-72*time.Hour)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			CompletedInstanceGraceMinutes: 15,
+			StoppedInstanceGraceHours:     24,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-abandoned" {
+		t.Errorf("terminated = %v, want [i-abandoned]: a stopped instance outside any pool is "+
+			"unreachable by every other sweep and bills for its EBS volume indefinitely",
+			ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_SparesPooledAndRecentStoppedInstances(t *testing.T) {
+	t.Parallel()
+
+	poolTag := ec2types.Tag{Key: aws.String("runs-fleet:pool"), Value: aws.String("default")}
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		// Banked warm-pool member: the reconciler owns it and will start it on demand.
+		stoppedInstance("i-pool-banked", time.Now().Add(-72*time.Hour), poolTag),
+		// Inside the grace window: may be mid stop/start for an assignment.
+		stoppedInstance("i-recent", time.Now().Add(-2*time.Hour)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			CompletedInstanceGraceMinutes: 15,
+			StoppedInstanceGraceHours:     24,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a pool-tagged instance is banked capacity and a "+
+			"recently stopped one may be mid-assignment", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_StoppedSweepDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		stoppedInstance("i-abandoned", time.Now().Add(-72*time.Hour)),
+	}}}}
+
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			CompletedInstanceGraceMinutes: 15,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Terminating a stopped instance destroys its EBS volume, so the sweep stays
+	// off until an operator sets a grace window.
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none when StoppedInstanceGraceHours is unset",
+			ec2Client.terminatedIDs)
 	}
 }
 

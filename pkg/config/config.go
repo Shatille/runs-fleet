@@ -73,9 +73,15 @@ type Config struct {
 	// once its job ends, so without this it bills until the MaxRuntimeMinutes
 	// cutoff even though every sweep can see the job is done.
 	CompletedInstanceGraceMinutes int
-	LaunchTemplateName            string
-	RunnerImage                   string            // Container image for EC2 runners (ECR URL)
-	Tags                          map[string]string // Custom tags for EC2 resources
+	// StoppedInstanceGraceHours reaps stopped instances that carry no pool tag.
+	// Nothing else can: the pool reconciler only manages tagged members, and every
+	// other sweep filters to running instances, so an untagged stopped instance
+	// bills for its EBS volume forever. Zero disables the sweep — terminating a
+	// stopped instance destroys its volume, so it stays opt-in.
+	StoppedInstanceGraceHours int
+	LaunchTemplateName        string
+	RunnerImage               string            // Container image for EC2 runners (ECR URL)
+	Tags                      map[string]string // Custom tags for EC2 resources
 
 	// Cost-attribution tag keys and values. Defaults are "Application"="runs-fleet"
 	// and "Service"="runner"; both the key names and the values are independently
@@ -158,6 +164,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// Defaults off: reaping a stopped instance destroys its EBS volume.
+	stoppedInstanceGraceHours, err := getEnvInt("RUNS_FLEET_STOPPED_INSTANCE_GRACE_HOURS", 0)
+	if err != nil {
+		return nil, err
+	}
+
 	unclaimedInstanceGraceMinutes, err := getEnvInt("RUNS_FLEET_UNCLAIMED_INSTANCE_GRACE_MINUTES", 30)
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
@@ -204,6 +216,7 @@ func Load() (*Config, error) {
 		MaxRuntimeMinutes:             maxRuntimeMinutes,
 		UnclaimedInstanceGraceMinutes: unclaimedInstanceGraceMinutes,
 		CompletedInstanceGraceMinutes: completedInstanceGraceMinutes,
+		StoppedInstanceGraceHours:     stoppedInstanceGraceHours,
 		LaunchTemplateName:            getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:                   getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:                          make(map[string]string),
@@ -315,6 +328,11 @@ func (c *Config) Validate() error {
 	// self-terminates, so this must leave room for that tail.
 	if c.CompletedInstanceGraceMinutes < 5 {
 		return fmt.Errorf("RUNS_FLEET_COMPLETED_INSTANCE_GRACE_MINUTES must be at least 5, got %d", c.CompletedInstanceGraceMinutes)
+	}
+	// A stopped instance can legitimately sit banked between jobs, so anything
+	// shorter than an hour risks reaping capacity that is about to be started.
+	if c.StoppedInstanceGraceHours < 0 || (c.StoppedInstanceGraceHours > 0 && c.StoppedInstanceGraceHours < 1) {
+		return fmt.Errorf("RUNS_FLEET_STOPPED_INSTANCE_GRACE_HOURS must be 0 (disabled) or at least 1, got %d", c.StoppedInstanceGraceHours)
 	}
 	if c.ShutdownDrainDelay < 0 {
 		return fmt.Errorf("RUNS_FLEET_SHUTDOWN_DRAIN_DELAY_SECONDS must not be negative, got %s", c.ShutdownDrainDelay)
