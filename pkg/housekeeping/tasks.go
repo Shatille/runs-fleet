@@ -201,12 +201,18 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	completedOrphans, completedErr := t.findCompletedOrphans(ctx,
 		time.Now().Add(-time.Duration(t.config.CompletedInstanceGraceMinutes)*time.Minute))
 
-	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans, unclaimedOrphans, completedOrphans)
+	// Phase 5: Abandoned stopped instances. Every phase above filters to running
+	// instances, and the pool reconciler only manages instances carrying its tag,
+	// so a stopped instance with no pool tag is owned by nothing and bills for its
+	// EBS volume indefinitely.
+	stoppedOrphans, stoppedErr := t.findAbandonedStoppedInstances(ctx)
+
+	orphanedIDs := mergeUniqueIDs(taggedOrphans, untaggedOrphans, unclaimedOrphans, completedOrphans, stoppedOrphans)
 
 	// A detection failure that reaped nothing is indistinguishable from a clean
 	// sweep, so it has to surface. When some orphans were confirmed, terminating
 	// them takes priority over reporting the partial failure.
-	if sweepErr := errors.Join(tagErr, unclaimedErr, completedErr); sweepErr != nil {
+	if sweepErr := errors.Join(tagErr, unclaimedErr, completedErr, stoppedErr); sweepErr != nil {
 		if len(orphanedIDs) == 0 {
 			return sweepErr
 		}
@@ -422,6 +428,53 @@ func extractOrphanIDs(output *ec2.DescribeInstancesOutput, cutoffTime time.Time)
 		}
 	}
 	return ids
+}
+
+// findAbandonedStoppedInstances returns stopped instances that carry no pool tag
+// and have been stopped longer than the configured grace window.
+//
+// Disabled when StoppedInstanceGraceHours is zero: terminating a stopped instance
+// destroys its EBS volume, which is the whole point but is also irreversible, so
+// it stays opt-in. Pool-tagged instances are exempt — a banked warm-pool member is
+// meant to sit stopped until the reconciler starts it for a job.
+//
+// LaunchTime is the only age signal EC2 exposes here; it is refreshed on restart,
+// so an instance that has been started for work since it was created reads as
+// young and is spared.
+func (t *Tasks) findAbandonedStoppedInstances(ctx context.Context) ([]string, error) {
+	if t.config.StoppedInstanceGraceHours <= 0 {
+		return nil, nil
+	}
+
+	cutoff := time.Now().Add(-time.Duration(t.config.StoppedInstanceGraceHours) * time.Hour)
+	input := &ec2.DescribeInstancesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("tag:runs-fleet:managed"), Values: []string{"true"}},
+			{Name: aws.String("instance-state-name"), Values: []string{"stopped"}},
+		},
+	}
+
+	var abandoned []string
+	var errs []error
+	for {
+		output, err := t.ec2Client.DescribeInstances(ctx, input)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to describe stopped instances: %w", err))
+			break
+		}
+		abandoned = append(abandoned, unclaimedOrphanCandidates(output, cutoff)...)
+		if output.NextToken == nil {
+			break
+		}
+		input.NextToken = output.NextToken
+	}
+
+	if len(abandoned) > 0 {
+		t.logger().Warn(ctx, "found abandoned stopped instances (no pool owns them)",
+			slog.Int("stopped_count", len(abandoned)),
+			slog.Any("stopped_ids", abandoned))
+	}
+	return abandoned, errors.Join(errs...)
 }
 
 // completedOrphanCandidates narrows a DescribeInstances page for the completed
