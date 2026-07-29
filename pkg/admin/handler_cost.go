@@ -16,6 +16,11 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
 
+// costBucketUnknown labels the catch-all bucket for jobs whose record is
+// missing the dimension being grouped on, so their cost is still reported rather
+// than silently dropped from a breakdown.
+const costBucketUnknown = "unknown"
+
 // CostDB defines the database operations required by the cost handler.
 type CostDB interface {
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
@@ -108,6 +113,28 @@ type CostPoolEntry struct {
 	SpotPercent  float64 `json:"spot_percent"`
 }
 
+// CostByRepositoryResponse is month-to-date cost grouped by source repository,
+// sorted by cost descending. Every repository is returned rather than a top-N
+// slice: the UI filters and pages client-side, and truncating here would leave
+// the visible rows failing to sum to the summary's TotalCost.
+type CostByRepositoryResponse struct {
+	PeriodStart  string                `json:"period_start"`
+	PeriodEnd    string                `json:"period_end"`
+	Repositories []CostRepositoryEntry `json:"repositories"`
+}
+
+// CostRepositoryEntry is one repository's month-to-date cost. Jobs whose record
+// carries no repo are grouped under the "unknown" pseudo-repository.
+type CostRepositoryEntry struct {
+	Repository    string  `json:"repository"`
+	JobCount      int     `json:"job_count"`
+	TotalCost     float64 `json:"total_cost"`
+	SpotCost      float64 `json:"spot_cost"`
+	OnDemandCost  float64 `json:"on_demand_cost"`
+	AvgCostPerJob float64 `json:"avg_cost_per_job"`
+	SpotPercent   float64 `json:"spot_percent"`
+}
+
 // CostHandler provides HTTP endpoints for cost reporting.
 type CostHandler struct {
 	db       CostDB
@@ -139,6 +166,7 @@ func (h *CostHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/cost/summary", h.auth.WrapFunc(h.GetCostSummary))
 	mux.Handle("GET /api/cost/daily", h.auth.WrapFunc(h.GetCostDaily))
 	mux.Handle("GET /api/cost/by-pool", h.auth.WrapFunc(h.GetCostByPool))
+	mux.Handle("GET /api/cost/by-repository", h.auth.WrapFunc(h.GetCostByRepository))
 }
 
 // GetCostSummary handles GET /api/cost/summary.
@@ -356,6 +384,17 @@ func (h *CostHandler) GetCostByPool(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.computeByPool(ctx, jobs, start, end))
 }
 
+// GetCostByRepository handles GET /api/cost/by-repository.
+func (h *CostHandler) GetCostByRepository(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobs, start, end, err := h.monthToDateJobs(ctx)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "Failed to fetch jobs", err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, h.computeByRepository(ctx, jobs, start, end))
+}
+
 // computeDaily buckets each job's whole cost into the day of its CreatedAt.
 // This is intentional: jobs are short-lived CI runs (GitHub caps a job at 6h),
 // their cost is a single DurationSeconds-derived lump with no sub-day slices to
@@ -468,6 +507,66 @@ func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry
 	}
 }
 
+func (h *CostHandler) computeByRepository(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostByRepositoryResponse {
+	type repoAccum struct {
+		total, spot, onDemand float64
+		count, spotCount      int
+	}
+	repos := make(map[string]*repoAccum)
+
+	pricer := cost.NewJobPricer(h.onDemand, h.spot)
+	for _, job := range jobs {
+		repo := job.Repo
+		if repo == "" {
+			repo = costBucketUnknown
+		}
+		p := pricer.Price(ctx, job)
+		acc, ok := repos[repo]
+		if !ok {
+			acc = &repoAccum{}
+			repos[repo] = acc
+		}
+		acc.total += p.Total
+		acc.spot += p.Spot
+		acc.onDemand += p.OnDemand
+		acc.count++
+		if job.Spot {
+			acc.spotCount++
+		}
+	}
+
+	entries := make([]CostRepositoryEntry, 0, len(repos))
+	for name, acc := range repos {
+		spotPct, avg := 0.0, 0.0
+		if acc.count > 0 {
+			spotPct = float64(acc.spotCount) / float64(acc.count) * 100
+			avg = acc.total / float64(acc.count)
+		}
+		entries = append(entries, CostRepositoryEntry{
+			Repository:    name,
+			JobCount:      acc.count,
+			TotalCost:     acc.total,
+			SpotCost:      acc.spot,
+			OnDemandCost:  acc.onDemand,
+			AvgCostPerJob: avg,
+			SpotPercent:   spotPct,
+		})
+	}
+	// Cost desc, then name for a stable order across equal-cost repositories.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].TotalCost != entries[j].TotalCost {
+			return entries[i].TotalCost > entries[j].TotalCost
+		}
+		return entries[i].Repository < entries[j].Repository
+	})
+
+	return &CostByRepositoryResponse{
+		PeriodStart:  start.Format(time.RFC3339),
+		PeriodEnd:    end.Format(time.RFC3339),
+		Repositories: entries,
+	}
+}
+
 func (h *CostHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	// Response-writer helper with no request/context in scope.
 	ctx := context.Background()
@@ -494,11 +593,11 @@ func (h *CostHandler) writeError(w http.ResponseWriter, status int, message, det
 
 func extractFamily(instanceType string) string {
 	if instanceType == "" {
-		return "unknown"
+		return costBucketUnknown
 	}
 	parts := strings.SplitN(instanceType, ".", 2)
 	if len(parts) >= 1 && parts[0] != "" {
 		return parts[0]
 	}
-	return "unknown"
+	return costBucketUnknown
 }

@@ -190,6 +190,22 @@ export interface CostPoolEntry {
   spot_percent: number;
 }
 
+export interface CostByRepository {
+  period_start: string;
+  period_end: string;
+  repositories: CostRepositoryEntry[];
+}
+
+export interface CostRepositoryEntry {
+  repository: string;
+  job_count: number;
+  total_cost: number;
+  spot_cost: number;
+  on_demand_cost: number;
+  avg_cost_per_job: number;
+  spot_percent: number;
+}
+
 export interface MetricsSummary {
   jobs_24h: {
     total: number;
