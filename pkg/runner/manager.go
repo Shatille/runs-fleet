@@ -77,7 +77,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 	org := parts[0]
 	repoName := parts[1]
 
-	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions, req.JobID)
+	runnerName := buildRunnerName(req.Pool, repoName, req.Conditions, req.JobID, req.InstanceID)
 
 	// Get registration token from GitHub (returns token and whether owner is an org)
 	runnerLog.Info(ctx, "fetching registration token",
@@ -141,7 +141,7 @@ func (m *Manager) CleanupRunner(ctx context.Context, instanceID string) error {
 
 const runnerNameMaxLen = 64
 
-func buildRunnerName(pool, repoName, conditions, jobID string) string {
+func buildRunnerName(pool, repoName, conditions, jobID, instanceID string) string {
 	const prefix = "runs-fleet-runner-"
 
 	var name string
@@ -156,18 +156,28 @@ func buildRunnerName(pool, repoName, conditions, jobID string) string {
 		name = "runs-fleet-runner"
 	}
 
-	// Append short job ID suffix to guarantee uniqueness when multiple jobs
-	// in the same workflow run share identical runs-on labels.
+	// Job ID suffix distinguishes jobs sharing identical runs-on labels; the
+	// instance ID suffix distinguishes duplicate dispatches of the same job —
+	// the agent registers with --replace, so two instances sharing one name
+	// would evict each other's GitHub registration and fail the job.
+	var suffix string
 	if jobID != "" {
-		suffix := jobID
-		if len(suffix) > 6 {
-			suffix = suffix[len(suffix)-6:]
+		jobPart := jobID
+		if len(jobPart) > 6 {
+			jobPart = jobPart[len(jobPart)-6:]
 		}
-		name += "-" + suffix
+		suffix = "-" + jobPart
+	}
+	if instanceID != "" {
+		instPart := instanceID
+		if len(instPart) > 5 {
+			instPart = instPart[len(instPart)-5:]
+		}
+		suffix += "-" + instPart
 	}
 
-	if len(name) > runnerNameMaxLen {
-		name = name[:runnerNameMaxLen]
+	if len(name)+len(suffix) > runnerNameMaxLen {
+		name = strings.TrimRight(name[:runnerNameMaxLen-len(suffix)], "-")
 	}
-	return name
+	return name + suffix
 }
