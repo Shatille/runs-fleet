@@ -798,8 +798,12 @@ func TestTryAssignToWarmPool_FailureStopsBeforeReleasingClaim(t *testing.T) {
 		Pool:  "test-pool",
 	}
 
-	if _, err := assigner.TryAssignToWarmPool(context.Background(), job); err != nil {
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned after prep failure")
 	}
 
 	if len(order) != 2 || order[0] != "stop" || order[1] != "release" {
@@ -844,8 +848,12 @@ func TestTryAssignToWarmPool_StopFailureKeepsClaim(t *testing.T) {
 		Pool:  "test-pool",
 	}
 
-	if _, err := assigner.TryAssignToWarmPool(context.Background(), job); err != nil {
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned after prep failure")
 	}
 
 	if mockDB.releaseClaimCalled {
