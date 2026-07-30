@@ -2,6 +2,7 @@ package housekeeping
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"testing"
@@ -35,6 +36,7 @@ func launchedJobItem(jobID int64, instanceID string, runID int64, retry int) map
 		"instance_type": &types.AttributeValueMemberS{Value: "c7g.large"},
 		"pool":          &types.AttributeValueMemberS{Value: "default"},
 		"retry_count":   &types.AttributeValueMemberN{Value: strconv.Itoa(retry)},
+		"status":        &types.AttributeValueMemberS{Value: "launched"},
 	}
 }
 
@@ -171,6 +173,80 @@ func TestExecuteUnconfirmedRunners_ScanAliasesReservedPool(t *testing.T) {
 	// The pre-existing #status alias must remain intact alongside the new one.
 	if got := in.ExpressionAttributeNames["#status"]; got != "status" {
 		t.Errorf("ExpressionAttributeNames must still map #status -> status, got %q", got)
+	}
+}
+
+// A runner that confirms between the scan and the sweep flips the job to
+// running; the watchdog must re-read the record and leave the live runner alone
+// (the old behavior terminated it mid-job).
+func TestExecuteUnconfirmedRunners_SkipsJobThatConfirmed(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-confirmed")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{launchedJobItem(42, "i-confirmed", 7, 0)},
+		statusOverride: map[int64]string{42: "running"},
+	}
+	metrics := &mockTaskMetricsAPI{}
+	rq := &mockJobRequeuer{}
+	tasks := newUnconfirmedTasks(ec2, dyn, metrics, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if ec2.terminateCalls != 0 {
+		t.Errorf("a confirmed runner must not be terminated, got %d terminate calls", ec2.terminateCalls)
+	}
+	if len(rq.sent) != 0 {
+		t.Errorf("a confirmed runner's job must not be requeued, got %d", len(rq.sent))
+	}
+	if dyn.updateCalls != 0 {
+		t.Errorf("a confirmed runner's record must not be flipped, got %d updates", dyn.updateCalls)
+	}
+}
+
+// A re-read failure means the job's true state is unknown; the watchdog must
+// not terminate on uncertainty and must leave the candidate for the next cycle.
+func TestExecuteUnconfirmedRunners_GetItemErrorSkips(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:      []map[string]types.AttributeValue{launchedJobItem(42, "i-stuck", 7, 0)},
+		getItemErr: errors.New("dynamo unavailable"),
+	}
+	metrics := &mockTaskMetricsAPI{}
+	rq := &mockJobRequeuer{}
+	tasks := newUnconfirmedTasks(ec2, dyn, metrics, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if ec2.terminateCalls != 0 {
+		t.Errorf("must not terminate when the job state is unknown, got %d terminate calls", ec2.terminateCalls)
+	}
+	if len(rq.sent) != 0 {
+		t.Errorf("must not requeue when the job state is unknown, got %d", len(rq.sent))
+	}
+}
+
+// A job that reached a terminal state after the scan is not a recovery
+// candidate anymore.
+func TestExecuteUnconfirmedRunners_SkipsCompletedJob(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-done")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{launchedJobItem(42, "i-done", 7, 0)},
+		statusOverride: map[int64]string{42: "success"},
+	}
+	metrics := &mockTaskMetricsAPI{}
+	rq := &mockJobRequeuer{}
+	tasks := newUnconfirmedTasks(ec2, dyn, metrics, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if ec2.terminateCalls != 0 || len(rq.sent) != 0 || dyn.updateCalls != 0 {
+		t.Errorf("completed job must be untouched: terminates=%d requeues=%d updates=%d",
+			ec2.terminateCalls, len(rq.sent), dyn.updateCalls)
 	}
 }
 

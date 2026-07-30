@@ -80,6 +80,13 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 			slog.Int64(logging.KeyJobID, c.JobID),
 			slog.String(logging.KeyInstanceID, c.InstanceID))
 
+		// The scan snapshot can be minutes old; a runner that confirmed since
+		// then has a live job on this instance. Re-read before the irreversible
+		// terminate — the guarded status flip alone cannot undo a kill.
+		if !t.jobStillLaunched(jobCtx, c.JobID) {
+			continue
+		}
+
 		if alive[c.InstanceID] {
 			t.cancelSpotRequestsForInstances(jobCtx, []string{c.InstanceID})
 			if _, err := t.ec2Client.TerminateInstances(jobCtx, &ec2.TerminateInstancesInput{
@@ -139,6 +146,31 @@ func (t *Tasks) requeueUnconfirmed(ctx context.Context, c RequeueableJob) error 
 		_ = t.metrics.PublishJobRequeued(ctx, housekeepingActionUnconfirmedRunner)
 	}
 	return nil
+}
+
+// jobStillLaunched re-reads the job row with a consistent read and reports
+// whether it is still awaiting runner confirmation. Unknown state (read error
+// or missing row) counts as not-launched so the watchdog never terminates on
+// uncertainty.
+func (t *Tasks) jobStillLaunched(ctx context.Context, jobID int64) bool {
+	out, err := t.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(t.config.JobsTableName),
+		Key: map[string]types.AttributeValue{
+			"job_id": &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
+		},
+		ProjectionExpression:     aws.String("#status"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ConsistentRead:           aws.Bool(true),
+	})
+	if err != nil {
+		t.logger().Warn(ctx, "unconfirmed-runner pre-flight read failed; skipping candidate",
+			slog.String("error", err.Error()))
+		return false
+	}
+	if out.Item == nil {
+		return false
+	}
+	return avString(out.Item, "status") == string(db.JobStatusLaunched)
 }
 
 func (t *Tasks) markLaunchedJobRequeued(ctx context.Context, jobID int64) error {

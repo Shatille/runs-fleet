@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -163,16 +164,42 @@ func (m *mockSecretsStore) Put(_ context.Context, _ string, _ *secrets.RunnerCon
 
 // mockTaskDynamoDBAPI implements DynamoDBAPI for testing.
 type mockTaskDynamoDBAPI struct {
-	items         []map[string]types.AttributeValue
-	queryErr      error
-	batchWriteErr error
-	scanErr       error
-	updateErr     error
-	queryCalls    int
-	scanCalls     int
-	batchCalls    int
-	updateCalls   int
-	scanInputs    []*dynamodb.ScanInput
+	items          []map[string]types.AttributeValue
+	queryErr       error
+	batchWriteErr  error
+	scanErr        error
+	updateErr      error
+	getItemErr     error
+	queryCalls     int
+	scanCalls      int
+	batchCalls     int
+	updateCalls    int
+	getItemCalls   int
+	scanInputs     []*dynamodb.ScanInput
+	statusOverride map[int64]string
+}
+
+func (m *mockTaskDynamoDBAPI) GetItem(_ context.Context, params *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	m.getItemCalls++
+	if m.getItemErr != nil {
+		return nil, m.getItemErr
+	}
+	keyN, ok := params.Key["job_id"].(*types.AttributeValueMemberN)
+	if !ok {
+		return &dynamodb.GetItemOutput{}, nil
+	}
+	jobID, _ := strconv.ParseInt(keyN.Value, 10, 64)
+	if status, ok := m.statusOverride[jobID]; ok {
+		return &dynamodb.GetItemOutput{Item: map[string]types.AttributeValue{
+			"status": &types.AttributeValueMemberS{Value: status},
+		}}, nil
+	}
+	for _, item := range m.items {
+		if n, ok := item["job_id"].(*types.AttributeValueMemberN); ok && n.Value == keyN.Value {
+			return &dynamodb.GetItemOutput{Item: item}, nil
+		}
+	}
+	return &dynamodb.GetItemOutput{}, nil
 }
 
 func (m *mockTaskDynamoDBAPI) Query(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
