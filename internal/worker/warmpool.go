@@ -26,6 +26,7 @@ type PoolManager interface {
 // RunnerPreparer defines runner configuration operations.
 type RunnerPreparer interface {
 	PrepareRunner(ctx context.Context, req runner.PrepareRunnerRequest) error
+	CleanupRunner(ctx context.Context, instanceID string) error
 }
 
 // JobDBClient defines database operations for job records.
@@ -112,32 +113,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 	if err := w.Runner.PrepareRunner(ctx, prepareReq); err != nil {
 		warmPoolLog.Error(ctx, "runner config preparation failed",
 			slog.String("error", err.Error()))
-		// Instance already started - stop it since it has no valid config
-		// Retry stop to ensure instance doesn't run with stale SSM config
-		stopped := false
-		for attempt := 0; attempt < 3; attempt++ {
-			if ctx.Err() != nil {
-				break
-			}
-			if stopErr := w.Pool.StopPoolInstance(ctx, instance.InstanceID); stopErr != nil {
-				warmPoolLog.Error(ctx, "instance stop failed after SSM prep failure",
-					slog.Int("attempt", attempt+1),
-					slog.String("error", stopErr.Error()))
-				continue
-			}
-			stopped = true
-			break
-		}
-		if !stopped {
-			warmPoolLog.Error(ctx, "instance may have invalid config - manual cleanup required")
-		}
-		// Release the distributed claim since assignment failed
-		if w.DB != nil {
-			if releaseErr := w.DB.ReleaseInstanceClaim(ctx, instance.InstanceID, job.JobID); releaseErr != nil {
-				warmPoolLog.Error(ctx, "instance claim release failed",
-					slog.String("error", releaseErr.Error()))
-			}
-		}
+		w.releaseFailedAssignment(ctx, instance.InstanceID, job.JobID)
 		return &WarmPoolResult{Assigned: false}, nil
 	}
 
@@ -160,29 +136,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		if err := w.DB.SaveJob(ctx, jobRecord); err != nil {
 			warmPoolLog.Error(ctx, "job record save failed",
 				slog.String("error", err.Error()))
-			// Release claim first to allow another orchestrator to retry with this instance
-			if releaseErr := w.DB.ReleaseInstanceClaim(ctx, instance.InstanceID, job.JobID); releaseErr != nil {
-				warmPoolLog.Error(ctx, "instance claim release failed",
-					slog.String("error", releaseErr.Error()))
-			}
-			// Job record is required for tracking - stop instance and fall back to cold start
-			stopped := false
-			for attempt := 0; attempt < 3; attempt++ {
-				if ctx.Err() != nil {
-					break
-				}
-				if stopErr := w.Pool.StopPoolInstance(ctx, instance.InstanceID); stopErr != nil {
-					warmPoolLog.Error(ctx, "instance stop failed after DB save failure",
-						slog.Int("attempt", attempt+1),
-						slog.String("error", stopErr.Error()))
-					continue
-				}
-				stopped = true
-				break
-			}
-			if !stopped {
-				warmPoolLog.Error(ctx, "instance may be running without job record - manual cleanup required")
-			}
+			w.releaseFailedAssignment(ctx, instance.InstanceID, job.JobID)
 			return &WarmPoolResult{Assigned: false}, nil
 		}
 	}
@@ -192,4 +146,43 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		Assigned:   true,
 		InstanceID: instance.InstanceID,
 	}, nil
+}
+
+// releaseFailedAssignment returns a claimed instance to the pool after an
+// assignment failure. The runner config is deleted first — the agent reads it
+// once at boot and never revalidates, so a leftover config would make the
+// instance's next assignment register for this job. The instance must be
+// stopped BEFORE the claim is released: releasing a still-running instance
+// lets a concurrent orchestrator claim it as a hot spare, and the stop here
+// would then kill that fresh assignment mid-flight. If the stop never
+// succeeds the claim is left to expire on its TTL instead.
+func (w *WarmPoolAssigner) releaseFailedAssignment(ctx context.Context, instanceID string, jobID int64) {
+	if err := w.Runner.CleanupRunner(ctx, instanceID); err != nil {
+		warmPoolLog.Error(ctx, "runner config cleanup failed",
+			slog.String("error", err.Error()))
+	}
+	stopped := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := w.Pool.StopPoolInstance(ctx, instanceID); err != nil {
+			warmPoolLog.Error(ctx, "instance stop failed after assignment failure",
+				slog.Int("attempt", attempt+1),
+				slog.String("error", err.Error()))
+			continue
+		}
+		stopped = true
+		break
+	}
+	if !stopped {
+		warmPoolLog.Error(ctx, "instance stop failed; leaving claim to expire - manual cleanup may be required")
+		return
+	}
+	if w.DB != nil {
+		if err := w.DB.ReleaseInstanceClaim(ctx, instanceID, jobID); err != nil {
+			warmPoolLog.Error(ctx, "instance claim release failed",
+				slog.String("error", err.Error()))
+		}
+	}
 }

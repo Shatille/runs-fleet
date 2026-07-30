@@ -307,9 +307,12 @@ func (m *mockPoolManager) StopPoolInstance(ctx context.Context, instanceID strin
 
 // mockRunnerPreparer implements RunnerPreparer for testing
 type mockRunnerPreparer struct {
-	prepareFunc   func(ctx context.Context, req runner.PrepareRunnerRequest) error
-	prepareCalled bool
-	lastRequest   runner.PrepareRunnerRequest
+	prepareFunc       func(ctx context.Context, req runner.PrepareRunnerRequest) error
+	prepareCalled     bool
+	lastRequest       runner.PrepareRunnerRequest
+	cleanupFunc       func(ctx context.Context, instanceID string) error
+	cleanupCalled     bool
+	cleanupInstanceID string
 }
 
 func (m *mockRunnerPreparer) PrepareRunner(ctx context.Context, req runner.PrepareRunnerRequest) error {
@@ -317,6 +320,15 @@ func (m *mockRunnerPreparer) PrepareRunner(ctx context.Context, req runner.Prepa
 	m.lastRequest = req
 	if m.prepareFunc != nil {
 		return m.prepareFunc(ctx, req)
+	}
+	return nil
+}
+
+func (m *mockRunnerPreparer) CleanupRunner(ctx context.Context, instanceID string) error {
+	m.cleanupCalled = true
+	m.cleanupInstanceID = instanceID
+	if m.cleanupFunc != nil {
+		return m.cleanupFunc(ctx, instanceID)
 	}
 	return nil
 }
@@ -584,6 +596,301 @@ func TestTryAssignToWarmPool_DBSaveFailure_StopsInstance(t *testing.T) {
 	}
 	if mockPool.stoppedInstanceID != "i-dbfail" {
 		t.Errorf("Stopped instance = %s, want i-dbfail", mockPool.stoppedInstanceID)
+	}
+}
+
+// TestTryAssignToWarmPool_PrepareFail_CleansUpRunnerConfig tests that a failed
+// runner config preparation deletes any partially written config so a restarted
+// spare cannot boot with a stale assignment.
+func TestTryAssignToWarmPool_PrepareFail_CleansUpRunnerConfig(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-prepfail",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{
+		prepareFunc: func(_ context.Context, _ runner.PrepareRunnerRequest) error {
+			return errors.New("SSM parameter store error")
+		},
+	}
+
+	mockDB := &mockJobDBClient{hasJobsTable: true}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned after prep failure")
+	}
+
+	if !mockRunner.cleanupCalled {
+		t.Error("CleanupRunner should be called after prep failure")
+	}
+	if mockRunner.cleanupInstanceID != "i-prepfail" {
+		t.Errorf("CleanupRunner instance = %s, want i-prepfail", mockRunner.cleanupInstanceID)
+	}
+}
+
+// TestTryAssignToWarmPool_DBSaveFailure_CleansUpRunnerConfig tests that a failed
+// job record save deletes the already-written runner config before the instance
+// is returned to the pool.
+func TestTryAssignToWarmPool_DBSaveFailure_CleansUpRunnerConfig(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-dbfail",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{}
+
+	mockDB := &mockJobDBClient{
+		hasJobsTable: true,
+		saveJobFunc: func(_ context.Context, _ *db.JobRecord) error {
+			return errors.New("DynamoDB write error")
+		},
+	}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned after DB save failure")
+	}
+
+	if !mockRunner.cleanupCalled {
+		t.Error("CleanupRunner should be called after DB save failure")
+	}
+	if mockRunner.cleanupInstanceID != "i-dbfail" {
+		t.Errorf("CleanupRunner instance = %s, want i-dbfail", mockRunner.cleanupInstanceID)
+	}
+}
+
+// TestTryAssignToWarmPool_CleanupErrorDoesNotBlockStop tests that a failed
+// config deletion still stops the instance and releases the claim.
+func TestTryAssignToWarmPool_CleanupErrorDoesNotBlockStop(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-cleanupfail",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{
+		prepareFunc: func(_ context.Context, _ runner.PrepareRunnerRequest) error {
+			return errors.New("SSM parameter store error")
+		},
+		cleanupFunc: func(_ context.Context, _ string) error {
+			return errors.New("SSM delete error")
+		},
+	}
+
+	mockDB := &mockJobDBClient{hasJobsTable: true}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Assigned {
+		t.Error("expected job to NOT be assigned")
+	}
+
+	if !mockPool.stopCalled {
+		t.Error("StopPoolInstance should be called despite cleanup failure")
+	}
+	if !mockDB.releaseClaimCalled {
+		t.Error("ReleaseInstanceClaim should be called despite cleanup failure")
+	}
+}
+
+// TestTryAssignToWarmPool_FailureStopsBeforeReleasingClaim tests that the
+// instance is stopped before the claim is released: a claim released while the
+// instance still runs lets a concurrent orchestrator assign it a new job that
+// the pending stop would then kill.
+func TestTryAssignToWarmPool_FailureStopsBeforeReleasingClaim(t *testing.T) {
+	var order []string
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-order",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+		stopFunc: func(_ context.Context, _ string) error {
+			order = append(order, "stop")
+			return nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{
+		prepareFunc: func(_ context.Context, _ runner.PrepareRunnerRequest) error {
+			return errors.New("SSM parameter store error")
+		},
+	}
+
+	mockDB := &mockJobDBClient{
+		hasJobsTable: true,
+		releaseClaimFunc: func(_ context.Context, _ string, _ int64) error {
+			order = append(order, "release")
+			return nil
+		},
+	}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	if _, err := assigner.TryAssignToWarmPool(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "stop" || order[1] != "release" {
+		t.Errorf("expected stop before release, got order %v", order)
+	}
+}
+
+// TestTryAssignToWarmPool_StopFailureKeepsClaim tests that a claim is never
+// released for an instance that could not be stopped; the claim TTL expiry
+// covers recovery instead.
+func TestTryAssignToWarmPool_StopFailureKeepsClaim(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-stuckstop",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+		stopFunc: func(_ context.Context, _ string) error {
+			return errors.New("EC2 stop error")
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{
+		prepareFunc: func(_ context.Context, _ runner.PrepareRunnerRequest) error {
+			return errors.New("SSM parameter store error")
+		},
+	}
+
+	mockDB := &mockJobDBClient{hasJobsTable: true}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	if _, err := assigner.TryAssignToWarmPool(context.Background(), job); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mockDB.releaseClaimCalled {
+		t.Error("claim must not be released while the instance is still running")
+	}
+}
+
+// TestTryAssignToWarmPool_Success_NoCleanup tests that a successful assignment
+// never deletes the runner config it just wrote.
+func TestTryAssignToWarmPool_Success_NoCleanup(t *testing.T) {
+	mockPool := &mockPoolManager{
+		claimAndStartFunc: func(_ context.Context, _ string, _ int64, _ string, _ *fleet.FlexibleSpec) (*pools.AvailableInstance, error) {
+			return &pools.AvailableInstance{
+				InstanceID:   "i-clean",
+				InstanceType: "c7g.xlarge",
+			}, nil
+		},
+	}
+
+	mockRunner := &mockRunnerPreparer{}
+	mockDB := &mockJobDBClient{hasJobsTable: true}
+
+	assigner := &WarmPoolAssigner{
+		Pool:   mockPool,
+		Runner: mockRunner,
+		DB:     mockDB,
+	}
+
+	job := &queue.JobMessage{
+		JobID: 12345,
+		RunID: 67890,
+		Repo:  "owner/repo",
+		Pool:  "test-pool",
+	}
+
+	result, err := assigner.TryAssignToWarmPool(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Assigned {
+		t.Fatal("expected job to be assigned")
+	}
+
+	if mockRunner.cleanupCalled {
+		t.Error("CleanupRunner should NOT be called on success")
 	}
 }
 
