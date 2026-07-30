@@ -822,6 +822,7 @@ func (r *runnerConfigCheckerAdapter) HasRunnerConfig(ctx context.Context, instan
 	}
 	return true, nil
 }
+
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
 type githubJobCheckerAdapter struct {
 	client *gh.Client

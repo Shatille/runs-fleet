@@ -337,3 +337,177 @@ func TestClaim_GateOff_NoBusyQuery_NoRunningClaim(t *testing.T) {
 		}
 	}
 }
+
+// A running spare whose runner config still exists was assigned before and its
+// agent may already hold that stale config; claiming it would register the
+// wrong job. The claim must release it and fall to the stopped instance.
+func TestClaim_SkipsRunningSpareWithStaleConfig(t *testing.T) {
+	t.Parallel()
+
+	var startCalls int64
+	var releasedIDs []string
+
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
+		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
+			return nil, nil
+		},
+		ReleaseInstanceClaimFunc: func(_ context.Context, instanceID string, _ int64) error {
+			releasedIDs = append(releasedIDs, instanceID)
+			return nil
+		},
+	}
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: mixedReservation([]string{iRunID}, []string{iStopID})}, nil
+		},
+		StartInstancesFunc: func(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			atomic.AddInt64(&startCalls, 1)
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(context.Context, *ec2.CreateTagsInput, ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			return &ec2.CreateTagsOutput{}, nil
+		},
+	}
+
+	m := NewManager(mockDB, &MockFleetAPI{}, hotGateConfig())
+	m.SetEC2Client(mockEC2)
+	m.SetRunnerConfigChecker(&mockConfigChecker{hasConfig: map[string]bool{iRunID: true}})
+
+	inst, err := m.ClaimAndStartPoolInstance(context.Background(), "hot", 1, "owner/repo", nil)
+	if err != nil {
+		t.Fatalf("claim err = %v", err)
+	}
+	if inst.InstanceID != iStopID {
+		t.Errorf("claimed %s, want %s (poisoned running spare must be skipped)", inst.InstanceID, iStopID)
+	}
+	if n := atomic.LoadInt64(&startCalls); n != 1 {
+		t.Errorf("StartInstances called %d times, want 1 (stopped fallback)", n)
+	}
+	if len(releasedIDs) != 1 || releasedIDs[0] != iRunID {
+		t.Errorf("expected the poisoned spare's claim released, got %v", releasedIDs)
+	}
+}
+
+// A config-check failure means the spare's state is unknown; it must be
+// skipped (fail-closed) with the claim falling to the stopped instance.
+func TestClaim_RunningSpareConfigCheckErrorSkips(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
+		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
+			return nil, nil
+		},
+	}
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: mixedReservation([]string{iRunID}, []string{iStopID})}, nil
+		},
+		StartInstancesFunc: func(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(context.Context, *ec2.CreateTagsInput, ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			return &ec2.CreateTagsOutput{}, nil
+		},
+	}
+
+	m := NewManager(mockDB, &MockFleetAPI{}, hotGateConfig())
+	m.SetEC2Client(mockEC2)
+	m.SetRunnerConfigChecker(&mockConfigChecker{err: errors.New("ssm unavailable")})
+
+	inst, err := m.ClaimAndStartPoolInstance(context.Background(), "hot", 1, "owner/repo", nil)
+	if err != nil {
+		t.Fatalf("claim err = %v", err)
+	}
+	if inst.InstanceID != iStopID {
+		t.Errorf("claimed %s, want %s (unknown-state spare must be skipped)", inst.InstanceID, iStopID)
+	}
+}
+
+// A clean running spare (checker present, no config) is assigned exactly as
+// before, with a single config probe.
+func TestClaim_CleanRunningSpareUnchanged(t *testing.T) {
+	t.Parallel()
+
+	var startCalls int64
+	checker := &mockConfigChecker{}
+
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
+		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
+			return nil, nil
+		},
+	}
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: mixedReservation([]string{iRunID}, []string{iStopID})}, nil
+		},
+		StartInstancesFunc: func(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			atomic.AddInt64(&startCalls, 1)
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(context.Context, *ec2.CreateTagsInput, ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			return &ec2.CreateTagsOutput{}, nil
+		},
+	}
+
+	m := NewManager(mockDB, &MockFleetAPI{}, hotGateConfig())
+	m.SetEC2Client(mockEC2)
+	m.SetRunnerConfigChecker(checker)
+
+	inst, err := m.ClaimAndStartPoolInstance(context.Background(), "hot", 1, "owner/repo", nil)
+	if err != nil {
+		t.Fatalf("claim err = %v", err)
+	}
+	if inst.InstanceID != iRunID {
+		t.Errorf("claimed %s, want %s (clean hot spare preferred)", inst.InstanceID, iRunID)
+	}
+	if n := atomic.LoadInt64(&startCalls); n != 0 {
+		t.Errorf("StartInstances called %d times, want 0", n)
+	}
+	if checker.calls != 1 {
+		t.Errorf("expected exactly 1 config probe, got %d", checker.calls)
+	}
+}
+
+// Stopped candidates never need a config probe: the fresh PrepareRunner
+// overwrite lands before the instance boots and reads it.
+func TestClaim_StoppedInstanceNoConfigCheck(t *testing.T) {
+	t.Parallel()
+
+	checker := &mockConfigChecker{}
+
+	mockDB := &MockDBClient{
+		GetPoolConfigFunc: func(context.Context, string) (*db.PoolConfig, error) { return hotPoolCfg(), nil },
+		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) {
+			return nil, nil
+		},
+	}
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: mixedReservation(nil, []string{iStopID})}, nil
+		},
+		StartInstancesFunc: func(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+			return &ec2.StartInstancesOutput{}, nil
+		},
+		CreateTagsFunc: func(context.Context, *ec2.CreateTagsInput, ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			return &ec2.CreateTagsOutput{}, nil
+		},
+	}
+
+	m := NewManager(mockDB, &MockFleetAPI{}, hotGateConfig())
+	m.SetEC2Client(mockEC2)
+	m.SetRunnerConfigChecker(checker)
+
+	inst, err := m.ClaimAndStartPoolInstance(context.Background(), "hot", 1, "owner/repo", nil)
+	if err != nil {
+		t.Fatalf("claim err = %v", err)
+	}
+	if inst.InstanceID != iStopID {
+		t.Errorf("claimed %s, want %s", inst.InstanceID, iStopID)
+	}
+	if checker.calls != 0 {
+		t.Errorf("stopped claim must not probe configs, got %d calls", checker.calls)
+	}
+}

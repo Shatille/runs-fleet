@@ -192,7 +192,7 @@ func (p PoolInstance) matchesFlexibleSpec(spec *fleet.FlexibleSpec) bool {
 // redundant work and lost updates within a single process and are never held
 // across network calls.
 type Manager struct {
-	dbClient     DBClient
+	dbClient      DBClient
 	fleetManager  FleetAPI
 	ec2Client     EC2API
 	config        *config.Config
@@ -1500,6 +1500,33 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		emitClaimWait()
 
 		if inst.State == stateRunning {
+			// A running spare with an existing runner config was assigned before
+			// and its agent may already hold that config — the agent reads it once
+			// at boot and never revalidates, so assigning here would register the
+			// old job. Checked AFTER the claim: config presence while holding the
+			// claim is by definition stale (the normal flow writes config only
+			// after its own claim), whereas check-then-claim races a concurrent
+			// assignment's config write. Unknown state skips too (fail-closed).
+			if m.configChecker != nil {
+				hasConfig, err := m.configChecker.HasRunnerConfig(ctx, instance.InstanceID)
+				if err != nil || hasConfig {
+					if err != nil {
+						poolLog.Warn(ctx, "runner config check failed; skipping hot spare",
+							slog.String(logging.KeyInstanceID, instance.InstanceID),
+							slog.String("error", err.Error()))
+					} else {
+						poolLog.Info(ctx, "skipping hot spare with stale runner config",
+							slog.String(logging.KeyInstanceID, instance.InstanceID))
+					}
+					if releaseErr := m.dbClient.ReleaseInstanceClaim(ctx, instance.InstanceID, jobID); releaseErr != nil {
+						poolLog.Error(ctx, "instance claim release failed after config check",
+							slog.String(logging.KeyInstanceID, instance.InstanceID),
+							slog.String("error", releaseErr.Error()))
+					}
+					pl.release(instance.InstanceID)
+					continue
+				}
+			}
 			// Hot spare: the instance is already running with a live standby agent
 			// polling for config, so we assign it WITHOUT StartInstances — just tag
 			// it and drop it from ready tracking. The agent picks up the config the
