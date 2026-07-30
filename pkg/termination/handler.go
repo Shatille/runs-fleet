@@ -35,7 +35,7 @@ type QueueAPI interface {
 
 // DBAPI provides database operations for termination processing.
 type DBAPI interface {
-	MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) (*events.JobInfo, error)
+	MarkJobComplete(ctx context.Context, jobID int64, instanceID, status string, exitCode, duration int) (*events.JobInfo, error)
 	MarkJobStarted(ctx context.Context, jobID int64, startedAt time.Time) (*events.JobInfo, error)
 	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 	GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error)
@@ -559,18 +559,29 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 	// source of run_id/repo: the termination Message carries only instance_id and
 	// job_id, so we enrich the context from the DB so every log below (and the
 	// "processing termination" line) carries the full job identity.
-	rec, err := h.dbClient.MarkJobComplete(ctx, jobID, msg.Status, msg.ExitCode, msg.DurationSeconds)
+	rec, err := h.dbClient.MarkJobComplete(ctx, jobID, msg.InstanceID, msg.Status, msg.ExitCode, msg.DurationSeconds)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to mark job complete: %w", err)
 	}
-	if rec != nil {
-		// job_id is already stashed by processMessage; pass 0 so ContextWithJob
-		// stashes only run_id/repo and job_id is not emitted twice (slog does not
-		// de-duplicate stashed attrs). Zero-valued run_id/repo are omitted.
-		ctx = logging.ContextWithJob(ctx, 0, rec.RunID, rec.Repo)
+	if rec == nil {
+		// The record no longer binds this instance: the job was re-dispatched
+		// (or never tracked) and another instance owns it now. This agent's
+		// report must not close the record or emit completion metrics, but its
+		// own config is garbage either way.
+		termLog.Info(ctx, "completion from non-owning instance skipped",
+			slog.String("status", msg.Status))
+		if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {
+			termLog.Warn(ctx, "runner config delete failed",
+				slog.String("error", err.Error()))
+		}
+		return nil
 	}
+	// job_id is already stashed by processMessage; pass 0 so ContextWithJob
+	// stashes only run_id/repo and job_id is not emitted twice (slog does not
+	// de-duplicate stashed attrs). Zero-valued run_id/repo are omitted.
+	ctx = logging.ContextWithJob(ctx, 0, rec.RunID, rec.Repo)
 
 	termLog.Info(ctx, "processing termination",
 		slog.String("status", msg.Status),
@@ -586,10 +597,7 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 
 	// Publish job completion metrics. The job record (from MarkJobComplete above)
 	// supplies pool and repo so the completion counter carries those labels.
-	var pool, repo string
-	if rec != nil {
-		pool, repo = rec.Pool, rec.Repo
-	}
+	pool, repo := rec.Pool, rec.Repo
 	result := jobResult(msg.Status)
 	if h.metrics != nil {
 		if err := h.metrics.PublishJobCompleted(ctx, pool, result, repo); err != nil {
@@ -604,7 +612,7 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 			}
 			// Billable runner seconds keyed by arch+vCPU+spot — the axis per-minute
 			// competitors bill on; skipped when the instance type isn't in the catalog.
-			if rec != nil && rec.InstanceType != "" {
+			if rec.InstanceType != "" {
 				if spec, ok := fleet.GetInstanceSpec(rec.InstanceType); ok {
 					if err := h.metrics.PublishRunnerExecutionSeconds(ctx, spec.Arch, spec.CPU, rec.Spot, result, float64(msg.DurationSeconds)); err != nil {
 						termLog.Warn(ctx, "runner execution seconds metric publish failed", slog.String("error", err.Error()))

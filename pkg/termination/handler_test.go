@@ -67,17 +67,19 @@ func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) er
 
 // mockDBAPI implements DBAPI for testing.
 type mockDBAPI struct {
-	markCompleteErr  error
-	updateMetricsErr error
-	markStartedErr   error
-	startedNoOp      bool
-	completeCalls    int
-	startedCalls     int
-	metricsCalls     int
-	lastJobID        int64
-	lastStatus       string
-	completeRecord   *events.JobInfo
-	startedRecord    *events.JobInfo
+	markCompleteErr        error
+	updateMetricsErr       error
+	markStartedErr         error
+	startedNoOp            bool
+	completeNoOp           bool
+	completeCalls          int
+	startedCalls           int
+	metricsCalls           int
+	lastJobID              int64
+	lastCompleteInstanceID string
+	lastStatus             string
+	completeRecord         *events.JobInfo
+	startedRecord          *events.JobInfo
 
 	getByInstanceCalls int
 	getByInstanceErr   error
@@ -103,12 +105,16 @@ func (m *mockDBAPI) MarkJobStarted(_ context.Context, jobID int64, _ time.Time) 
 	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo, Pool: "default"}, nil
 }
 
-func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status string, _, _ int) (*events.JobInfo, error) {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, instanceID, status string, _, _ int) (*events.JobInfo, error) {
 	m.completeCalls++
 	m.lastJobID = jobID
+	m.lastCompleteInstanceID = instanceID
 	m.lastStatus = status
 	if m.markCompleteErr != nil {
 		return nil, m.markCompleteErr
+	}
+	if m.completeNoOp {
+		return nil, nil
 	}
 	if m.completeRecord != nil {
 		return m.completeRecord, nil
@@ -1309,6 +1315,44 @@ func TestHandler_processTermination_DeleteRunnerConfig(t *testing.T) {
 	}
 }
 
+// A termination report from an instance the job record no longer binds (the
+// job was re-dispatched) must not close the record or emit completion metrics,
+// but must still delete the reporting instance's own config.
+func TestHandler_processTermination_NonOwningInstanceSkipsCompletion(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeNoOp: true}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
+
+	msg := &Message{
+		InstanceID:      "i-stale",
+		JobID:           "12345678901",
+		Status:          "success",
+		DurationSeconds: 42,
+	}
+
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if db.lastCompleteInstanceID != "i-stale" {
+		t.Errorf("MarkJobComplete instance = %q, want i-stale", db.lastCompleteInstanceID)
+	}
+	if metrics.completedCalls != 0 {
+		t.Errorf("no completion metric may be published for a non-owning instance, got %d", metrics.completedCalls)
+	}
+	if db.metricsCalls != 0 {
+		t.Errorf("no job metrics update for a non-owning instance, got %d", db.metricsCalls)
+	}
+	if secretsStore.deleteCalls != 1 || secretsStore.deletedID != "i-stale" {
+		t.Errorf("expected the stale instance's config deleted, got calls=%d id=%q",
+			secretsStore.deleteCalls, secretsStore.deletedID)
+	}
+}
+
 func TestHandler_deleteRunnerConfig_NotFound(t *testing.T) {
 	secretsStore := &mockSecretsStore{
 		deleteErr: errors.New("not found"),
@@ -1412,7 +1456,7 @@ type blockingDBAPI struct {
 	startedOnce sync.Once
 }
 
-func (m *blockingDBAPI) MarkJobComplete(ctx context.Context, jobID int64, _ string, _, _ int) (*events.JobInfo, error) {
+func (m *blockingDBAPI) MarkJobComplete(ctx context.Context, jobID int64, _, _ string, _, _ int) (*events.JobInfo, error) {
 	m.startedOnce.Do(func() { close(m.started) })
 	<-m.release
 	m.ctxErr = ctx.Err()
