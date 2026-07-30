@@ -1689,6 +1689,7 @@ func TestReconcilePoolScaleDown(t *testing.T) {
 		},
 	}
 
+	agedLaunch := aws.Time(time.Now().Add(-1 * time.Hour))
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 			// Return 3 running instances - need to terminate 2
@@ -1700,16 +1701,19 @@ func TestReconcilePoolScaleDown(t *testing.T) {
 								InstanceId:   aws.String("i-running1"),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   agedLaunch,
 							},
 							{
 								InstanceId:   aws.String("i-running2"),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   agedLaunch,
 							},
 							{
 								InstanceId:   aws.String("i-running3"),
 								InstanceType: ec2types.InstanceTypeT3Medium,
 								State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+								LaunchTime:   agedLaunch,
 							},
 						},
 					},
@@ -1724,6 +1728,7 @@ func TestReconcilePoolScaleDown(t *testing.T) {
 
 	manager := NewManager(mockDB, &MockFleetAPI{}, &config.Config{})
 	manager.SetEC2Client(mockEC2)
+	manager.readyDwellPeriod = 0
 
 	// Mark instances as idle for long enough
 	idleTime := time.Now().Add(-10 * time.Minute)
