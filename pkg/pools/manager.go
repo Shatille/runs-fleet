@@ -193,11 +193,12 @@ func (p PoolInstance) matchesFlexibleSpec(spec *fleet.FlexibleSpec) bool {
 // across network calls.
 type Manager struct {
 	dbClient     DBClient
-	fleetManager FleetAPI
-	ec2Client    EC2API
-	config       *config.Config
-	metrics      MetricsAPI
-	instanceID   string // Unique identifier for this instance (for distributed locking)
+	fleetManager  FleetAPI
+	ec2Client     EC2API
+	config        *config.Config
+	metrics       MetricsAPI
+	configChecker RunnerConfigChecker
+	instanceID    string // Unique identifier for this instance (for distributed locking)
 
 	// bootstrapGracePeriod gates how long a warm-pool spare is left running before
 	// it may be stopped (see defaultBootstrapGracePeriod). A field, not a global, so
@@ -280,6 +281,21 @@ func (m *Manager) SetEC2Client(ec2Client EC2API) {
 // SetMetrics sets the metrics publisher for the manager.
 func (m *Manager) SetMetrics(metrics MetricsAPI) {
 	m.metrics = metrics
+}
+
+// RunnerConfigChecker reports whether a runner config exists for an instance.
+// Config presence is the earliest durable assignment signal: it is written
+// before the job record lands in the busy GSI and deleted only when that
+// instance's termination is processed, so it protects assigned or
+// registered-idle instances the busy set cannot see.
+type RunnerConfigChecker interface {
+	HasRunnerConfig(ctx context.Context, instanceID string) (bool, error)
+}
+
+// SetRunnerConfigChecker enables the config-presence scale-down guard.
+// Without it the reconciler relies on the busy set and in-memory guards alone.
+func (m *Manager) SetRunnerConfigChecker(c RunnerConfigChecker) {
+	m.configChecker = c
 }
 
 // selectSubnet returns the next private subnet ID in round-robin fashion.
@@ -566,6 +582,7 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 			withinGraceSpares = graceSpares
 			candidateInstances = m.filterIdleInstances(eligible, poolConfig.IdleTimeoutMinutes)
 		}
+		candidateInstances = m.withoutLiveConfig(ctx, poolName, candidateInstances, excess)
 
 		// One-time spot instances (cold-start overflow that got pool-tagged) cannot
 		// be stopped — StopInstances rejects them — so only on-demand spares are
@@ -990,6 +1007,50 @@ func (m *Manager) stopEligibleSpares(ctx context.Context, poolName string, runni
 			slog.Int("within_dwell", dwellDeferred))
 	}
 	return candidates, withinGrace
+}
+
+// withoutLiveConfig drops scale-down candidates whose runner config still
+// exists: their agent has (or is about to consume) a live assignment even if
+// the busy set misses it — cross-replica claim races, jobs finalized early by
+// housekeeping, or duplicate dispatches whose sibling completed the shared
+// record. An unknown state (checker error) also keeps the instance: the worst
+// case of keeping is a one-cycle deferral, the worst case of stopping is a
+// killed registration. Probing stops once needed clean candidates are found —
+// bounded by the scale-down size in the common case, by len(candidates) when
+// live-config instances precede the clean ones. Dropped instances are real
+// assignments, not deferred spares, so they are deliberately not credited to
+// the stopped-replenish deficit the way grace/dwell deferrals are.
+func (m *Manager) withoutLiveConfig(ctx context.Context, poolName string, candidates []PoolInstance, needed int) []PoolInstance {
+	if m.configChecker == nil || len(candidates) == 0 || needed <= 0 {
+		return candidates
+	}
+	kept := make([]PoolInstance, 0, min(needed, len(candidates)))
+	var skipped int
+	for _, inst := range candidates {
+		if len(kept) >= needed {
+			break
+		}
+		hasConfig, err := m.configChecker.HasRunnerConfig(ctx, inst.InstanceID)
+		if err != nil {
+			poolLog.Warn(ctx, "runner config check failed; keeping instance",
+				slog.String("pool_name", poolName),
+				slog.String(logging.KeyInstanceID, inst.InstanceID),
+				slog.String("error", err.Error()))
+			skipped++
+			continue
+		}
+		if hasConfig {
+			skipped++
+			continue
+		}
+		kept = append(kept, inst)
+	}
+	if skipped > 0 {
+		poolLog.Info(ctx, "deferring scale-down of instances with live runner config",
+			slog.String("pool_name", poolName),
+			slog.Int(logging.KeyCount, skipped))
+	}
+	return kept
 }
 
 func (m *Manager) filterIdleInstances(instances []PoolInstance, idleTimeoutMinutes int) []PoolInstance {
