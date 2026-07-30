@@ -148,6 +148,9 @@ func main() {
 		terminationHandler = termination.NewHandler(terminationQueueClient, dbClient, metricsPublisher, secretsStore, jobQueue, cfg)
 	}
 	githubClient := initGitHubClient(cfg)
+	if terminationHandler != nil && githubClient != nil {
+		terminationHandler.SetGitHubJobChecker(&terminationJobCheckerAdapter{client: githubClient})
+	}
 	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, fleetManager, jobQueue, githubClient)
 
 	runnerManager := initRunnerManager(githubClient, secretsStore, cfg)
@@ -786,6 +789,21 @@ func (p *poolDBAdapter) HasActiveJobForInstance(ctx context.Context, instanceID 
 
 func (p *poolDBAdapter) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error) {
 	return p.client.LastJobCompletionForInstance(ctx, instanceID)
+}
+
+// terminationJobCheckerAdapter adapts *gh.Client to
+// termination.GitHubJobStatusChecker, preserving the raw status string —
+// unlike the housekeeping adapter, which collapses it to a Completed bool.
+type terminationJobCheckerAdapter struct {
+	client *gh.Client
+}
+
+func (t *terminationJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, repo string, jobID int64) (string, error) {
+	info, err := t.client.GetWorkflowJobByID(ctx, repo, jobID)
+	if err != nil {
+		return "", err
+	}
+	return info.Status, nil
 }
 
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.

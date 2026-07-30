@@ -39,7 +39,16 @@ type DBAPI interface {
 	MarkJobStarted(ctx context.Context, jobID int64, startedAt time.Time) (*events.JobInfo, error)
 	UpdateJobMetrics(ctx context.Context, jobID int64, startedAt, completedAt time.Time) error
 	GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error)
+	GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInfo, error)
 	MarkJobRequeuedByJobID(ctx context.Context, jobID int64) (bool, error)
+}
+
+// GitHubJobStatusChecker reports a workflow job's live status at GitHub
+// ("queued", "in_progress", "completed"). Deliberately narrower than
+// housekeeping's checker, which collapses the queued/in_progress distinction
+// this handler depends on.
+type GitHubJobStatusChecker interface {
+	GetWorkflowJobStatus(ctx context.Context, repo string, jobID int64) (string, error)
 }
 
 // JobQueueAPI enqueues job re-queue messages (used to recover a job whose
@@ -76,6 +85,12 @@ const maxBootstrapRequeues = 2
 // when an instance fails to start the agent on boot, so operators can alert on
 // a spike (a bad rollout) distinctly from spot interruptions.
 const reasonBootstrapFailed = "bootstrap_failed"
+
+// reasonJobStillQueued labels the requeue emitted when a terminating agent's
+// configured job is still queued at GitHub — the runner executed a different
+// label-matched job, and without a re-dispatch the configured job would starve
+// until unrelated demand minted the next runner.
+const reasonJobStillQueued = "job_still_queued"
 
 // queueTermination is the queue label for the termination worker's
 // message-processing latency metric.
@@ -179,12 +194,19 @@ var handlerTickInterval = 1 * time.Second
 
 // Handler processes termination notifications from agents.
 type Handler struct {
-	queueClient  QueueAPI
-	dbClient     DBAPI
-	metrics      MetricsAPI
-	secretsStore secrets.Store
-	jobQueue     JobQueueAPI
-	config       *config.Config
+	queueClient   QueueAPI
+	dbClient      DBAPI
+	metrics       MetricsAPI
+	secretsStore  secrets.Store
+	jobQueue      JobQueueAPI
+	githubChecker GitHubJobStatusChecker
+	config        *config.Config
+}
+
+// SetGitHubJobChecker enables the termination-time still-queued verification.
+// Without it (nil), terminations are processed exactly as before.
+func (h *Handler) SetGitHubJobChecker(c GitHubJobStatusChecker) {
+	h.githubChecker = c
 }
 
 // NewHandler creates a new termination handler. jobQueue may be nil (re-queue
@@ -555,6 +577,21 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("failed to parse job ID %q: %w", msg.JobID, err)
 	}
 
+	// The agent's job_id is its boot-time config, not necessarily the job it
+	// ran: GitHub hands queued jobs to any label-matched runner. If GitHub
+	// still has the configured job queued, closing the record here would
+	// orphan it — no runner is ever re-dispatched and the job starves until
+	// unrelated demand arrives.
+	handled, err := h.redispatchIfStillQueued(ctx, jobID, msg)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	if handled {
+		return nil
+	}
+
 	// Update DynamoDB job record (keyed by job_id). The returned record is the
 	// source of run_id/repo: the termination Message carries only instance_id and
 	// job_id, so we enrich the context from the DB so every log below (and the
@@ -695,6 +732,102 @@ func parseToolCacheMiss(key string) (tool, version, arch string, ok bool) {
 }
 
 // deleteRunnerConfig deletes the runner configuration from the secrets store.
+// redispatchIfStillQueued re-drives the configured job when GitHub still has
+// it queued at agent termination. Returns handled=true when this termination
+// has been fully processed here (record left for the re-dispatch, this
+// instance's config deleted). Everything inconclusive — nil checker, DB
+// pre-read failure, unknown record, GitHub API error — fails open to the
+// normal completion path, preserving prior behavior. DB-write and queue-send
+// failures are returned so SQS redelivers; the MarkJobRequeuedByJobID gate
+// makes redelivery idempotent.
+func (h *Handler) redispatchIfStillQueued(ctx context.Context, jobID int64, msg *Message) (bool, error) {
+	if h.githubChecker == nil || h.jobQueue == nil {
+		return false, nil
+	}
+
+	rec, err := h.dbClient.GetJobByJobID(ctx, jobID)
+	if err != nil {
+		termLog.Warn(ctx, "job pre-read failed; skipping still-queued check",
+			slog.String("error", err.Error()))
+		return false, nil
+	}
+	if rec == nil || rec.Repo == "" {
+		return false, nil
+	}
+
+	status, err := h.githubChecker.GetWorkflowJobStatus(ctx, rec.Repo, jobID)
+	if err != nil {
+		termLog.Warn(ctx, "github job status check failed; assuming terminal",
+			slog.String("error", err.Error()))
+		return false, nil
+	}
+	if status != "queued" {
+		return false, nil
+	}
+
+	ctx = logging.ContextWithJob(ctx, 0, rec.RunID, rec.Repo)
+
+	if rec.RetryCount >= maxBootstrapRequeues {
+		// The record must NOT be completed with this agent's status — the agent
+		// ran a different job, and closing a never-run job as complete both
+		// corrupts telemetry and hides it from every reaper. Left as-is, the
+		// orphan sweep finds the running/launched record with a gone instance
+		// and marks it orphaned.
+		termLog.Warn(ctx, "job still queued at github but requeue budget exhausted; leaving record for the orphan sweep",
+			slog.Int("retry_count", rec.RetryCount))
+		if h.metrics != nil {
+			if metricErr := h.metrics.PublishSchedulingFailure(ctx, reasonJobStillQueued); metricErr != nil {
+				termLog.Warn(ctx, "scheduling failure metric publish failed", slog.String("error", metricErr.Error()))
+			}
+		}
+		if delErr := h.deleteRunnerConfig(ctx, msg.InstanceID); delErr != nil {
+			termLog.Warn(ctx, "runner config delete failed",
+				slog.String("error", delErr.Error()))
+		}
+		return true, nil
+	}
+
+	// Send before flipping the record: a record flipped to requeued without a
+	// delivered message is invisible to every reaper (the watchdog scans
+	// launched only), permanently stranding the job. Re-sends from SQS
+	// redelivery or a concurrent duplicate instance are absorbed by FIFO
+	// dedup (job_id + retry_count) and by the worker's claim status gate.
+	requeueMsg := &queue.JobMessage{
+		JobID:         jobID,
+		RunID:         rec.RunID,
+		Repo:          rec.Repo,
+		InstanceType:  rec.InstanceType,
+		Pool:          rec.Pool,
+		Spot:          false,
+		RetryCount:    rec.RetryCount + 1,
+		ForceOnDemand: true,
+	}
+	if sendErr := h.jobQueue.SendMessage(ctx, requeueMsg); sendErr != nil {
+		return false, fmt.Errorf("failed to re-queue still-queued job: %w", sendErr)
+	}
+	marked, err := h.dbClient.MarkJobRequeuedByJobID(ctx, jobID)
+	if err != nil {
+		return false, fmt.Errorf("failed to mark still-queued job requeued: %w", err)
+	}
+	if marked {
+		termLog.Info(ctx, "job re-queued; still queued at github at termination",
+			slog.Int("retry_count", rec.RetryCount+1))
+		if h.metrics != nil {
+			if metricErr := h.metrics.PublishJobRequeued(ctx, reasonJobStillQueued); metricErr != nil {
+				termLog.Warn(ctx, "job requeued metric publish failed", slog.String("error", metricErr.Error()))
+			}
+		}
+	} else {
+		termLog.Info(ctx, "job record already advanced; duplicate requeue absorbed by queue dedup")
+	}
+
+	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {
+		termLog.Warn(ctx, "runner config delete failed",
+			slog.String("error", err.Error()))
+	}
+	return true, nil
+}
+
 func (h *Handler) deleteRunnerConfig(ctx context.Context, instanceID string) error {
 	if h.secretsStore == nil {
 		return nil
