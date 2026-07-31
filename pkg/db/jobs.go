@@ -440,9 +440,12 @@ func (c *Client) DeleteJobClaim(ctx context.Context, jobID int64) error {
 // DynamoDB). ReturnValueAllNew makes the write echo back the full post-update
 // item, so callers can read identity fields (run_id, repo) off the record
 // without a second GetItem.
-func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string, exitCode, duration int) (*events.JobInfo, error) {
+func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, instanceID, status string, exitCode, duration int) (*events.JobInfo, error) {
 	if jobID == 0 {
 		return nil, fmt.Errorf("job ID cannot be zero")
+	}
+	if instanceID == "" {
+		return nil, fmt.Errorf("instance ID cannot be empty")
 	}
 	if status == "" {
 		return nil, fmt.Errorf("status cannot be empty")
@@ -464,20 +467,32 @@ func (c *Client) MarkJobComplete(ctx context.Context, jobID int64, status string
 		":exit_code":    exitCode,
 		":duration":     duration,
 		":completed_at": time.Now().Format(time.RFC3339),
+		":iid":          instanceID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal values: %w", err)
 	}
 
+	// Only the instance the record currently binds may complete it. An agent
+	// with a stale boot-time config reports a job_id whose record has since
+	// been re-dispatched to another instance (the re-claim rewrites the item
+	// without instance_id until the new SaveJob lands), and an unconditional
+	// write would clobber the live retry. Condition failure returns (nil, nil),
+	// like MarkJobStarted.
 	output, err := c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(c.jobsTable),
 		Key:                       key,
 		UpdateExpression:          aws.String(update),
+		ConditionExpression:       aws.String("instance_id = :iid"),
 		ExpressionAttributeNames:  exprNames,
 		ExpressionAttributeValues: exprValues,
 		ReturnValues:              types.ReturnValueAllNew,
 	})
 	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to update job: %w", err)
 	}
 

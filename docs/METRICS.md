@@ -41,7 +41,7 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 | `JobsAssigned` | `jobs_assigned_total` | counter | Pool, Source, Repo | A runner was delivered for a request (success side of the fulfillment SLA). Source: `warm_pool` \| `cold_start`. |
 | `RunnerConfirmed` | `runner_confirmed_total` | counter | Pool | A launched runner registered and began executing (agent "started" signal). A flatline while `JobsAssigned` climbs is a leading indicator of fleet-wide registration failure. |
 | `JobsCompleted` | `jobs_completed_total` | counter | Pool, Result, Repo | A job finished. Result is **our** runner lifecycle — `served` \| `interrupted` \| `error` \| `timeout` — never the client workflow's pass/fail. |
-| `JobsRequeued` | `jobs_requeued_total` | counter | Reason | A job was re-queued (e.g. spot interruption, bootstrap failure). |
+| `JobsRequeued` | `jobs_requeued_total` | counter | Reason | A job was re-queued. Reason: `spot_interruption` \| `bootstrap_failed` \| `job_failure` \| `on_demand_fallback` \| `direct_fleet_failure` \| `unconfirmed_runners` \| `operator_requeue` \| `job_still_queued` (the terminating agent's configured job was never run — GitHub still had it queued). |
 | `JobsDeduplicated` | `jobs_deduplicated_total` | counter | Path | The dual-path dispatch loser dropped its copy. Correct dedup — **not** a scheduling failure. |
 | `JobWaitSeconds` | `job_wait_seconds` | histogram | Pool, Source | Enqueue → assignment latency (the SQS slice only). |
 | `JobStartupSeconds` | `job_startup_seconds` | histogram | Pool, Source | End-to-end acquisition latency on the **GitHub clock**: `workflow_job` created → started. The headline startup number, spanning strictly more than `JobWaitSeconds`. Source: `warm_pool` \| `cold_start` \| empty when unresolved. Measured from the `in_progress` webhook. |
@@ -86,7 +86,7 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 | `QueueReceive` | `queue_receive_total` | counter | Queue, Result | Receive outcome (`messages` \| `empty` \| `error`). |
 | _(no-op)_ | `aws_call_duration_seconds` | histogram | Service, Operation | AWS SDK call latency. No-oped on CloudWatch (would double AWS API volume). |
 | `AWSCallFailures` | `aws_call_failures_total` | counter | Service, Operation, Result | Failed AWS SDK call (`timeout` \| `error`). |
-| `SchedulingFailure` | `scheduling_failure_total` | counter | TaskType | Gave up assigning a runner (failure side of the fulfillment SLA). |
+| `SchedulingFailure` | `scheduling_failure_total` | counter | TaskType | Gave up assigning a runner (failure side of the fulfillment SLA). TaskType: `job_claim` \| `fleet_create` \| `bootstrap_failed` \| `unconfirmed_runners` \| `operator_requeue` \| `job_still_queued` (requeue budget exhausted while GitHub still had the job queued). |
 | `MessageDeletionFailures` | `message_deletion_failures_total` | counter | Queue | SQS delete failed after processing. |
 
 ### Cache

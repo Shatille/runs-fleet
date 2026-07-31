@@ -67,21 +67,27 @@ func (m *mockQueueAPI) DeleteMessage(_ context.Context, receiptHandle string) er
 
 // mockDBAPI implements DBAPI for testing.
 type mockDBAPI struct {
-	markCompleteErr  error
-	updateMetricsErr error
-	markStartedErr   error
-	startedNoOp      bool
-	completeCalls    int
-	startedCalls     int
-	metricsCalls     int
-	lastJobID        int64
-	lastStatus       string
-	completeRecord   *events.JobInfo
-	startedRecord    *events.JobInfo
+	markCompleteErr        error
+	updateMetricsErr       error
+	markStartedErr         error
+	startedNoOp            bool
+	completeNoOp           bool
+	completeCalls          int
+	startedCalls           int
+	metricsCalls           int
+	lastJobID              int64
+	lastCompleteInstanceID string
+	lastStatus             string
+	completeRecord         *events.JobInfo
+	startedRecord          *events.JobInfo
 
 	getByInstanceCalls int
 	getByInstanceErr   error
 	jobByInstance      *events.JobInfo
+	getByJobIDCalls    int
+	lastGetByJobID     int64
+	getByJobIDErr      error
+	jobByJobID         *events.JobInfo
 	requeueCalls       int
 	lastRequeueJobID   int64
 	markRequeuedErr    error
@@ -103,12 +109,16 @@ func (m *mockDBAPI) MarkJobStarted(_ context.Context, jobID int64, _ time.Time) 
 	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo, Pool: "default"}, nil
 }
 
-func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, status string, _, _ int) (*events.JobInfo, error) {
+func (m *mockDBAPI) MarkJobComplete(_ context.Context, jobID int64, instanceID, status string, _, _ int) (*events.JobInfo, error) {
 	m.completeCalls++
 	m.lastJobID = jobID
+	m.lastCompleteInstanceID = instanceID
 	m.lastStatus = status
 	if m.markCompleteErr != nil {
 		return nil, m.markCompleteErr
+	}
+	if m.completeNoOp {
+		return nil, nil
 	}
 	if m.completeRecord != nil {
 		return m.completeRecord, nil
@@ -127,6 +137,18 @@ func (m *mockDBAPI) GetJobByInstance(_ context.Context, _ string) (*events.JobIn
 		return nil, m.getByInstanceErr
 	}
 	return m.jobByInstance, nil
+}
+
+func (m *mockDBAPI) GetJobByJobID(_ context.Context, jobID int64) (*events.JobInfo, error) {
+	m.getByJobIDCalls++
+	m.lastGetByJobID = jobID
+	if m.getByJobIDErr != nil {
+		return nil, m.getByJobIDErr
+	}
+	if m.jobByJobID != nil {
+		return m.jobByJobID, nil
+	}
+	return &events.JobInfo{JobID: jobID, RunID: 99, Repo: testRepo, Pool: "default"}, nil
 }
 
 func (m *mockDBAPI) MarkJobRequeuedByJobID(_ context.Context, jobID int64) (bool, error) {
@@ -1309,6 +1331,265 @@ func TestHandler_processTermination_DeleteRunnerConfig(t *testing.T) {
 	}
 }
 
+type mockJobStatusChecker struct {
+	status    string
+	err       error
+	calls     int
+	lastRepo  string
+	lastJobID int64
+}
+
+func (m *mockJobStatusChecker) GetWorkflowJobStatus(_ context.Context, repo string, jobID int64) (string, error) {
+	m.calls++
+	m.lastRepo = repo
+	m.lastJobID = jobID
+	return m.status, m.err
+}
+
+// A configured job GitHub still reports as queued was never run by this runner
+// (label-matched shuffle); the handler must re-dispatch it instead of marking
+// it complete.
+func TestHandler_processTermination_RequeuesWhenJobStillQueued(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		jobByJobID:         &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo, Pool: "default", InstanceType: "c7g.large", RetryCount: 0},
+		markRequeuedResult: true,
+	}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	jobQueue := &mockJobQueue{}
+	handler := NewHandler(q, db, metrics, secretsStore, jobQueue, &config.Config{})
+	checker := &mockJobStatusChecker{status: "queued"}
+	handler.SetGitHubJobChecker(checker)
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if checker.lastRepo != testRepo || checker.lastJobID != 12345678901 {
+		t.Errorf("checker called with (%s, %d), want (%s, 12345678901)", checker.lastRepo, checker.lastJobID, testRepo)
+	}
+	if db.completeCalls != 0 {
+		t.Errorf("MarkJobComplete must not be called for a still-queued job, got %d", db.completeCalls)
+	}
+	if db.requeueCalls != 1 || db.lastRequeueJobID != 12345678901 {
+		t.Errorf("expected MarkJobRequeuedByJobID once for 12345678901, got calls=%d id=%d", db.requeueCalls, db.lastRequeueJobID)
+	}
+	if jobQueue.sendCalls != 1 {
+		t.Fatalf("expected 1 requeue message, got %d", jobQueue.sendCalls)
+	}
+	sent := jobQueue.lastMsg
+	if sent.JobID != 12345678901 || sent.RetryCount != 1 || !sent.ForceOnDemand || sent.Spot {
+		t.Errorf("requeue message wrong: %+v", sent)
+	}
+	if metrics.lastRequeuedReason != "job_still_queued" {
+		t.Errorf("requeue metric reason = %q, want job_still_queued", metrics.lastRequeuedReason)
+	}
+	if secretsStore.deleteCalls != 1 {
+		t.Errorf("the terminated instance's config must still be deleted, got %d", secretsStore.deleteCalls)
+	}
+}
+
+// When the record already advanced (another actor holds the requeue), the
+// handler must not mark complete; the duplicate send is absorbed by SQS FIFO
+// dedup, so sending before the flip is safe and never strands the job.
+func TestHandler_processTermination_QueuedAlreadyRequeuedSkipsComplete(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{markRequeuedResult: false}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	jobQueue := &mockJobQueue{}
+	handler := NewHandler(q, db, metrics, secretsStore, jobQueue, &config.Config{})
+	handler.SetGitHubJobChecker(&mockJobStatusChecker{status: "queued"})
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if db.completeCalls != 0 {
+		t.Errorf("MarkJobComplete must not be called, got %d", db.completeCalls)
+	}
+	if metrics.requeuedCalls != 0 {
+		t.Errorf("no requeue metric when the record already advanced, got %d", metrics.requeuedCalls)
+	}
+	if secretsStore.deleteCalls != 1 {
+		t.Errorf("config delete still expected, got %d", secretsStore.deleteCalls)
+	}
+}
+
+// A job out of requeue budget must NOT be completed with this agent's status —
+// the agent ran a different job, and closing a never-run job would hide it
+// from every reaper. The record is left for the orphan sweep, with a
+// scheduling-failure alert.
+func TestHandler_processTermination_QueuedRetryCapExhausted(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		jobByJobID: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo, RetryCount: maxBootstrapRequeues},
+	}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	jobQueue := &mockJobQueue{}
+	handler := NewHandler(q, db, metrics, secretsStore, jobQueue, &config.Config{})
+	handler.SetGitHubJobChecker(&mockJobStatusChecker{status: "queued"})
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if jobQueue.sendCalls != 0 {
+		t.Errorf("exhausted job must not be requeued, got %d sends", jobQueue.sendCalls)
+	}
+	if db.completeCalls != 0 {
+		t.Errorf("exhausted job must not be completed with the agent's unrelated status, got %d", db.completeCalls)
+	}
+	if metrics.lastSchedFailType != "job_still_queued" {
+		t.Errorf("scheduling failure type = %q, want job_still_queued", metrics.lastSchedFailType)
+	}
+	if secretsStore.deleteCalls != 1 {
+		t.Errorf("the terminated instance's config must still be deleted, got %d", secretsStore.deleteCalls)
+	}
+}
+
+// GitHub API errors (including the untyped 404) fail open to today's behavior.
+func TestHandler_processTermination_GitHubErrorFailsOpen(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	jobQueue := &mockJobQueue{}
+	handler := NewHandler(q, db, metrics, secretsStore, jobQueue, &config.Config{})
+	handler.SetGitHubJobChecker(&mockJobStatusChecker{err: errors.New("github unavailable")})
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if db.completeCalls != 1 {
+		t.Errorf("GitHub error must fail open to MarkJobComplete, got %d calls", db.completeCalls)
+	}
+	if jobQueue.sendCalls != 0 {
+		t.Errorf("no requeue on GitHub error, got %d", jobQueue.sendCalls)
+	}
+}
+
+// Without a checker the flow is unchanged (no DB pre-read, straight to
+// completion).
+func TestHandler_processTermination_NilCheckerUnchanged(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	handler := NewHandler(q, db, metrics, secretsStore, nil, &config.Config{})
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if db.getByJobIDCalls != 0 {
+		t.Errorf("no pre-read without a checker, got %d", db.getByJobIDCalls)
+	}
+	if db.completeCalls != 1 {
+		t.Errorf("expected MarkJobComplete, got %d calls", db.completeCalls)
+	}
+}
+
+// A queue send failure must surface as an error so SQS redelivers; the
+// MarkJobRequeuedByJobID gate makes the retry safe.
+func TestHandler_processTermination_QueueSendFailureRetries(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{markRequeuedResult: true}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	jobQueue := &mockJobQueue{sendErr: errors.New("sqs unavailable")}
+	handler := NewHandler(q, db, metrics, secretsStore, jobQueue, &config.Config{})
+	handler.SetGitHubJobChecker(&mockJobStatusChecker{status: "queued"})
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err == nil {
+		t.Fatal("expected error so SQS redelivers")
+	}
+
+	if db.completeCalls != 0 {
+		t.Errorf("MarkJobComplete must not be called after a failed requeue send, got %d", db.completeCalls)
+	}
+	if db.requeueCalls != 0 {
+		t.Errorf("the record must not flip to requeued before the send succeeds (a flipped record with no message strands the job), got %d", db.requeueCalls)
+	}
+}
+
+// A termination report from an instance the job record no longer binds (the
+// job was re-dispatched) must not close the record or emit completion metrics,
+// but must still delete the reporting instance's own config.
+func TestHandler_processTermination_NonOwningInstanceSkipsCompletion(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeNoOp: true}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	cfg := &config.Config{}
+	handler := NewHandler(q, db, metrics, secretsStore, nil, cfg)
+
+	msg := &Message{
+		InstanceID:      "i-stale",
+		JobID:           "12345678901",
+		Status:          "success",
+		DurationSeconds: 42,
+	}
+
+	err := handler.processTermination(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if db.lastCompleteInstanceID != "i-stale" {
+		t.Errorf("MarkJobComplete instance = %q, want i-stale", db.lastCompleteInstanceID)
+	}
+	if metrics.completedCalls != 0 {
+		t.Errorf("no completion metric may be published for a non-owning instance, got %d", metrics.completedCalls)
+	}
+	if db.metricsCalls != 0 {
+		t.Errorf("no job metrics update for a non-owning instance, got %d", db.metricsCalls)
+	}
+	if secretsStore.deleteCalls != 1 || secretsStore.deletedID != "i-stale" {
+		t.Errorf("expected the stale instance's config deleted, got calls=%d id=%q",
+			secretsStore.deleteCalls, secretsStore.deletedID)
+	}
+}
+
 func TestHandler_deleteRunnerConfig_NotFound(t *testing.T) {
 	secretsStore := &mockSecretsStore{
 		deleteErr: errors.New("not found"),
@@ -1412,7 +1693,7 @@ type blockingDBAPI struct {
 	startedOnce sync.Once
 }
 
-func (m *blockingDBAPI) MarkJobComplete(ctx context.Context, jobID int64, _ string, _, _ int) (*events.JobInfo, error) {
+func (m *blockingDBAPI) MarkJobComplete(ctx context.Context, jobID int64, _, _ string, _, _ int) (*events.JobInfo, error) {
 	m.startedOnce.Do(func() { close(m.started) })
 	<-m.release
 	m.ctxErr = ctx.Err()
@@ -1428,6 +1709,10 @@ func (m *blockingDBAPI) UpdateJobMetrics(_ context.Context, _ int64, _, _ time.T
 }
 
 func (m *blockingDBAPI) GetJobByInstance(_ context.Context, _ string) (*events.JobInfo, error) {
+	return nil, nil
+}
+
+func (m *blockingDBAPI) GetJobByJobID(_ context.Context, _ int64) (*events.JobInfo, error) {
 	return nil, nil
 }
 

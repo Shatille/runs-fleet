@@ -628,26 +628,38 @@ func TestMarkJobComplete(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		jobID    int64
-		status   string
-		exitCode int
-		duration int
-		mockDB   *MockDynamoDBAPI
-		wantErr  bool
-		want     *events.JobInfo
+		name       string
+		jobID      int64
+		instanceID string
+		status     string
+		exitCode   int
+		duration   int
+		mockDB     *MockDynamoDBAPI
+		wantErr    bool
+		wantNilRec bool
+		want       *events.JobInfo
 	}{
 		{
-			name:     "Success",
-			jobID:    12345678901,
-			status:   string(JobStatusCompleted),
-			exitCode: 0,
-			duration: 120,
+			name:       "Success",
+			jobID:      12345678901,
+			instanceID: "i-owner123",
+			status:     string(JobStatusCompleted),
+			exitCode:   0,
+			duration:   120,
 			mockDB: &MockDynamoDBAPI{
 				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 					// Verify that the update expression sets the right fields
 					if params.UpdateExpression == nil {
 						t.Error("UpdateExpression should not be nil")
+					}
+					// Only the instance the record currently binds may complete it;
+					// a stale agent reporting a re-dispatched job must no-op.
+					if params.ConditionExpression == nil || *params.ConditionExpression != "instance_id = :iid" {
+						t.Errorf("ConditionExpression = %v, want instance_id = :iid", params.ConditionExpression)
+					}
+					iid, ok := params.ExpressionAttributeValues[":iid"].(*types.AttributeValueMemberS)
+					if !ok || iid.Value != "i-owner123" {
+						t.Errorf(":iid = %v, want i-owner123", params.ExpressionAttributeValues[":iid"])
 					}
 					// The updated record must be returned so callers can enrich
 					// their logging context with run_id/repo without a second read.
@@ -673,29 +685,57 @@ func TestMarkJobComplete(t *testing.T) {
 			},
 		},
 		{
-			name:     "Zero job ID",
-			jobID:    0,
-			status:   string(JobStatusCompleted),
-			exitCode: 0,
-			duration: 120,
-			mockDB:   &MockDynamoDBAPI{},
-			wantErr:  true,
+			name:       "Non-owning instance no-ops",
+			jobID:      12345678901,
+			instanceID: "i-stale456",
+			status:     string(JobStatusCompleted),
+			exitCode:   0,
+			duration:   120,
+			mockDB: &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					return nil, &types.ConditionalCheckFailedException{}
+				},
+			},
+			wantErr:    false,
+			wantNilRec: true,
 		},
 		{
-			name:     "Empty status",
-			jobID:    123,
-			status:   "",
-			exitCode: 0,
-			duration: 120,
-			mockDB:   &MockDynamoDBAPI{},
-			wantErr:  true,
+			name:       "Zero job ID",
+			jobID:      0,
+			instanceID: "i-owner123",
+			status:     string(JobStatusCompleted),
+			exitCode:   0,
+			duration:   120,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
 		},
 		{
-			name:     "DynamoDB error",
-			jobID:    999,
-			status:   string(JobStatusFailed),
-			exitCode: 1,
-			duration: 60,
+			name:       "Empty instance ID",
+			jobID:      123,
+			instanceID: "",
+			status:     string(JobStatusCompleted),
+			exitCode:   0,
+			duration:   120,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "Empty status",
+			jobID:      123,
+			instanceID: "i-owner123",
+			status:     "",
+			exitCode:   0,
+			duration:   120,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "DynamoDB error",
+			jobID:      999,
+			instanceID: "i-owner123",
+			status:     string(JobStatusFailed),
+			exitCode:   1,
+			duration:   60,
 			mockDB: &MockDynamoDBAPI{
 				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 					return nil, errors.New("dynamodb update error")
@@ -714,13 +754,19 @@ func TestMarkJobComplete(t *testing.T) {
 				jobsTable:    "jobs-table",
 			}
 
-			got, err := client.MarkJobComplete(context.Background(), tt.jobID, tt.status, tt.exitCode, tt.duration)
+			got, err := client.MarkJobComplete(context.Background(), tt.jobID, tt.instanceID, tt.status, tt.exitCode, tt.duration)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("MarkJobComplete() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if tt.wantErr {
 				if got != nil {
 					t.Errorf("MarkJobComplete() returned non-nil record on error: %+v", got)
+				}
+				return
+			}
+			if tt.wantNilRec {
+				if got != nil {
+					t.Errorf("MarkJobComplete() = %+v, want nil record on condition failure", got)
 				}
 				return
 			}
