@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -142,6 +143,7 @@ func main() {
 	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
 
 	secretsStore := initSecretsStore(ctx, awsCfg, cfg)
+	poolManager.SetRunnerConfigChecker(&runnerConfigCheckerAdapter{store: secretsStore})
 	var terminationHandler *termination.Handler
 	if cfg.TerminationQueueURL != "" {
 		terminationQueueClient := queue.NewClient(sqsCfg, cfg.TerminationQueueURL)
@@ -804,6 +806,21 @@ func (t *terminationJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context,
 		return "", err
 	}
 	return info.Status, nil
+}
+
+// runnerConfigCheckerAdapter adapts secrets.Store to pools.RunnerConfigChecker.
+type runnerConfigCheckerAdapter struct {
+	store secrets.Store
+}
+
+func (r *runnerConfigCheckerAdapter) HasRunnerConfig(ctx context.Context, instanceID string) (bool, error) {
+	if _, err := r.store.Get(ctx, instanceID); err != nil {
+		if errors.Is(err, secrets.ErrConfigNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.

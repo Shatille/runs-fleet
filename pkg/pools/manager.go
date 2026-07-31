@@ -192,12 +192,13 @@ func (p PoolInstance) matchesFlexibleSpec(spec *fleet.FlexibleSpec) bool {
 // redundant work and lost updates within a single process and are never held
 // across network calls.
 type Manager struct {
-	dbClient     DBClient
-	fleetManager FleetAPI
-	ec2Client    EC2API
-	config       *config.Config
-	metrics      MetricsAPI
-	instanceID   string // Unique identifier for this instance (for distributed locking)
+	dbClient      DBClient
+	fleetManager  FleetAPI
+	ec2Client     EC2API
+	config        *config.Config
+	metrics       MetricsAPI
+	configChecker RunnerConfigChecker
+	instanceID    string // Unique identifier for this instance (for distributed locking)
 
 	// bootstrapGracePeriod gates how long a warm-pool spare is left running before
 	// it may be stopped (see defaultBootstrapGracePeriod). A field, not a global, so
@@ -280,6 +281,21 @@ func (m *Manager) SetEC2Client(ec2Client EC2API) {
 // SetMetrics sets the metrics publisher for the manager.
 func (m *Manager) SetMetrics(metrics MetricsAPI) {
 	m.metrics = metrics
+}
+
+// RunnerConfigChecker reports whether a runner config exists for an instance.
+// Config presence is the earliest durable assignment signal: it is written
+// before the job record lands in the busy GSI and deleted only when that
+// instance's termination is processed, so it protects assigned or
+// registered-idle instances the busy set cannot see.
+type RunnerConfigChecker interface {
+	HasRunnerConfig(ctx context.Context, instanceID string) (bool, error)
+}
+
+// SetRunnerConfigChecker enables the config-presence scale-down guard.
+// Without it the reconciler relies on the busy set and in-memory guards alone.
+func (m *Manager) SetRunnerConfigChecker(c RunnerConfigChecker) {
+	m.configChecker = c
 }
 
 // selectSubnet returns the next private subnet ID in round-robin fashion.
@@ -554,59 +570,19 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		// For hot pools, only stop instances that exceeded idle timeout
 		var candidateInstances []PoolInstance
 		if desiredRunning == 0 && desiredStopped > 0 {
-			// Warm pool: ready instances are candidates for stopping, but skip ones
-			// still within the bootstrap grace window — stopping mid-boot churns the
-			// pool (see defaultBootstrapGracePeriod). They become candidates on a later pass.
-			// filterNotInFlight also excludes a running instance a concurrent claim has
-			// selected as a hot spare (the assignment path reserves it in-flight before
-			// it flips the DB record to busy), so linger-decay can't race a claim and
-			// stop a spare that's being assigned a job. A no-op when nothing is in-flight,
-			// which is always the case with hot pools off.
-			readyInstances := m.poolLockFor(poolName).filterNotInFlight(m.filterReadyInstances(runningInstances, busyIDs))
-			candidateInstances = make([]PoolInstance, 0, len(readyInstances))
-			var graceDeferred, dwellDeferred int
-			for _, inst := range readyInstances {
-				// Treat an unknown launch time (zero value) as still-booting: acting on
-				// it could stop a spare mid-boot, the exact churn this guards against.
-				if inst.LaunchTime.IsZero() || now.Sub(inst.LaunchTime) < m.bootstrapGracePeriod {
-					graceDeferred++
-					// Only on-demand spares become stopped spares, so only they may be
-					// credited against the replenish deficit below. A within-grace spot
-					// instance is cold-start overflow that gets terminated once it ages
-					// out — crediting it would wrongly suppress real stopped-spare creation.
-					if !inst.Spot {
-						withinGraceSpares++
-					}
-					continue
-				}
-				// Defer instances that have not been continuously not-busy for the dwell
-				// window: the busy set can momentarily miss a live instance (GSI lag, the
-				// claiming window), and stopping on a single such observation is what
-				// killed running jobs mid-flight. Credited like within-grace spares since
-				// a genuinely-idle one is a pending stopped-spare.
-				if !m.readyLongEnough(poolName, inst.InstanceID, now) {
-					dwellDeferred++
-					if !inst.Spot {
-						withinGraceSpares++
-					}
-					continue
-				}
-				candidateInstances = append(candidateInstances, inst)
-			}
-			if graceDeferred > 0 {
-				poolLog.Info(ctx, "deferring stop of still-bootstrapping spares",
-					slog.String("pool_name", poolName),
-					slog.Int("within_grace", graceDeferred))
-			}
-			if dwellDeferred > 0 {
-				poolLog.Info(ctx, "deferring stop of recently-active spares",
-					slog.String("pool_name", poolName),
-					slog.Int("within_dwell", dwellDeferred))
-			}
+			candidateInstances, withinGraceSpares = m.stopEligibleSpares(ctx, poolName, runningInstances, busyIDs, now)
 		} else {
-			// Hot pool: only idle instances that exceeded timeout
-			candidateInstances = m.filterIdleInstances(runningInstances, poolConfig.IdleTimeoutMinutes)
+			// Hot pool: the same guards apply before the idle timeout — the
+			// per-replica IdleSince map alone counts busy instances as idle (it is
+			// seeded for any running instance a replica hasn't observed and only
+			// cleared on the assigning replica), which stopped registered runners
+			// and killed jobs mid-flight. The idle timeout is applied on top as the
+			// stricter hot-pool decay criterion.
+			eligible, graceSpares := m.stopEligibleSpares(ctx, poolName, runningInstances, busyIDs, now)
+			withinGraceSpares = graceSpares
+			candidateInstances = m.filterIdleInstances(eligible, poolConfig.IdleTimeoutMinutes)
 		}
+		candidateInstances = m.withoutLiveConfig(ctx, poolName, candidateInstances, excess)
 
 		// One-time spot instances (cold-start overflow that got pool-tagged) cannot
 		// be stopped — StopInstances rejects them — so only on-demand spares are
@@ -986,6 +962,95 @@ func (m *Manager) filterByState(instances []PoolInstance, state string) []PoolIn
 		}
 	}
 	return filtered
+}
+
+// stopEligibleSpares returns the running instances that may safely be scaled
+// down this pass: not busy, not reserved by a concurrent local claim, past the
+// bootstrap grace window (stopping mid-boot churns the pool; a zero launch
+// time counts as still-booting), and continuously not-busy for the dwell
+// window (the busy set can momentarily miss a live instance — GSI lag, the
+// claiming window — and stopping on a single such observation killed running
+// jobs mid-flight). Deferred on-demand spares are returned as withinGrace:
+// they are pending stopped-spares, and crediting them against the replenish
+// deficit prevents duplicate creation while they finish booting. Spot
+// instances are cold-start overflow that gets terminated once aged out, so
+// they are never credited.
+func (m *Manager) stopEligibleSpares(ctx context.Context, poolName string, runningInstances []PoolInstance, busyIDs []string, now time.Time) (candidates []PoolInstance, withinGrace int) {
+	readyInstances := m.poolLockFor(poolName).filterNotInFlight(m.filterReadyInstances(runningInstances, busyIDs))
+	candidates = make([]PoolInstance, 0, len(readyInstances))
+	var graceDeferred, dwellDeferred int
+	for _, inst := range readyInstances {
+		if inst.LaunchTime.IsZero() || now.Sub(inst.LaunchTime) < m.bootstrapGracePeriod {
+			graceDeferred++
+			if !inst.Spot {
+				withinGrace++
+			}
+			continue
+		}
+		if !m.readyLongEnough(poolName, inst.InstanceID, now) {
+			dwellDeferred++
+			if !inst.Spot {
+				withinGrace++
+			}
+			continue
+		}
+		candidates = append(candidates, inst)
+	}
+	if graceDeferred > 0 {
+		poolLog.Info(ctx, "deferring stop of still-bootstrapping spares",
+			slog.String("pool_name", poolName),
+			slog.Int("within_grace", graceDeferred))
+	}
+	if dwellDeferred > 0 {
+		poolLog.Info(ctx, "deferring stop of recently-active spares",
+			slog.String("pool_name", poolName),
+			slog.Int("within_dwell", dwellDeferred))
+	}
+	return candidates, withinGrace
+}
+
+// withoutLiveConfig drops scale-down candidates whose runner config still
+// exists: their agent has (or is about to consume) a live assignment even if
+// the busy set misses it — cross-replica claim races, jobs finalized early by
+// housekeeping, or duplicate dispatches whose sibling completed the shared
+// record. An unknown state (checker error) also keeps the instance: the worst
+// case of keeping is a one-cycle deferral, the worst case of stopping is a
+// killed registration. Probing stops once needed clean candidates are found —
+// bounded by the scale-down size in the common case, by len(candidates) when
+// live-config instances precede the clean ones. Dropped instances are real
+// assignments, not deferred spares, so they are deliberately not credited to
+// the stopped-replenish deficit the way grace/dwell deferrals are.
+func (m *Manager) withoutLiveConfig(ctx context.Context, poolName string, candidates []PoolInstance, needed int) []PoolInstance {
+	if m.configChecker == nil || len(candidates) == 0 || needed <= 0 {
+		return candidates
+	}
+	kept := make([]PoolInstance, 0, min(needed, len(candidates)))
+	var skipped int
+	for _, inst := range candidates {
+		if len(kept) >= needed {
+			break
+		}
+		hasConfig, err := m.configChecker.HasRunnerConfig(ctx, inst.InstanceID)
+		if err != nil {
+			poolLog.Warn(ctx, "runner config check failed; keeping instance",
+				slog.String("pool_name", poolName),
+				slog.String(logging.KeyInstanceID, inst.InstanceID),
+				slog.String("error", err.Error()))
+			skipped++
+			continue
+		}
+		if hasConfig {
+			skipped++
+			continue
+		}
+		kept = append(kept, inst)
+	}
+	if skipped > 0 {
+		poolLog.Info(ctx, "deferring scale-down of instances with live runner config",
+			slog.String("pool_name", poolName),
+			slog.Int(logging.KeyCount, skipped))
+	}
+	return kept
 }
 
 func (m *Manager) filterIdleInstances(instances []PoolInstance, idleTimeoutMinutes int) []PoolInstance {
@@ -1435,6 +1500,33 @@ func (m *Manager) ClaimAndStartPoolInstance(ctx context.Context, poolName string
 		emitClaimWait()
 
 		if inst.State == stateRunning {
+			// A running spare with an existing runner config was assigned before
+			// and its agent may already hold that config — the agent reads it once
+			// at boot and never revalidates, so assigning here would register the
+			// old job. Checked AFTER the claim: config presence while holding the
+			// claim is by definition stale (the normal flow writes config only
+			// after its own claim), whereas check-then-claim races a concurrent
+			// assignment's config write. Unknown state skips too (fail-closed).
+			if m.configChecker != nil {
+				hasConfig, err := m.configChecker.HasRunnerConfig(ctx, instance.InstanceID)
+				if err != nil || hasConfig {
+					if err != nil {
+						poolLog.Warn(ctx, "runner config check failed; skipping hot spare",
+							slog.String(logging.KeyInstanceID, instance.InstanceID),
+							slog.String("error", err.Error()))
+					} else {
+						poolLog.Info(ctx, "skipping hot spare with stale runner config",
+							slog.String(logging.KeyInstanceID, instance.InstanceID))
+					}
+					if releaseErr := m.dbClient.ReleaseInstanceClaim(ctx, instance.InstanceID, jobID); releaseErr != nil {
+						poolLog.Error(ctx, "instance claim release failed after config check",
+							slog.String(logging.KeyInstanceID, instance.InstanceID),
+							slog.String("error", releaseErr.Error()))
+					}
+					pl.release(instance.InstanceID)
+					continue
+				}
+			}
 			// Hot spare: the instance is already running with a live standby agent
 			// polling for config, so we assign it WITHOUT StartInstances — just tag
 			// it and drop it from ready tracking. The agent picks up the config the
