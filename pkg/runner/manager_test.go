@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Shavakan/runs-fleet/pkg/github"
@@ -534,8 +535,8 @@ func TestManager_PrepareRunner_RunnerName(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-default-99999" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-99999")
+	if storedConfig.RunnerName != "runs-fleet-runner-default-99999-12345" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-default-99999-12345")
 	}
 }
 
@@ -566,8 +567,8 @@ func TestManager_PrepareRunner_RunnerName_ColdStart(t *testing.T) {
 	}
 
 	storedConfig := mockStore.lastPutCfg
-	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8-88888" {
-		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8-88888")
+	if storedConfig.RunnerName != "runs-fleet-runner-myapp-amd64-cpu8-88888-12345" {
+		t.Errorf("RunnerName = %q, want %q", storedConfig.RunnerName, "runs-fleet-runner-myapp-amd64-cpu8-88888-12345")
 	}
 }
 
@@ -712,6 +713,7 @@ func TestBuildRunnerName(t *testing.T) {
 		repoName   string
 		conditions string
 		jobID      string
+		instanceID string
 		want       string
 	}{
 		{
@@ -721,6 +723,15 @@ func TestBuildRunnerName(t *testing.T) {
 			conditions: "arm64-cpu4",
 			jobID:      "65558617323",
 			want:       "runs-fleet-runner-default-617323",
+		},
+		{
+			name:       "warm pool with instance discriminator",
+			pool:       "default",
+			repoName:   "myapp",
+			conditions: "arm64-cpu4",
+			jobID:      "65558617323",
+			instanceID: "i-0abc123def4567890",
+			want:       "runs-fleet-runner-default-617323-67890",
 		},
 		{
 			name:       "cold-start with all conditions",
@@ -763,6 +774,15 @@ func TestBuildRunnerName(t *testing.T) {
 			want:       "runs-fleet-runner-default",
 		},
 		{
+			name:       "empty job ID keeps instance discriminator",
+			pool:       "default",
+			repoName:   "myapp",
+			conditions: "",
+			jobID:      "",
+			instanceID: "i-0abc123def4567890",
+			want:       "runs-fleet-runner-default-67890",
+		},
+		{
 			name:       "short job ID used as-is",
 			pool:       "",
 			repoName:   "myapp",
@@ -771,12 +791,21 @@ func TestBuildRunnerName(t *testing.T) {
 			want:       "runs-fleet-runner-myapp-arm64-123",
 		},
 		{
-			name:       "truncates to 64 chars",
+			name:       "truncation preserves job suffix",
 			pool:       "",
 			repoName:   "my-repository",
 			conditions: "arm64-cpu4-ram16-disk200-c7g-m7g-r7g-gen8",
 			jobID:      "65558617323",
-			want:       "runs-fleet-runner-my-repository-arm64-cpu4-ram16-disk200-c7g-m7g",
+			want:       "runs-fleet-runner-my-repository-arm64-cpu4-ram16-disk200-617323",
+		},
+		{
+			name:       "truncation preserves both discriminators",
+			pool:       "",
+			repoName:   "my-repository",
+			conditions: "arm64-cpu4-ram16-disk200-c7g-m7g-r7g-gen8",
+			jobID:      "65558617323",
+			instanceID: "i-0abc123def4567890",
+			want:       "runs-fleet-runner-my-repository-arm64-cpu4-ram16-di-617323-67890",
 		},
 		{
 			name:       "different job IDs produce different names",
@@ -792,20 +821,33 @@ func TestBuildRunnerName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := buildRunnerName(tt.pool, tt.repoName, tt.conditions, tt.jobID)
+			got := buildRunnerName(tt.pool, tt.repoName, tt.conditions, tt.jobID, tt.instanceID)
 			if got != tt.want {
 				t.Errorf("buildRunnerName() = %q, want %q", got, tt.want)
 			}
 			if len(got) > 64 {
 				t.Errorf("buildRunnerName() length = %d, exceeds 64 chars", len(got))
 			}
+			if !strings.HasPrefix(got, "runs-fleet-") {
+				t.Errorf("buildRunnerName() = %q, must keep runs-fleet- prefix", got)
+			}
 		})
 	}
 
 	// Verify uniqueness: same spec but different job IDs produce different names
-	name1 := buildRunnerName("", "cygnus", "cpu4", "65558617323")
-	name2 := buildRunnerName("", "cygnus", "cpu4", "65558617355")
+	name1 := buildRunnerName("", "cygnus", "cpu4", "65558617323", "")
+	name2 := buildRunnerName("", "cygnus", "cpu4", "65558617355", "")
 	if name1 == name2 {
 		t.Errorf("different job IDs should produce different names: %q == %q", name1, name2)
+	}
+}
+
+func TestBuildRunnerNameUniquePerInstance(t *testing.T) {
+	t.Parallel()
+
+	name1 := buildRunnerName("lingua-franca", "", "", "90815122250", "i-02c4cb272a32f82af")
+	name2 := buildRunnerName("lingua-franca", "", "", "90815122250", "i-075d24eb920f2c456")
+	if name1 == name2 {
+		t.Errorf("same job on different instances must produce different names: %q == %q", name1, name2)
 	}
 }
