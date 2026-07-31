@@ -787,11 +787,22 @@ func (h *Handler) redispatchIfStillQueued(ctx context.Context, jobID int64, msg 
 		return true, nil
 	}
 
-	// Send before flipping the record: a record flipped to requeued without a
-	// delivered message is invisible to every reaper (the watchdog scans
-	// launched only), permanently stranding the job. Re-sends from SQS
-	// redelivery or a concurrent duplicate instance are absorbed by FIFO
-	// dedup (job_id + retry_count) and by the worker's claim status gate.
+	// Flip the record to a claimable state BEFORE the message becomes visible.
+	// A worker sitting in a long poll receives it within milliseconds, and
+	// ClaimJob rejects a record that still reads `running` as already-claimed,
+	// dropping the message without a trace — the job then starves exactly as
+	// if no re-dispatch had happened.
+	marked, err := h.dbClient.MarkJobRequeuedByJobID(ctx, jobID)
+	if err != nil {
+		return false, fmt.Errorf("failed to mark still-queued job requeued: %w", err)
+	}
+
+	// Send regardless of who owned the transition: a record left in requeued
+	// with no delivered message is invisible to every reaper (the watchdog
+	// scans launched only), so skipping the send here would strand the job.
+	// Repeat sends are absorbed by FIFO dedup (job_id + retry_count) and by
+	// the worker's claim gate, and a send failure leaves the record claimable
+	// for the redelivered termination message to re-send.
 	requeueMsg := &queue.JobMessage{
 		JobID:         jobID,
 		RunID:         rec.RunID,
@@ -805,10 +816,7 @@ func (h *Handler) redispatchIfStillQueued(ctx context.Context, jobID int64, msg 
 	if sendErr := h.jobQueue.SendMessage(ctx, requeueMsg); sendErr != nil {
 		return false, fmt.Errorf("failed to re-queue still-queued job: %w", sendErr)
 	}
-	marked, err := h.dbClient.MarkJobRequeuedByJobID(ctx, jobID)
-	if err != nil {
-		return false, fmt.Errorf("failed to mark still-queued job requeued: %w", err)
-	}
+
 	if marked {
 		termLog.Info(ctx, "job re-queued; still queued at github at termination",
 			slog.Int("retry_count", rec.RetryCount+1))
@@ -818,7 +826,7 @@ func (h *Handler) redispatchIfStillQueued(ctx context.Context, jobID int64, msg 
 			}
 		}
 	} else {
-		termLog.Info(ctx, "job record already advanced; duplicate requeue absorbed by queue dedup")
+		termLog.Info(ctx, "still-queued job re-sent; another actor owns the requeue transition")
 	}
 
 	if err := h.deleteRunnerConfig(ctx, msg.InstanceID); err != nil {

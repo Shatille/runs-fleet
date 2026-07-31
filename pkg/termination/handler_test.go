@@ -92,6 +92,7 @@ type mockDBAPI struct {
 	lastRequeueJobID   int64
 	markRequeuedErr    error
 	markRequeuedResult bool
+	onMarkRequeued     func()
 }
 
 func (m *mockDBAPI) MarkJobStarted(_ context.Context, jobID int64, _ time.Time) (*events.JobInfo, error) {
@@ -154,6 +155,9 @@ func (m *mockDBAPI) GetJobByJobID(_ context.Context, jobID int64) (*events.JobIn
 func (m *mockDBAPI) MarkJobRequeuedByJobID(_ context.Context, jobID int64) (bool, error) {
 	m.requeueCalls++
 	m.lastRequeueJobID = jobID
+	if m.onMarkRequeued != nil {
+		m.onMarkRequeued()
+	}
 	if m.markRequeuedErr != nil {
 		return false, m.markRequeuedErr
 	}
@@ -165,11 +169,15 @@ type mockJobQueue struct {
 	sendCalls int
 	lastMsg   *queue.JobMessage
 	sendErr   error
+	onSend    func()
 }
 
 func (m *mockJobQueue) SendMessage(_ context.Context, job *queue.JobMessage) error {
 	m.sendCalls++
 	m.lastMsg = job
+	if m.onSend != nil {
+		m.onSend()
+	}
 	return m.sendErr
 }
 
@@ -1396,10 +1404,42 @@ func TestHandler_processTermination_RequeuesWhenJobStillQueued(t *testing.T) {
 	}
 }
 
-// When the record already advanced (another actor holds the requeue), the
-// handler must not mark complete; the duplicate send is absorbed by SQS FIFO
-// dedup, so sending before the flip is safe and never strands the job.
-func TestHandler_processTermination_QueuedAlreadyRequeuedSkipsComplete(t *testing.T) {
+// The record must be flipped to a claimable state BEFORE the message is
+// visible to a consumer: a long-polling worker receives it within
+// milliseconds, and a record still reading `running` makes ClaimJob reject the
+// message as already-claimed and silently drop it, stranding the job.
+func TestHandler_processTermination_QueuedFlipsRecordBeforeSending(t *testing.T) {
+	var order []string
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{
+		markRequeuedResult: true,
+		onMarkRequeued:     func() { order = append(order, "flip") },
+	}
+	metrics := &mockMetricsAPI{}
+	secretsStore := &mockSecretsStore{}
+	jobQueue := &mockJobQueue{onSend: func() { order = append(order, "send") }}
+	handler := NewHandler(q, db, metrics, secretsStore, jobQueue, &config.Config{})
+	handler.SetGitHubJobChecker(&mockJobStatusChecker{status: "queued"})
+
+	msg := &Message{
+		InstanceID: "i-12345",
+		JobID:      "12345678901",
+		Status:     "success",
+	}
+
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "flip" || order[1] != "send" {
+		t.Errorf("expected the record flipped before the send, got order %v", order)
+	}
+}
+
+// When another actor already flipped the record, the message must still be
+// sent: a flipped record whose message was never delivered is invisible to
+// every reaper. Repeat sends are absorbed by FIFO dedup and by ClaimJob.
+func TestHandler_processTermination_QueuedAlreadyRequeuedStillSends(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{markRequeuedResult: false}
 	metrics := &mockMetricsAPI{}
@@ -1418,11 +1458,14 @@ func TestHandler_processTermination_QueuedAlreadyRequeuedSkipsComplete(t *testin
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	if jobQueue.sendCalls != 1 {
+		t.Errorf("the message must be sent even when another actor flipped the record, got %d sends", jobQueue.sendCalls)
+	}
 	if db.completeCalls != 0 {
 		t.Errorf("MarkJobComplete must not be called, got %d", db.completeCalls)
 	}
 	if metrics.requeuedCalls != 0 {
-		t.Errorf("no requeue metric when the record already advanced, got %d", metrics.requeuedCalls)
+		t.Errorf("no requeue metric when this actor did not own the transition, got %d", metrics.requeuedCalls)
 	}
 	if secretsStore.deleteCalls != 1 {
 		t.Errorf("config delete still expected, got %d", secretsStore.deleteCalls)
@@ -1523,9 +1566,11 @@ func TestHandler_processTermination_NilCheckerUnchanged(t *testing.T) {
 	}
 }
 
-// A queue send failure must surface as an error so SQS redelivers; the
-// MarkJobRequeuedByJobID gate makes the retry safe.
-func TestHandler_processTermination_QueueSendFailureRetries(t *testing.T) {
+// A queue send failure must surface as an error so SQS redelivers the
+// termination message, and the redelivery must re-send even though the record
+// is already flipped — otherwise the job is stranded in requeued with no
+// message, invisible to every reaper.
+func TestHandler_processTermination_QueueSendFailureRecoversOnRedelivery(t *testing.T) {
 	q := &mockQueueAPI{}
 	db := &mockDBAPI{markRequeuedResult: true}
 	metrics := &mockMetricsAPI{}
@@ -1543,12 +1588,22 @@ func TestHandler_processTermination_QueueSendFailureRetries(t *testing.T) {
 	if err := handler.processTermination(context.Background(), msg); err == nil {
 		t.Fatal("expected error so SQS redelivers")
 	}
-
 	if db.completeCalls != 0 {
 		t.Errorf("MarkJobComplete must not be called after a failed requeue send, got %d", db.completeCalls)
 	}
-	if db.requeueCalls != 0 {
-		t.Errorf("the record must not flip to requeued before the send succeeds (a flipped record with no message strands the job), got %d", db.requeueCalls)
+
+	// Redelivery: the record now reads requeued, so this actor no longer owns
+	// the transition, but the message must still go out.
+	db.markRequeuedResult = false
+	jobQueue.sendErr = nil
+	if err := handler.processTermination(context.Background(), msg); err != nil {
+		t.Fatalf("redelivery unexpected error: %v", err)
+	}
+	if jobQueue.sendCalls != 2 {
+		t.Errorf("redelivery must re-send the requeue message, got %d total sends", jobQueue.sendCalls)
+	}
+	if db.completeCalls != 0 {
+		t.Errorf("MarkJobComplete must still not be called, got %d", db.completeCalls)
 	}
 }
 
