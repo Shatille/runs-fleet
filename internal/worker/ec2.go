@@ -149,7 +149,7 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	claimExhausted := false
 	// Captured for the discard log below, which runs in a defer declared before
 	// the message body is unmarshalled.
-	retryCount := 0
+	var retryCount int
 
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)

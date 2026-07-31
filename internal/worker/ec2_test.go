@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1634,20 +1633,26 @@ func TestProcessEC2Message_AlreadyClaimedRedispatch_LogsAtInfo(t *testing.T) {
 
 	processEC2Message(context.Background(), deps, queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1"})
 
-	if !strings.Contains(buf.String(), "discarding already-claimed re-dispatch") {
-		t.Errorf("a discarded re-dispatch must be logged at info; got logs: %s", buf.String())
+	recs := recordsWithField(t, &buf, "reason", discardReasonAlreadyClaimed)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 already-claimed discard record at info, got %d: %s", len(recs), buf.String())
+	}
+	if lvl := recs[0]["level"]; lvl != "INFO" {
+		t.Errorf("discarded re-dispatch logged at %v, want INFO", lvl)
+	}
+	if rc := recs[0]["retry_count"]; rc != float64(1) {
+		t.Errorf("retry_count = %v, want 1", rc)
 	}
 }
 
 // The ordinary dual-path discard (retry_count 0) must stay at debug so the
-// re-dispatch signal above is not drowned out.
-func TestProcessEC2Message_AlreadyClaimedFirstAttempt_StaysQuiet(t *testing.T) {
+// re-dispatch signal above is not drowned out. The same scenario is replayed
+// with a debug sink: seeing the record there proves the info-level absence is a
+// real level decision and not a capture that silently swallowed everything.
+func TestProcessEC2Message_AlreadyClaimedFirstAttempt_StaysBelowInfo(t *testing.T) {
 	origRetryDelay := RetryDelay
 	defer func() { RetryDelay = origRetryDelay }()
 	RetryDelay = 1 * time.Millisecond
-
-	var buf syncBuffer
-	captureCtxLogsAtInfo(t, &buf)
 
 	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
 	jobBytes, err := json.Marshal(job)
@@ -1655,30 +1660,45 @@ func TestProcessEC2Message_AlreadyClaimedFirstAttempt_StaysQuiet(t *testing.T) {
 		t.Fatalf("failed to marshal job: %v", err)
 	}
 
-	mockDynamo := &mockDynamoForClaim{
-		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: map[string]types.AttributeValue{
-				"job_id":     &types.AttributeValueMemberN{Value: "12345"},
-				"status":     &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
-				"created_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
-			}}, nil
-		},
+	newDeps := func() EC2WorkerDeps {
+		mockDynamo := &mockDynamoForClaim{
+			GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+				return &dynamodb.GetItemOutput{Item: map[string]types.AttributeValue{
+					"job_id":     &types.AttributeValueMemberN{Value: "12345"},
+					"status":     &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+					"created_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+				}}, nil
+			},
+		}
+		subnetIndex := new(uint64)
+		return EC2WorkerDeps{
+			Queue:       &mockQueueEC2{},
+			Fleet:       &fleet.Manager{},
+			Metrics:     &mockMetricsPublisher{},
+			DB:          db.NewClientWithAPI(mockDynamo, "pools", "jobs"),
+			Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+			SubnetIndex: subnetIndex,
+		}
 	}
-	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+	msg := queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1"}
 
-	var subnetIndex uint64
-	deps := EC2WorkerDeps{
-		Queue:       &mockQueueEC2{},
-		Fleet:       &fleet.Manager{},
-		Metrics:     &mockMetricsPublisher{},
-		DB:          dbClient,
-		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
-		SubnetIndex: &subnetIndex,
+	var infoBuf syncBuffer
+	captureCtxLogsAtInfo(t, &infoBuf)
+	processEC2Message(context.Background(), newDeps(), msg)
+
+	if recs := recordsWithField(t, &infoBuf, "reason", discardReasonAlreadyClaimed); len(recs) != 0 {
+		t.Errorf("a first-attempt discard must stay below info; got %v", recs)
 	}
 
-	processEC2Message(context.Background(), deps, queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1"})
+	var debugBuf syncBuffer
+	captureCtxLogs(t, &debugBuf)
+	processEC2Message(context.Background(), newDeps(), msg)
 
-	if strings.Contains(buf.String(), "discarding already-claimed") {
-		t.Errorf("a first-attempt discard must stay below info; got logs: %s", buf.String())
+	recs := recordsWithField(t, &debugBuf, "reason", discardReasonAlreadyClaimed)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 already-claimed discard record at debug, got %d: %s", len(recs), debugBuf.String())
+	}
+	if lvl := recs[0]["level"]; lvl != "DEBUG" {
+		t.Errorf("first-attempt discard logged at %v, want DEBUG", lvl)
 	}
 }
