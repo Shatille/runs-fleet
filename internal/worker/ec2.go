@@ -147,6 +147,9 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 	poisonMessage := false
 	alreadyClaimed := false
 	claimExhausted := false
+	// Captured for the discard log below, which runs in a defer declared before
+	// the message body is unmarshalled.
+	retryCount := 0
 
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), config.CleanupTimeout)
@@ -169,8 +172,19 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			// the load-bearing half of the dual-path race. Count it as a dedup, NOT
 			// a scheduling failure: the job did get a runner via the winning path,
 			// so it must not deflate the fulfillment SLA.
-			ec2Log.Debug(cleanupCtx, "discarding already-claimed message",
-				slog.String("reason", discardReasonAlreadyClaimed))
+			//
+			// A discarded RE-DISPATCH is different and is logged at info: the
+			// message existed to recover a job that had no runner, so dropping it
+			// means the recovery silently failed and the job starves. Leaving that
+			// case at debug hid exactly such a regression in production.
+			if retryCount > 0 {
+				ec2Log.Info(cleanupCtx, "discarding already-claimed re-dispatch",
+					slog.String("reason", discardReasonAlreadyClaimed),
+					slog.Int("retry_count", retryCount))
+			} else {
+				ec2Log.Debug(cleanupCtx, "discarding already-claimed message",
+					slog.String("reason", discardReasonAlreadyClaimed))
+			}
 			if err := deleteMessageWithRetry(cleanupCtx, deps.Queue, msg.Handle); err != nil {
 				ec2Log.Error(cleanupCtx, "already claimed message delete failed", slog.String("error", err.Error()))
 			}
@@ -218,6 +232,8 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		}
 		return
 	}
+
+	retryCount = job.RetryCount
 
 	if tp := job.Traceparent; tp != "" {
 		ctx = tracing.ExtractTraceContext(tp)

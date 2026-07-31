@@ -172,3 +172,14 @@ func TestPrepareRunnersLogsCarryInstanceID(t *testing.T) {
 		t.Errorf("log has %d instance_id keys, want exactly 1: %s", n, stored[0])
 	}
 }
+
+// captureCtxLogs at the production level, so a test can prove whether a line is
+// visible in production rather than only at debug.
+func captureCtxLogsAtInfo(t *testing.T, buf *syncBuffer) {
+	t.Helper()
+	inner := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(logging.NewContextHandler(inner)))
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	})
+}

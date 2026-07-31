@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1588,3 +1589,96 @@ var (
 	_ = db.ErrJobAlreadyClaimed
 	_ = fleet.LaunchSpec{}
 )
+
+// TestProcessEC2Message_AlreadyClaimedRedispatch_LogsAtInfo proves that
+// discarding a RE-DISPATCH (retry_count > 0) is visible at the production log
+// level. A swallowed re-dispatch means a recovery attempt silently failed and
+// the job starves; the ordinary dual-path discard stays at debug so this signal
+// is not buried in it.
+func TestProcessEC2Message_AlreadyClaimedRedispatch_LogsAtInfo(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	var buf syncBuffer
+	captureCtxLogsAtInfo(t, &buf)
+
+	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro", RetryCount: 1}
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("failed to marshal job: %v", err)
+	}
+
+	mockDynamo := &mockDynamoForClaim{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: map[string]types.AttributeValue{
+				"job_id":     &types.AttributeValueMemberN{Value: "12345"},
+				"run_id":     &types.AttributeValueMemberN{Value: "67890"},
+				"repo":       &types.AttributeValueMemberS{Value: "owner/repo"},
+				"status":     &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+				"created_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+			}}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       &fleet.Manager{},
+		Metrics:     &mockMetricsPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	processEC2Message(context.Background(), deps, queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1"})
+
+	if !strings.Contains(buf.String(), "discarding already-claimed re-dispatch") {
+		t.Errorf("a discarded re-dispatch must be logged at info; got logs: %s", buf.String())
+	}
+}
+
+// The ordinary dual-path discard (retry_count 0) must stay at debug so the
+// re-dispatch signal above is not drowned out.
+func TestProcessEC2Message_AlreadyClaimedFirstAttempt_StaysQuiet(t *testing.T) {
+	origRetryDelay := RetryDelay
+	defer func() { RetryDelay = origRetryDelay }()
+	RetryDelay = 1 * time.Millisecond
+
+	var buf syncBuffer
+	captureCtxLogsAtInfo(t, &buf)
+
+	job := queue.JobMessage{JobID: 12345, RunID: 67890, Repo: "owner/repo", InstanceType: "t3.micro"}
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("failed to marshal job: %v", err)
+	}
+
+	mockDynamo := &mockDynamoForClaim{
+		GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: map[string]types.AttributeValue{
+				"job_id":     &types.AttributeValueMemberN{Value: "12345"},
+				"status":     &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+				"created_at": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+			}}, nil
+		},
+	}
+	dbClient := db.NewClientWithAPI(mockDynamo, "pools", "jobs")
+
+	var subnetIndex uint64
+	deps := EC2WorkerDeps{
+		Queue:       &mockQueueEC2{},
+		Fleet:       &fleet.Manager{},
+		Metrics:     &mockMetricsPublisher{},
+		DB:          dbClient,
+		Config:      &config.Config{SubnetIDs: []string{"subnet-a"}},
+		SubnetIndex: &subnetIndex,
+	}
+
+	processEC2Message(context.Background(), deps, queue.Message{ID: "m1", Body: string(jobBytes), Handle: "h1"})
+
+	if strings.Contains(buf.String(), "discarding already-claimed") {
+		t.Errorf("a first-attempt discard must stay below info; got logs: %s", buf.String())
+	}
+}
