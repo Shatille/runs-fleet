@@ -47,6 +47,24 @@ func captureCtxLogs(t *testing.T, buf *syncBuffer) {
 	})
 }
 
+func recordsWithField(t *testing.T, buf *syncBuffer, key, want string) []map[string]any {
+	t.Helper()
+	var recs []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if rec[key] == want {
+			recs = append(recs, rec)
+		}
+	}
+	return recs
+}
+
 func recordsWithMsg(t *testing.T, buf *syncBuffer, msg string) []string {
 	t.Helper()
 	var lines []string
@@ -171,4 +189,15 @@ func TestPrepareRunnersLogsCarryInstanceID(t *testing.T) {
 	if n := strings.Count(stored[0], `"`+logging.KeyInstanceID+`"`); n != 1 {
 		t.Errorf("log has %d instance_id keys, want exactly 1: %s", n, stored[0])
 	}
+}
+
+// captureCtxLogsAtInfo captures at the production level, so a test can prove
+// whether a line is visible in production rather than only at debug.
+func captureCtxLogsAtInfo(t *testing.T, buf *syncBuffer) {
+	t.Helper()
+	inner := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(logging.NewContextHandler(inner)))
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	})
 }
