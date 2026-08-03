@@ -68,6 +68,7 @@ const (
 	housekeepingActionStaleJobs         = "stale_jobs"
 	housekeepingActionUnconfirmedRunner = "unconfirmed_runners"
 	housekeepingActionDLQRedrive        = "dlq_redrive"
+	housekeepingActionDeadAssignment    = "dead_assignment"
 )
 
 // dlqQueueName labels the main queue's dead-letter queue for depth metrics,
@@ -675,7 +676,41 @@ func mergeUniqueIDs(lists ...[]string) []string {
 	return result
 }
 
-// ExecuteStaleSecrets cleans up stale runner secrets.
+// agentStandbyAllowance bounds an agent that never received a job
+// (RUNS_FLEET_STANDBY_DEADLINE_MINUTES, default 120m). deadAssignmentSlack
+// covers boot, clock skew and shutdown on top of whichever bound applies.
+const (
+	agentStandbyAllowance = 2 * time.Hour
+	deadAssignmentSlack   = 2 * time.Hour
+)
+
+// deadAssignmentAge is the config age past which no agent can still be acting on
+// an assignment: past its runtime ceiling a working agent is killed by its own
+// safety monitor, and past the standby deadline one that never got a job exits.
+//
+// Derived from the configured ceiling rather than hardcoded, because the config
+// validator permits up to 24h — a deploy that raises the ceiling for a slower
+// job class would otherwise leave this threshold below it and the reaper would
+// start terminating live jobs.
+func (t *Tasks) deadAssignmentAge() time.Duration {
+	ceiling := time.Duration(t.config.MaxRuntimeMinutes) * time.Minute
+	if ceiling < agentStandbyAllowance {
+		ceiling = agentStandbyAllowance
+	}
+	return ceiling + deadAssignmentSlack
+}
+
+// ExecuteStaleSecrets cleans up stale runner secrets and reaps the instances
+// behind abandoned assignments.
+//
+// A config whose instance no longer exists is simply deleted. A config older
+// than deadAssignmentAge is an abandoned assignment: its agent died without
+// sending the termination message that would have deleted the config, so
+// nothing else ever cleans it up — the reconciler's config-presence guard keeps
+// deferring the instance's scale-down and the claim path keeps skipping it,
+// leaving it to bill indefinitely. Such an instance is terminated; a stopped one
+// only has its config cleared, since it re-reads config when it next boots and
+// is banked pool capacity.
 func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
 	if t.secretsStore == nil {
 		return nil
@@ -686,28 +721,132 @@ func (t *Tasks) ExecuteStaleSecrets(ctx context.Context) error {
 		return fmt.Errorf("failed to list runner configs: %w", err)
 	}
 
-	var deletedCount int
+	threshold := t.deadAssignmentAge()
+
+	var deletedCount, reapedCount int
 	for _, runnerID := range runnerIDs {
-		exists, err := t.instanceExists(ctx, runnerID)
+		state, uptime, err := t.instanceRuntimeState(ctx, runnerID)
 		if err != nil {
 			continue
 		}
 
-		if !exists {
+		if state == "" {
 			if err := t.secretsStore.Delete(ctx, runnerID); err == nil {
 				deletedCount++
 			}
+			continue
+		}
+
+		// A terminated instance inside the grace period may still be processing
+		// its own shutdown; its config has always been left alone until the
+		// window elapses (see instanceTerminationGracePeriod).
+		if state == string(ec2types.InstanceStateNameTerminated) {
+			continue
+		}
+
+		age, ok := t.runnerConfigAge(ctx, runnerID)
+		if !ok || age < threshold {
+			continue
+		}
+
+		// The instance's own uptime is a second, independent clock. A config that
+		// looks old on a freshly booted instance means a bad or skewed stamp, not
+		// a dead agent, and acting on that alone would terminate live work.
+		if state == string(ec2types.InstanceStateNameRunning) && uptime >= threshold {
+			if _, err := t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+				InstanceIds: []string{runnerID},
+			}); err != nil {
+				t.logger().Error(ctx, "dead-assignment instance terminate failed",
+					slog.String(logging.KeyInstanceID, runnerID),
+					slog.String("error", err.Error()))
+				continue
+			}
+			reapedCount++
+			t.logger().Warn(ctx, "terminated instance with an abandoned assignment",
+				slog.String(logging.KeyInstanceID, runnerID),
+				slog.Duration("config_age", age))
+		} else if state != string(ec2types.InstanceStateNameRunning) {
+			t.logger().Info(ctx, "clearing stale runner config from a banked instance",
+				slog.String(logging.KeyInstanceID, runnerID),
+				slog.Duration("config_age", age))
+		} else {
+			continue
+		}
+
+		if err := t.secretsStore.Delete(ctx, runnerID); err == nil {
+			deletedCount++
 		}
 	}
 
-	if t.metrics != nil && deletedCount > 0 {
-		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionSSMParams, deletedCount)
+	if t.metrics != nil {
+		if deletedCount > 0 {
+			_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionSSMParams, deletedCount)
+		}
+		if reapedCount > 0 {
+			_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionDeadAssignment, reapedCount)
+		}
 	}
 
 	if deletedCount > 0 {
 		t.logger().Info(ctx, "stale secrets deleted", slog.Int(logging.KeyCount, deletedCount))
 	}
 	return nil
+}
+
+// runnerConfigAge reports how long ago a runner config was written. ok is false
+// when the config is gone, unreadable, or carries no timestamp (written by an
+// orchestrator predating the field), so callers treat the age as unknown rather
+// than acting on a zero value.
+func (t *Tasks) runnerConfigAge(ctx context.Context, instanceID string) (time.Duration, bool) {
+	cfg, err := t.secretsStore.Get(ctx, instanceID)
+	if err != nil || cfg == nil || cfg.CreatedAt == "" {
+		return 0, false
+	}
+	created, err := time.Parse(time.RFC3339, cfg.CreatedAt)
+	if err != nil {
+		return 0, false
+	}
+	return time.Since(created), true
+}
+
+// instanceRuntimeState returns an instance's current state and uptime. An empty
+// state means the instance no longer exists (or is terminated past the grace
+// period), matching instanceExists's notion of "gone".
+func (t *Tasks) instanceRuntimeState(ctx context.Context, instanceID string) (state string, uptime time.Duration, err error) {
+	output, err := t.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "InvalidInstanceID") {
+			return "", 0, nil
+		}
+		return "", 0, err
+	}
+
+	for _, reservation := range output.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.State == nil {
+				continue
+			}
+			if instance.State.Name == ec2types.InstanceStateNameTerminated {
+				// Reported as terminated (rather than gone) while inside the grace
+				// window so callers defer acting on it. The predecessor also
+				// required StateTransitionReason to be set; dropping that only
+				// makes the deferral slightly broader, which is the safe
+				// direction for a window whose purpose is to wait out shutdown.
+				if instance.LaunchTime != nil && time.Since(*instance.LaunchTime) < instanceTerminationGracePeriod {
+					return string(instance.State.Name), time.Since(*instance.LaunchTime), nil
+				}
+				continue
+			}
+			if instance.LaunchTime != nil {
+				uptime = time.Since(*instance.LaunchTime)
+			}
+			return string(instance.State.Name), uptime, nil
+		}
+	}
+
+	return "", 0, nil
 }
 
 // instanceTerminationGracePeriod is the minimum time an instance must be terminated

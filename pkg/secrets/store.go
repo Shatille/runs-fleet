@@ -27,6 +27,11 @@ type RunnerConfig struct {
 	CacheURL            string   `json:"cache_url,omitempty"`
 	TerminationQueueURL string   `json:"termination_queue_url,omitempty"`
 	IsOrg               bool     `json:"is_org"`
+	// CreatedAt (RFC3339) is when this config was written. It bounds how long an
+	// agent could still be acting on it, which is what lets housekeeping tell a
+	// live assignment from an abandoned one. omitempty: a config written by an
+	// older orchestrator has no stamp and is treated as unknown-age.
+	CreatedAt string `json:"created_at,omitempty"`
 	// BuildkitCache* carry the transparent Docker layer-cache config the agent
 	// writes into the runner .env so the on-host buildx shim can add S3
 	// cache-from/cache-to. All omitempty: absent (feature disabled, or an older
