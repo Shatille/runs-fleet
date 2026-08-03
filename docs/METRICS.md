@@ -105,7 +105,7 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 
 | CloudWatch | Prometheus | Type | Dimensions | Meaning |
 |------------|------------|------|------------|---------|
-| `HousekeepingActions` | `housekeeping_actions_total` | counter | Action | Cleanup count by action (`orphaned_instances`, `ssm_params`, `job_records`, `orphaned_jobs`, `stale_jobs`). |
+| `HousekeepingActions` | `housekeeping_actions_total` | counter | Action | Cleanup count by action (`orphaned_instances`, `ssm_params`, `job_records`, `orphaned_jobs`, `stale_jobs`, `unconfirmed_runners`, `dlq_redrive`, `dead_assignment`). A sustained nonzero `dead_assignment` rate means instances are losing their agents without sending a termination message — the reaper is only the backstop, so investigate upstream. |
 | `InstanceHours` | `instance_hours_total` | counter | Capacity, Family | Instance-hours consumed. |
 | `EstimatedCost` | `estimated_cost_usd` | gauge | — | Estimated spend in USD (see cost caveats in `AGENTS.md`). |
 | `RunnerExecutionSeconds` | `runner_execution_seconds_total` | counter | Arch, Vcpu, Spot, Result | Billable runner seconds on the axis hosted runners bill on; sum reconstructs a per-(arch,vCPU) minutes breakdown. |

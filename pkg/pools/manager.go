@@ -1074,7 +1074,7 @@ func (m *Manager) withoutLiveConfig(ctx context.Context, poolName string, candid
 		return candidates
 	}
 	kept := make([]PoolInstance, 0, min(needed, len(candidates)))
-	var skipped int
+	skippedIDs := make([]string, 0, len(candidates))
 	for _, inst := range candidates {
 		if len(kept) >= needed {
 			break
@@ -1085,19 +1085,23 @@ func (m *Manager) withoutLiveConfig(ctx context.Context, poolName string, candid
 				slog.String("pool_name", poolName),
 				slog.String(logging.KeyInstanceID, inst.InstanceID),
 				slog.String("error", err.Error()))
-			skipped++
+			skippedIDs = append(skippedIDs, inst.InstanceID)
 			continue
 		}
 		if hasConfig {
-			skipped++
+			skippedIDs = append(skippedIDs, inst.InstanceID)
 			continue
 		}
 		kept = append(kept, inst)
 	}
-	if skipped > 0 {
+	if len(skippedIDs) > 0 {
+		// Instance IDs, not just a count: a deferral that never clears is the only
+		// symptom of an instance whose agent died without its termination message,
+		// and a count alone cannot tell a rotating set from a stuck one.
 		poolLog.Info(ctx, "deferring scale-down of instances with live runner config",
 			slog.String("pool_name", poolName),
-			slog.Int(logging.KeyCount, skipped))
+			slog.Int(logging.KeyCount, len(skippedIDs)),
+			slog.Any("instance_ids", skippedIDs))
 	}
 	return kept
 }

@@ -21,6 +21,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/smithy-go"
 )
 
 // mockEC2API implements EC2API for testing.
@@ -135,6 +136,8 @@ type mockSecretsStore struct {
 	listCalls   int
 	deleteCalls int
 	deletedIDs  []string
+	configs     map[string]*secrets.RunnerConfig
+	getErr      error
 }
 
 func (m *mockSecretsStore) List(_ context.Context) ([]string, error) {
@@ -154,8 +157,14 @@ func (m *mockSecretsStore) Delete(_ context.Context, runnerID string) error {
 	return nil
 }
 
-func (m *mockSecretsStore) Get(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
-	return nil, errors.New("not implemented")
+func (m *mockSecretsStore) Get(_ context.Context, runnerID string) (*secrets.RunnerConfig, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	if cfg, ok := m.configs[runnerID]; ok {
+		return cfg, nil
+	}
+	return nil, secrets.ErrConfigNotFound
 }
 
 func (m *mockSecretsStore) Put(_ context.Context, _ string, _ *secrets.RunnerConfig) error {
@@ -3720,5 +3729,259 @@ func TestSplitRepo(t *testing.T) {
 			t.Errorf("splitRepo(%q) = (%q, %q, %v), want (%q, %q, %v)",
 				tt.input, owner, name, ok, tt.wantOwner, tt.wantName, tt.wantOK)
 		}
+	}
+}
+
+// runningInstanceUp builds a reservation for one running instance with the given uptime.
+func runningInstanceUp(id string, uptime time.Duration) []ec2types.Reservation {
+	launched := time.Now().Add(-uptime)
+	return []ec2types.Reservation{{Instances: []ec2types.Instance{{
+		InstanceId: strPtr(id),
+		LaunchTime: &launched,
+		State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+	}}}}
+}
+
+func stoppedInstanceUp(id string, uptime time.Duration) []ec2types.Reservation {
+	launched := time.Now().Add(-uptime)
+	return []ec2types.Reservation{{Instances: []ec2types.Instance{{
+		InstanceId: strPtr(id),
+		LaunchTime: &launched,
+		State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped},
+	}}}}
+}
+
+func configAged(age time.Duration) *secrets.RunnerConfig {
+	return &secrets.RunnerConfig{CreatedAt: time.Now().Add(-age).Format(time.RFC3339)}
+}
+
+// A running instance whose runner config predates the agent's maximum possible
+// lifetime can have no live agent, yet the config-presence guards keep deferring
+// its scale-down forever: it bills indefinitely with nothing to reap it. The
+// reaper terminates it and clears the config.
+func TestExecuteStaleSecrets_ReapsDeadAssignment(t *testing.T) {
+	t.Parallel()
+
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-zombie"},
+		configs:   map[string]*secrets.RunnerConfig{"i-zombie": configAged(10 * time.Hour)},
+	}
+	ec2Client := &mockEC2API{instances: runningInstanceUp("i-zombie", 10*time.Hour)}
+	metrics := &mockTaskMetricsAPI{}
+	tasks := &Tasks{ec2Client: ec2Client, secretsStore: secretsStore, metrics: metrics, config: &config.Config{}}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ec2Client.terminateCalls != 1 || len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-zombie" {
+		t.Errorf("expected the dead-assignment instance terminated, calls=%d ids=%v",
+			ec2Client.terminateCalls, ec2Client.terminatedIDs)
+	}
+	if len(secretsStore.deletedIDs) != 1 || secretsStore.deletedIDs[0] != "i-zombie" {
+		t.Errorf("expected the config deleted, got %v", secretsStore.deletedIDs)
+	}
+}
+
+// A young config means the agent may still be working; never terminate on it.
+func TestExecuteStaleSecrets_YoungConfigUntouched(t *testing.T) {
+	t.Parallel()
+
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-working"},
+		configs:   map[string]*secrets.RunnerConfig{"i-working": configAged(5 * time.Minute)},
+	}
+	ec2Client := &mockEC2API{instances: runningInstanceUp("i-working", 10*time.Hour)}
+	tasks := &Tasks{ec2Client: ec2Client, secretsStore: secretsStore, config: &config.Config{}}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ec2Client.terminateCalls != 0 || secretsStore.deleteCalls != 0 {
+		t.Errorf("a young config must be left alone, terminates=%d deletes=%d",
+			ec2Client.terminateCalls, secretsStore.deleteCalls)
+	}
+}
+
+// The instance's own uptime is an independent clock: a config timestamp that
+// looks old on a freshly booted instance means a bad or skewed stamp, not a dead
+// agent, so the instance must not be terminated on that evidence alone.
+func TestExecuteStaleSecrets_YoungInstanceNotReaped(t *testing.T) {
+	t.Parallel()
+
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-fresh"},
+		configs:   map[string]*secrets.RunnerConfig{"i-fresh": configAged(10 * time.Hour)},
+	}
+	ec2Client := &mockEC2API{instances: runningInstanceUp("i-fresh", 2*time.Minute)}
+	tasks := &Tasks{ec2Client: ec2Client, secretsStore: secretsStore, config: &config.Config{}}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ec2Client.terminateCalls != 0 {
+		t.Errorf("a freshly booted instance must not be terminated, got %d", ec2Client.terminateCalls)
+	}
+}
+
+// A config with no timestamp predates this field; age is unknown, so the reaper
+// must not act on it.
+func TestExecuteStaleSecrets_UnstampedConfigUntouched(t *testing.T) {
+	t.Parallel()
+
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-legacy"},
+		configs:   map[string]*secrets.RunnerConfig{"i-legacy": {}},
+	}
+	ec2Client := &mockEC2API{instances: runningInstanceUp("i-legacy", 20*time.Hour)}
+	tasks := &Tasks{ec2Client: ec2Client, secretsStore: secretsStore, config: &config.Config{}}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ec2Client.terminateCalls != 0 || secretsStore.deleteCalls != 0 {
+		t.Errorf("an unstamped config must be left alone, terminates=%d deletes=%d",
+			ec2Client.terminateCalls, secretsStore.deleteCalls)
+	}
+}
+
+// A stopped instance re-reads config when it next boots, so a stale config on
+// one is only misleading: clear it, but never terminate the instance — it is
+// banked pool capacity.
+func TestExecuteStaleSecrets_StoppedInstanceConfigCleared(t *testing.T) {
+	t.Parallel()
+
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-banked"},
+		configs:   map[string]*secrets.RunnerConfig{"i-banked": configAged(10 * time.Hour)},
+	}
+	ec2Client := &mockEC2API{instances: stoppedInstanceUp("i-banked", 10*time.Hour)}
+	tasks := &Tasks{ec2Client: ec2Client, secretsStore: secretsStore, config: &config.Config{}}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ec2Client.terminateCalls != 0 {
+		t.Errorf("a stopped pool instance must never be terminated, got %d", ec2Client.terminateCalls)
+	}
+	if len(secretsStore.deletedIDs) != 1 || secretsStore.deletedIDs[0] != "i-banked" {
+		t.Errorf("expected the stale config cleared, got %v", secretsStore.deletedIDs)
+	}
+}
+
+// The safety argument is "no agent can still be acting on a config this old",
+// which depends on the configured runtime ceiling — a value the config validator
+// allows up to 24h. A deploy that raises the ceiling must raise the reaper's
+// threshold with it, or the reaper starts killing live jobs.
+func TestExecuteStaleSecrets_ThresholdFollowsConfiguredCeiling(t *testing.T) {
+	t.Parallel()
+
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-longjob"},
+		configs:   map[string]*secrets.RunnerConfig{"i-longjob": configAged(10 * time.Hour)},
+	}
+	ec2Client := &mockEC2API{instances: runningInstanceUp("i-longjob", 10*time.Hour)}
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		secretsStore: secretsStore,
+		// A 20h ceiling means a 10h-old assignment may still be running.
+		config: &config.Config{MaxRuntimeMinutes: 1200},
+	}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ec2Client.terminateCalls != 0 {
+		t.Errorf("a job still inside the configured ceiling must not be reaped, got %d terminates", ec2Client.terminateCalls)
+	}
+	if secretsStore.deleteCalls != 0 {
+		t.Errorf("its config must not be deleted either, got %d deletes", secretsStore.deleteCalls)
+	}
+}
+
+// A just-terminated instance may still be processing its own shutdown, which is
+// why config deletion has always been deferred through a grace period. The
+// reaper must not shortcut that margin.
+func TestExecuteStaleSecrets_RecentlyTerminatedConfigDeferred(t *testing.T) {
+	t.Parallel()
+
+	launched := time.Now().Add(-time.Minute)
+	secretsStore := &mockSecretsStore{
+		runnerIDs: []string{"i-justgone"},
+		configs:   map[string]*secrets.RunnerConfig{"i-justgone": configAged(10 * time.Hour)},
+	}
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+		InstanceId:            strPtr("i-justgone"),
+		LaunchTime:            &launched,
+		State:                 &ec2types.InstanceState{Name: ec2types.InstanceStateNameTerminated},
+		StateTransitionReason: strPtr("Client.UserInitiatedShutdown"),
+	}}}}}
+	tasks := &Tasks{ec2Client: ec2Client, secretsStore: secretsStore, config: &config.Config{}}
+
+	if err := tasks.ExecuteStaleSecrets(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if secretsStore.deleteCalls != 0 {
+		t.Errorf("a just-terminated instance's config must stay until the grace period elapses, got %d deletes", secretsStore.deleteCalls)
+	}
+	if ec2Client.terminateCalls != 0 {
+		t.Errorf("a terminated instance must never be terminated again, got %d", ec2Client.terminateCalls)
+	}
+}
+
+// EC2 signals a vanished instance through the API error code, so classification
+// must read the code: a throttling error that merely quotes "InvalidInstanceID"
+// in its message must stay an error, or a live instance's config gets deleted on
+// the strength of a transient failure.
+func TestInstanceRuntimeState_ClassifiesAPIErrorsByCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		wantState string
+		wantErr   bool
+	}{
+		{
+			name:      "typed NotFound without the code in its message",
+			err:       &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound", Message: "The instance does not exist"},
+			wantState: "",
+		},
+		{
+			name:    "typed throttling error quoting the NotFound code",
+			err:     &smithy.GenericAPIError{Code: "RequestLimitExceeded", Message: "throttled: retry InvalidInstanceID.NotFound lookup"},
+			wantErr: true,
+		},
+		{
+			name:      "untyped error naming the code",
+			err:       errors.New("operation error EC2: InvalidInstanceID.NotFound"),
+			wantState: "",
+		},
+		{
+			name:    "untyped error mentioning the ID family without a definitive code",
+			err:     errors.New("operation error EC2: RequestLimitExceeded while validating InvalidInstanceID"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tasks := &Tasks{ec2Client: &mockEC2API{describeErr: tt.err}, config: &config.Config{}}
+			state, _, err := tasks.instanceRuntimeState(context.Background(), "i-gone")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected the error propagated, got state %q", state)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if state != tt.wantState {
+				t.Errorf("state = %q, want %q", state, tt.wantState)
+			}
+		})
 	}
 }

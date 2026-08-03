@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/github"
@@ -109,6 +110,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		Org:                 org,
 		Repo:                req.Repo,
 		RunID:               req.RunID,
+		CreatedAt:           time.Now().Format(time.RFC3339),
 		JITToken:            regResult.Token,
 		Labels:              req.Labels,
 		RunnerName:          runnerName,
