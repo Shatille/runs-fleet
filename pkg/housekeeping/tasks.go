@@ -23,6 +23,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/smithy-go"
 )
 
 // EC2API defines EC2 operations for housekeeping.
@@ -817,7 +818,7 @@ func (t *Tasks) instanceRuntimeState(ctx context.Context, instanceID string) (st
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "InvalidInstanceID") {
+		if instanceIDGone(err) {
 			return "", 0, nil
 		}
 		return "", 0, err
@@ -849,6 +850,20 @@ func (t *Tasks) instanceRuntimeState(ctx context.Context, instanceID string) (st
 	return "", 0, nil
 }
 
+// instanceIDGone reports whether an EC2 error means the instance ID does not
+// exist, as opposed to a transient failure. The API code is authoritative: a
+// throttling error that merely quotes the code in its message must not read as a
+// vanished instance, or a live instance's config gets deleted on the strength of
+// an EC2 outage. Errors that surface no code fall back to a message match.
+func instanceIDGone(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		return code == "InvalidInstanceID.NotFound" || code == "InvalidInstanceID.Malformed"
+	}
+	return strings.Contains(err.Error(), "InvalidInstanceID")
+}
+
 // instanceTerminationGracePeriod is the minimum time an instance must be terminated
 // before we consider it safe to delete its associated SSM parameters.
 // This prevents race conditions where parameters are deleted for recently terminated
@@ -863,7 +878,7 @@ func (t *Tasks) instanceExists(ctx context.Context, instanceID string) (bool, er
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "InvalidInstanceID") {
+		if instanceIDGone(err) {
 			return false, nil
 		}
 		return false, err

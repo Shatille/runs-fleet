@@ -21,6 +21,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/smithy-go"
 )
 
 // mockEC2API implements EC2API for testing.
@@ -3917,5 +3918,57 @@ func TestExecuteStaleSecrets_RecentlyTerminatedConfigDeferred(t *testing.T) {
 	}
 	if ec2Client.terminateCalls != 0 {
 		t.Errorf("a terminated instance must never be terminated again, got %d", ec2Client.terminateCalls)
+	}
+}
+
+// EC2 signals a vanished instance through the API error code, so classification
+// must read the code: a throttling error that merely quotes "InvalidInstanceID"
+// in its message must stay an error, or a live instance's config gets deleted on
+// the strength of a transient failure.
+func TestInstanceRuntimeState_ClassifiesAPIErrorsByCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		err       error
+		wantState string
+		wantErr   bool
+	}{
+		{
+			name:      "typed NotFound without the code in its message",
+			err:       &smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound", Message: "The instance does not exist"},
+			wantState: "",
+		},
+		{
+			name:    "typed throttling error quoting the NotFound code",
+			err:     &smithy.GenericAPIError{Code: "RequestLimitExceeded", Message: "throttled: retry InvalidInstanceID.NotFound lookup"},
+			wantErr: true,
+		},
+		{
+			name:      "untyped error naming the code",
+			err:       errors.New("operation error EC2: InvalidInstanceID.NotFound"),
+			wantState: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tasks := &Tasks{ec2Client: &mockEC2API{describeErr: tt.err}, config: &config.Config{}}
+			state, _, err := tasks.instanceRuntimeState(context.Background(), "i-gone")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected the error propagated, got state %q", state)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if state != tt.wantState {
+				t.Errorf("state = %q, want %q", state, tt.wantState)
+			}
+		})
 	}
 }
