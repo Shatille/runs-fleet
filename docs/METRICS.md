@@ -70,7 +70,7 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 
 | CloudWatch | Prometheus | Type | Dimensions | Meaning |
 |------------|------------|------|------------|---------|
-| `PoolInstances` | `pool_instances` | gauge | PoolName, State | Pool instances by state (`running` \| `stopped` \| `ready` \| `busy`). |
+| `PoolInstances` | `pool_instances` | gauge | PoolName, State | Pool instances by state (`running` \| `stopped` \| `ready` \| `busy` \| `assigned_idle`). `assigned_idle` counts running instances that already consumed a runner config and so can never serve another claim; a sustained nonzero value means assignments are being abandoned upstream. |
 | `PoolDesired` | `pool_desired` | gauge | PoolName, Kind | Desired pool size (`running` \| `stopped`). |
 | `PoolActions` | `pool_actions_total` | counter | PoolName, Action, Reason | Reconcile action (`create` \| `stop` \| `terminate` \| `start`). |
 | `PoolReconcileSeconds` | `pool_reconcile_seconds` | histogram | — | Reconcile-loop latency. |

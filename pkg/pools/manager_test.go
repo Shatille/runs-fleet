@@ -2812,20 +2812,23 @@ func TestStartInstanceForJob_CreatesRoleTag(t *testing.T) {
 	}
 }
 
-func TestStartInstanceForJob_EmptyRepoSkipsTag(t *testing.T) {
+// An unknown repo omits the Role tag but must still stamp the assigned tag: that
+// tag is what keeps the instance out of later hot claims once its agent has
+// consumed a config.
+func TestStartInstanceForJob_EmptyRepoTagsAssignedOnly(t *testing.T) {
 	t.Parallel()
 
 	const instanceID = "i-emptyrepotest"
 	startCalled := false
-	createTagsCalled := false
+	var tagged []ec2types.Tag
 
 	mockEC2 := &MockEC2API{
 		StartInstancesFunc: func(_ context.Context, _ *ec2.StartInstancesInput, _ ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
 			startCalled = true
 			return &ec2.StartInstancesOutput{}, nil
 		},
-		CreateTagsFunc: func(_ context.Context, _ *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
-			createTagsCalled = true
+		CreateTagsFunc: func(_ context.Context, in *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			tagged = append(tagged, in.Tags...)
 			return &ec2.CreateTagsOutput{}, nil
 		},
 	}
@@ -2841,8 +2844,8 @@ func TestStartInstanceForJob_EmptyRepoSkipsTag(t *testing.T) {
 	if !startCalled {
 		t.Error("StartInstances was not called")
 	}
-	if createTagsCalled {
-		t.Error("CreateTags should not be called when repo is empty")
+	if len(tagged) != 1 || aws.ToString(tagged[0].Key) != tagInstanceAssigned {
+		t.Errorf("expected only the assigned tag when repo is empty, got %v", tagged)
 	}
 }
 

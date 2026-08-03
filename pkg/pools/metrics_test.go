@@ -22,6 +22,7 @@ type mockMetrics struct {
 	lockWaits        []lockWaitCall
 	reconcileSeconds []float64
 	instances        []instancesCall
+	poolInstances    []instancesCall
 }
 
 type lockWaitCall struct {
@@ -38,7 +39,10 @@ type instancesCall struct {
 
 func (m *mockMetrics) PublishPoolAction(_ context.Context, _, _, _ string) error      { return nil }
 func (m *mockMetrics) PublishPoolDesired(_ context.Context, _, _ string, _ int) error { return nil }
-func (m *mockMetrics) PublishPoolInstances(_ context.Context, _, _ string, _ int) error {
+func (m *mockMetrics) PublishPoolInstances(_ context.Context, pool, state string, n int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.poolInstances = append(m.poolInstances, instancesCall{state: state, pool: pool, n: n})
 	return nil
 }
 

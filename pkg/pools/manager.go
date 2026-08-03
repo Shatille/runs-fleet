@@ -33,6 +33,12 @@ const (
 	stateStopped = "stopped"
 )
 
+// tagInstanceAssigned marks an instance that has had a runner config written for
+// it. It is durable and shared across replicas, unlike the in-memory idle
+// tracking, so a spare whose assignment was later requeued away stays excluded
+// from hot claims even after a replica restart.
+const tagInstanceAssigned = "runs-fleet:assigned"
+
 // defaultBootstrapGracePeriod is how long after launch a warm-pool spare is left
 // alone before it may be stopped. Stopping a spare mid-boot begins an OS shutdown
 // that collides with agent-bootstrap's `systemctl start` (systemd "destructive
@@ -140,6 +146,10 @@ type PoolInstance struct {
 	InstanceType string
 	Spot         bool      // one-time spot instance (cold-start overflow); cannot be stopped
 	IdleSince    time.Time // When the instance became idle (no job assigned)
+	// Assigned reports that a runner config was written for this instance at least
+	// once (tagInstanceAssigned). The agent reads its config only at boot, so a
+	// RUNNING instance carrying this can never serve a new assignment.
+	Assigned bool
 
 	// Spec from InstanceCatalog lookup (populated for multi-spec pool matching)
 	CPU    int
@@ -512,7 +522,35 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	// (from terminated instances) must NOT inflate busy count or they block scale-down.
 	runningInstances := m.filterByState(instances, stateRunning)
 	busy := len(filterMatchingInstances(runningInstances, busyIDs))
-	ready := running - busy
+	// A previously-assigned running instance is neither busy (its job may have been
+	// requeued away) nor usable capacity: the claim path skips it because its agent
+	// already consumed a config. Excluding it from ready is what makes the
+	// reconciler provision a real spare in its place — counted as ready, one such
+	// instance would satisfy desiredRunning indefinitely and every job in the pool
+	// would silently fall back to a stopped-instance start.
+	assignedIdle := 0
+	assignedIdleIDs := make([]string, 0)
+	busySet := make(map[string]struct{}, len(busyIDs))
+	for _, id := range busyIDs {
+		busySet[id] = struct{}{}
+	}
+	for _, inst := range runningInstances {
+		if !inst.Assigned {
+			continue
+		}
+		if _, isBusy := busySet[inst.InstanceID]; isBusy {
+			continue
+		}
+		assignedIdle++
+		assignedIdleIDs = append(assignedIdleIDs, inst.InstanceID)
+	}
+	if assignedIdle > 0 {
+		poolLog.Info(ctx, "excluding previously-assigned instances from ready capacity",
+			slog.String("pool_name", poolName),
+			slog.Int(logging.KeyCount, assignedIdle),
+			slog.Any("instance_ids", assignedIdleIDs))
+	}
+	ready := running - busy - assignedIdle
 
 	// Refresh not-busy streaks every pass (both scale directions) so the dwell guard
 	// has continuous history when a later pass considers scaling down.
@@ -700,6 +738,11 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		_ = m.metrics.PublishPoolInstances(ctx, poolName, "stopped", stopped)
 		_ = m.metrics.PublishPoolInstances(ctx, poolName, "ready", ready)
 		_ = m.metrics.PublishPoolInstances(ctx, poolName, "busy", busy)
+		// Published every cycle (including zero) so a sustained nonzero value is
+		// alertable: an instance stuck assigned-but-not-busy is capacity the pool
+		// keeps replacing, and the incident this guards against went unnoticed for
+		// days because the only evidence was a log line.
+		_ = m.metrics.PublishPoolInstances(ctx, poolName, "assigned_idle", assignedIdle)
 		_ = m.metrics.PublishPoolDesired(ctx, poolName, "running", desiredRunning)
 		_ = m.metrics.PublishPoolDesired(ctx, poolName, "stopped", desiredStopped)
 		// Feed the global instances gauge from the authoritative per-pool counts
@@ -921,6 +964,12 @@ func (m *Manager) getPoolInstances(ctx context.Context, poolName string) ([]Pool
 			if inst.LaunchTime != nil {
 				instance.LaunchTime = *inst.LaunchTime
 			}
+			for _, tg := range inst.Tags {
+				if aws.ToString(tg.Key) == tagInstanceAssigned && aws.ToString(tg.Value) == "true" {
+					instance.Assigned = true
+					break
+				}
+			}
 
 			// Populate spec fields from InstanceCatalog for multi-spec pool matching
 			if spec, ok := fleet.GetInstanceSpec(instanceType); ok {
@@ -1068,8 +1117,12 @@ func (m *Manager) filterIdleInstances(instances []PoolInstance, idleTimeoutMinut
 	return idle
 }
 
-// filterReadyInstances returns running instances that are not busy (no running job).
-// Used for warm pools where we want to stop instances immediately without idle timeout.
+// filterReadyInstances returns running instances that are not busy (no running job)
+// and have not already been assigned a runner config. Used for warm pools where we
+// want to stop instances immediately without idle timeout. Previously-assigned
+// instances are excluded because their agent is serving GitHub as surplus and
+// self-terminates when it finishes: stopping one would race that shutdown, and
+// they are not spare capacity either way (see the ready accounting in reconcilePool).
 func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs []string) []PoolInstance {
 	busySet := make(map[string]struct{}, len(busyInstanceIDs))
 	for _, id := range busyInstanceIDs {
@@ -1078,7 +1131,7 @@ func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs
 
 	var ready []PoolInstance
 	for _, inst := range instances {
-		if inst.State != stateRunning {
+		if inst.State != stateRunning || inst.Assigned {
 			continue
 		}
 		if _, isBusy := busySet[inst.InstanceID]; !isBusy {
@@ -1361,22 +1414,31 @@ func (m *Manager) StartInstanceForJob(ctx context.Context, instanceID, repo stri
 // hot-pool running-instance claim path, which reuses a live spare and therefore
 // must NOT call StartInstances.
 func (m *Manager) markInstanceAssigned(ctx context.Context, instanceID, repo string) {
-	// Pool instances are created without the Role tag since the repo is unknown
-	// at creation time; it is applied here at assignment.
+	// tagInstanceAssigned is written unconditionally — it is what keeps this
+	// instance out of later hot claims once its agent has consumed a config, so
+	// it must not depend on the repo being known. Pool instances are created
+	// without the Role tag since the repo is unknown at creation time; it is
+	// applied here at assignment when available.
+	tags := []types.Tag{
+		{
+			Key:   aws.String(tagInstanceAssigned),
+			Value: aws.String("true"),
+		},
+	}
 	if repo != "" {
-		_, err := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
-			Resources: []string{instanceID},
-			Tags: []types.Tag{
-				{
-					Key:   aws.String("Role"),
-					Value: aws.String(repo),
-				},
-			},
+		tags = append(tags, types.Tag{
+			Key:   aws.String("Role"),
+			Value: aws.String(repo),
 		})
-		if err != nil {
-			poolLog.Warn(ctx, "failed to tag instance with Role",
-				slog.String("error", err.Error()))
-		}
+	}
+	if _, err := m.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
+		Resources: []string{instanceID},
+		Tags:      tags,
+	}); err != nil {
+		// Best-effort: a lost tag write degrades to the config-presence guards,
+		// which catch the same instance one probe later.
+		poolLog.Warn(ctx, "failed to tag assigned instance",
+			slog.String("error", err.Error()))
 	}
 
 	// forgetInstances clears both idle tracking and the not-busy streak so the
@@ -1624,6 +1686,13 @@ func (m *Manager) claimCandidates(ctx context.Context, poolName string, instance
 		// is always on-demand (createPoolFleetInstances), so this excludes only
 		// stray overflow, never a real hot spare.
 		if inst.Spot {
+			continue
+		}
+		// A previously-assigned instance still hosts the agent that consumed that
+		// config, and the agent never re-reads it — handing this instance a new
+		// job would register a runner for the old one. Filtered here rather than
+		// mid-claim so no DynamoDB claim or secrets probe is spent on it.
+		if inst.Assigned {
 			continue
 		}
 		if _, isBusy := busy[inst.InstanceID]; isBusy {
