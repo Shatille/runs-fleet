@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/go-github/v57/github"
 )
 
@@ -1201,5 +1204,189 @@ func TestPublishJobStartupMetrics_PublishErrorDoesNotPanic(t *testing.T) {
 	PublishJobStartupMetrics(context.Background(), m, nil, obs)
 	if !m.StartupCalled {
 		t.Error("PublishJobStartupSeconds should still be attempted")
+	}
+}
+
+// cancelCleanupRecorder captures the side effects of a cancelled-job cleanup.
+type cancelCleanupRecorder struct {
+	deleted   []string
+	deleteErr error
+}
+
+func (c *cancelCleanupRecorder) Delete(_ context.Context, instanceID string) error {
+	c.deleted = append(c.deleted, instanceID)
+	return c.deleteErr
+}
+
+func cancelledEvent(labels []string) *github.WorkflowJobEvent {
+	return &github.WorkflowJobEvent{
+		WorkflowJob: &github.WorkflowJob{
+			ID:         github.Int64(12345),
+			Name:       github.String("test-job"),
+			Labels:     labels,
+			Conclusion: github.String("cancelled"),
+		},
+		Repo: &github.Repository{FullName: github.String("owner/repo")},
+	}
+}
+
+func launchedJobItem(t *testing.T, instanceID string) *dynamodb.GetItemOutput {
+	t.Helper()
+	item, err := attributevalue.MarshalMap(map[string]any{
+		"job_id":      12345,
+		"run_id":      67890,
+		"repo":        "owner/repo",
+		"instance_id": instanceID,
+		"status":      string(db.JobStatusLaunched),
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	return &dynamodb.GetItemOutput{Item: item}
+}
+
+// A job cancelled while still queued leaves a launched record whose instance is
+// booting for work that will never arrive. The cleanup finalizes the record and
+// releases the instance, so the unconfirmed-runner watchdog never provisions a
+// replacement runner for a cancelled job.
+func TestHandleJobCancelled_CleansUpLaunchedJob(t *testing.T) {
+	dyn := &fakeDynamoForFailure{
+		getItem: func() (*dynamodb.GetItemOutput, error) { return launchedJobItem(t, "i-booting"), nil },
+	}
+	dbc := db.NewClientWithAPI(dyn, "pools", "jobs")
+	rec := &cancelCleanupRecorder{}
+
+	cleaned, err := HandleJobCancelled(context.Background(), cancelledEvent(
+		[]string{"runs-fleet/cpu=2/pool=default"}), dbc, rec, nil)
+	if err != nil {
+		t.Fatalf("HandleJobCancelled() error = %v", err)
+	}
+	if !cleaned {
+		t.Fatal("expected the cancelled job to be cleaned up")
+	}
+	if len(rec.deleted) != 1 || rec.deleted[0] != "i-booting" {
+		t.Errorf("expected the runner config deleted, got %v", rec.deleted)
+	}
+}
+
+// A cancelled job whose runner already confirmed is executing: GitHub delivers
+// the cancellation to the runner, which finishes and self-terminates. The
+// conditional flip losing means this caller does not own the cleanup.
+func TestHandleJobCancelled_RunningJobUntouched(t *testing.T) {
+	item, err := attributevalue.MarshalMap(map[string]any{
+		"job_id":      12345,
+		"run_id":      67890,
+		"repo":        "owner/repo",
+		"instance_id": "i-working",
+		"status":      string(db.JobStatusRunning),
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	dyn := &conditionalUpdateDynamo{
+		fakeDynamoForFailure: fakeDynamoForFailure{
+			getItem: func() (*dynamodb.GetItemOutput, error) { return &dynamodb.GetItemOutput{Item: item}, nil },
+		},
+		failUpdate: true,
+	}
+	dbc := db.NewClientWithAPI(dyn, "pools", "jobs")
+	rec := &cancelCleanupRecorder{}
+
+	cleaned, err := HandleJobCancelled(context.Background(), cancelledEvent(
+		[]string{"runs-fleet/cpu=2/pool=default"}), dbc, rec, nil)
+	if err != nil {
+		t.Fatalf("HandleJobCancelled() error = %v", err)
+	}
+	if cleaned {
+		t.Error("a confirmed runner's job must not be cleaned up here")
+	}
+	if len(rec.deleted) != 0 {
+		t.Errorf("a working instance's config must not be touched, got %v", rec.deleted)
+	}
+}
+
+// Jobs that are not runs-fleet's concern must be ignored outright — the handler
+// runs for every cancelled job in every repo the app is installed on.
+func TestHandleJobCancelled_IgnoresForeignLabels(t *testing.T) {
+	dyn := &fakeDynamoForFailure{
+		getItem: func() (*dynamodb.GetItemOutput, error) { return launchedJobItem(t, "i-booting"), nil },
+	}
+	dbc := db.NewClientWithAPI(dyn, "pools", "jobs")
+	rec := &cancelCleanupRecorder{}
+
+	cleaned, err := HandleJobCancelled(context.Background(), cancelledEvent(
+		[]string{"ubuntu-latest"}), dbc, rec, nil)
+	if err != nil {
+		t.Fatalf("HandleJobCancelled() error = %v", err)
+	}
+	if cleaned || dyn.getItemSeen {
+		t.Errorf("a foreign job must be ignored without a lookup (cleaned=%v, looked up=%v)", cleaned, dyn.getItemSeen)
+	}
+}
+
+// Nothing to clean up when runs-fleet never tracked the job.
+func TestHandleJobCancelled_NoRecord(t *testing.T) {
+	dyn := &fakeDynamoForFailure{
+		getItem: func() (*dynamodb.GetItemOutput, error) { return &dynamodb.GetItemOutput{}, nil },
+	}
+	dbc := db.NewClientWithAPI(dyn, "pools", "jobs")
+	rec := &cancelCleanupRecorder{}
+
+	cleaned, err := HandleJobCancelled(context.Background(), cancelledEvent(
+		[]string{"runs-fleet/cpu=2/pool=default"}), dbc, rec, nil)
+	if err != nil {
+		t.Fatalf("HandleJobCancelled() error = %v", err)
+	}
+	if cleaned || len(rec.deleted) != 0 {
+		t.Errorf("expected a no-op without a record, got cleaned=%v deleted=%v", cleaned, rec.deleted)
+	}
+}
+
+// The record is already finalized once the flip wins, so best-effort cleanup
+// failures must not turn into a handler error (the instance is covered by
+// housekeeping).
+func TestHandleJobCancelled_CleanupErrorsTolerated(t *testing.T) {
+	dyn := &fakeDynamoForFailure{
+		getItem: func() (*dynamodb.GetItemOutput, error) { return launchedJobItem(t, "i-booting"), nil },
+	}
+	dbc := db.NewClientWithAPI(dyn, "pools", "jobs")
+	rec := &cancelCleanupRecorder{deleteErr: errors.New("ssm unavailable")}
+
+	cleaned, err := HandleJobCancelled(context.Background(), cancelledEvent(
+		[]string{"runs-fleet/cpu=2/pool=default"}), dbc, rec, nil)
+	if err != nil {
+		t.Fatalf("HandleJobCancelled() error = %v", err)
+	}
+	if !cleaned {
+		t.Error("the record was finalized, so the cleanup must still count as handled")
+	}
+}
+
+// conditionalUpdateDynamo fails UpdateItem with a conditional-check error, the
+// shape DynamoDB returns when a guarded status transition loses.
+type conditionalUpdateDynamo struct {
+	fakeDynamoForFailure
+	failUpdate bool
+}
+
+func (c *conditionalUpdateDynamo) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	if c.failUpdate {
+		return nil, &dynamodbtypes.ConditionalCheckFailedException{}
+	}
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+// A launched record only means no started signal has been processed yet: the
+// runner may have registered moments ago and be visible to GitHub as idle
+// capacity for another queued job. Killing that is the starvation bug this
+// series removed, so the cancel path must have no way to terminate an instance —
+// the handler takes no EC2 dependency at all.
+func TestHandleJobCancelled_TakesNoInstanceTerminator(t *testing.T) {
+	fnType := reflect.TypeOf(HandleJobCancelled)
+	for i := 0; i < fnType.NumIn(); i++ {
+		arg := fnType.In(i).String()
+		if strings.Contains(strings.ToLower(arg), "terminat") || strings.Contains(strings.ToLower(arg), "ec2") {
+			t.Errorf("HandleJobCancelled must not accept an instance-terminating dependency, got %s", arg)
+		}
 	}
 }

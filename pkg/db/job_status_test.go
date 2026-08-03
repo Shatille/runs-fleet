@@ -82,3 +82,17 @@ func TestJobStatusIsTerminal(t *testing.T) {
 		}
 	}
 }
+
+// A job cancelled while still queued at GitHub ends in a terminal state: the
+// instance that was provisioned for it has no work coming, so reapers must treat
+// it like any other finished job.
+func TestJobStatusCancelled_IsTerminal(t *testing.T) {
+	t.Parallel()
+
+	if !JobStatusCancelled.IsTerminal() {
+		t.Error("cancelled must be terminal")
+	}
+	if JobStatusCancelled.String() != "cancelled" {
+		t.Errorf("JobStatusCancelled = %q, want cancelled", JobStatusCancelled)
+	}
+}

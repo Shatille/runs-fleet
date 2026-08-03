@@ -202,6 +202,86 @@ func EnsureEphemeralPool(ctx context.Context, dbc PoolDBClient, jobConfig *gh.Jo
 	return nil
 }
 
+// RunnerConfigDeleter removes an instance's runner config from the secrets store.
+type RunnerConfigDeleter interface {
+	Delete(ctx context.Context, instanceID string) error
+}
+
+// HandleJobCancelled cleans up after a job GitHub cancelled before its runner
+// ever confirmed — a superseded PR pipeline, or an operator cancelling a queued
+// job. Such a record stays launched forever, so the unconfirmed-runner watchdog
+// eventually "recovers" it and provisions a fresh runner for work that no longer
+// exists. Finalizing the record here retires the job before that happens and
+// releases the instance that was booting for it.
+//
+// Only the launched case is ours: a running job is being cancelled by GitHub on
+// the runner itself, which finishes and self-terminates, and a requeued/claiming
+// record has a recovery in flight whose runner idles out once. The conditional
+// flip decides ownership — losing it means the runner confirmed concurrently and
+// owns its own shutdown.
+func HandleJobCancelled(ctx context.Context, event *github.WorkflowJobEvent, dbc *db.Client, configs RunnerConfigDeleter, resolver *gh.AliasResolver) (bool, error) {
+	job := event.GetWorkflowJob()
+
+	// A queued-then-cancelled job never got a runner, so there is no runner name
+	// to gate on as HandleJobFailure does; the labels are the only signal that
+	// this job was ever ours.
+	if _, err := gh.ParseLabelsWithAliases(job.Labels, resolver); err != nil {
+		return false, nil
+	}
+
+	if dbc == nil || !dbc.HasJobsTable() {
+		return false, nil
+	}
+
+	ghJobID := job.GetID()
+	jobInfo, err := dbc.GetJobByJobID(ctx, ghJobID)
+	if err != nil {
+		return false, fmt.Errorf("failed to get job %d: %w", ghJobID, err)
+	}
+	if jobInfo == nil {
+		return false, nil
+	}
+
+	marked, err := dbc.MarkJobCancelled(ctx, ghJobID)
+	if err != nil {
+		return false, fmt.Errorf("failed to mark job %d cancelled: %w", ghJobID, err)
+	}
+	if !marked {
+		return false, nil
+	}
+
+	ctx = logging.ContextWithJob(ctx, jobInfo.JobID, jobInfo.RunID, jobInfo.Repo)
+
+	// The instance is deliberately NOT terminated here. A launched record only
+	// means no started signal has been processed yet — the runner may have
+	// registered moments ago and be visible to GitHub as idle capacity for some
+	// other queued job, and killing that is the starvation bug this whole series
+	// removed. Deleting the config stops a runner being minted for a job that no
+	// longer exists; anything already registered goes on to serve other work, and
+	// an instance that never registered exits on its standby deadline. Marking the
+	// record terminal also hands the instance to the completed-instance sweep,
+	// which is grace-period gated. Best-effort throughout: the record is already
+	// terminal and housekeeping sweeps whatever leaks.
+	if jobInfo.InstanceID != "" {
+		if configs != nil {
+			if err := configs.Delete(ctx, jobInfo.InstanceID); err != nil {
+				webhookLog.Warn(ctx, "cancelled job runner config delete failed",
+					slog.String(logging.KeyInstanceID, jobInfo.InstanceID),
+					slog.String("error", err.Error()))
+			}
+		}
+		if err := dbc.ReleaseInstanceClaim(ctx, jobInfo.InstanceID, ghJobID); err != nil {
+			webhookLog.Warn(ctx, "cancelled job claim release failed",
+				slog.String(logging.KeyInstanceID, jobInfo.InstanceID),
+				slog.String("error", err.Error()))
+		}
+	}
+
+	webhookLog.Info(ctx, "cancelled queued job cleaned up",
+		slog.String(logging.KeyInstanceID, jobInfo.InstanceID))
+	return true, nil
+}
+
 // HandleJobFailure processes workflow_job completed events with failure conclusion.
 func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q queue.Queue, dbc *db.Client, resolver *gh.AliasResolver) (bool, error) {
 	job := event.GetWorkflowJob()

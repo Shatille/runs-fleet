@@ -687,6 +687,7 @@ func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, er
 		JobID:        record.JobID,
 		RunID:        record.RunID,
 		Repo:         record.Repo,
+		InstanceID:   record.InstanceID,
 		InstanceType: record.InstanceType,
 		Pool:         record.Pool,
 		Spot:         record.Spot,
@@ -1149,6 +1150,45 @@ func (c *Client) GetJobByJobID(ctx context.Context, jobID int64) (*events.JobInf
 	}
 
 	return unmarshalJobInfo(output.Item)
+}
+
+// MarkJobCancelled finalizes a job that GitHub cancelled before its runner ever
+// confirmed. The write is conditioned on the record still being launched, so a
+// runner that confirmed concurrently keeps ownership and finishes the job
+// normally; a false return means this caller does not own the cleanup.
+func (c *Client) MarkJobCancelled(ctx context.Context, jobID int64) (bool, error) {
+	if jobID == 0 {
+		return false, fmt.Errorf("job ID cannot be zero")
+	}
+	if c.jobsTable == "" {
+		return false, fmt.Errorf("jobs table not configured")
+	}
+
+	key, err := attributevalue.MarshalMap(map[string]int64{"job_id": jobID})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	_, err = c.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                aws.String(c.jobsTable),
+		Key:                      key,
+		UpdateExpression:         aws.String("SET #status = :cancelled, completed_at = :now"),
+		ConditionExpression:      aws.String("#status = :launched"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":cancelled": &types.AttributeValueMemberS{Value: string(JobStatusCancelled)},
+			":launched":  &types.AttributeValueMemberS{Value: string(JobStatusLaunched)},
+			":now":       &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to mark job cancelled: %w", err)
+	}
+	return true, nil
 }
 
 // MarkJobRequeuedByJobID atomically marks a job as "requeued" using the job_id partition key.

@@ -15,6 +15,7 @@ const (
 	JobStatusFailed      JobStatus = "failed"
 	JobStatusError       JobStatus = "error"
 	JobStatusOrphaned    JobStatus = "orphaned"
+	JobStatusCancelled   JobStatus = "cancelled"
 )
 
 func (s JobStatus) String() string {
@@ -40,7 +41,7 @@ const (
 // live instance's job terminal and get the instance reaped.
 func (s JobStatus) IsTerminal() bool {
 	switch s {
-	case JobStatusCompleted, JobStatusSuccess, JobStatusError,
+	case JobStatusCompleted, JobStatusSuccess, JobStatusError, JobStatusCancelled,
 		JobStatusAgentFailure, JobStatusAgentTimeout, JobStatusAgentInterrupted:
 		return true
 	default:
