@@ -521,28 +521,28 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 	// Only count actual running instances with matching job records - orphaned job records
 	// (from terminated instances) must NOT inflate busy count or they block scale-down.
 	runningInstances := m.filterByState(instances, stateRunning)
-	busy := len(filterMatchingInstances(runningInstances, busyIDs))
 	// A previously-assigned running instance is neither busy (its job may have been
 	// requeued away) nor usable capacity: the claim path skips it because its agent
 	// already consumed a config. Excluding it from ready is what makes the
 	// reconciler provision a real spare in its place — counted as ready, one such
 	// instance would satisfy desiredRunning indefinitely and every job in the pool
 	// would silently fall back to a stopped-instance start.
-	assignedIdle := 0
-	assignedIdleIDs := make([]string, 0)
 	busySet := make(map[string]struct{}, len(busyIDs))
 	for _, id := range busyIDs {
 		busySet[id] = struct{}{}
 	}
+	busy := 0
+	assignedIdle := 0
+	assignedIdleIDs := make([]string, 0, len(runningInstances))
 	for _, inst := range runningInstances {
-		if !inst.Assigned {
-			continue
-		}
 		if _, isBusy := busySet[inst.InstanceID]; isBusy {
+			busy++
 			continue
 		}
-		assignedIdle++
-		assignedIdleIDs = append(assignedIdleIDs, inst.InstanceID)
+		if inst.Assigned {
+			assignedIdle++
+			assignedIdleIDs = append(assignedIdleIDs, inst.InstanceID)
+		}
 	}
 	if assignedIdle > 0 {
 		poolLog.Info(ctx, "excluding previously-assigned instances from ready capacity",
@@ -1139,22 +1139,6 @@ func (m *Manager) filterReadyInstances(instances []PoolInstance, busyInstanceIDs
 		}
 	}
 	return ready
-}
-
-// filterMatchingInstances returns instances whose IDs are in the given list.
-func filterMatchingInstances(instances []PoolInstance, instanceIDs []string) []PoolInstance {
-	idSet := make(map[string]struct{}, len(instanceIDs))
-	for _, id := range instanceIDs {
-		idSet[id] = struct{}{}
-	}
-
-	var matched []PoolInstance
-	for _, inst := range instances {
-		if _, ok := idSet[inst.InstanceID]; ok {
-			matched = append(matched, inst)
-		}
-	}
-	return matched
 }
 
 func (m *Manager) startInstances(ctx context.Context, poolName string, instanceIDs []string, reason string) error {
