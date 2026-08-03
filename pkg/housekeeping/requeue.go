@@ -231,6 +231,15 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 			continue
 		}
 
+		// The scan snapshot can be minutes old; a runner that confirmed since
+		// then is executing a job on this instance. Re-read before the
+		// irreversible terminate below — the guarded status flip protects the
+		// record but cannot undo a kill. Applied on dry runs too so the preview
+		// reports what a real sweep would act on.
+		if !jobHasStatus(jobCtx, deps.Scan, deps.JobsTable, c.JobID, opts.Statuses, log) {
+			continue
+		}
+
 		if opts.DryRun {
 			result.JobIDs = append(result.JobIDs, c.JobID)
 			continue
@@ -346,6 +355,37 @@ func isConditionalCheckFailed(err error) bool {
 // record still being launched, so a job that advanced (completed, or confirmed its runner
 // into running between the scan and now) is never clobbered. A ConditionalCheckFailedException
 // means the job moved on and is treated as success.
+// jobHasStatus re-reads a candidate's status with a consistent read and reports
+// whether it is still one of the statuses the sweep was asked to recover.
+// Unknown state (read error or missing row) counts as no, so the caller never
+// acts on a job whose state it could not confirm.
+func jobHasStatus(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64, statuses []db.JobStatus, log *logging.Logger) bool {
+	out, err := scanAPI.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(jobsTable),
+		Key: map[string]types.AttributeValue{
+			"job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
+		},
+		ProjectionExpression:     aws.String("#status"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ConsistentRead:           aws.Bool(true),
+	})
+	if err != nil {
+		log.Warn(ctx, "requeue skipped: pre-flight status read failed", slog.String("error", err.Error()))
+		return false
+	}
+	if out.Item == nil {
+		return false
+	}
+	current := avString(out.Item, "status")
+	for _, s := range statuses {
+		if current == string(s) {
+			return true
+		}
+	}
+	log.Info(ctx, "requeue skipped: job advanced since the scan", slog.String("status", current))
+	return false
+}
+
 func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64) error {
 	_, err := scanAPI.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(jobsTable),

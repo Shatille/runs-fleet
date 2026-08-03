@@ -23,6 +23,19 @@ type mockOrphanDynamo struct {
 	lastUpdate  *dynamodb.UpdateItemInput
 }
 
+func (m *mockOrphanDynamo) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	key, ok := in.Key["job_id"].(*types.AttributeValueMemberN)
+	if !ok {
+		return &dynamodb.GetItemOutput{}, nil
+	}
+	for _, item := range m.items {
+		if n, ok := item["job_id"].(*types.AttributeValueMemberN); ok && n.Value == key.Value {
+			return &dynamodb.GetItemOutput{Item: item}, nil
+		}
+	}
+	return &dynamodb.GetItemOutput{}, nil
+}
+
 func (m *mockOrphanDynamo) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 	if m.scanErr != nil {
 		return nil, m.scanErr

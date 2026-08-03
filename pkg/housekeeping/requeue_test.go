@@ -390,3 +390,108 @@ func TestRequeueHungJobs_ScanError(t *testing.T) {
 		t.Fatal("expected error when scan fails")
 	}
 }
+
+// The scan snapshot can be minutes old. A runner that confirmed since then has a
+// live job on the instance, so the operator sweep must re-read the record and
+// leave it alone rather than terminating a working runner mid-job.
+func TestRequeueHungJobs_SkipsJobThatConfirmed(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-confirmed")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{requeueJobItem(42, "i-confirmed", 7, 0, db.JobStatusLaunched)},
+		statusOverride: map[int64]string{42: string(db.JobStatusRunning)},
+	}
+	rq := &mockJobRequeuer{}
+
+	result, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+	})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+
+	if ec2.terminateCalls != 0 {
+		t.Errorf("a confirmed runner must not be terminated, got %d terminate calls", ec2.terminateCalls)
+	}
+	if len(rq.sent) != 0 {
+		t.Errorf("a confirmed runner's job must not be requeued, got %d", len(rq.sent))
+	}
+	if result.Requeued != 0 {
+		t.Errorf("expected 0 requeued, got %d", result.Requeued)
+	}
+}
+
+// An inconclusive re-read means the job's true state is unknown; the sweep must
+// never terminate on uncertainty.
+func TestRequeueHungJobs_PreflightErrorSkips(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:      []map[string]types.AttributeValue{requeueJobItem(42, "i-stuck", 7, 0, db.JobStatusLaunched)},
+		getItemErr: errors.New("dynamo unavailable"),
+	}
+	rq := &mockJobRequeuer{}
+
+	result, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+	})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+
+	if ec2.terminateCalls != 0 || len(rq.sent) != 0 || result.Requeued != 0 {
+		t.Errorf("must not act on an unknown job state: terminates=%d sends=%d requeued=%d",
+			ec2.terminateCalls, len(rq.sent), result.Requeued)
+	}
+}
+
+// A dry run must report what a real run would act on, so it applies the same
+// pre-flight rather than listing candidates the real sweep would skip.
+func TestRequeueHungJobs_DryRunAppliesPreflight(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-confirmed")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{requeueJobItem(42, "i-confirmed", 7, 0, db.JobStatusLaunched)},
+		statusOverride: map[int64]string{42: string(db.JobStatusRunning)},
+	}
+	rq := &mockJobRequeuer{}
+
+	result, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+
+	if len(result.JobIDs) != 0 {
+		t.Errorf("a dry run must not list a job the real sweep would skip, got %v", result.JobIDs)
+	}
+	if ec2.terminateCalls != 0 {
+		t.Errorf("a dry run must never terminate, got %d", ec2.terminateCalls)
+	}
+}
+
+// The record must be claimable before the message is visible to a worker:
+// ClaimJob rejects a record still reading launched as already-claimed and drops
+// the message, so a send-then-flip ordering strands the job.
+func TestRequeueHungJobs_FlipsRecordBeforeSending(t *testing.T) {
+	var order []string
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:        []map[string]types.AttributeValue{requeueJobItem(42, "i-stuck", 7, 0, db.JobStatusLaunched)},
+		onUpdateItem: func() { order = append(order, "flip") },
+	}
+	rq := &mockJobRequeuer{onSend: func() { order = append(order, "send") }}
+
+	if _, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+	}); err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "flip" || order[1] != "send" {
+		t.Errorf("expected the record flipped before the send, got order %v", order)
+	}
+}

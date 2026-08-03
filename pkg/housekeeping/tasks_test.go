@@ -177,6 +177,7 @@ type mockTaskDynamoDBAPI struct {
 	getItemCalls   int
 	scanInputs     []*dynamodb.ScanInput
 	statusOverride map[int64]string
+	onUpdateItem   func()
 }
 
 func (m *mockTaskDynamoDBAPI) GetItem(_ context.Context, params *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -690,6 +691,9 @@ func (m *mockTaskDynamoDBAPI) Scan(_ context.Context, params *dynamodb.ScanInput
 
 func (m *mockTaskDynamoDBAPI) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	m.updateCalls++
+	if m.onUpdateItem != nil {
+		m.onUpdateItem()
+	}
 	if m.updateErr != nil {
 		return nil, m.updateErr
 	}
