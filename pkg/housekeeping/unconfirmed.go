@@ -83,7 +83,8 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 		// The scan snapshot can be minutes old; a runner that confirmed since
 		// then has a live job on this instance. Re-read before the irreversible
 		// terminate — the guarded status flip alone cannot undo a kill.
-		if !t.jobStillLaunched(jobCtx, c.JobID) {
+		if !jobHasStatus(jobCtx, t.dynamoClient, t.config.JobsTableName, c.JobID,
+			[]db.JobStatus{db.JobStatusLaunched}, t.logger()) {
 			continue
 		}
 
@@ -127,20 +128,29 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 	return nil
 }
 
-// requeueUnconfirmed re-enqueues the job on-demand and flips its record to
-// requeued so the watchdog stops seeing it. The message is sent before the
-// status flip; if the flip fails, the next cycle re-sends (SQS dedupes on
-// job_id + retry_count).
+// requeueUnconfirmed flips the job record to requeued and then re-enqueues it
+// on-demand. The flip comes first because ClaimJob rejects a record still
+// reading launched as already-claimed: a worker that receives the message before
+// the flip lands drops it and the job is never re-dispatched. If the send then
+// fails the flip is rolled back, since this watchdog scans launched records only
+// and would otherwise never see the job again.
 func (t *Tasks) requeueUnconfirmed(ctx context.Context, c RequeueableJob) error {
 	if c.RunID == 0 {
 		return fmt.Errorf("job %d has no run_id; cannot requeue", c.JobID)
 	}
 
-	if err := t.jobRequeuer.SendMessage(ctx, BuildRequeueMessage(c)); err != nil {
-		return fmt.Errorf("send requeue message: %w", err)
-	}
-	if err := t.markLaunchedJobRequeued(ctx, c.JobID); err != nil {
+	flipped, err := t.markLaunchedJobRequeued(ctx, c.JobID)
+	if err != nil {
 		return fmt.Errorf("mark requeued: %w", err)
+	}
+	if !flipped {
+		// Another actor flipped this record first and owns its re-dispatch;
+		// sending on its state would let its rollback strand our message.
+		return nil
+	}
+	if err := t.jobRequeuer.SendMessage(ctx, BuildRequeueMessage(c)); err != nil {
+		rollbackRequeueFlip(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID, t.logger())
+		return fmt.Errorf("send requeue message: %w", err)
 	}
 	if t.metrics != nil {
 		_ = t.metrics.PublishJobRequeued(ctx, housekeepingActionUnconfirmedRunner)
@@ -148,32 +158,10 @@ func (t *Tasks) requeueUnconfirmed(ctx context.Context, c RequeueableJob) error 
 	return nil
 }
 
-// jobStillLaunched re-reads the job row with a consistent read and reports
-// whether it is still awaiting runner confirmation. Unknown state (read error
-// or missing row) counts as not-launched so the watchdog never terminates on
-// uncertainty.
-func (t *Tasks) jobStillLaunched(ctx context.Context, jobID int64) bool {
-	out, err := t.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(t.config.JobsTableName),
-		Key: map[string]types.AttributeValue{
-			"job_id": &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
-		},
-		ProjectionExpression:     aws.String("#status"),
-		ExpressionAttributeNames: map[string]string{"#status": "status"},
-		ConsistentRead:           aws.Bool(true),
-	})
-	if err != nil {
-		t.logger().Warn(ctx, "unconfirmed-runner pre-flight read failed; skipping candidate",
-			slog.String("error", err.Error()))
-		return false
-	}
-	if out.Item == nil {
-		return false
-	}
-	return avString(out.Item, "status") == string(db.JobStatusLaunched)
-}
-
-func (t *Tasks) markLaunchedJobRequeued(ctx context.Context, jobID int64) error {
+// markLaunchedJobRequeued flips a launched record to requeued, reporting whether
+// THIS call performed the write. A lost condition means another actor owns the
+// record, which the caller must not treat as its own success.
+func (t *Tasks) markLaunchedJobRequeued(ctx context.Context, jobID int64) (bool, error) {
 	return t.updateLaunchedJob(ctx, jobID, "SET #status = :requeued, requeued_at = :now",
 		map[string]types.AttributeValue{
 			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
@@ -183,19 +171,21 @@ func (t *Tasks) markLaunchedJobRequeued(ctx context.Context, jobID int64) error 
 }
 
 func (t *Tasks) markLaunchedJobError(ctx context.Context, jobID int64) error {
-	return t.updateLaunchedJob(ctx, jobID, "SET #status = :error, completed_at = :now",
+	_, err := t.updateLaunchedJob(ctx, jobID, "SET #status = :error, completed_at = :now",
 		map[string]types.AttributeValue{
 			":error":    &types.AttributeValueMemberS{Value: string(db.JobStatusError)},
 			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
 			":now":      &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 		})
+	return err
 }
 
 // updateLaunchedJob applies a status transition guarded on the record still
 // being launched, so a runner that confirms (or a completion) concurrently is
-// not clobbered. A ConditionalCheckFailedException means the job advanced under
-// us and is treated as success.
-func (t *Tasks) updateLaunchedJob(ctx context.Context, jobID int64, updateExpr string, values map[string]types.AttributeValue) error {
+// not clobbered. It reports whether this call performed the write: a
+// ConditionalCheckFailedException means another actor owns the record's current
+// state, so callers must check the returned bool rather than assume success.
+func (t *Tasks) updateLaunchedJob(ctx context.Context, jobID int64, updateExpr string, values map[string]types.AttributeValue) (bool, error) {
 	_, err := t.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(t.config.JobsTableName),
 		Key: map[string]types.AttributeValue{
@@ -209,11 +199,11 @@ func (t *Tasks) updateLaunchedJob(ctx context.Context, jobID int64, updateExpr s
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("update launched job: %w", err)
+		return false, fmt.Errorf("update launched job: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func avString(item map[string]types.AttributeValue, key string) string {

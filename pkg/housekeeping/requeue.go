@@ -252,14 +252,28 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 			}
 		}
 
-		if err := deps.Requeuer.SendMessage(jobCtx, BuildRequeueMessage(c)); err != nil {
-			log.Error(jobCtx, "requeue send failed", slog.String("error", err.Error()))
+		// Flip before sending: ClaimJob rejects a record still reading launched
+		// as already-claimed, so a worker that receives the message before this
+		// write lands drops it and the job is never re-dispatched. The send is
+		// gated on OUR write landing — a concurrent sweep whose flip won owns the
+		// dispatch, and sending on its state would let its rollback strand a
+		// message we put in flight.
+		flipped, err := markRequeued(jobCtx, deps.Scan, deps.JobsTable, c.JobID)
+		if err != nil {
+			log.Error(jobCtx, "requeue mark failed", slog.String("error", err.Error()))
+			continue
+		}
+		if !flipped {
+			log.Info(jobCtx, "requeue skipped: another sweep owns this job's re-dispatch")
 			continue
 		}
 
-		if err := markRequeued(jobCtx, deps.Scan, deps.JobsTable, c.JobID); err != nil {
-			log.Error(jobCtx, "requeue mark failed", slog.String("error", err.Error()))
-			// Message already sent; the next sweep re-sends (SQS dedupes on job_id+retry).
+		if err := deps.Requeuer.SendMessage(jobCtx, BuildRequeueMessage(c)); err != nil {
+			log.Error(jobCtx, "requeue send failed", slog.String("error", err.Error()))
+			// This sweep scans launched records only, so a record left in
+			// requeued with no delivered message would be invisible to every
+			// future sweep. Undo the flip so the job is a candidate again.
+			rollbackRequeueFlip(jobCtx, deps.Scan, deps.JobsTable, c.JobID, log)
 			continue
 		}
 
@@ -351,10 +365,34 @@ func isConditionalCheckFailed(err error) bool {
 	return errors.As(err, &condErr)
 }
 
-// markRequeued flips a job record to requeued under a conditional write guarded on the
-// record still being launched, so a job that advanced (completed, or confirmed its runner
-// into running between the scan and now) is never clobbered. A ConditionalCheckFailedException
-// means the job moved on and is treated as success.
+// rollbackRequeueFlip restores a record to launched after its requeue message
+// could not be sent, conditioned on the record still being the requeued one this
+// sweep wrote (a concurrent claim that advanced it owns the state instead).
+//
+// A failure here is not recoverable automatically: no sweep scans requeued
+// records, so the job stays invisible until someone repairs it by hand. It takes
+// two consecutive DynamoDB failures to get there, and the error log is the only
+// signal, hence the severity.
+func rollbackRequeueFlip(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64, log *logging.Logger) {
+	_, err := scanAPI.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(jobsTable),
+		Key: map[string]types.AttributeValue{
+			"job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
+		},
+		UpdateExpression:         aws.String("SET #status = :launched REMOVE requeued_at"),
+		ConditionExpression:      aws.String("#status = :requeued"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
+		},
+	})
+	if err != nil && !isConditionalCheckFailed(err) {
+		log.Error(ctx, "requeue flip rollback failed; job left for the orphan sweep",
+			slog.String("error", err.Error()))
+	}
+}
+
 // jobHasStatus re-reads a candidate's status with a consistent read and reports
 // whether it is still one of the statuses the sweep was asked to recover.
 // Unknown state (read error or missing row) counts as no, so the caller never
@@ -386,7 +424,12 @@ func jobHasStatus(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, 
 	return false
 }
 
-func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64) error {
+// markRequeued flips a job record to requeued under a conditional write guarded on the
+// record still being launched, so a job that advanced (completed, or confirmed its runner
+// into running between the scan and now) is never clobbered. It reports whether THIS call
+// performed the write: a ConditionalCheckFailedException means another actor owns the
+// record's state, which the caller must not mistake for its own success.
+func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64) (bool, error) {
 	_, err := scanAPI.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(jobsTable),
 		Key: map[string]types.AttributeValue{
@@ -403,9 +446,9 @@ func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, 
 	})
 	if err != nil {
 		if isConditionalCheckFailed(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("mark requeued: %w", err)
+		return false, fmt.Errorf("mark requeued: %w", err)
 	}
-	return nil
+	return true, nil
 }

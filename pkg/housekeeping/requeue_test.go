@@ -325,9 +325,9 @@ func TestRequeueHungJobs_DryRun(t *testing.T) {
 	}
 }
 
-// A send failure leaves the record unflipped (so a later attempt retries) and does not
-// count the job as requeued.
-func TestRequeueHungJobs_SendFailureDoesNotFlip(t *testing.T) {
+// A send failure must leave the record back in launched (so a later sweep
+// retries) and must not count the job as requeued.
+func TestRequeueHungJobs_SendFailureLeavesRecordLaunched(t *testing.T) {
 	ec2 := &mockEC2API{instances: nil}
 	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
 		requeueJobItem(42, "i-gone", 7, 0, db.JobStatusLaunched),
@@ -344,15 +344,16 @@ func TestRequeueHungJobs_SendFailureDoesNotFlip(t *testing.T) {
 	if res.Requeued != 0 {
 		t.Errorf("send failure must not count as requeued, got %+v", res)
 	}
-	if dyn.updateCalls != 0 {
-		t.Errorf("send failure must not flip the record, got %d updates", dyn.updateCalls)
+	// The flip is written before the send so the record is claimable; a failed
+	// send rolls it back, so the record must not be left in requeued.
+	if dyn.updateCalls != 2 {
+		t.Errorf("expected the flip to be rolled back after a failed send, got %d updates", dyn.updateCalls)
 	}
 }
 
 // Termination happens before the send. If the instance is terminated but the queue send
-// then fails, the record must NOT be flipped — the next sweep re-dispatches (FIFO dedup
-// keeps it idempotent), so the job is never lost.
-func TestRequeueHungJobs_TerminateSucceedsSendFailsNoFlip(t *testing.T) {
+// then fails, the record must end up back in launched so the next sweep re-dispatches it.
+func TestRequeueHungJobs_TerminateSucceedsSendFailsRollsBack(t *testing.T) {
 	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
 	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
 		requeueJobItem(42, "i-stuck", 7, 0, db.JobStatusLaunched),
@@ -372,8 +373,8 @@ func TestRequeueHungJobs_TerminateSucceedsSendFailsNoFlip(t *testing.T) {
 	if res.Requeued != 0 {
 		t.Errorf("send failure must not count as requeued, got %+v", res)
 	}
-	if dyn.updateCalls != 0 {
-		t.Errorf("send failure must not flip the record, got %d updates", dyn.updateCalls)
+	if dyn.updateCalls != 2 {
+		t.Errorf("expected the flip to be rolled back after a failed send, got %d updates", dyn.updateCalls)
 	}
 }
 
@@ -493,5 +494,72 @@ func TestRequeueHungJobs_FlipsRecordBeforeSending(t *testing.T) {
 
 	if len(order) != 2 || order[0] != "flip" || order[1] != "send" {
 		t.Errorf("expected the record flipped before the send, got order %v", order)
+	}
+}
+
+// A flip whose send then fails would strand the job: the sweep scans launched
+// records only, so a record left in requeued with no message is invisible to
+// every future sweep. The flip must be rolled back so the next sweep retries.
+func TestRequeueHungJobs_SendFailureRollsBackFlip(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	var updates []*dynamodb.UpdateItemInput
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{requeueJobItem(42, "i-stuck", 7, 0, db.JobStatusLaunched)},
+		captureUpdates: &updates,
+	}
+	rq := &mockJobRequeuer{sendErr: errors.New("sqs unavailable")}
+
+	result, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+	})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+	if result.Requeued != 0 {
+		t.Errorf("expected 0 requeued after a failed send, got %d", result.Requeued)
+	}
+
+	// Two writes: the flip to requeued, then the rollback to launched.
+	if len(updates) != 2 {
+		t.Fatalf("expected flip + rollback writes, got %d", len(updates))
+	}
+	rollback := updates[1]
+	got := rollback.ExpressionAttributeValues[":launched"]
+	if v, ok := got.(*types.AttributeValueMemberS); !ok || v.Value != string(db.JobStatusLaunched) {
+		t.Errorf("rollback must restore the launched status, got %v", got)
+	}
+	if rollback.ConditionExpression == nil || !strings.Contains(*rollback.ConditionExpression, "requeued") {
+		t.Errorf("rollback must be conditioned on the record still being requeued, got %v", rollback.ConditionExpression)
+	}
+}
+
+// Two sweeps can scan the same launched job before either writes. The one whose
+// conditional flip loses must NOT send: its sibling owns the dispatch, and a
+// message sent on state the sibling may still roll back would be dropped by
+// ClaimJob (the record reads launched again) and the job would be stranded.
+func TestRequeueHungJobs_LostFlipDoesNotSend(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{requeueJobItem(42, "i-stuck", 7, 0, db.JobStatusLaunched)},
+		// A sibling sweep already flipped the record, so this sweep's guarded
+		// write fails its condition.
+		updateErr: &types.ConditionalCheckFailedException{},
+	}
+	rq := &mockJobRequeuer{}
+
+	result, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, rq), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+	})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+
+	if len(rq.sent) != 0 {
+		t.Errorf("a sweep whose flip lost must not send, got %d messages", len(rq.sent))
+	}
+	if result.Requeued != 0 {
+		t.Errorf("expected 0 requeued when the flip was lost, got %d", result.Requeued)
 	}
 }

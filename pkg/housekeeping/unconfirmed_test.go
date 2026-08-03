@@ -10,6 +10,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
@@ -17,9 +18,13 @@ import (
 type mockJobRequeuer struct {
 	sent    []*queue.JobMessage
 	sendErr error
+	onSend  func()
 }
 
 func (m *mockJobRequeuer) SendMessage(_ context.Context, job *queue.JobMessage) error {
+	if m.onSend != nil {
+		m.onSend()
+	}
 	if m.sendErr != nil {
 		return m.sendErr
 	}
@@ -266,5 +271,70 @@ func TestExecuteUnconfirmedRunners_NoRequeuerNoOp(t *testing.T) {
 	}
 	if ec2.terminateCalls != 0 {
 		t.Errorf("watchdog must not terminate anything when disabled, got %d", ec2.terminateCalls)
+	}
+}
+
+// Same claimability ordering as the operator sweep: a message that reaches a
+// worker before the record is flipped is rejected by ClaimJob and dropped.
+func TestExecuteUnconfirmedRunners_FlipsRecordBeforeSending(t *testing.T) {
+	var order []string
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:        []map[string]types.AttributeValue{launchedJobItem(42, "i-stuck", 7, 0)},
+		onUpdateItem: func() { order = append(order, "flip") },
+	}
+	rq := &mockJobRequeuer{onSend: func() { order = append(order, "send") }}
+	tasks := newUnconfirmedTasks(ec2, dyn, &mockTaskMetricsAPI{}, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if len(order) != 2 || order[0] != "flip" || order[1] != "send" {
+		t.Errorf("expected the record flipped before the send, got order %v", order)
+	}
+}
+
+// Same rollback requirement as the operator sweep: the watchdog also scans
+// launched records only, so a flip with no delivered message must be undone.
+func TestExecuteUnconfirmedRunners_SendFailureRollsBackFlip(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	var updates []*dynamodb.UpdateItemInput
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{launchedJobItem(42, "i-stuck", 7, 0)},
+		captureUpdates: &updates,
+	}
+	rq := &mockJobRequeuer{sendErr: errors.New("sqs unavailable")}
+	tasks := newUnconfirmedTasks(ec2, dyn, &mockTaskMetricsAPI{}, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if len(updates) != 2 {
+		t.Fatalf("expected flip + rollback writes, got %d", len(updates))
+	}
+	if v, ok := updates[1].ExpressionAttributeValues[":launched"].(*types.AttributeValueMemberS); !ok || v.Value != "launched" {
+		t.Errorf("rollback must restore the launched status, got %v", updates[1].ExpressionAttributeValues[":launched"])
+	}
+}
+
+// Same ownership rule for the watchdog: losing the guarded flip means another
+// actor owns the dispatch, so this cycle must not send a message of its own.
+func TestExecuteUnconfirmedRunners_LostFlipDoesNotSend(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-stuck")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:     []map[string]types.AttributeValue{launchedJobItem(42, "i-stuck", 7, 0)},
+		updateErr: &types.ConditionalCheckFailedException{},
+	}
+	rq := &mockJobRequeuer{}
+	tasks := newUnconfirmedTasks(ec2, dyn, &mockTaskMetricsAPI{}, rq)
+
+	if err := tasks.ExecuteUnconfirmedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteUnconfirmedRunners() error = %v", err)
+	}
+
+	if len(rq.sent) != 0 {
+		t.Errorf("a cycle whose flip lost must not send, got %d messages", len(rq.sent))
 	}
 }
