@@ -5209,3 +5209,85 @@ func TestGetJobByInstance_ScanPath(t *testing.T) {
 		t.Errorf("JobID = %d, want 55555", job.JobID)
 	}
 }
+
+// MarkJobCancelled finalizes a job cancelled before its runner confirmed. It is
+// conditioned on launched so a runner that confirmed concurrently keeps
+// ownership of the record and finishes normally.
+func TestMarkJobCancelled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		jobID      int64
+		updateErr  error
+		wantMarked bool
+		wantErr    bool
+	}{
+		{name: "flips a launched record", jobID: 12345, wantMarked: true},
+		{
+			name:       "no-ops when the runner already confirmed",
+			jobID:      12345,
+			updateErr:  &types.ConditionalCheckFailedException{},
+			wantMarked: false,
+		},
+		{name: "zero job id rejected", jobID: 0, wantErr: true},
+		{
+			name:      "dynamo error surfaces",
+			jobID:     12345,
+			updateErr: errors.New("dynamodb unavailable"),
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var captured *dynamodb.UpdateItemInput
+			mockDB := &MockDynamoDBAPI{
+				UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+					captured = params
+					if tt.updateErr != nil {
+						return nil, tt.updateErr
+					}
+					return &dynamodb.UpdateItemOutput{}, nil
+				},
+			}
+			client := &Client{dynamoClient: mockDB, jobsTable: "jobs-table"}
+
+			marked, err := client.MarkJobCancelled(context.Background(), tt.jobID)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("MarkJobCancelled() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if marked != tt.wantMarked {
+				t.Errorf("marked = %v, want %v", marked, tt.wantMarked)
+			}
+			if captured == nil {
+				t.Fatal("expected an UpdateItem call")
+			}
+			if captured.ConditionExpression == nil || !strings.Contains(*captured.ConditionExpression, "launched") {
+				t.Errorf("write must be conditioned on the launched status, got %v", captured.ConditionExpression)
+			}
+		})
+	}
+}
+
+// The cancelled-job cleanup needs the bound instance from the record, so
+// unmarshalling must carry instance_id through.
+func TestUnmarshalJobInfo_CarriesInstanceID(t *testing.T) {
+	t.Parallel()
+
+	info, err := unmarshalJobInfo(map[string]types.AttributeValue{
+		"job_id":      &types.AttributeValueMemberN{Value: "42"},
+		"instance_id": &types.AttributeValueMemberS{Value: "i-bound"},
+	})
+	if err != nil {
+		t.Fatalf("unmarshalJobInfo() error = %v", err)
+	}
+	if info.InstanceID != "i-bound" {
+		t.Errorf("InstanceID = %q, want i-bound", info.InstanceID)
+	}
+}

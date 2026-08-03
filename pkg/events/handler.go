@@ -50,6 +50,7 @@ type JobInfo struct {
 	JobID        int64
 	RunID        int64
 	Repo         string
+	InstanceID   string // Instance the record is currently bound to; empty mid-reclaim
 	InstanceType string
 	Pool         string
 	Spot         bool

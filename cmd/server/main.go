@@ -182,6 +182,7 @@ func main() {
 		poolNotifier:       poolManager,
 		labelAliasResolver: labelAliasResolver,
 		fleetManager:       fleetManager,
+		secretsStore:       secretsStore,
 	}
 	mux, err := ws.setupHTTPRoutes(ctx, cacheServer, prometheusHandler)
 	if err != nil {
@@ -489,6 +490,7 @@ type webhookServer struct {
 	poolNotifier       PoolReconcileNotifier
 	labelAliasResolver *gh.AliasResolver
 	fleetManager       *fleet.Manager
+	secretsStore       secrets.Store
 
 	// shuttingDown flips true on SIGTERM so /ready reports 503 and the load
 	// balancer deregisters this task before the listener is closed.
@@ -718,7 +720,21 @@ func (ws *webhookServer) processWebhookEvent(ctx context.Context, payload interf
 		}
 
 	case "completed":
-		if event.GetWorkflowJob().GetConclusion() != "failure" {
+		conclusion := event.GetWorkflowJob().GetConclusion()
+		if conclusion == "cancelled" {
+			// Run the whole cleanup post-ack: it costs a read, a conditional
+			// write and an EC2 call, and GitHub redelivers any webhook whose
+			// response it waits too long for. The conditional flip makes a
+			// redelivered copy a no-op.
+			return true, "Cancellation processed", func(bgCtx context.Context) {
+				if _, err := handler.HandleJobCancelled(bgCtx, event, ws.dbClient,
+					ws.secretsStore, ws.labelAliasResolver); err != nil {
+					webhookLog.Error(bgCtx, "cancelled job cleanup failed",
+						slog.String("error", err.Error()))
+				}
+			}
+		}
+		if conclusion != "failure" {
 			return false, "", nil
 		}
 		requeued, err := handler.HandleJobFailure(ctx, event, ws.jobQueue, ws.dbClient, ws.labelAliasResolver)
