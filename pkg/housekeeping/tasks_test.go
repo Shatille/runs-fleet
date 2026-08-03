@@ -3949,6 +3949,11 @@ func TestInstanceRuntimeState_ClassifiesAPIErrorsByCode(t *testing.T) {
 			err:       errors.New("operation error EC2: InvalidInstanceID.NotFound"),
 			wantState: "",
 		},
+		{
+			name:    "untyped error mentioning the ID family without a definitive code",
+			err:     errors.New("operation error EC2: RequestLimitExceeded while validating InvalidInstanceID"),
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

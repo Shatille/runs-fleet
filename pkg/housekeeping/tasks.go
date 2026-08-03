@@ -813,6 +813,11 @@ func (t *Tasks) runnerConfigAge(ctx context.Context, instanceID string) (time.Du
 // instanceRuntimeState returns an instance's current state and uptime. An empty
 // state means the instance no longer exists (or is terminated past the grace
 // period), matching instanceExists's notion of "gone".
+//
+// The query is by a single instance ID, for which EC2 returns at most one
+// instance (IDs are never reused; an unknown one is an InvalidInstanceID.NotFound
+// error, not an extra payload entry), so the loops only unwrap the Reservations
+// envelope and the first match is the answer.
 func (t *Tasks) instanceRuntimeState(ctx context.Context, instanceID string) (state string, uptime time.Duration, err error) {
 	output, err := t.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: []string{instanceID},
@@ -854,14 +859,17 @@ func (t *Tasks) instanceRuntimeState(ctx context.Context, instanceID string) (st
 // exist, as opposed to a transient failure. The API code is authoritative: a
 // throttling error that merely quotes the code in its message must not read as a
 // vanished instance, or a live instance's config gets deleted on the strength of
-// an EC2 outage. Errors that surface no code fall back to a message match.
+// an EC2 outage. Errors that surface no code fall back to matching the two
+// definitive codes in the message, never the bare InvalidInstanceID family.
 func instanceIDGone(err error) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		code := apiErr.ErrorCode()
 		return code == "InvalidInstanceID.NotFound" || code == "InvalidInstanceID.Malformed"
 	}
-	return strings.Contains(err.Error(), "InvalidInstanceID")
+	msg := err.Error()
+	return strings.Contains(msg, "InvalidInstanceID.NotFound") ||
+		strings.Contains(msg, "InvalidInstanceID.Malformed")
 }
 
 // instanceTerminationGracePeriod is the minimum time an instance must be terminated
