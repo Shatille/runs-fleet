@@ -1025,7 +1025,7 @@ func (m *Manager) withoutLiveConfig(ctx context.Context, poolName string, candid
 		return candidates
 	}
 	kept := make([]PoolInstance, 0, min(needed, len(candidates)))
-	skippedIDs := make([]string, 0)
+	skippedIDs := make([]string, 0, len(candidates))
 	for _, inst := range candidates {
 		if len(kept) >= needed {
 			break
