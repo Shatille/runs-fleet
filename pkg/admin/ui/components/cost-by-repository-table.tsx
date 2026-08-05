@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { HelpTip } from '@/components/help-tip';
 import { CostRepositoryEntry } from '@/lib/types';
+import { formatMinutes, formatPerMinute } from '@/lib/format';
 
 const PAGE_SIZES = [20, 50, 100] as const;
 const ALL = 'all';
@@ -37,18 +38,25 @@ export function CostByRepositoryTable({
     [filtered]
   );
 
+  // Blended unit price over the visible selection: re-derived from the rows'
+  // own minutes so filtering narrows the rate along with the total.
+  const shownPerMinute = useMemo(() => {
+    const minutes = filtered.reduce((sum, r) => sum + r.total_minutes, 0);
+    return minutes > 0 ? shownTotal / minutes : 0;
+  }, [filtered, shownTotal]);
+
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 overflow-hidden mb-6">
       <div className="px-4 py-3 border-b dark:border-gray-700">
         <div className="flex justify-between items-center gap-4 flex-wrap">
           <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
             Breakdown by Repository
-            <HelpTip text="Month-to-date cost attributed to the repository that requested each job, priced the same way as Total Cost. Jobs whose record carries no repository are grouped under &quot;unknown&quot;. Every repository is listed, so the rows sum to Total Cost when no filter is applied." />
+            <HelpTip text="Month-to-date cost attributed to the repository that requested each job, priced the same way as Total Cost. $/min is that repository's own cost over its own billable minutes, so it reflects the runner shapes it asked for rather than the fleet average. Jobs whose record carries no repository are grouped under &quot;unknown&quot;. Every repository is listed, so the rows sum to Total Cost when no filter is applied." />
           </h3>
           <span className="text-sm text-gray-500 dark:text-gray-400" role="status" aria-live="polite">
             {filtered.length} of {repositories.length}{' '}
             {repositories.length === 1 ? 'repository' : 'repositories'} · $
-            {shownTotal.toFixed(2)}
+            {shownTotal.toFixed(2)} · {formatPerMinute(shownPerMinute)}/min
           </span>
         </div>
         <div className="mt-3 flex gap-3 flex-wrap items-center">
@@ -95,7 +103,9 @@ export function CostByRepositoryTable({
             <tr>
               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Repository</th>
               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Jobs</th>
+              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Minutes</th>
               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cost</th>
+              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">$ / min</th>
               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Avg / Job</th>
               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Spot %</th>
             </tr>
@@ -105,7 +115,9 @@ export function CostByRepositoryTable({
               <tr key={entry.repository} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                 <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{entry.repository}</td>
                 <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.job_count}</td>
+                <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{formatMinutes(entry.total_minutes)}</td>
                 <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.total_cost.toFixed(2)}</td>
+                <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatPerMinute(entry.cost_per_minute)}</td>
                 <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.avg_cost_per_job.toFixed(4)}</td>
                 <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.spot_percent.toFixed(0)}%</td>
               </tr>

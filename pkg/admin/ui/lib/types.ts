@@ -151,6 +151,8 @@ export interface CostSummary {
   on_demand_cost: number;
   spot_savings: number;
   avg_cost_per_job: number;
+  total_minutes: number;
+  cost_per_minute: number;
   job_count: number;
   spot_job_count: number;
   on_demand_count: number;
@@ -166,6 +168,9 @@ export interface RunnerMinuteEntry {
   runner_minutes: number;
   vcpu_minutes: number;
   cost: number;
+  cost_per_minute: number;
+  baseline_cost: number;
+  baseline_cost_per_minute: number;
 }
 
 export interface FamilyBreakdown {
@@ -173,6 +178,7 @@ export interface FamilyBreakdown {
   job_count: number;
   total_hours: number;
   total_cost: number;
+  cost_per_minute: number;
   spot_percent: number;
 }
 
@@ -187,6 +193,8 @@ export interface CostDayEntry {
   total_cost: number;
   spot_cost: number;
   on_demand_cost: number;
+  total_minutes: number;
+  cost_per_minute: number;
   job_count: number;
 }
 
@@ -202,6 +210,8 @@ export interface CostPoolEntry {
   total_cost: number;
   spot_cost: number;
   on_demand_cost: number;
+  total_minutes: number;
+  cost_per_minute: number;
   spot_percent: number;
 }
 
@@ -218,6 +228,8 @@ export interface CostRepositoryEntry {
   spot_cost: number;
   on_demand_cost: number;
   avg_cost_per_job: number;
+  total_minutes: number;
+  cost_per_minute: number;
   spot_percent: number;
 }
 
