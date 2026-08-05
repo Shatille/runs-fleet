@@ -6,6 +6,7 @@ import { HelpTip } from '@/components/help-tip';
 import { CostByRepositoryTable } from '@/components/cost-by-repository-table';
 import { CostSummary, CostDaily, CostByPool, CostByRepository } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
+import { formatMinutes, formatPerMinute } from '@/lib/format';
 
 export default function CostPage() {
   const [summary, setSummary] = useState<CostSummary | null>(null);
@@ -78,7 +79,13 @@ export default function CostPage() {
         <CostSkeleton />
       ) : summary ? (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
+            <SummaryCard
+              title="Cost / Runner-Minute"
+              value={formatPerMinute(summary.cost_per_minute)}
+              subtitle={`${formatMinutes(summary.total_minutes)} runner-minutes`}
+              help="Actual incurred unit price: Total Cost divided by the billable minutes it was computed from. This is the figure to put next to a hosted runner's per-minute rate, though it blends every runner shape — see the per-shape table below for a like-for-like comparison."
+            />
             <SummaryCard
               title="Total Cost"
               value={`$${summary.total_cost.toFixed(2)}`}
@@ -145,7 +152,9 @@ export default function CostPage() {
                   <tr>
                     <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Pool</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Jobs</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Minutes</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cost</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">$ / min</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Spot %</th>
                   </tr>
                 </thead>
@@ -154,7 +163,9 @@ export default function CostPage() {
                     <tr key={entry.pool} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                       <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{entry.pool}</td>
                       <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.job_count}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{formatMinutes(entry.total_minutes)}</td>
                       <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.total_cost.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatPerMinute(entry.cost_per_minute)}</td>
                       <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.spot_percent.toFixed(0)}%</td>
                     </tr>
                   ))}
@@ -179,6 +190,7 @@ export default function CostPage() {
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Jobs</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Hours</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cost</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">$ / min</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Spot %</th>
                   </tr>
                 </thead>
@@ -191,6 +203,7 @@ export default function CostPage() {
                         <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.job_count}</td>
                         <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.total_hours.toFixed(1)}</td>
                         <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.total_cost.toFixed(2)}</td>
+                        <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatPerMinute(entry.cost_per_minute)}</td>
                         <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.spot_percent.toFixed(0)}%</td>
                       </tr>
                     ))}
@@ -203,21 +216,23 @@ export default function CostPage() {
             <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 overflow-hidden mb-6">
               <div className="px-4 py-3 border-b dark:border-gray-700 flex justify-between items-center">
                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  Runner-Minute Cost (standard per-vCPU-minute pricing)
-                  <HelpTip text="Comparison baseline, NOT runs-fleet spend and not comparable to Total Cost above. It prices the same work at standard hosted-runner rates (vCPU-minutes times the per-arch rate shown below) to show what these runs would have cost elsewhere. It also draws on a different data source — the RunnerExecutionSeconds CloudWatch metric rather than job records — so its totals will not reconcile with the tiles above." />
+                  Unit Cost by Runner Shape
+                  <HelpTip text="What one runner-minute actually cost, per (arch, vCPU) shape — the cell to drop into a comparison matrix against a hosted runner's per-minute price for the same shape. $/min is this shape's incurred EC2 cost divided by its own runner-minutes, so it already reflects the spot/on-demand mix it actually ran on. Hosted $/min prices the identical minutes at the reference per-vCPU-minute rate below; it is a baseline, not runs-fleet spend. Shapes are built from job records with a recorded duration and a catalogued instance type, so uncatalogued types are absent and the Cost column can fall short of Total Cost." />
                 </h3>
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  ${summary.runner_minute_cost.toFixed(2)}
+                  {formatPerMinute(summary.cost_per_minute)} / min blended
                 </span>
               </div>
-              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700" aria-label="Runner-minute cost breakdown by architecture and vCPU">
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700" aria-label="Unit cost per runner-minute by architecture and vCPU">
                 <thead className="bg-gray-50 dark:bg-gray-700">
                   <tr>
                     <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Arch</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">vCPU</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Runner-min</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">vCPU-min</th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cost</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">$ / min</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Hosted $ / min</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">vs Hosted</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
@@ -225,25 +240,31 @@ export default function CostPage() {
                     <tr key={`${entry.arch}-${entry.vcpu}`} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                       <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{entry.arch}</td>
                       <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.vcpu}</td>
-                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.runner_minutes.toFixed(0)}</td>
-                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{entry.vcpu_minutes.toFixed(0)}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{formatMinutes(entry.runner_minutes)}</td>
                       <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">${entry.cost.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100 text-right">{formatPerMinute(entry.cost_per_minute)}</td>
+                      <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 text-right">{formatPerMinute(entry.baseline_cost_per_minute)}</td>
+                      <td className="px-4 py-2 text-sm text-right">{formatSavingsMultiple(entry.cost_per_minute, entry.baseline_cost_per_minute)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               <div className="px-4 py-2 border-t dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
-                rate: {formatRates(summary.runner_minute_rates)} per vCPU-minute
+                hosted baseline rate: {formatRates(summary.runner_minute_rates)} per vCPU-minute
+                {' '}(${summary.runner_minute_cost.toFixed(2)} for this month&apos;s usage)
               </div>
             </div>
           )}
 
           <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-4 text-sm text-yellow-800 dark:text-yellow-300">
             runs-fleet cost uses live AWS prices — region-correct on-demand (AWS Pricing API) and current
-            spot-market rates — falling back to list pricing if a lookup is unavailable. Runner-minute cost
-            expresses usage in the standard hosted-runner unit (vCPU-minutes × a fixed per-vCPU-minute rate) for
-            comparison. Spot is priced at current market (not each job&apos;s run-time price), and costs exclude
-            data transfer, EBS, and ancillary charges. Estimates only — see CLAUDE.md for limitations.
+            spot-market rates — falling back to list pricing if a lookup is unavailable. Every $/min column is
+            incurred cost over the billable minutes it was priced from, so cost = minutes × $/min in each row; the
+            Hosted $/min column is a fixed reference rate, not runs-fleet spend. Jobs whose record carries no
+            duration are billed a 0.5h minimum, which inflates their minutes as well as their cost. Spot is priced
+            at current market (not each job&apos;s run-time price), and costs exclude data transfer, EBS, and
+            ancillary charges — as well as boot time, hot-pool linger, and idle instances, none of which appear in
+            job records. Estimates only — see CLAUDE.md for limitations.
           </div>
         </>
       ) : (
@@ -259,7 +280,10 @@ function DailyChart({ daily }: { daily: CostDaily }) {
   const maxCost = daily.days.reduce((m, d) => Math.max(m, d.total_cost), 0.0001);
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4 mb-6">
-      <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">Daily Cost</h3>
+      <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">
+        Daily Cost
+        <HelpTip text="Each day's cost and its unit price — cost over that day's billable minutes. A day's $/min moves with the mix of shapes and the spot/on-demand split that ran, not with volume." />
+      </h3>
       <div className="flex items-end gap-1 h-40" role="img" aria-label="Daily cost bar chart; see the accompanying data table for values">
         {daily.days.map((d) => (
           <div key={d.date} className="flex-1 flex flex-col justify-end h-full group relative">
@@ -268,7 +292,8 @@ function DailyChart({ daily }: { daily: CostDaily }) {
               style={{ height: `${(d.total_cost / maxCost) * 100}%` }}
             />
             <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap rounded bg-gray-900 text-white text-xs px-2 py-1 z-10">
-              {d.date}: ${d.total_cost.toFixed(2)} ({d.job_count} jobs)
+              {d.date}: ${d.total_cost.toFixed(2)} ({d.job_count} jobs,{' '}
+              {formatPerMinute(d.cost_per_minute)}/min)
             </div>
           </div>
         ))}
@@ -280,13 +305,15 @@ function DailyChart({ daily }: { daily: CostDaily }) {
       <table className="sr-only">
         <caption>Daily cost</caption>
         <thead>
-          <tr><th>Date</th><th>Total cost (USD)</th><th>Jobs</th></tr>
+          <tr><th>Date</th><th>Total cost (USD)</th><th>Runner-minutes</th><th>Cost per minute (USD)</th><th>Jobs</th></tr>
         </thead>
         <tbody>
           {daily.days.map((d) => (
             <tr key={d.date}>
               <td>{d.date}</td>
               <td>{d.total_cost.toFixed(2)}</td>
+              <td>{formatMinutes(d.total_minutes)}</td>
+              <td>{formatPerMinute(d.cost_per_minute)}</td>
               <td>{d.job_count}</td>
             </tr>
           ))}
@@ -316,6 +343,19 @@ function SummaryCard({
       <dd className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">{value}</dd>
       <dd className="mt-1 text-xs text-gray-500 dark:text-gray-400">{subtitle}</dd>
     </div>
+  );
+}
+
+function formatSavingsMultiple(incurred: number, baseline: number) {
+  if (incurred <= 0 || baseline <= 0) {
+    return <span className="text-gray-400 dark:text-gray-500">-</span>;
+  }
+  const ratio = baseline / incurred;
+  const cheaper = ratio >= 1;
+  return (
+    <span className={cheaper ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
+      {cheaper ? `${ratio.toFixed(1)}x cheaper` : `${(1 / ratio).toFixed(1)}x pricier`}
+    </span>
   );
 }
 

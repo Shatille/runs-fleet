@@ -24,6 +24,19 @@ export function formatTimestamp(isoString?: string): string {
   return date.toLocaleString();
 }
 
+// formatPerMinute renders a per-runner-minute unit price. Fleet rates run an
+// order of magnitude below hosted-runner rates, so sub-cent values keep a fifth
+// decimal rather than collapsing to $0.0006.
+export function formatPerMinute(value?: number): string {
+  if (!value || value <= 0) return '-';
+  return `$${value.toFixed(value < 0.01 ? 5 : 4)}`;
+}
+
+export function formatMinutes(value?: number): string {
+  if (!value || value <= 0) return '-';
+  return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
 export function formatDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return '-';
   if (seconds < 60) return `${seconds}s`;

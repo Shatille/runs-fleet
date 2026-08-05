@@ -272,7 +272,9 @@ func TestCostHandler_GetCostSummary_MixedInstances(t *testing.T) {
 	if len(resp.RunnerMinuteRates) == 0 {
 		t.Error("expected runner-minute rates in response")
 	}
-	// arm64/4 row = c7g.xlarge, 300s = 5 min, 20 vCPU-min, 20*0.00125 = $0.025.
+	// arm64/4 row = c7g.xlarge spot, 300s = 5 min, 20 vCPU-min. Incurred cost is
+	// EC2: $0.145/hr on-demand at the 70% spot fallback over 5 min = $0.003625.
+	// The hosted baseline for the same minutes is 20 * $0.00125 = $0.025.
 	var arm4 *RunnerMinuteEntry
 	for i := range resp.RunnerMinuteBreakdown {
 		if resp.RunnerMinuteBreakdown[i].Arch == testArchARM64 && resp.RunnerMinuteBreakdown[i].Vcpu == 4 {
@@ -285,8 +287,127 @@ func TestCostHandler_GetCostSummary_MixedInstances(t *testing.T) {
 	if arm4.VcpuMinutes != 20 {
 		t.Errorf("arm64/4 vcpu-minutes = %v, want 20", arm4.VcpuMinutes)
 	}
-	if d := arm4.Cost - 0.025; d > 1e-9 || d < -1e-9 {
-		t.Errorf("arm64/4 cost = %v, want 0.025", arm4.Cost)
+	wantIncurred := 0.145 * (1 - cost.SpotDiscount) * (5.0 / 60)
+	if !approx(arm4.Cost, wantIncurred) {
+		t.Errorf("arm64/4 cost = %v, want %v (incurred EC2, not the flat rate)", arm4.Cost, wantIncurred)
+	}
+	if !approx(arm4.CostPerMinute, wantIncurred/5) {
+		t.Errorf("arm64/4 cost_per_minute = %v, want %v", arm4.CostPerMinute, wantIncurred/5)
+	}
+	if !approx(arm4.BaselineCost, 0.025) {
+		t.Errorf("arm64/4 baseline_cost = %v, want 0.025", arm4.BaselineCost)
+	}
+	if !approx(arm4.BaselineCostPerMinute, 0.005) {
+		t.Errorf("arm64/4 baseline_cost_per_minute = %v, want 0.005", arm4.BaselineCostPerMinute)
+	}
+}
+
+// The unit price is what makes the tab comparable to a hosted runner's per-minute
+// rate, so every aggregate must divide its own incurred cost by its own billable
+// minutes -- never a flat rate, and never a denominator borrowed from elsewhere.
+func TestCostHandler_UnitCostPerMinuteInEveryAggregate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	// Two on-demand t4g.medium hours ($0.0336/hr) => 120 billable minutes for
+	// $0.0672, a unit price of $0.00056/min in every grouping.
+	const wantPerMin = 0.0336 / 60
+	mockDB := &mockCostDB{jobs: []db.AdminJobEntry{
+		{JobID: 1, Repo: "org/api", Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+		{JobID: 2, Repo: "org/api", Pool: "default", InstanceType: "t4g.medium", DurationSeconds: 3600, Status: string(db.JobStatusCompleted), CreatedAt: now, CompletedAt: testCompletedAt},
+	}}
+
+	handler := NewCostHandler(mockDB, NewAuthMiddleware(""), nil, nil)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	get := func(t *testing.T, path string, out any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200: %s", path, rec.Code, rec.Body.String())
+		}
+		if err := json.NewDecoder(rec.Body).Decode(out); err != nil {
+			t.Fatalf("%s: decode: %v", path, err)
+		}
+	}
+
+	var summary CostSummaryResponse
+	get(t, "/api/cost/summary", &summary)
+	if !approx(summary.TotalMinutes, 120) {
+		t.Errorf("summary total_minutes = %v, want 120", summary.TotalMinutes)
+	}
+	if !approx(summary.CostPerMinute, wantPerMin) {
+		t.Errorf("summary cost_per_minute = %v, want %v", summary.CostPerMinute, wantPerMin)
+	}
+	if len(summary.FamilyBreakdown) != 1 {
+		t.Fatalf("family_breakdown = %d rows, want 1", len(summary.FamilyBreakdown))
+	}
+	if !approx(summary.FamilyBreakdown[0].CostPerMinute, wantPerMin) {
+		t.Errorf("family cost_per_minute = %v, want %v", summary.FamilyBreakdown[0].CostPerMinute, wantPerMin)
+	}
+	if len(summary.RunnerMinuteBreakdown) != 1 {
+		t.Fatalf("runner_minute_breakdown = %d rows, want 1", len(summary.RunnerMinuteBreakdown))
+	}
+	if !approx(summary.RunnerMinuteBreakdown[0].CostPerMinute, wantPerMin) {
+		t.Errorf("shape cost_per_minute = %v, want %v", summary.RunnerMinuteBreakdown[0].CostPerMinute, wantPerMin)
+	}
+
+	var byPool CostByPoolResponse
+	get(t, "/api/cost/by-pool", &byPool)
+	if len(byPool.Pools) != 1 {
+		t.Fatalf("pools = %d, want 1", len(byPool.Pools))
+	}
+	if !approx(byPool.Pools[0].TotalMinutes, 120) || !approx(byPool.Pools[0].CostPerMinute, wantPerMin) {
+		t.Errorf("pool unit cost = %v/min over %v min, want %v/min over 120",
+			byPool.Pools[0].CostPerMinute, byPool.Pools[0].TotalMinutes, wantPerMin)
+	}
+
+	var byRepo CostByRepositoryResponse
+	get(t, "/api/cost/by-repository", &byRepo)
+	if len(byRepo.Repositories) != 1 {
+		t.Fatalf("repositories = %d, want 1", len(byRepo.Repositories))
+	}
+	if !approx(byRepo.Repositories[0].TotalMinutes, 120) || !approx(byRepo.Repositories[0].CostPerMinute, wantPerMin) {
+		t.Errorf("repository unit cost = %v/min over %v min, want %v/min over 120",
+			byRepo.Repositories[0].CostPerMinute, byRepo.Repositories[0].TotalMinutes, wantPerMin)
+	}
+
+	var daily CostDailyResponse
+	get(t, "/api/cost/daily", &daily)
+	var today *CostDayEntry
+	for i := range daily.Days {
+		if daily.Days[i].Date == now.Format("2006-01-02") {
+			today = &daily.Days[i]
+		}
+	}
+	if today == nil {
+		t.Fatalf("no bucket for %s", now.Format("2006-01-02"))
+	}
+	if !approx(today.TotalMinutes, 120) || !approx(today.CostPerMinute, wantPerMin) {
+		t.Errorf("day unit cost = %v/min over %v min, want %v/min over 120",
+			today.CostPerMinute, today.TotalMinutes, wantPerMin)
+	}
+	// A day with no jobs must stay a clean zero rather than a divide-by-zero.
+	for _, d := range daily.Days {
+		if d.JobCount == 0 && d.CostPerMinute != 0 {
+			t.Errorf("%s: empty day cost_per_minute = %v, want 0", d.Date, d.CostPerMinute)
+		}
+	}
+}
+
+func TestCostPerMinute(t *testing.T) {
+	t.Parallel()
+
+	if got := costPerMinute(1.5, 30); !approx(got, 0.05) {
+		t.Errorf("costPerMinute(1.5, 30) = %v, want 0.05", got)
+	}
+	if got := costPerMinute(1.5, 0); got != 0 {
+		t.Errorf("costPerMinute(1.5, 0) = %v, want 0", got)
+	}
+	if got := costPerMinute(1.5, -10); got != 0 {
+		t.Errorf("costPerMinute(1.5, -10) = %v, want 0", got)
 	}
 }
 
@@ -316,7 +437,8 @@ func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testin
 	}
 
 	// Only the catalogued c7g.xlarge contributes: arm64/4, 600s = 10 min,
-	// 40 vCPU-min, 40*0.00125 = $0.05. The made-up type is excluded.
+	// 40 vCPU-min, baseline 40*0.00125 = $0.05. The made-up type has no known
+	// arch/vCPU, so it cannot be placed in a shape row.
 	if len(resp.RunnerMinuteBreakdown) != 1 {
 		t.Fatalf("expected 1 runner-minute shape, got %d", len(resp.RunnerMinuteBreakdown))
 	}
@@ -324,8 +446,16 @@ func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testin
 	if row.Arch != testArchARM64 || row.Vcpu != 4 || row.RunnerMinutes != 10 || row.VcpuMinutes != 40 {
 		t.Errorf("unexpected row: %+v", row)
 	}
-	if d := resp.RunnerMinuteCost - 0.05; d > 1e-9 || d < -1e-9 {
-		t.Errorf("runner-minute cost = %v, want 0.05", resp.RunnerMinuteCost)
+	if !approx(resp.RunnerMinuteCost, 0.05) {
+		t.Errorf("baseline runner-minute cost = %v, want 0.05", resp.RunnerMinuteCost)
+	}
+	// Incurred cost stays EC2-priced: $0.145/hr at the spot fallback over 10 min.
+	wantIncurred := 0.145 * (1 - cost.SpotDiscount) / 6
+	if !approx(row.Cost, wantIncurred) {
+		t.Errorf("shape cost = %v, want %v", row.Cost, wantIncurred)
+	}
+	if !approx(row.CostPerMinute, wantIncurred/10) {
+		t.Errorf("shape cost_per_minute = %v, want %v", row.CostPerMinute, wantIncurred/10)
 	}
 }
 

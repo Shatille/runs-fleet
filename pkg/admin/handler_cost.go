@@ -49,34 +49,46 @@ type CostSummaryResponse struct {
 	OnDemandCost    float64                `json:"on_demand_cost"`
 	SpotSavings     float64                `json:"spot_savings"`
 	AvgCostPerJob   float64                `json:"avg_cost_per_job"`
+	TotalMinutes    float64                `json:"total_minutes"`
+	CostPerMinute   float64                `json:"cost_per_minute"`
 	JobCount        int                    `json:"job_count"`
 	SpotJobCount    int                    `json:"spot_job_count"`
 	OnDemandCount   int                    `json:"on_demand_count"`
 	FamilyBreakdown []FamilyBreakdownEntry `json:"family_breakdown"`
 
-	// Runner-minute cost expresses the same usage in the standard hosted-runner
-	// unit (vCPU-minutes × per-vCPU-minute rate), broken down by (arch, vCPU).
+	// RunnerMinuteBreakdown carries the per-runner-shape unit price: the cost
+	// actually incurred for each (arch, vCPU) shape and its per-minute rate,
+	// alongside the hosted-runner baseline for the same usage.
+	// RunnerMinuteCost is that baseline's total (Σ vCPU-minutes ×
+	// per-vCPU-minute rate), not runs-fleet spend.
 	RunnerMinuteCost      float64             `json:"runner_minute_cost"`
 	RunnerMinuteRates     map[string]float64  `json:"runner_minute_rates"`
 	RunnerMinuteBreakdown []RunnerMinuteEntry `json:"runner_minute_breakdown"`
 }
 
-// RunnerMinuteEntry is one (arch, vCPU) row of the runner-minute cost matrix.
+// RunnerMinuteEntry is one (arch, vCPU) runner shape's unit cost. Cost and
+// CostPerMinute are what runs-fleet actually incurred; the Baseline fields
+// price the identical minutes at the standard per-vCPU-minute rate so the two
+// can be compared cell by cell.
 type RunnerMinuteEntry struct {
-	Arch          string  `json:"arch"`
-	Vcpu          int     `json:"vcpu"`
-	RunnerMinutes float64 `json:"runner_minutes"`
-	VcpuMinutes   float64 `json:"vcpu_minutes"`
-	Cost          float64 `json:"cost"`
+	Arch                  string  `json:"arch"`
+	Vcpu                  int     `json:"vcpu"`
+	RunnerMinutes         float64 `json:"runner_minutes"`
+	VcpuMinutes           float64 `json:"vcpu_minutes"`
+	Cost                  float64 `json:"cost"`
+	CostPerMinute         float64 `json:"cost_per_minute"`
+	BaselineCost          float64 `json:"baseline_cost"`
+	BaselineCostPerMinute float64 `json:"baseline_cost_per_minute"`
 }
 
 // FamilyBreakdownEntry represents cost breakdown for one instance family.
 type FamilyBreakdownEntry struct {
-	Family      string  `json:"family"`
-	JobCount    int     `json:"job_count"`
-	TotalHours  float64 `json:"total_hours"`
-	TotalCost   float64 `json:"total_cost"`
-	SpotPercent float64 `json:"spot_percent"`
+	Family        string  `json:"family"`
+	JobCount      int     `json:"job_count"`
+	TotalHours    float64 `json:"total_hours"`
+	TotalCost     float64 `json:"total_cost"`
+	CostPerMinute float64 `json:"cost_per_minute"`
+	SpotPercent   float64 `json:"spot_percent"`
 }
 
 // CostDailyResponse is the per-day cost time series for the current month.
@@ -88,11 +100,13 @@ type CostDailyResponse struct {
 
 // CostDayEntry is one calendar day's cost (zero-filled for days with no jobs).
 type CostDayEntry struct {
-	Date         string  `json:"date"` // YYYY-MM-DD (UTC)
-	TotalCost    float64 `json:"total_cost"`
-	SpotCost     float64 `json:"spot_cost"`
-	OnDemandCost float64 `json:"on_demand_cost"`
-	JobCount     int     `json:"job_count"`
+	Date          string  `json:"date"` // YYYY-MM-DD (UTC)
+	TotalCost     float64 `json:"total_cost"`
+	SpotCost      float64 `json:"spot_cost"`
+	OnDemandCost  float64 `json:"on_demand_cost"`
+	TotalMinutes  float64 `json:"total_minutes"`
+	CostPerMinute float64 `json:"cost_per_minute"`
+	JobCount      int     `json:"job_count"`
 }
 
 // CostByPoolResponse is month-to-date cost grouped by warm pool.
@@ -105,12 +119,14 @@ type CostByPoolResponse struct {
 // CostPoolEntry is one pool's month-to-date cost. Cold-start (poolless) jobs are
 // grouped under the "cold-start" pseudo-pool.
 type CostPoolEntry struct {
-	Pool         string  `json:"pool"`
-	JobCount     int     `json:"job_count"`
-	TotalCost    float64 `json:"total_cost"`
-	SpotCost     float64 `json:"spot_cost"`
-	OnDemandCost float64 `json:"on_demand_cost"`
-	SpotPercent  float64 `json:"spot_percent"`
+	Pool          string  `json:"pool"`
+	JobCount      int     `json:"job_count"`
+	TotalCost     float64 `json:"total_cost"`
+	SpotCost      float64 `json:"spot_cost"`
+	OnDemandCost  float64 `json:"on_demand_cost"`
+	TotalMinutes  float64 `json:"total_minutes"`
+	CostPerMinute float64 `json:"cost_per_minute"`
+	SpotPercent   float64 `json:"spot_percent"`
 }
 
 // CostByRepositoryResponse is month-to-date cost grouped by source repository,
@@ -132,6 +148,8 @@ type CostRepositoryEntry struct {
 	SpotCost      float64 `json:"spot_cost"`
 	OnDemandCost  float64 `json:"on_demand_cost"`
 	AvgCostPerJob float64 `json:"avg_cost_per_job"`
+	TotalMinutes  float64 `json:"total_minutes"`
+	CostPerMinute float64 `json:"cost_per_minute"`
 	SpotPercent   float64 `json:"spot_percent"`
 }
 
@@ -221,6 +239,18 @@ type archVcpuKey struct {
 	vcpu int
 }
 
+// costPerMinute turns an aggregate into the unit price that compares directly
+// against a hosted runner's per-minute rate. The denominator is billable
+// minutes -- the same minutes the numerator was priced from -- so cost always
+// equals minutes × the returned rate. Zero when nothing was billed, so an empty
+// bucket reads as "no rate" rather than +Inf.
+func costPerMinute(total, minutes float64) float64 {
+	if minutes <= 0 {
+		return 0
+	}
+	return total / minutes
+}
+
 func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostSummaryResponse {
 	type familyAccum struct {
 		jobCount  int
@@ -230,16 +260,17 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 	}
 
 	type shapeAccum struct {
-		arch        string
-		vcpu        int
-		runnerMins  float64
-		vcpuMinutes float64
-		cost        float64
+		arch         string
+		vcpu         int
+		runnerMins   float64
+		vcpuMinutes  float64
+		cost         float64
+		baselineCost float64
 	}
 
 	families := make(map[string]*familyAccum)
 	shapes := make(map[archVcpuKey]*shapeAccum)
-	var totalCost, spotCost, onDemandCost, spotSavings, runnerMinuteCost float64
+	var totalCost, spotCost, onDemandCost, spotSavings, totalMinutes, baselineCost float64
 	var spotJobCount, onDemandCount int
 
 	// Per-request pricer so each distinct instance type is priced once, even
@@ -257,6 +288,7 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 		spotCost += p.Spot
 		onDemandCost += p.OnDemand
 		spotSavings += p.Savings
+		totalMinutes += p.Hours * 60
 		if job.Spot {
 			spotJobCount++
 		} else {
@@ -276,20 +308,17 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			acc.spotCount++
 		}
 
-		// Runner-minute matrix, keyed by (arch, vCPU). Uses the actual reported
-		// duration (not the EC2-cost 0.5h fallback) so it faithfully reflects
-		// billable runner-minutes, matching the RunnerExecutionSeconds metric.
-		// Skips zero-duration jobs, instance types not in the catalog (arch/vCPU
-		// unknown), and shapes without a configured rate.
+		// Per-shape unit cost, keyed by (arch, vCPU). Uses the actual reported
+		// duration (not the EC2-cost 0.5h fallback) so a per-minute rate divides
+		// real cost by real minutes. Skips zero-duration jobs (no minutes to
+		// price) and instance types not in the catalog (arch/vCPU unknown); the
+		// hosted baseline is added only for architectures with a configured rate,
+		// while the incurred cost is recorded either way.
 		if job.DurationSeconds <= 0 {
 			continue
 		}
 		spec, found := fleet.GetInstanceSpec(instanceType)
 		if !found {
-			continue
-		}
-		rate, priced := h.rates[spec.Arch]
-		if !priced {
 			continue
 		}
 		key := archVcpuKey{arch: spec.Arch, vcpu: spec.CPU}
@@ -298,23 +327,28 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			shape = &shapeAccum{arch: spec.Arch, vcpu: spec.CPU}
 			shapes[key] = shape
 		}
-		mins := float64(job.DurationSeconds) / 60
+		mins := p.Hours * 60
 		vcpuMins := mins * float64(spec.CPU)
-		shapeCost := vcpuMins * rate
 		shape.runnerMins += mins
 		shape.vcpuMinutes += vcpuMins
-		shape.cost += shapeCost
-		runnerMinuteCost += shapeCost
+		shape.cost += p.Total
+		if rate, priced := h.rates[spec.Arch]; priced {
+			shape.baselineCost += vcpuMins * rate
+			baselineCost += vcpuMins * rate
+		}
 	}
 
 	runnerBreakdown := make([]RunnerMinuteEntry, 0, len(shapes))
 	for _, s := range shapes {
 		runnerBreakdown = append(runnerBreakdown, RunnerMinuteEntry{
-			Arch:          s.arch,
-			Vcpu:          s.vcpu,
-			RunnerMinutes: s.runnerMins,
-			VcpuMinutes:   s.vcpuMinutes,
-			Cost:          s.cost,
+			Arch:                  s.arch,
+			Vcpu:                  s.vcpu,
+			RunnerMinutes:         s.runnerMins,
+			VcpuMinutes:           s.vcpuMinutes,
+			Cost:                  s.cost,
+			CostPerMinute:         costPerMinute(s.cost, s.runnerMins),
+			BaselineCost:          s.baselineCost,
+			BaselineCostPerMinute: costPerMinute(s.baselineCost, s.runnerMins),
 		})
 	}
 	sort.Slice(runnerBreakdown, func(i, j int) bool {
@@ -331,11 +365,12 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 			spotPct = float64(acc.spotCount) / float64(acc.jobCount) * 100
 		}
 		breakdown = append(breakdown, FamilyBreakdownEntry{
-			Family:      fam,
-			JobCount:    acc.jobCount,
-			TotalHours:  acc.hours,
-			TotalCost:   acc.cost,
-			SpotPercent: spotPct,
+			Family:        fam,
+			JobCount:      acc.jobCount,
+			TotalHours:    acc.hours,
+			TotalCost:     acc.cost,
+			CostPerMinute: costPerMinute(acc.cost, acc.hours*60),
+			SpotPercent:   spotPct,
 		})
 	}
 
@@ -352,11 +387,13 @@ func (h *CostHandler) computeCostSummary(ctx context.Context, jobs []db.AdminJob
 		OnDemandCost:          onDemandCost,
 		SpotSavings:           spotSavings,
 		AvgCostPerJob:         avgCost,
+		TotalMinutes:          totalMinutes,
+		CostPerMinute:         costPerMinute(totalCost, totalMinutes),
 		JobCount:              len(jobs),
 		SpotJobCount:          spotJobCount,
 		OnDemandCount:         onDemandCount,
 		FamilyBreakdown:       breakdown,
-		RunnerMinuteCost:      runnerMinuteCost,
+		RunnerMinuteCost:      baselineCost,
 		RunnerMinuteRates:     h.rates,
 		RunnerMinuteBreakdown: runnerBreakdown,
 	}
@@ -411,8 +448,8 @@ func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry,
 	}
 
 	type dayAccum struct {
-		total, spot, onDemand float64
-		count                 int
+		total, spot, onDemand, minutes float64
+		count                          int
 	}
 	days := make(map[string]*dayAccum)
 
@@ -428,6 +465,7 @@ func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry,
 		acc.total += p.Total
 		acc.spot += p.Spot
 		acc.onDemand += p.OnDemand
+		acc.minutes += p.Hours * 60
 		acc.count++
 	}
 
@@ -441,6 +479,8 @@ func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry,
 			entry.TotalCost = acc.total
 			entry.SpotCost = acc.spot
 			entry.OnDemandCost = acc.onDemand
+			entry.TotalMinutes = acc.minutes
+			entry.CostPerMinute = costPerMinute(acc.total, acc.minutes)
 			entry.JobCount = acc.count
 		}
 		entries = append(entries, entry)
@@ -455,8 +495,8 @@ func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry,
 
 func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostByPoolResponse {
 	type poolAccum struct {
-		total, spot, onDemand float64
-		count, spotCount      int
+		total, spot, onDemand, minutes float64
+		count, spotCount               int
 	}
 	pools := make(map[string]*poolAccum)
 
@@ -475,6 +515,7 @@ func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry
 		acc.total += p.Total
 		acc.spot += p.Spot
 		acc.onDemand += p.OnDemand
+		acc.minutes += p.Hours * 60
 		acc.count++
 		if job.Spot {
 			acc.spotCount++
@@ -488,12 +529,14 @@ func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry
 			spotPct = float64(acc.spotCount) / float64(acc.count) * 100
 		}
 		entries = append(entries, CostPoolEntry{
-			Pool:         name,
-			JobCount:     acc.count,
-			TotalCost:    acc.total,
-			SpotCost:     acc.spot,
-			OnDemandCost: acc.onDemand,
-			SpotPercent:  spotPct,
+			Pool:          name,
+			JobCount:      acc.count,
+			TotalCost:     acc.total,
+			SpotCost:      acc.spot,
+			OnDemandCost:  acc.onDemand,
+			TotalMinutes:  acc.minutes,
+			CostPerMinute: costPerMinute(acc.total, acc.minutes),
+			SpotPercent:   spotPct,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -509,8 +552,8 @@ func (h *CostHandler) computeByPool(ctx context.Context, jobs []db.AdminJobEntry
 
 func (h *CostHandler) computeByRepository(ctx context.Context, jobs []db.AdminJobEntry, start, end time.Time) *CostByRepositoryResponse {
 	type repoAccum struct {
-		total, spot, onDemand float64
-		count, spotCount      int
+		total, spot, onDemand, minutes float64
+		count, spotCount               int
 	}
 	repos := make(map[string]*repoAccum)
 
@@ -529,6 +572,7 @@ func (h *CostHandler) computeByRepository(ctx context.Context, jobs []db.AdminJo
 		acc.total += p.Total
 		acc.spot += p.Spot
 		acc.onDemand += p.OnDemand
+		acc.minutes += p.Hours * 60
 		acc.count++
 		if job.Spot {
 			acc.spotCount++
@@ -549,6 +593,8 @@ func (h *CostHandler) computeByRepository(ctx context.Context, jobs []db.AdminJo
 			SpotCost:      acc.spot,
 			OnDemandCost:  acc.onDemand,
 			AvgCostPerJob: avg,
+			TotalMinutes:  acc.minutes,
+			CostPerMinute: costPerMinute(acc.total, acc.minutes),
 			SpotPercent:   spotPct,
 		})
 	}
