@@ -632,17 +632,25 @@ done
 sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
 
 echo "==> Downloading GitHub Actions runner"
-RUNNER_VERSION="2.334.0"
+# GitHub enforces a rolling minimum: registration needs >= 2.329.0, but running
+# jobs requires each release installed within 30 days of its publication, so a
+# static pin goes stale ~30 days after the release it names regardless of value.
+# Rebake within that window; github.com enforcement lands 2026-09-25.
+RUNNER_VERSION="2.336.0"
 if [ "$ARCH" = "x86_64" ]; then
   RUNNER_PLATFORM="x64"
+  RUNNER_SHA256="04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
 else
   RUNNER_PLATFORM="arm64"
+  RUNNER_SHA256="58b758e420b87093fbd4bfddd368074960053e2f1388f01848c82624b90f27d1"
 fi
 sudo mkdir -p /opt/actions-runner
 sudo chown ec2-user:ec2-user /opt/actions-runner
 dl -o /tmp/actions-runner.tar.gz \
   "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_PLATFORM}-${RUNNER_VERSION}.tar.gz" \
   || { echo "actions-runner download failed"; exit 1; }
+echo "${RUNNER_SHA256}  /tmp/actions-runner.tar.gz" | sha256sum -c \
+  || { echo "actions-runner checksum mismatch"; rm -f /tmp/actions-runner.tar.gz; exit 1; }
 tar xzf /tmp/actions-runner.tar.gz -C /opt/actions-runner \
   || { echo "actions-runner extraction failed"; rm /tmp/actions-runner.tar.gz; exit 1; }
 rm /tmp/actions-runner.tar.gz
