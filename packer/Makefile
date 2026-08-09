@@ -35,6 +35,28 @@ BASE_AMD64_TEMPLATE := runner-base-amd64.pkr.hcl
 RUNS_FLEET_ARM64_TEMPLATE := runs-fleet-runner-arm64.pkr.hcl
 RUNS_FLEET_AMD64_TEMPLATE := runs-fleet-runner-amd64.pkr.hcl
 
+# The base templates require runner_version/runner_sha256 with no defaults; CI
+# supplies them from the "Resolve actions/runner version" step. For local builds
+# resolve the same way, so `make base` works without hand-copying digests.
+# Override by exporting PKR_VAR_runner_version / PKR_VAR_runner_sha256.
+RUNNER_MIN_VERSION := $(shell tr -d '[:space:]' < ../.github/RUNNER_MIN_VERSION)
+define resolve_runner
+	if [ -z "$$PKR_VAR_runner_version" ] || [ -z "$$PKR_VAR_runner_sha256" ]; then \
+		release="$$(gh api repos/actions/runner/releases/latest)" || exit 1; \
+		PKR_VAR_runner_version="$$(printf '%s' "$$release" | jq -r '.tag_name | ltrimstr("v")')"; \
+		PKR_VAR_runner_sha256="$$(printf '%s' "$$release" | jq -r '.body' \
+			| grep -oE "BEGIN SHA linux-$(1) -->[0-9a-f]{64}" | grep -oE '[0-9a-f]{64}' | head -1)"; \
+		if [ -z "$$PKR_VAR_runner_version" ] || [ -z "$$PKR_VAR_runner_sha256" ]; then \
+			echo "failed to resolve actions/runner version or linux-$(1) checksum" >&2; exit 1; \
+		fi; \
+		if [ "$$(printf '%s\n%s\n' "$$PKR_VAR_runner_version" "$(RUNNER_MIN_VERSION)" | sort -V | head -1)" \
+			!= "$(RUNNER_MIN_VERSION)" ]; then \
+			echo "resolved $$PKR_VAR_runner_version is below the floor $(RUNNER_MIN_VERSION)" >&2; exit 1; \
+		fi; \
+		export PKR_VAR_runner_version PKR_VAR_runner_sha256; \
+	fi
+endef
+
 # Build all
 all: base runs-fleet
 
@@ -52,9 +74,11 @@ base-arm64-init:
 	packer init $(BASE_ARM64_TEMPLATE)
 
 base-arm64-validate: base-arm64-init
+	@$(call resolve_runner,arm64); \
 	packer validate $(BASE_ARM64_TEMPLATE)
 
 base-arm64-build: base-arm64-validate
+	@$(call resolve_runner,arm64); \
 	packer build $(BASE_ARM64_TEMPLATE)
 
 # Base AMI amd64
@@ -64,9 +88,11 @@ base-amd64-init:
 	packer init $(BASE_AMD64_TEMPLATE)
 
 base-amd64-validate: base-amd64-init
+	@$(call resolve_runner,x64); \
 	packer validate $(BASE_AMD64_TEMPLATE)
 
 base-amd64-build: base-amd64-validate
+	@$(call resolve_runner,x64); \
 	packer build $(BASE_AMD64_TEMPLATE)
 
 # Runs Fleet Runner AMI ARM64
