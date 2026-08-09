@@ -56,7 +56,8 @@ Two-layer AMI build, per architecture (`amd64` and `arm64`):
   yarn + pnpm, Vault CLI, yq, CloudWatch + SSM agents, Java 21 + sbt,
   Python 3.11–3.13 + pipx, Ruby 3.2/3.4, pre-populated Actions tool caches
   (Python, Ruby, Node 20/22, Go 1.24/1.25, Temurin JDK 17/21), the
-  `actions/runner` binary itself (v2.336.0) and its OS deps, and on ARM64
+  `actions/runner` binary itself (resolved at bake time, see below) and its OS
+  deps, and on ARM64
   only a from-source gold linker for Go race-detector compatibility. A
   downstream hook (`provision-base-hook.sh`, empty upstream) runs just before
   cleanup, and a Trivy filesystem scan gates the snapshot.
@@ -361,20 +362,35 @@ the GitHub secret's.
   `/var/lib/cloud/scripts/per-boot/`. Warm-pool instances stop and restart, so
   `per-instance/` or `once/` would break every resume (root cause of commit
   `490249b`).
-- **Runner version drift between AMI and container image.** The AMI bakes
-  `actions/runner` v2.336.0 (`RUNNER_VERSION` in `provision-base.sh`); the
-  container tracks the official base image at `RUNNER_BASE_TAG` 2.335.1
-  (Makefile and Dockerfile now agree, CI can override via
-  `vars.RUNNER_BASE_TAG`). Two supply chains, two bump sites — EC2 jobs and
-  container-based runs can run different runner versions between bumps.
-  Both pins are now on a clock: GitHub requires each runner release be
-  installed within 30 days of publication to keep executing jobs (registration
-  floor is 2.329.0), so a static pin expires ~30 days after its release date
-  no matter which version it names. Enforcement for github.com begins
-  2026-09-25, with brownouts from 2026-08-24; Enterprise Cloud with Data
-  Residency was enforced from 2026-07-31. Rebaking on a schedule inside the
-  30-day window — or resolving `releases/latest` at bake time, which
-  `pkg/agent/downloader.go` already does at runtime — is the durable fix.
+- **Runner version drift between AMI and container image.** The AMI no longer
+  pins `actions/runner`: the "Resolve actions/runner version" step in
+  `build-amis.yml` reads `releases/latest`, takes the matching per-arch SHA-256
+  out of the release notes, and passes both to Packer as `runner_version` /
+  `runner_sha256`. Those templates declare the variables with **no defaults**,
+  so a missing value fails the build instead of silently baking something
+  stale, and `provision-base.sh` rejects an empty value before downloading.
+  The resolved version lands on the AMI as the `RunnerVersion` tag, so what a
+  given AMI carries is answerable from the EC2 console.
+
+  This exists because GitHub expires runners on a rolling clock: registration
+  requires at least the floor in `.github/RUNNER_MIN_VERSION` (2.329.0), but
+  *executing jobs* requires each release be installed within 30 days of
+  publication. Any static literal therefore expires ~30 days after the release
+  it names, whatever that release is — the weekly base rebuild
+  (`cron: "0 6 * * 0"`) would just have rebaked the stale value. Enforcement for
+  github.com began 2026-09-25 with brownouts from 2026-08-24; Enterprise Cloud
+  with Data Residency was enforced from 2026-07-31.
+
+  The floor is the guard against floating: `sort -V` rejects anything below it,
+  so a yanked or rolled-back upstream release fails the build rather than
+  reaching an AMI. Raise it when GitHub raises the registration minimum. The
+  tradeoff accepted here is that a new upstream release reaches AMIs without a
+  commit, so AMI contents are not reproducible from a git SHA alone.
+
+  The container image is still a separate, static supply chain — `RUNNER_BASE_TAG`
+  2.335.1 in the Makefile and Dockerfile, overridable via `vars.RUNNER_BASE_TAG`
+  — and is on the same 30-day clock without the same automation. EC2 jobs and
+  container-based runs can therefore still report different runner versions.
 - **Nix Go agent vs Docker runner agent diverge.** `nix build .#agent-arm64`
   builds from the Nix store; the AMI's agent is extracted from the
   `runs-fleet-runner` ECR image at Packer build time. Different toolchain,

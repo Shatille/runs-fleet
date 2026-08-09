@@ -80,6 +80,7 @@ jobs:
               # and config must rebuild base too.
               - 'packer/provision-trivy-scan.sh'
               - '.trivy/**'
+              - '.github/RUNNER_MIN_VERSION'
               - '.github/workflows/build-amis.yml'
             runner:
               - 'packer/runs-fleet-runner-*.pkr.hcl'
@@ -155,6 +156,59 @@ jobs:
             echo "No PROVISION_BASE_HOOK secret set; using checked-in empty stub"
           fi
 
+      # Resolved here rather than pinned in provision-base.sh because GitHub
+      # enforces a rolling minimum: registration needs >= RUNNER_MIN_VERSION,
+      # but executing jobs requires each release be installed within 30 days of
+      # publication. A literal in the provisioner expires ~30 days after the
+      # release it names, and the weekly rebuild would just rebake it. Resolving
+      # on the workflow runner (not inside the Packer instance) is deliberate:
+      # the builder has no GitHub credential and would hit the 60 req/hr
+      # anonymous limit, and `tags` is evaluated at build-plan time so a version
+      # resolved in-instance could never reach the AMI tag.
+      - name: Resolve actions/runner version
+        id: runner
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          min="$(tr -d '[:space:]' < .github/RUNNER_MIN_VERSION)"
+          release="$(gh api repos/actions/runner/releases/latest)"
+
+          version="$(printf '%s' "$release" | jq -r '.tag_name | ltrimstr("v")')"
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "ERROR: could not resolve latest actions/runner version" >&2
+            exit 1
+          fi
+
+          # sort -V puts the smaller version first, so the floor holds iff it
+          # sorts lowest. Rejects a yanked/rolled-back upstream release.
+          if [ "$(printf '%s\n%s\n' "$version" "$min" | sort -V | head -1)" != "$min" ]; then
+            echo "ERROR: resolved $version is below the floor $min" >&2
+            exit 1
+          fi
+
+          # The releases API exposes no per-asset digest; the checksums live in
+          # the release body between HTML-comment markers.
+          case "$MATRIX_ARCH" in
+            amd64) asset_arch=x64 ;;
+            arm64) asset_arch=arm64 ;;
+            *) echo "ERROR: unexpected arch '$MATRIX_ARCH'" >&2; exit 1 ;;
+          esac
+          sha="$(printf '%s' "$release" \
+            | jq -r '.body' \
+            | grep -oE "BEGIN SHA linux-${asset_arch} -->[0-9a-f]{64}" \
+            | grep -oE '[0-9a-f]{64}' \
+            | head -1)"
+          if [ -z "$sha" ]; then
+            echo "ERROR: no linux-${asset_arch} checksum in the v${version} release notes" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved actions/runner v${version} (linux-${asset_arch}, floor ${min})"
+
       - name: Packer Init
         working-directory: packer
         run: packer init ${{ matrix.packer_file }}
@@ -166,6 +220,8 @@ jobs:
           # (e.g., '{"Environment":"prod"}') to merge tags onto the final AMI.
           # Unset → '{}', which parses as an empty map(string).
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
+          PKR_VAR_runner_version: ${{ steps.runner.outputs.version }}
+          PKR_VAR_runner_sha256: ${{ steps.runner.outputs.sha256 }}
         run: |
           packer validate \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
@@ -176,6 +232,8 @@ jobs:
         working-directory: packer
         env:
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
+          PKR_VAR_runner_version: ${{ steps.runner.outputs.version }}
+          PKR_VAR_runner_sha256: ${{ steps.runner.outputs.sha256 }}
         run: |
           packer build \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \

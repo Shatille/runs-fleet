@@ -632,17 +632,19 @@ done
 sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
 
 echo "==> Downloading GitHub Actions runner"
-# GitHub enforces a rolling minimum: registration needs >= 2.329.0, but running
-# jobs requires each release installed within 30 days of its publication, so a
-# static pin goes stale ~30 days after the release it names regardless of value.
-# Rebake within that window; github.com enforcement lands 2026-09-25.
-RUNNER_VERSION="2.336.0"
+# RUNNER_VERSION and RUNNER_SHA256 are injected by the Packer template, resolved
+# from releases/latest by build-amis.yml. They are deliberately not defaulted
+# here: GitHub stops a runner executing jobs ~30 days after its release is
+# published, so any literal baked into this script expires on a timer. Checked
+# explicitly because this script runs under `set -e` alone — an unset variable
+# would otherwise expand to empty and bake a broken runner.
+if [ -z "${RUNNER_VERSION:-}" ] || [ -z "${RUNNER_SHA256:-}" ]; then
+  echo "RUNNER_VERSION and RUNNER_SHA256 must be set (see build-amis.yml)"; exit 1
+fi
 if [ "$ARCH" = "x86_64" ]; then
   RUNNER_PLATFORM="x64"
-  RUNNER_SHA256="04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
 else
   RUNNER_PLATFORM="arm64"
-  RUNNER_SHA256="58b758e420b87093fbd4bfddd368074960053e2f1388f01848c82624b90f27d1"
 fi
 sudo mkdir -p /opt/actions-runner
 sudo chown ec2-user:ec2-user /opt/actions-runner
@@ -654,6 +656,15 @@ echo "${RUNNER_SHA256}  /tmp/actions-runner.tar.gz" | sha256sum -c \
 tar xzf /tmp/actions-runner.tar.gz -C /opt/actions-runner \
   || { echo "actions-runner extraction failed"; rm /tmp/actions-runner.tar.gz; exit 1; }
 rm /tmp/actions-runner.tar.gz
+# Confirm the extracted tree is the version we asked for, so a redirected or
+# mislabelled asset can't pass the checksum gate and still bake the wrong
+# runner. Read from deps.json rather than `Runner.Listener --version` because
+# the binary is built for the target arch and need not be executable here.
+RUNNER_BAKED="$(jq -r '.libraries | keys[] | select(startswith("Runner.Listener/")) | ltrimstr("Runner.Listener/")' \
+  /opt/actions-runner/bin/Runner.Listener.deps.json)"
+if [ "$RUNNER_BAKED" != "$RUNNER_VERSION" ]; then
+  echo "actions-runner extracted ${RUNNER_BAKED:-unknown}, expected ${RUNNER_VERSION}"; exit 1
+fi
 
 # Downstream extension point.
 # The build uploads packer/provision-base-hook.sh to /tmp/provision-base-hook.sh

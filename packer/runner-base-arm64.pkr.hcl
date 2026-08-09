@@ -28,6 +28,16 @@ variable "extra_tags" {
   description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
 }
 
+variable "runner_version" {
+  type        = string
+  description = "actions/runner version to bake, without the leading 'v'. Resolved from releases/latest by the Resolve actions/runner version step in build-amis.yml. No default: GitHub expires a given version ~30 days after its release, so a stale fallback would silently bake a non-compliant runner."
+}
+
+variable "runner_sha256" {
+  type        = string
+  description = "SHA-256 of the linux-arm64 actions/runner tarball for runner_version, taken from the release notes. No default, for the same reason as runner_version."
+}
+
 source "amazon-ebs" "runner_base_arm64" {
   ami_name             = "runner-base-arm64-{{timestamp}}"
   instance_type        = "c7g.xlarge"
@@ -89,6 +99,7 @@ source "amazon-ebs" "runner_base_arm64" {
     ManagedBy      = "Packer"
     BuildTimestamp = "{{timestamp}}"
     Stage          = "base"
+    RunnerVersion  = var.runner_version
   }, var.extra_tags)
 
   run_tags = {
@@ -117,6 +128,10 @@ build {
   }
 
   provisioner "shell" {
+    environment_vars = [
+      "RUNNER_VERSION=${var.runner_version}",
+      "RUNNER_SHA256=${var.runner_sha256}",
+    ]
     script = "${path.root}/provision-base.sh"
   }
 
