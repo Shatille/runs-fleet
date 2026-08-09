@@ -1,0 +1,105 @@
+name: Runner Staleness Check
+
+# AMIs are rebuilt on demand, not on a schedule, so nothing forces the baked
+# actions/runner forward on its own. GitHub stops a runner executing jobs 30
+# days after its release is published, which means the fleet can drift out of
+# compliance with no failing build to show for it — the symptom is jobs
+# refusing to run, not CI going red.
+#
+# This job reports that drift so a rebuild can be triggered deliberately. It
+# only ever reads: it does not rebuild anything, because builds here are
+# spontaneous by design.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/RUNNER_MIN_VERSION"
+      - ".github/workflows/runner-staleness.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-1
+  # Days after an actions/runner release is published before GitHub stops it
+  # executing jobs. Warn before that, not on it.
+  EXPIRY_DAYS: 30
+  WARN_DAYS: 21
+
+jobs:
+  check:
+    name: Check baked runner version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Compare baked runner against upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          min="$(tr -d '[:space:]' < .github/RUNNER_MIN_VERSION)"
+          release="$(gh api repos/actions/runner/releases/latest)"
+          latest="$(printf '%s' "$release" | jq -r '.tag_name | ltrimstr("v")')"
+          published="$(printf '%s' "$release" | jq -r '.published_at')"
+          published_epoch="$(date -u -d "$published" +%s)"
+          age_days=$(( ( $(date -u +%s) - published_epoch ) / 86400 ))
+
+          echo "Upstream latest: v${latest} (published ${published}, ${age_days}d ago)"
+          echo "Registration floor: ${min}"
+          echo
+
+          stale=0
+          for arch in arm64 amd64; do
+            # RunnerVersion is stamped on the AMI by the base Packer templates.
+            # Newest base AMI per arch is what a fresh instance would launch from.
+            baked="$(aws ec2 describe-images \
+              --owners self \
+              --filters "Name=name,Values=runner-base-${arch}-*" \
+              --query 'sort_by(Images, &CreationDate)[-1].Tags[?Key==`RunnerVersion`].Value | [0]' \
+              --output text)"
+
+            if [ -z "$baked" ] || [ "$baked" = "None" ]; then
+              echo "::warning::${arch}: newest base AMI has no RunnerVersion tag (built before tagging, or no AMI exists) — rebuild to get a reading"
+              stale=1
+              continue
+            fi
+
+            if [ "$baked" = "$latest" ]; then
+              echo "${arch}: v${baked} — current"
+              continue
+            fi
+
+            # Baked version is behind. Its own expiry clock started when *it* was
+            # published, so ask upstream when that was rather than assuming.
+            baked_published="$(gh api "repos/actions/runner/releases/tags/v${baked}" --jq '.published_at' 2>/dev/null || echo "")"
+            if [ -z "$baked_published" ]; then
+              echo "::warning::${arch}: baked v${baked} is behind v${latest} and its release was not found upstream (yanked?) — rebuild"
+              stale=1
+              continue
+            fi
+            baked_age=$(( ( $(date -u +%s) - $(date -u -d "$baked_published" +%s) ) / 86400 ))
+
+            if [ "$baked_age" -ge "$EXPIRY_DAYS" ]; then
+              echo "::error::${arch}: baked v${baked} was published ${baked_age}d ago (>= ${EXPIRY_DAYS}d) — GitHub will refuse to run jobs on it. Trigger Build AMIs."
+              stale=1
+            elif [ "$baked_age" -ge "$WARN_DAYS" ]; then
+              echo "::warning::${arch}: baked v${baked} is ${baked_age}d old, expires at ${EXPIRY_DAYS}d — trigger Build AMIs soon (v${latest} available)."
+              stale=1
+            else
+              echo "${arch}: v${baked} — ${baked_age}d old, behind v${latest} but still valid"
+            fi
+          done
+
+          if [ "$stale" -ne 0 ]; then
+            echo
+            echo "Run the Build AMIs workflow to bake the current runner."
+          fi

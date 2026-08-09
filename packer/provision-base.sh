@@ -246,8 +246,9 @@ echo "==> Pre-baking common Docker images into the AMI image store"
 # Ephemeral runners boot from this AMI with a fresh /var/lib/docker, so without
 # this every job re-pulls its service/build images from Docker Hub (mysql:8.0
 # alone is ~25s per job). Pulling here persists the images on the AMI's root
-# volume; at job time a moved tag re-pulls only changed layers. The weekly AMI
-# rebuild (build-amis.yml cron) bounds staleness. binfmt uses the same ref as
+# volume; at job time a moved tag re-pulls only changed layers, which is what
+# bounds staleness now that AMI rebuilds are triggered rather than scheduled.
+# binfmt uses the same ref as
 # the binfmt-qemu.service unit above so the two never diverge.
 # docker is enabled (not started) during provisioning, so start it before pulling.
 sudo systemctl start docker || { echo "Failed to start docker"; exit 1; }
@@ -564,8 +565,8 @@ go_default_dir=""
 for minor in 1.24 1.25; do
   # setup-go resolves a full `go 1.x.y` in go.mod as an exact-patch spec, so a cache
   # entry for a different patch of the same line does not match and the job re-downloads
-  # the toolchain. Bake the newest few patches so a Go release mid-AMI-cycle (rebuilt
-  # weekly) still hits. The index lists newest first within a line.
+  # the toolchain. Bake the newest few patches so a Go release landing between AMI
+  # rebuilds still hits. The index lists newest first within a line.
   files=$(printf '%s' "$GO_TC_INDEX" | jq -c --arg m "go${minor}." --arg a "$GO_ARCH" \
     --argjson n "$GO_PATCHES_PER_LINE" \
     '[ .[] | select(.stable) | select(.version | startswith($m))

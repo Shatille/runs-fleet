@@ -181,10 +181,15 @@ filter `runner-base-{arch}-*`, `owners = ["self"]`, `most_recent = true`.
   paths-filtered per layer (`base` vs `runner` vs `image` outputs).
 - **workflow_run** after a successful "Build Runner Image" — bakes the fresh
   `:latest` agent into a runner AMI (base skipped).
-- **schedule** — weekly cron, Sunday 06:00 UTC: rebuilds base (picking up OS
-  updates and re-pulling `PREBAKE_IMAGES`), cascades to the runner AMI.
 - **workflow_dispatch** — manual, with `use_fallback_runners` to bootstrap on
   GitHub-hosted runners when no working fleet AMI exists (chicken/egg).
+
+There is deliberately **no scheduled trigger**: AMIs rebuild when someone
+causes them to. Nothing therefore advances the baked OS packages, prebaked
+images, or `actions/runner` on its own — the "Runner Staleness Check" workflow
+(`runner-staleness.yml`) reports when the baked runner is approaching GitHub's
+30-day expiry so a rebuild can be triggered deliberately, but it only reads and
+never builds.
 
 ## Data [coverage: high -- 9 sources]
 
@@ -277,8 +282,9 @@ the GitHub secret's.
   Pulls get 3-attempt retry and an explicit `systemctl start docker` (the
   daemon is only *enabled* during provisioning). `tonistiigi/binfmt` reuses
   the same `BINFMT_VERSION` variable as the `binfmt-qemu.service` unit so the
-  two refs cannot diverge. The weekly base rebuild bounds image staleness at
-  ≤7 days, and a moved tag at job time re-pulls only changed layers.
+  two refs cannot diverge. Nothing bounds image staleness on a timer — base
+  rebuilds are triggered, not scheduled — so prebaked layers are as old as the
+  last build; a moved tag at job time re-pulls only changed layers.
 - **One AMI workflow with enforced layer ordering.** Base and runner builds
   used to be separate workflows racing on the same push — the ~3 min runner
   build would resolve a stale base via `source_ami_filter` before the ~16 min
@@ -335,7 +341,7 @@ the GitHub secret's.
 
 - **Existing warm-pool instances keep old pre-baked images until churned.**
   The image store rides the AMI root volume, so editing `PREBAKE_IMAGES` (or
-  the weekly refresh itself) only affects instances launched from the *new*
+  rebuilding the base at all) only affects instances launched from the *new*
   AMI. Stopped/running warm-pool instances built from an older AMI keep the
   stale store until pool reconciliation replaces them — a fleet is
   heterogeneous until natural churn completes.
@@ -350,7 +356,7 @@ the GitHub secret's.
 - **Pre-baked image CVEs are invisible to the AMI gate.** `--skip-dirs
   /var/lib/docker` is deliberate (see Key Decisions), but it means a
   vulnerable `mysql:8.0` layer ships silently — the trust boundary is the
-  upstream publisher's own scanning plus the weekly re-pull.
+  upstream publisher's own scanning plus whenever the base is next rebuilt.
 - **`$Latest` means highest version number, not the default version.**
   `pkg/fleet/fleet.go` pins `LaunchTemplateSpecification.Version` to
   `"$Latest"`, so `aws ec2 modify-launch-template --default-version N` does
@@ -376,8 +382,7 @@ the GitHub secret's.
   requires at least the floor in `.github/RUNNER_MIN_VERSION` (2.329.0), but
   *executing jobs* requires each release be installed within 30 days of
   publication. Any static literal therefore expires ~30 days after the release
-  it names, whatever that release is — the weekly base rebuild
-  (`cron: "0 6 * * 0"`) would just have rebaked the stale value. Enforcement for
+  it names, whatever that release is. Enforcement for
   github.com began 2026-09-25 with brownouts from 2026-08-24; Enterprise Cloud
   with Data Residency was enforced from 2026-07-31.
 
@@ -386,6 +391,15 @@ the GitHub secret's.
   reaching an AMI. Raise it when GitHub raises the registration minimum. The
   tradeoff accepted here is that a new upstream release reaches AMIs without a
   commit, so AMI contents are not reproducible from a git SHA alone.
+
+  Resolution only helps *when a build runs*, and builds are triggered rather
+  than scheduled — so the AMI can still fall out of compliance simply by nobody
+  rebuilding for a month. That gap is covered by reporting, not automation:
+  `runner-staleness.yml` compares the `RunnerVersion` tag on the newest base AMI
+  per arch against upstream, warns at 21 days past the baked release's
+  publication and errors at 30, and never builds anything itself. It is
+  `workflow_dispatch`, so checking is also a deliberate act — run it when you
+  want to know whether a rebuild is due.
 
   The container image is still a separate, static supply chain — `RUNNER_BASE_TAG`
   2.335.1 in the Makefile and Dockerfile, overridable via `vars.RUNNER_BASE_TAG`

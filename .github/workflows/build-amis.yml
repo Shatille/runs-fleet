@@ -22,10 +22,6 @@ on:
     workflows: ["Build Runner Image"]
     types: [completed]
     branches: [main]
-  schedule:
-    # Weekly base refresh picks up any upstream OS/package updates. The runner
-    # AMI job cascades automatically since base output reflects "fresh build".
-    - cron: "0 6 * * 0"
   workflow_dispatch:
     inputs:
       use_fallback_runners:
@@ -43,7 +39,7 @@ concurrency:
   # in-progress push run that is building the base AMI: with cancel-in-progress
   # false for that trigger the cascade queues behind the push run and bakes the
   # runner AMI after the fresh base completes, instead of killing it. A push (or
-  # schedule/dispatch) still supersedes in-progress + pending runs.
+  # dispatch) still supersedes in-progress + pending runs.
   cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
 
 env:
@@ -112,7 +108,6 @@ jobs:
     needs: changes
     if: |
       needs.changes.outputs.base == 'true' ||
-      github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -160,7 +155,7 @@ jobs:
       # enforces a rolling minimum: registration needs >= RUNNER_MIN_VERSION,
       # but executing jobs requires each release be installed within 30 days of
       # publication. A literal in the provisioner expires ~30 days after the
-      # release it names, and the weekly rebuild would just rebake it. Resolving
+      # release it names, and a rebuild would just rebake it. Resolving
       # on the workflow runner (not inside the Packer instance) is deliberate:
       # the builder has no GitHub credential and would hit the 60 req/hr
       # anonymous limit, and `tags` is evaluated at build-plan time so a version
@@ -255,7 +250,6 @@ jobs:
     #   - runner-AMI paths changed (push), OR
     #   - base paths changed (push) — chain rebuild on top of fresh base, OR
     #   - workflow_run from Build Runner Image (new agent binary to bake), OR
-    #   - schedule (weekly refresh), OR
     #   - workflow_dispatch (manual).
     # Gate on build-base completing — success unblocks; skipped means base
     # didn't need to rebuild and we proceed against the existing latest base;
@@ -277,7 +271,6 @@ jobs:
       (
         (github.event_name == 'workflow_run' &&
          github.event.workflow_run.conclusion == 'success') ||
-        github.event_name == 'schedule' ||
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' &&
          needs.changes.outputs.image != 'true' &&
