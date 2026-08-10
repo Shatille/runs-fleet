@@ -133,6 +133,9 @@ type Client struct {
 
 	tokenMu    sync.Mutex
 	tokenCache map[string]*installationInfo // keyed by owner
+
+	runnerGroupMu    sync.Mutex
+	runnerGroupCache map[string]runnerGroupEntry // keyed by repo+group name
 }
 
 // splitRepo splits an "owner/repo" string into its parts.
