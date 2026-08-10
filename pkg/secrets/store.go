@@ -15,18 +15,27 @@ var ErrConfigNotFound = errors.New("runner config not found")
 // RunnerConfig represents configuration passed to runners.
 // This is the canonical structure used by both server and agent components.
 type RunnerConfig struct {
-	Org      string `json:"org"`
-	Repo     string `json:"repo,omitempty"`
-	RunID    string `json:"run_id"`
-	JITToken string `json:"jit_token"`
-	// JITConfig is GitHub's encoded just-in-time runner configuration, consumed by
-	// `run.sh --jitconfig`. When set it supersedes JITToken: a JIT-configured
-	// runner is bound by GitHub to the single job it was minted for, so it cannot
-	// be handed a different queued job that merely shares its labels. Empty means
-	// fall back to token registration via config.sh.
+	Org   string `json:"org"`
+	Repo  string `json:"repo,omitempty"`
+	RunID string `json:"run_id"`
+	// RegistrationToken is a GitHub runner registration token, passed to
+	// `config.sh --token`. It registers a runner bound to a LABEL SET, so GitHub
+	// may hand that runner any queued job matching those labels — see JITConfig
+	// for the job-bound alternative.
 	//
-	// Like JITToken this is a credential that registers a runner — never log it,
-	// and never put it in a resource tag.
+	// The json tag stays `jit_token` deliberately: it is a wire contract with
+	// agents already in flight, which read configs written before this rename. The
+	// name was always a misnomer — this is not a JIT credential.
+	RegistrationToken string `json:"jit_token"`
+	// JITConfig is GitHub's encoded just-in-time runner configuration, handed to
+	// run.sh via ACTIONS_RUNNER_INPUT_JITCONFIG. When set it supersedes
+	// RegistrationToken: a JIT-configured runner is bound by GitHub to the single
+	// job it was minted for, so it cannot be handed a different queued job that
+	// merely shares its labels. Empty means fall back to token registration via
+	// config.sh.
+	//
+	// Like RegistrationToken this is a credential that registers a runner — never
+	// log it, and never put it in a resource tag.
 	JITConfig           string   `json:"jit_config,omitempty"`
 	Labels              []string `json:"labels"`
 	RunnerGroup         string   `json:"runner_group,omitempty"`

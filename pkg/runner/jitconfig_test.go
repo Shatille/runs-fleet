@@ -118,8 +118,8 @@ func TestPrepareRunner_FallsBackToTokenWhenClientLacksJIT(t *testing.T) {
 	if store.lastPutCfg.JITConfig != "" {
 		t.Errorf("JITConfig = %q, want empty for a non-JIT client", store.lastPutCfg.JITConfig)
 	}
-	if store.lastPutCfg.JITToken != testRegToken {
-		t.Errorf("JITToken = %q, want %q", store.lastPutCfg.JITToken, testRegToken)
+	if store.lastPutCfg.RegistrationToken != testRegToken {
+		t.Errorf("RegistrationToken = %q, want %q", store.lastPutCfg.RegistrationToken, testRegToken)
 	}
 }
 
@@ -137,8 +137,8 @@ func TestPrepareRunner_FallsBackToTokenWhenJITFails(t *testing.T) {
 	if store.lastPutCfg.JITConfig != "" {
 		t.Errorf("JITConfig = %q, want empty after a mint failure", store.lastPutCfg.JITConfig)
 	}
-	if store.lastPutCfg.JITToken != testRegToken {
-		t.Errorf("JITToken = %q, want the token fallback", store.lastPutCfg.JITToken)
+	if store.lastPutCfg.RegistrationToken != testRegToken {
+		t.Errorf("RegistrationToken = %q, want the token fallback", store.lastPutCfg.RegistrationToken)
 	}
 }
 

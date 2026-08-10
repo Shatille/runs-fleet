@@ -43,6 +43,38 @@ func statefulSSMStore(prefix string) (*SSMStore, *[]string) {
 	return NewSSMStoreWithClient(mock, prefix), lastTags
 }
 
+// The JSON tags are a wire contract: an orchestrator writes a config that agents
+// already booted from an earlier build read back. Renaming a Go field must not
+// change the serialized key, or those in-flight agents lose the value and fail to
+// register. RegistrationToken keeps `jit_token` for exactly that reason.
+func TestRunnerConfig_WireKeysAreStable(t *testing.T) {
+	want := map[string]string{
+		"RegistrationToken": "jit_token",
+		"JITConfig":         "jit_config",
+		"Org":               "org",
+		"Repo":              "repo",
+		"RunID":             "run_id",
+		"Labels":            "labels",
+		"RunnerGroup":       "runner_group",
+		"RunnerName":        "runner_name",
+		"JobID":             "job_id",
+	}
+
+	typ := reflect.TypeOf(RunnerConfig{})
+	for field, wantKey := range want {
+		structField, ok := typ.FieldByName(field)
+		if !ok {
+			t.Errorf("RunnerConfig.%s no longer exists; if it was renamed, keep its json key", field)
+			continue
+		}
+		gotKey := strings.Split(structField.Tag.Get("json"), ",")[0]
+		if gotKey != wantKey {
+			t.Errorf("RunnerConfig.%s json key = %q, want %q (breaks in-flight agents)",
+				field, gotKey, wantKey)
+		}
+	}
+}
+
 // envVarForField maps a RunnerConfig field to the environment variable EnvStore
 // reads it from. Kept as data (not derived) so a field whose env name does not
 // follow the mechanical convention is stated explicitly rather than guessed.
@@ -50,7 +82,7 @@ var envVarForField = map[string]string{
 	"Org":                 "RUNS_FLEET_ORG",
 	"Repo":                "RUNS_FLEET_REPO",
 	"RunID":               "RUNS_FLEET_RUN_ID",
-	"JITToken":            "RUNS_FLEET_JIT_TOKEN",
+	"RegistrationToken":   "RUNS_FLEET_JIT_TOKEN",
 	"JITConfig":           "RUNS_FLEET_JIT_CONFIG",
 	"Labels":              "RUNS_FLEET_LABELS",
 	"RunnerGroup":         "RUNS_FLEET_RUNNER_GROUP",
@@ -103,7 +135,7 @@ func TestEnvStore_CarriesEveryRunnerConfigField(t *testing.T) {
 			// registration credential, so both preconditions are satisfied for
 			// every case; the field under test then overwrites its own var.
 			t.Setenv("RUNS_FLEET_ORG", "sentinel-Org")
-			t.Setenv("RUNS_FLEET_JIT_TOKEN", "sentinel-JITToken")
+			t.Setenv("RUNS_FLEET_JIT_TOKEN", "sentinel-RegistrationToken")
 
 			field := reflect.ValueOf(RunnerConfig{}).Field(i)
 			var want string

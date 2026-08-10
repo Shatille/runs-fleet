@@ -62,10 +62,10 @@ func TestSSMStore_Put(t *testing.T) {
 			name:     "successful put",
 			runnerID: "i-123456",
 			config: &RunnerConfig{
-				Org:      "testorg",
-				Repo:     "testorg/testrepo",
-				JITToken: "token123",
-				JobID:    "job-1",
+				Org:               "testorg",
+				Repo:              "testorg/testrepo",
+				RegistrationToken: "token123",
+				JobID:             "job-1",
 			},
 			putFunc: func(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
 				if *params.Name != testExpectedPath {
@@ -108,10 +108,10 @@ func TestSSMStore_Get(t *testing.T) {
 	t.Parallel()
 
 	expectedConfig := &RunnerConfig{
-		Org:      "testorg",
-		Repo:     "testorg/testrepo",
-		JITToken: "token123",
-		Labels:   []string{"self-hosted", "linux"},
+		Org:               "testorg",
+		Repo:              "testorg/testrepo",
+		RegistrationToken: "token123",
+		Labels:            []string{"self-hosted", "linux"},
 	}
 	configJSON, _ := json.Marshal(expectedConfig)
 

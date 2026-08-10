@@ -135,7 +135,7 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		Repo:                req.Repo,
 		RunID:               req.RunID,
 		CreatedAt:           time.Now().Format(time.RFC3339),
-		JITToken:            regResult.Token,
+		RegistrationToken:   regResult.Token,
 		JITConfig:           jitConfig,
 		Labels:              req.Labels,
 		RunnerGroup:         m.config.RunnerGroup,

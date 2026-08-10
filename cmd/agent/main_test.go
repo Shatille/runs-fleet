@@ -190,10 +190,10 @@ func TestGetEnvInt_InvalidFormats(t *testing.T) {
 
 func TestAgentConfig_WithRunnerConfig(t *testing.T) {
 	rc := &secrets.RunnerConfig{
-		Repo:       "owner/repo",
-		JITToken:   "test-token",
-		Labels:     []string{"self-hosted", "linux"},
-		CacheToken: "cache-token",
+		Repo:              "owner/repo",
+		RegistrationToken: "test-token",
+		Labels:            []string{"self-hosted", "linux"},
+		CacheToken:        "cache-token",
 	}
 
 	ac := &agentConfig{
@@ -297,9 +297,9 @@ func TestStdLogger_VariadicArgs(_ *testing.T) {
 
 func TestAgentConfig_AllFieldsSet(t *testing.T) {
 	rc := &secrets.RunnerConfig{
-		Repo:     "test/repo",
-		JITToken: "token",
-		Labels:   []string{"label1"},
+		Repo:              "test/repo",
+		RegistrationToken: "token",
+		Labels:            []string{"label1"},
 	}
 
 	ac := &agentConfig{
@@ -699,17 +699,17 @@ func TestJobStatus_Duration(t *testing.T) {
 
 func TestRunnerConfig_AllFields(t *testing.T) {
 	rc := &secrets.RunnerConfig{
-		Repo:       "owner/repo",
-		JITToken:   "jit-token-value",
-		Labels:     []string{"self-hosted", "linux", "arm64"},
-		CacheToken: "cache-token-value",
+		Repo:              "owner/repo",
+		RegistrationToken: "jit-token-value",
+		Labels:            []string{"self-hosted", "linux", "arm64"},
+		CacheToken:        "cache-token-value",
 	}
 
 	if rc.Repo != "owner/repo" {
 		t.Errorf("Repo = %q, want %q", rc.Repo, "owner/repo")
 	}
-	if rc.JITToken != "jit-token-value" {
-		t.Errorf("JITToken = %q, want %q", rc.JITToken, "jit-token-value")
+	if rc.RegistrationToken != "jit-token-value" {
+		t.Errorf("RegistrationToken = %q, want %q", rc.RegistrationToken, "jit-token-value")
 	}
 	if len(rc.Labels) != 3 {
 		t.Errorf("Labels length = %d, want 3", len(rc.Labels))
@@ -721,9 +721,9 @@ func TestRunnerConfig_AllFields(t *testing.T) {
 
 func TestRunnerConfig_EmptyLabels(t *testing.T) {
 	rc := &secrets.RunnerConfig{
-		Repo:     "owner/repo",
-		JITToken: "token",
-		Labels:   []string{},
+		Repo:              "owner/repo",
+		RegistrationToken: "token",
+		Labels:            []string{},
 	}
 
 	if len(rc.Labels) != 0 {
@@ -733,9 +733,9 @@ func TestRunnerConfig_EmptyLabels(t *testing.T) {
 
 func TestRunnerConfig_NilLabels(t *testing.T) {
 	rc := &secrets.RunnerConfig{
-		Repo:     "owner/repo",
-		JITToken: "token",
-		Labels:   nil,
+		Repo:              "owner/repo",
+		RegistrationToken: "token",
+		Labels:            nil,
 	}
 
 	if rc.Labels != nil {

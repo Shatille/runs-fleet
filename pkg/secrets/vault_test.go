@@ -251,10 +251,10 @@ func TestVaultStore_Put(t *testing.T) {
 			store := NewVaultStoreWithClient(client, "secret", "runs-fleet/runners", tt.kvVersion)
 
 			config := &RunnerConfig{
-				Org:        "testorg",
-				Repo:       "testorg/testrepo",
-				JITToken:   "token123",
-				RunnerName: "runs-fleet-runner-unique-suffix-42",
+				Org:               "testorg",
+				Repo:              "testorg/testrepo",
+				RegistrationToken: "token123",
+				RunnerName:        "runs-fleet-runner-unique-suffix-42",
 			}
 
 			err = store.Put(t.Context(), "i-123", config)
@@ -281,10 +281,10 @@ func TestVaultStore_Get_KVv2(t *testing.T) {
 	t.Parallel()
 
 	expectedConfig := RunnerConfig{
-		Org:      "testorg",
-		Repo:     "testorg/testrepo",
-		JITToken: "token123",
-		Labels:   []string{"self-hosted"},
+		Org:               "testorg",
+		Repo:              "testorg/testrepo",
+		RegistrationToken: "token123",
+		Labels:            []string{"self-hosted"},
 	}
 
 	server := mockVaultServer(map[string]http.HandlerFunc{
@@ -294,7 +294,7 @@ func TestVaultStore_Get_KVv2(t *testing.T) {
 					"data": map[string]interface{}{
 						"org":       expectedConfig.Org,
 						"repo":      expectedConfig.Repo,
-						"jit_token": expectedConfig.JITToken,
+						"jit_token": expectedConfig.RegistrationToken,
 						"labels":    expectedConfig.Labels,
 					},
 				},
@@ -330,9 +330,9 @@ func TestVaultStore_Get_KVv1(t *testing.T) {
 	t.Parallel()
 
 	expectedConfig := RunnerConfig{
-		Org:      "testorg",
-		Repo:     "testorg/testrepo",
-		JITToken: "token123",
+		Org:               "testorg",
+		Repo:              "testorg/testrepo",
+		RegistrationToken: "token123",
 	}
 
 	server := mockVaultServer(map[string]http.HandlerFunc{
@@ -341,7 +341,7 @@ func TestVaultStore_Get_KVv1(t *testing.T) {
 				"data": map[string]interface{}{
 					"org":       expectedConfig.Org,
 					"repo":      expectedConfig.Repo,
-					"jit_token": expectedConfig.JITToken,
+					"jit_token": expectedConfig.RegistrationToken,
 				},
 			}
 			w.WriteHeader(http.StatusOK)

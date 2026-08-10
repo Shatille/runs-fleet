@@ -243,8 +243,8 @@ func TestManager_PrepareRunner_Success(t *testing.T) {
 	if storedConfig.Repo != "testorg/testrepo" {
 		t.Errorf("Repo = %s, want testorg/testrepo", storedConfig.Repo)
 	}
-	if storedConfig.JITToken != "test-registration-token" {
-		t.Errorf("JITToken = %s, want test-registration-token", storedConfig.JITToken)
+	if storedConfig.RegistrationToken != "test-registration-token" {
+		t.Errorf("RegistrationToken = %s, want test-registration-token", storedConfig.RegistrationToken)
 	}
 	if storedConfig.JobID != "job-success-123" {
 		t.Errorf("JobID = %s, want job-success-123", storedConfig.JobID)

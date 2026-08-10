@@ -97,7 +97,7 @@ func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerCo
 		"--unattended",
 		"--ephemeral",
 		"--url", repoURL,
-		"--token", config.JITToken,
+		"--token", config.RegistrationToken,
 	}
 
 	if len(config.Labels) > 0 {

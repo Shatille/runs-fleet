@@ -37,6 +37,12 @@ func (l *renderingLogger) String() string {
 	return strings.Join(l.lines, "\n")
 }
 
+// envUnsetSentinel is what the recorder writes when the JIT-config variable is
+// absent from the environment. A bare `printf '%s' "$VAR"` cannot tell an unset
+// variable from one set to the empty string, which would let "always set the
+// variable, even when empty" pass a test meant to forbid exactly that.
+const envUnsetSentinel = "<unset>"
+
 // writeArgRecorder creates a run.sh that records both the arguments and the
 // JIT-config environment variable it was invoked with, so a test can assert on
 // exactly how the agent handed the config over.
@@ -46,7 +52,11 @@ func writeArgRecorder(t *testing.T, dir string) (argsFile, envFile string) {
 	envFile = filepath.Join(dir, "env.txt")
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$@\" > " + argsFile + "\n" +
-		"printf '%s' \"$ACTIONS_RUNNER_INPUT_JITCONFIG\" > " + envFile + "\n" +
+		"if [ -z \"${ACTIONS_RUNNER_INPUT_JITCONFIG+x}\" ]; then\n" +
+		"  printf '%s' '" + envUnsetSentinel + "' > " + envFile + "\n" +
+		"else\n" +
+		"  printf '%s' \"$ACTIONS_RUNNER_INPUT_JITCONFIG\" > " + envFile + "\n" +
+		"fi\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte(script), 0o755); err != nil {
 		t.Fatalf("failed to write run.sh: %v", err)
@@ -109,8 +119,10 @@ func TestExecuteJob_OmitsJITConfigWhenEmpty(t *testing.T) {
 		t.Fatalf("ExecuteJobWithConfig() error = %v", err)
 	}
 
-	if got := recordedEnv(t, envFile); got != "" {
-		t.Errorf("ACTIONS_RUNNER_INPUT_JITCONFIG = %q, want empty", got)
+	// Must be ABSENT, not merely empty: the assertion is that the agent adds
+	// nothing at all when there is no config to pass.
+	if got := recordedEnv(t, envFile); got != envUnsetSentinel {
+		t.Errorf("ACTIONS_RUNNER_INPUT_JITCONFIG = %q, want it unset", got)
 	}
 	if args := recordedArgs(t, argsFile); len(args) != 0 {
 		t.Errorf("run.sh args = %v, want none", args)
@@ -128,8 +140,8 @@ func TestExecuteJob_LegacyEntryPointPassesNoJITConfig(t *testing.T) {
 		t.Fatalf("ExecuteJob() error = %v", err)
 	}
 
-	if got := recordedEnv(t, envFile); got != "" {
-		t.Errorf("ACTIONS_RUNNER_INPUT_JITCONFIG = %q, want empty", got)
+	if got := recordedEnv(t, envFile); got != envUnsetSentinel {
+		t.Errorf("ACTIONS_RUNNER_INPUT_JITCONFIG = %q, want it unset", got)
 	}
 	if args := recordedArgs(t, argsFile); len(args) != 0 {
 		t.Errorf("run.sh args = %v, want none", args)
@@ -170,10 +182,10 @@ func TestRegisterRunner_SkippedForJITConfig(t *testing.T) {
 
 	registrar := NewRegistrar(nil, &renderingLogger{})
 	cfg := &secrets.RunnerConfig{
-		Repo:      "myorg/myrepo",
-		JITConfig: "ENCODEDJIT",
-		JITToken:  "tok",
-		Labels:    []string{"runs-fleet"},
+		Repo:              "myorg/myrepo",
+		JITConfig:         "ENCODEDJIT",
+		RegistrationToken: "tok",
+		Labels:            []string{"runs-fleet"},
 	}
 
 	if err := registrar.RegisterRunner(t.Context(), cfg, tmpDir); err != nil {
@@ -197,9 +209,9 @@ func TestRegisterRunner_StillRunsConfigShWithoutJITConfig(t *testing.T) {
 
 	registrar := NewRegistrar(nil, &renderingLogger{})
 	cfg := &secrets.RunnerConfig{
-		Repo:     "myorg/myrepo",
-		JITToken: "tok",
-		Labels:   []string{"runs-fleet"},
+		Repo:              "myorg/myrepo",
+		RegistrationToken: "tok",
+		Labels:            []string{"runs-fleet"},
 	}
 
 	if err := registrar.RegisterRunner(t.Context(), cfg, tmpDir); err != nil {
