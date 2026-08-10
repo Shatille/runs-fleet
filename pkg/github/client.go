@@ -150,9 +150,23 @@ func splitRepo(repo string) (owner, name string, err error) {
 	return parts[0], parts[1], nil
 }
 
+// Option configures a Client.
+type Option func(*Client)
+
+// WithBaseURL overrides the GitHub API base URL. The client already honors a
+// non-default base URL internally (for GitHub Enterprise Server); this is the
+// only way to actually set one.
+func WithBaseURL(url string) Option {
+	return func(c *Client) {
+		if url != "" {
+			c.baseURL = url
+		}
+	}
+}
+
 // NewClient creates a new GitHub client for runner operations.
 // privateKeyBase64 should be the base64-encoded PEM private key.
-func NewClient(appID string, privateKeyBase64 string) (*Client, error) {
+func NewClient(appID string, privateKeyBase64 string, opts ...Option) (*Client, error) {
 	id, err := strconv.ParseInt(appID, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid app ID: %w", err)
@@ -182,13 +196,17 @@ func NewClient(appID string, privateKeyBase64 string) (*Client, error) {
 		}
 	}
 
-	return &Client{
+	c := &Client{
 		appID:      id,
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		baseURL:    "https://api.github.com",
 		tokenCache: make(map[string]*installationInfo),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // generateJWT creates a JWT for GitHub App authentication.
