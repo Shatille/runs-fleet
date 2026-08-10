@@ -176,12 +176,30 @@ func NewTasks(cfg aws.Config, appConfig *config.Config, secretsStore secrets.Sto
 	}
 }
 
-// ExecuteOrphanedInstances detects and terminates orphaned instances.
+// OrphanInstanceSweep reports what one orphaned-instance sweep found and did.
+type OrphanInstanceSweep struct {
+	InstanceIDs []string
+	Terminated  int
+	DryRun      bool
+}
+
+// ExecuteOrphanedInstances is the scheduler's entry point for the orphaned-instance
+// reaper.
+func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
+	_, err := t.SweepOrphanedInstances(ctx, false)
+	return err
+}
+
+// SweepOrphanedInstances detects and terminates orphaned instances.
 // Uses two detection strategies:
 //  1. Tag-based: finds tagged instances (runs-fleet:managed=true) that exceeded max runtime
 //  2. Profile-based: finds ANY instance using the runner IAM profile that exceeded max runtime,
 //     catching untagged zombies from persistent spot tag propagation failures
-func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
+//
+// A dry run reports the same detected set but cancels nothing, terminates nothing,
+// and emits no metric, so an operator can preview a fleet-wide reap before running it.
+func (t *Tasks) SweepOrphanedInstances(ctx context.Context, dryRun bool) (OrphanInstanceSweep, error) {
+	sweep := OrphanInstanceSweep{DryRun: dryRun}
 	maxRuntime := time.Duration(t.config.MaxRuntimeMinutes+10) * time.Minute
 	cutoffTime := time.Now().Add(-maxRuntime)
 
@@ -217,15 +235,16 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	// them takes priority over reporting the partial failure.
 	if sweepErr := errors.Join(tagErr, unclaimedErr, completedErr, stoppedErr); sweepErr != nil {
 		if len(orphanedIDs) == 0 {
-			return sweepErr
+			return sweep, sweepErr
 		}
 		t.logger().Warn(ctx, "orphan detection partially failed",
 			slog.String("error", sweepErr.Error()))
 	}
 	if len(orphanedIDs) == 0 {
 		t.logger().Debug(ctx, "no orphaned instances found")
-		return nil
+		return sweep, nil
 	}
+	sweep.InstanceIDs = orphanedIDs
 
 	if len(untaggedOrphans) > 0 {
 		t.logger().Warn(ctx, "found untagged orphaned instances (persistent spot tag propagation failure)",
@@ -239,6 +258,13 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 			slog.Any("unclaimed_ids", unclaimedOrphans))
 	}
 
+	if dryRun {
+		t.logger().Info(ctx, "orphaned instance sweep (dry run)",
+			slog.Int(logging.KeyCount, len(orphanedIDs)),
+			slog.Any("instance_ids", orphanedIDs))
+		return sweep, nil
+	}
+
 	// Cancel persistent spot requests before termination to prevent zombie resurrection
 	t.cancelSpotRequestsForInstances(ctx, orphanedIDs)
 
@@ -248,8 +274,9 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 		InstanceIds: orphanedIDs,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to terminate orphaned instances: %w", err)
+		return sweep, fmt.Errorf("failed to terminate orphaned instances: %w", err)
 	}
+	sweep.Terminated = len(orphanedIDs)
 
 	if t.metrics != nil {
 		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionOrphanedInstances, len(orphanedIDs))
@@ -258,7 +285,7 @@ func (t *Tasks) ExecuteOrphanedInstances(ctx context.Context) error {
 	t.logger().Info(ctx, "orphaned instances terminated",
 		slog.Int(logging.KeyCount, len(orphanedIDs)),
 		slog.Any("instance_ids", orphanedIDs))
-	return nil
+	return sweep, nil
 }
 
 func (t *Tasks) findOrphansByTag(ctx context.Context, cutoffTime time.Time) ([]string, error) {

@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { Instance } from '@/lib/types';
 import { useSortable } from '@/hooks/use-sortable';
 import TerminateInstanceButton from '@/components/terminate-instance-button';
+import { isTerminable } from '@/lib/instance-state';
 
 type InstanceSortField = 'instance_id' | 'state' | 'pool' | 'instance_type' | 'launch_time';
 
@@ -22,9 +23,16 @@ const INSTANCE_COMPARATORS: Record<InstanceSortField, (a: Instance, b: Instance)
 interface InstancesTableProps {
   instances: Instance[];
   onTerminated: () => void;
+  selected: Set<string>;
+  onSelectionChange: (selected: Set<string>) => void;
 }
 
-export default function InstancesTable({ instances, onTerminated }: InstancesTableProps) {
+export default function InstancesTable({
+  instances,
+  onTerminated,
+  selected,
+  onSelectionChange,
+}: InstancesTableProps) {
   const comparators = useMemo(() => INSTANCE_COMPARATORS, []);
   const { sortedData, requestSort, getSortIndicator } = useSortable<Instance, InstanceSortField>(
     instances,
@@ -32,6 +40,25 @@ export default function InstancesTable({ instances, onTerminated }: InstancesTab
     'desc',
     comparators,
   );
+
+  const selectable = useMemo(() => sortedData.filter(isTerminable), [sortedData]);
+  const allSelected = selectable.length > 0 && selectable.every((i) => selected.has(i.instance_id));
+
+  function toggleOne(id: string, checked: boolean) {
+    const next = new Set(selected);
+    if (checked) next.add(id);
+    else next.delete(id);
+    onSelectionChange(next);
+  }
+
+  function toggleAll(checked: boolean) {
+    const next = new Set(selected);
+    for (const inst of selectable) {
+      if (checked) next.add(inst.instance_id);
+      else next.delete(inst.instance_id);
+    }
+    onSelectionChange(next);
+  }
 
   const thBase = 'px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider';
   const thSortable = `${thBase} cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-300`;
@@ -41,6 +68,16 @@ export default function InstancesTable({ instances, onTerminated }: InstancesTab
       <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
         <thead className="bg-gray-50 dark:bg-gray-700">
           <tr>
+            <th className={`${thBase} w-10`}>
+              <input
+                type="checkbox"
+                checked={allSelected}
+                disabled={selectable.length === 0}
+                onChange={(e) => toggleAll(e.target.checked)}
+                aria-label="Select all terminable instances"
+                className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+              />
+            </th>
             <th className={thSortable} onClick={() => requestSort('instance_id')}>
               Instance ID{getSortIndicator('instance_id')}
             </th>
@@ -70,6 +107,16 @@ export default function InstancesTable({ instances, onTerminated }: InstancesTab
         <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
           {sortedData.map((inst) => (
             <tr key={inst.instance_id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+              <td className="px-4 py-3 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={selected.has(inst.instance_id)}
+                  disabled={!isTerminable(inst)}
+                  onChange={(e) => toggleOne(inst.instance_id, e.target.checked)}
+                  aria-label={`Select ${inst.instance_id}`}
+                  className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 disabled:opacity-40"
+                />
+              </td>
               <td className="px-4 py-3 whitespace-nowrap">
                 <a
                   href={`/admin/instances/detail/?id=${encodeURIComponent(inst.instance_id)}`}

@@ -563,3 +563,182 @@ func TestRequeueHungJobs_LostFlipDoesNotSend(t *testing.T) {
 		t.Errorf("expected 0 requeued when the flip was lost, got %d", result.Requeued)
 	}
 }
+
+// The single-job action re-dispatches exactly like the sweep: the alive
+// dead-agent instance is terminated first, the record is flipped, and the
+// launch message goes out on-demand with a bumped retry count.
+func TestRequeueJob_RecoversAliveInstance(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-dead-agent")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-dead-agent", 7, 0, db.JobStatusLaunched),
+	}}
+	rq := &mockJobRequeuer{}
+	metrics := &mockTaskMetricsAPI{}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithMetrics(ec2, dyn, rq, metrics), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Errorf("expected outcome %q, got %q", OutcomeRequeued, res.Outcome)
+	}
+	if !res.InstanceTerminated || ec2.terminatedIDs == nil || ec2.terminatedIDs[0] != "i-dead-agent" {
+		t.Errorf("expected i-dead-agent terminated; terminated=%v ids=%v", res.InstanceTerminated, ec2.terminatedIDs)
+	}
+	if len(rq.sent) != 1 || rq.sent[0].RetryCount != 1 || !rq.sent[0].ForceOnDemand {
+		t.Errorf("requeue message wrong: %+v", rq.sent)
+	}
+	if res.RetryCount != 1 {
+		t.Errorf("expected the resulting retry count 1, got %d", res.RetryCount)
+	}
+	if want := []string{requeueReasonOperator}; !slices.Equal(metrics.requeuedReasons, want) {
+		t.Errorf("expected requeued reasons %v, got %v", want, metrics.requeuedReasons)
+	}
+}
+
+// The operator picked this row deliberately, so the sweep's staleness threshold
+// does not apply: a job launched seconds ago is still re-dispatchable.
+func TestRequeueJob_IgnoresAgeThreshold(t *testing.T) {
+	item := requeueJobItem(42, "i-gone", 7, 0, db.JobStatusLaunched)
+	item["created_at"] = &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{item}}
+	rq := &mockJobRequeuer{}
+
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued || len(rq.sent) != 1 {
+		t.Errorf("a freshly launched job must still be requeue-able, got %+v (sent=%d)", res, len(rq.sent))
+	}
+	if dyn.scanCalls != 0 {
+		t.Errorf("the single-job path must read the record directly, not scan; got %d scans", dyn.scanCalls)
+	}
+}
+
+// A gone instance needs no termination.
+func TestRequeueJob_MissingInstanceSkipsTerminate(t *testing.T) {
+	ec2 := &mockEC2API{}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-gone", 7, 0, db.JobStatusLaunched),
+	}}
+	rq := &mockJobRequeuer{}
+
+	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued || res.InstanceTerminated {
+		t.Errorf("expected a requeue with no termination, got %+v", res)
+	}
+	if ec2.terminateCalls != 0 {
+		t.Errorf("a missing instance must not be terminated, got %d calls", ec2.terminateCalls)
+	}
+}
+
+// The retry cap still binds: the operator button is a backstop, not an override.
+func TestRequeueJob_RefusesExhausted(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-dead-agent")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-dead-agent", 7, MaxRequeueRetries, db.JobStatusLaunched),
+	}}
+	rq := &mockJobRequeuer{}
+
+	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeExhausted || res.RetryCount != MaxRequeueRetries {
+		t.Errorf("expected an exhausted refusal, got %+v", res)
+	}
+	if len(rq.sent) != 0 || dyn.updateCalls != 0 || ec2.terminateCalls != 0 {
+		t.Errorf("an exhausted job must not be touched; sent=%d updates=%d terminates=%d",
+			len(rq.sent), dyn.updateCalls, ec2.terminateCalls)
+	}
+}
+
+// A running job has a confirmed runner doing real work; requeue would kill it.
+func TestRequeueJob_RefusesRunningJob(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-live")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-live", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+
+	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeWrongStatus || res.Status != string(db.JobStatusRunning) {
+		t.Errorf("expected a wrong-status refusal naming the live status, got %+v", res)
+	}
+	if ec2.terminateCalls != 0 || len(rq.sent) != 0 {
+		t.Errorf("a running job must not be terminated or requeued; terminates=%d sends=%d",
+			ec2.terminateCalls, len(rq.sent))
+	}
+}
+
+func TestRequeueJob_NotFound(t *testing.T) {
+	dyn := &mockTaskDynamoDBAPI{}
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, &mockJobRequeuer{}), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeNotFound {
+		t.Errorf("expected a not-found outcome, got %+v", res)
+	}
+}
+
+// A read failure is not a missing job: acting on an unknown state could kill a
+// live runner, so it surfaces as an error rather than a refusal.
+func TestRequeueJob_ReadErrorSurfaces(t *testing.T) {
+	dyn := &mockTaskDynamoDBAPI{getItemErr: errors.New("dynamo unavailable")}
+	_, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, &mockJobRequeuer{}), 42)
+	if err == nil {
+		t.Fatal("expected an error when the record cannot be read")
+	}
+}
+
+// Same invariant as the sweep: a flip whose send fails must be rolled back, or
+// the record sits in requeued with no message and no sweep ever finds it again.
+func TestRequeueJob_SendFailureRollsBackFlip(t *testing.T) {
+	var updates []*dynamodb.UpdateItemInput
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{requeueJobItem(42, "i-gone", 7, 0, db.JobStatusLaunched)},
+		captureUpdates: &updates,
+	}
+	rq := &mockJobRequeuer{sendErr: errors.New("sqs unavailable")}
+
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42)
+	if err == nil {
+		t.Fatal("expected an error when the send fails")
+	}
+	if res.Outcome != OutcomeSendFailed {
+		t.Errorf("expected a send-failed outcome, got %+v", res)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("expected the flip and its rollback, got %d updates", len(updates))
+	}
+	rollback := updates[1]
+	if !strings.Contains(*rollback.UpdateExpression, string(db.JobStatusLaunched)) &&
+		!strings.Contains(*rollback.ConditionExpression, "#status") {
+		t.Errorf("second update does not look like a rollback: %+v", rollback)
+	}
+}
+
+// A sibling sweep that already owns the dispatch must not be double-sent.
+func TestRequeueJob_LostFlipDoesNotSend(t *testing.T) {
+	dyn := &mockTaskDynamoDBAPI{
+		items:     []map[string]types.AttributeValue{requeueJobItem(42, "i-gone", 7, 0, db.JobStatusLaunched)},
+		updateErr: &types.ConditionalCheckFailedException{},
+	}
+	rq := &mockJobRequeuer{}
+
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42)
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeLostRace || len(rq.sent) != 0 {
+		t.Errorf("expected a lost-race refusal with no send, got %+v (sent=%d)", res, len(rq.sent))
+	}
+}

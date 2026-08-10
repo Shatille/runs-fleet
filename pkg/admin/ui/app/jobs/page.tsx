@@ -358,7 +358,7 @@ export default function JobsPage() {
         </div>
       ) : (
         <>
-          <JobsTable jobs={filteredJobs} traceURL={traceURL || undefined} />
+          <JobsTable jobs={filteredJobs} traceURL={traceURL || undefined} onActed={handleRefresh} />
 
           <div className="mt-4 flex justify-between items-center">
             <span className="text-sm text-gray-500 dark:text-gray-400">

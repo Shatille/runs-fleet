@@ -116,6 +116,35 @@ export interface ActiveJobRef {
   repo: string;
 }
 
+export interface RequeueJobResult {
+  job_id: number;
+  outcome: string;
+  instance_id?: string;
+  instance_terminated: boolean;
+  retry_count: number;
+  status?: string;
+  message: string;
+  details?: string;
+}
+
+export interface ReconcileJobResult {
+  job_id: number;
+  outcome: string;
+  orphaned: boolean;
+  instance_id?: string;
+  status?: string;
+  message: string;
+  details?: string;
+}
+
+export interface OrphanedInstancesResult {
+  instance_ids?: string[];
+  candidates: number;
+  terminated: number;
+  dry_run: boolean;
+  message: string;
+}
+
 export interface TerminateInstanceResult {
   instance_id: string;
   pool?: string;

@@ -22,23 +22,33 @@ const (
 	minOrphanedJobThreshold     = 10 * time.Minute
 )
 
+// OrphanInstanceSweeper runs the orphaned-instance reaper on demand. It is the
+// scheduled housekeeping task's detection and termination, callable with a dry run.
+type OrphanInstanceSweeper interface {
+	SweepOrphanedInstances(ctx context.Context, dryRun bool) (housekeeping.OrphanInstanceSweep, error)
+}
+
 // HousekeepingHandler provides admin endpoints for housekeeping actions.
 type HousekeepingHandler struct {
 	ec2Client     housekeeping.OrphanEC2API
 	dynamoClient  housekeeping.OrphanScanAPI
 	jobsTableName string
 	auditDB       AuditDB
+	sweeper       OrphanInstanceSweeper
 	auth          *AuthMiddleware
 	log           *logging.Logger
 }
 
-// NewHousekeepingHandler creates a new housekeeping admin handler.
-func NewHousekeepingHandler(ec2Client housekeeping.OrphanEC2API, dynamoClient housekeeping.OrphanScanAPI, jobsTableName string, auditDB AuditDB, auth *AuthMiddleware) *HousekeepingHandler {
+// NewHousekeepingHandler creates a new housekeeping admin handler. sweeper is
+// optional: housekeeping is disabled when no pools table is configured, and the
+// instance-reaper endpoint then reports itself unavailable.
+func NewHousekeepingHandler(ec2Client housekeeping.OrphanEC2API, dynamoClient housekeeping.OrphanScanAPI, jobsTableName string, auditDB AuditDB, sweeper OrphanInstanceSweeper, auth *AuthMiddleware) *HousekeepingHandler {
 	return &HousekeepingHandler{
 		ec2Client:     ec2Client,
 		dynamoClient:  dynamoClient,
 		jobsTableName: jobsTableName,
 		auditDB:       auditDB,
+		sweeper:       sweeper,
 		auth:          auth,
 		log:           logging.WithComponent(logging.LogTypeAdmin, "housekeeping"),
 	}
@@ -47,6 +57,71 @@ func NewHousekeepingHandler(ec2Client housekeeping.OrphanEC2API, dynamoClient ho
 // RegisterRoutes registers housekeeping admin routes.
 func (h *HousekeepingHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/housekeeping/orphaned-jobs", h.auth.WrapFunc(h.CleanupOrphanedJobs))
+	mux.Handle("POST /api/housekeeping/orphaned-instances", h.auth.WrapFunc(h.ReapOrphanedInstances))
+}
+
+// OrphanedInstancesResponse reports one orphaned-instance sweep.
+type OrphanedInstancesResponse struct {
+	InstanceIDs []string `json:"instance_ids,omitempty"`
+	Candidates  int      `json:"candidates"`
+	Terminated  int      `json:"terminated"`
+	DryRun      bool     `json:"dry_run"`
+	Message     string   `json:"message"`
+}
+
+// ReapOrphanedInstances handles POST /api/housekeeping/orphaned-instances.
+//
+// It runs the same five-phase detection the scheduled reaper uses (over-runtime
+// tagged instances, untagged profile zombies, never-claimed cold starts, finished
+// instances that failed to self-terminate, and abandoned stopped instances) and
+// terminates what it finds. It deliberately does not take the housekeeping task
+// lock: the scheduled sweep converges on the same idempotent TerminateInstances
+// call, so the worst case of an overlap is a duplicate terminate, and waiting on a
+// 60s lock would make the button feel broken.
+//
+// Query params:
+//   - dry_run: if "true", report the instances that would be reaped without touching them
+func (h *HousekeepingHandler) ReapOrphanedInstances(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if h.sweeper == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "Housekeeping not configured",
+			"the orphaned-instance reaper is unavailable without a pools table")
+		return
+	}
+
+	dryRun := r.URL.Query().Get("dry_run") == queryTrue
+
+	sweep, err := h.sweeper.SweepOrphanedInstances(ctx, dryRun)
+	if err != nil {
+		h.log.Error(ctx, "orphaned instance sweep failed", slog.String(logging.KeyError, err.Error()))
+		recordAdminAction(r, h.auditDB, "housekeeping.orphaned-instances", "", "error",
+			slog.Bool("dry_run", dryRun), slog.String(logging.KeyReason, err.Error()))
+		h.writeError(w, http.StatusInternalServerError, "Failed to sweep orphaned instances", err.Error())
+		return
+	}
+
+	resp := OrphanedInstancesResponse{
+		InstanceIDs: sweep.InstanceIDs,
+		Candidates:  len(sweep.InstanceIDs),
+		Terminated:  sweep.Terminated,
+		DryRun:      sweep.DryRun,
+	}
+	switch {
+	case len(sweep.InstanceIDs) == 0:
+		resp.Message = "No orphaned instances found"
+	case dryRun:
+		resp.Message = "Dry run: would terminate " + strconv.Itoa(len(sweep.InstanceIDs)) + " orphaned instance(s)"
+	default:
+		resp.Message = "Terminated " + strconv.Itoa(sweep.Terminated) + " orphaned instance(s)"
+	}
+
+	recordAdminAction(r, h.auditDB, "housekeeping.orphaned-instances", strings.Join(sweep.InstanceIDs, ","), "success",
+		slog.Bool("dry_run", dryRun),
+		slog.Int("candidates", len(sweep.InstanceIDs)),
+		slog.Int("terminated", sweep.Terminated))
+
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // CleanupOrphanedJobsResponse contains the result of orphaned job cleanup.

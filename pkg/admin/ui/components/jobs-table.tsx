@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { Job } from '@/lib/types';
 import { useSortable } from '@/hooks/use-sortable';
+import JobActions from '@/components/job-actions';
 
 type JobSortField = 'job_id' | 'repo' | 'status' | 'pool' | 'duration' | 'created_at';
 
@@ -22,9 +23,10 @@ const JOB_COMPARATORS: Record<JobSortField, (a: Job, b: Job) => number> = {
 interface JobsTableProps {
   jobs: Job[];
   traceURL?: string;
+  onActed: () => void;
 }
 
-export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
+export default function JobsTable({ jobs, traceURL, onActed }: JobsTableProps) {
   const comparators = useMemo(() => JOB_COMPARATORS, []);
   const { sortedData, requestSort, getSortIndicator } = useSortable<Job, JobSortField>(
     jobs,
@@ -70,6 +72,9 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
                 Trace
               </th>
             )}
+            <th className={`${thBase} text-right`}>
+              Actions
+            </th>
           </tr>
         </thead>
         <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
@@ -138,6 +143,18 @@ export default function JobsTable({ jobs, traceURL }: JobsTableProps) {
                   )}
                 </td>
               )}
+              <td
+                className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <JobActions
+                  jobId={job.job_id}
+                  status={job.status}
+                  instanceId={job.instance_id}
+                  createdAt={job.created_at}
+                  onActed={onActed}
+                />
+              </td>
             </tr>
           ))}
         </tbody>

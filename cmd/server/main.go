@@ -153,7 +153,7 @@ func main() {
 	if terminationHandler != nil && githubClient != nil {
 		terminationHandler.SetGitHubJobChecker(&terminationJobCheckerAdapter{client: githubClient})
 	}
-	housekeepingRunner := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, fleetManager, jobQueue, githubClient)
+	housekeepingRunner, housekeepingTasks := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, fleetManager, jobQueue, githubClient)
 
 	runnerManager := initRunnerManager(githubClient, secretsStore, cfg)
 
@@ -183,6 +183,7 @@ func main() {
 		labelAliasResolver: labelAliasResolver,
 		fleetManager:       fleetManager,
 		secretsStore:       secretsStore,
+		housekeepingTasks:  housekeepingTasks,
 	}
 	mux, err := ws.setupHTTPRoutes(ctx, cacheServer, prometheusHandler)
 	if err != nil {
@@ -391,11 +392,14 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 	return store
 }
 
-func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, fleetManager *fleet.Manager, jobQueue queue.Queue, githubClient *gh.Client) *housekeeping.Runner {
+// initHousekeeping builds the scheduled housekeeping runner and returns its task
+// executor alongside it, so the admin API can drive the same sweeps on demand.
+// Both are nil when housekeeping is disabled.
+func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secrets.Store, metricsPublisher metrics.Publisher, dbClient *db.Client, fleetManager *fleet.Manager, jobQueue queue.Queue, githubClient *gh.Client) (*housekeeping.Runner, *housekeeping.Tasks) {
 	if dbClient == nil || cfg.PoolsTableName == "" {
 		logging.WithComponent(logging.LogTypeServer, "housekeeping").Warn(context.Background(),
 			"housekeeping disabled: no pools table configured for task locking")
-		return nil
+		return nil, nil
 	}
 
 	var costReporter housekeeping.CostReporter
@@ -420,7 +424,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 	r := housekeeping.NewRunner(tasksExecutor, housekeeping.DefaultSchedulerConfig())
 	r.SetMetrics(metricsPublisher)
 	r.SetTaskLocker(dbClient, uuid.NewString())
-	return r
+	return r, tasksExecutor
 }
 
 func initMetrics(awsCfg aws.Config, cfg *config.Config) (metrics.Publisher, http.Handler) {
@@ -491,6 +495,7 @@ type webhookServer struct {
 	labelAliasResolver *gh.AliasResolver
 	fleetManager       *fleet.Manager
 	secretsStore       secrets.Store
+	housekeepingTasks  *housekeeping.Tasks
 
 	// shuttingDown flips true on SIGTERM so /ready reports 503 and the load
 	// balancer deregisters this task before the listener is closed.
@@ -571,10 +576,17 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	circuitHandler := admin.NewCircuitHandler(dynamoClient, ws.cfg.CircuitBreakerTable, adminAuth)
 	circuitHandler.RegisterRoutes(adminMux)
 
-	housekeepingHandler := admin.NewHousekeepingHandler(ec2Client, dynamoClient, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
+	// Guard the typed nil before it is stored in the interface: a nil
+	// *housekeeping.Tasks assigned directly would be a non-nil interface, and the
+	// handler could not tell that housekeeping is disabled.
+	var orphanSweeper admin.OrphanInstanceSweeper
+	if ws.housekeepingTasks != nil {
+		orphanSweeper = ws.housekeepingTasks
+	}
+	housekeepingHandler := admin.NewHousekeepingHandler(ec2Client, dynamoClient, ws.cfg.JobsTableName, ws.dbClient, orphanSweeper, adminAuth)
 	housekeepingHandler.RegisterRoutes(adminMux)
 
-	requeueHandler := admin.NewRequeueHandler(ec2Client, dynamoClient, ws.jobQueue, ws.metricsPublisher, ws.cfg.JobsTableName, adminAuth)
+	requeueHandler := admin.NewRequeueHandler(ec2Client, dynamoClient, ws.jobQueue, ws.metricsPublisher, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
 	requeueHandler.RegisterRoutes(adminMux)
 
 	costPriceFetcher := cost.NewPriceFetcher(ws.awsCfg, ws.awsCfg.Region)

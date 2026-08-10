@@ -3985,3 +3985,84 @@ func TestInstanceRuntimeState_ClassifiesAPIErrorsByCode(t *testing.T) {
 		})
 	}
 }
+
+func orphanSweepTasks(ec2Client *mockEC2API, metrics *mockTaskMetricsAPI) *Tasks {
+	tasks := &Tasks{
+		ec2Client:    ec2Client,
+		dynamoClient: &mockTaskDynamoDBAPI{},
+		metrics:      metrics,
+		config: &config.Config{
+			MaxRuntimeMinutes:             360,
+			UnclaimedInstanceGraceMinutes: 30,
+			CompletedInstanceGraceMinutes: 15,
+			StoppedInstanceGraceHours:     24,
+			JobsTableName:                 "jobs-table",
+		},
+	}
+	tasks.SetPoolDB(&mockPoolDBAPI{})
+	return tasks
+}
+
+// A dry run answers "what would this reap" without reaping: an operator has to be
+// able to look before pulling a fleet-wide trigger.
+func TestSweepOrphanedInstances_DryRunReportsWithoutTerminating(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		stoppedInstance("i-leaked", time.Now().Add(-72*time.Hour)),
+	}}}}
+	metrics := &mockTaskMetricsAPI{}
+
+	sweep, err := orphanSweepTasks(ec2Client, metrics).SweepOrphanedInstances(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !sweep.DryRun || len(sweep.InstanceIDs) != 1 || sweep.InstanceIDs[0] != "i-leaked" {
+		t.Errorf("sweep = %+v, want the orphan reported as a dry run", sweep)
+	}
+	if sweep.Terminated != 0 {
+		t.Errorf("Terminated = %d, want 0 on a dry run", sweep.Terminated)
+	}
+	if len(ec2Client.terminatedIDs) != 0 || ec2Client.cancelSpotCalls != 0 {
+		t.Errorf("a dry run must not terminate or cancel spot requests; terminated=%v cancels=%d",
+			ec2Client.terminatedIDs, ec2Client.cancelSpotCalls)
+	}
+	if metrics.orphanedCount != 0 {
+		t.Errorf("a dry run must not emit a housekeeping action metric, got count %d", metrics.orphanedCount)
+	}
+}
+
+func TestSweepOrphanedInstances_ReapsAndReports(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		stoppedInstance("i-leaked", time.Now().Add(-72*time.Hour)),
+	}}}}
+
+	sweep, err := orphanSweepTasks(ec2Client, &mockTaskMetricsAPI{}).SweepOrphanedInstances(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if sweep.DryRun || sweep.Terminated != 1 || len(sweep.InstanceIDs) != 1 {
+		t.Errorf("sweep = %+v, want 1 instance terminated", sweep)
+	}
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-leaked" {
+		t.Errorf("terminated = %v, want [i-leaked]", ec2Client.terminatedIDs)
+	}
+}
+
+// Nothing to reap is a clean result, not an error, and must not report a
+// termination the operator could mistake for action taken.
+func TestSweepOrphanedInstances_NoOrphans(t *testing.T) {
+	t.Parallel()
+
+	sweep, err := orphanSweepTasks(&mockEC2API{}, &mockTaskMetricsAPI{}).SweepOrphanedInstances(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sweep.InstanceIDs) != 0 || sweep.Terminated != 0 {
+		t.Errorf("sweep = %+v, want an empty result", sweep)
+	}
+}

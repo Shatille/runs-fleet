@@ -14,7 +14,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/db"
 )
 
-const reconcileResultSuccess = "success"
+const resultSuccess = "success"
 
 type mockPoolDB struct {
 	pools       map[string]*db.PoolConfig
@@ -819,7 +819,7 @@ func TestGetPool_SurfacesReconcileFields(t *testing.T) {
 		PoolName:            "warm-pool",
 		InstanceType:        "c7g.xlarge",
 		LastReconcileAt:     reconciledAt,
-		LastReconcileResult: reconcileResultSuccess,
+		LastReconcileResult: resultSuccess,
 	}
 
 	h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
@@ -837,7 +837,7 @@ func TestGetPool_SurfacesReconcileFields(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if resp.LastReconcileResult != reconcileResultSuccess {
+	if resp.LastReconcileResult != resultSuccess {
 		t.Errorf("last_reconcile_result = %q, want success", resp.LastReconcileResult)
 	}
 	if resp.LastReconcileAt == nil || !resp.LastReconcileAt.Equal(reconciledAt) {

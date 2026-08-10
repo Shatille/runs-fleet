@@ -5,8 +5,7 @@ import { apiFetch } from '@/lib/api';
 import { ActiveJobRef } from '@/lib/types';
 import { useToast } from '@/components/toast';
 import ConfirmDialog from '@/components/confirm-dialog';
-
-const GONE_STATES = ['terminated', 'shutting-down'];
+import { isTerminableState } from '@/lib/instance-state';
 
 interface TerminateInstanceButtonProps {
   instanceId: string;
@@ -34,7 +33,7 @@ export default function TerminateInstanceButton({
   // rejects the second call in the same tick, which setPending cannot.
   const inFlight = useRef(false);
 
-  if (GONE_STATES.includes(state?.toLowerCase() || '')) return null;
+  if (!isTerminableState(state)) return null;
 
   async function terminate(force: boolean) {
     if (inFlight.current) return;
