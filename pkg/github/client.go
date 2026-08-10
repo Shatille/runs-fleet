@@ -135,6 +135,18 @@ type Client struct {
 	tokenCache map[string]*installationInfo // keyed by owner
 }
 
+// splitRepo splits an "owner/repo" string into its parts.
+func splitRepo(repo string) (owner, name string, err error) {
+	if repo == "" {
+		return "", "", fmt.Errorf("repo is required (owner/repo format)")
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+	}
+	return parts[0], parts[1], nil
+}
+
 // NewClient creates a new GitHub client for runner operations.
 // privateKeyBase64 should be the base64-encoded PEM private key.
 func NewClient(appID string, privateKeyBase64 string) (*Client, error) {
@@ -353,15 +365,10 @@ type RegistrationResult struct {
 // Extracts owner from repo string (owner/repo format) for installation token.
 // Retries transient errors with exponential backoff.
 func (c *Client) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
-	// Extract owner from repo string (required)
-	if repo == "" {
-		return nil, fmt.Errorf("repo is required (owner/repo format)")
+	owner, _, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
 	}
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
-	}
-	owner := parts[0]
 
 	info, err := c.getInstallationInfo(ctx, owner)
 	if err != nil {
@@ -435,11 +442,10 @@ type WorkflowJobInfo struct {
 // GetWorkflowJobByID retrieves a workflow job by its ID from GitHub API.
 // The repo parameter must be in "owner/repo" format.
 func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int64) (*WorkflowJobInfo, error) {
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+	owner, repoName, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
 	}
-	owner := parts[0]
 
 	var lastErr error
 	var nextDelay time.Duration
@@ -468,7 +474,7 @@ func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int6
 			ghClient.BaseURL = u
 		}
 
-		job, resp, err := ghClient.Actions.GetWorkflowJobByID(ctx, parts[0], parts[1], jobID)
+		job, resp, err := ghClient.Actions.GetWorkflowJobByID(ctx, owner, repoName, jobID)
 		if err != nil {
 			var httpResp *http.Response
 			if resp != nil {
