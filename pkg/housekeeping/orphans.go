@@ -38,16 +38,30 @@ const (
 	orphanInstanceCheckBatchSize = 100
 )
 
-// FindOrphanedJobCandidates scans DynamoDB for jobs in "running", "claiming", or
-// "launched" status older than the given threshold. Jobs in "running" or "launched"
-// status without an instance_id are excluded (they need an instance to verify against).
-// Jobs in "claiming" status without an instance_id are included (instance creation failed).
+// FindOrphanedJobCandidates scans DynamoDB for jobs in "running", "claiming",
+// "launched", or "requeued" status older than the given threshold. Jobs in "running" or
+// "launched" status without an instance_id are excluded (they need an instance to verify
+// against). Jobs in "claiming" status without an instance_id are included (instance
+// creation failed).
+//
+// A requeued record is aged on requeued_at rather than created_at. Requeued is meant to
+// be transient — the record sits there only until a worker claims the re-dispatch — so
+// ageing it on created_at would retire a job re-dispatched seconds ago merely because its
+// first attempt was hours earlier. Its recorded instance is always gone (the requeue
+// terminates it), which makes requeued_at the only thing separating a live re-dispatch
+// from one that never landed.
+//
+// Requeued has to be here because nothing else can see it: the stale-jobs sweep scans
+// running/claiming, the requeue sweep scans launched, and the old-jobs GC keys off
+// completed_at, which a requeued record never gets. A re-dispatch that is never claimed
+// strands its record permanently otherwise.
 func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, threshold time.Duration) ([]OrphanedJobCandidate, error) {
 	cutoffTime := time.Now().Add(-threshold).Format(time.RFC3339)
 
 	input := &dynamodb.ScanInput{
-		TableName:        aws.String(jobsTableName),
-		FilterExpression: aws.String("(#status = :running OR #status = :claiming OR #status = :launched) AND created_at < :cutoff"),
+		TableName: aws.String(jobsTableName),
+		FilterExpression: aws.String("((#status = :running OR #status = :claiming OR #status = :launched) AND created_at < :cutoff)" +
+			" OR (#status = :requeued AND requeued_at < :cutoff)"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
@@ -55,6 +69,7 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
 		ProjectionExpression: aws.String("job_id, instance_id, #status"),
@@ -206,7 +221,12 @@ type ReconcileResult struct {
 
 // reconcilableStatuses are the states a job can be stuck in with a dead instance —
 // the same set FindOrphanedJobCandidates scans.
-var reconcilableStatuses = []db.JobStatus{db.JobStatusRunning, db.JobStatusClaiming, db.JobStatusLaunched}
+var reconcilableStatuses = []db.JobStatus{
+	db.JobStatusRunning,
+	db.JobStatusClaiming,
+	db.JobStatusLaunched,
+	db.JobStatusRequeued,
+}
 
 // ReconcileJob retires a single job whose instance is gone, the targeted form of the
 // orphaned-jobs sweep. It refuses while the instance still exists: a job record is the
@@ -289,8 +309,12 @@ func markJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
 		},
-		ConditionExpression: aws.String("#status = :running OR #status = :claiming OR #status = :launched"),
+		// Requeued belongs here for the same reason the scan admits it: without it
+		// the write fails its condition, the caller swallows that as "already
+		// changed", and the sweep reports retiring a record it never touched.
+		ConditionExpression: aws.String("#status = :running OR #status = :claiming OR #status = :launched OR #status = :requeued"),
 	})
 
 	if err != nil {
