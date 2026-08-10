@@ -219,8 +219,9 @@ type ReconcileResult struct {
 	Status     string
 }
 
-// reconcilableStatuses are the states a job can be stuck in with a dead instance —
-// the same set FindOrphanedJobCandidates scans.
+// reconcilableStatuses are the states a job can be stuck in with a dead instance — the
+// same set FindOrphanedJobCandidates scans, and the only ones MarkJobOrphaned retires
+// from.
 var reconcilableStatuses = []db.JobStatus{
 	db.JobStatusRunning,
 	db.JobStatusClaiming,
@@ -268,7 +269,7 @@ func ReconcileJob(ctx context.Context, scanAPI OrphanScanAPI, ec2Client OrphanEC
 		return res, nil
 	}
 
-	marked, err := markJobOrphaned(ctx, scanAPI, jobsTable, jobID)
+	marked, err := MarkJobOrphaned(ctx, scanAPI, jobsTable, jobID, job.Status)
 	if err != nil {
 		return res, fmt.Errorf("mark job %d orphaned: %w", jobID, err)
 	}
@@ -280,18 +281,22 @@ func ReconcileJob(ctx context.Context, scanAPI OrphanScanAPI, ec2Client OrphanEC
 	return res, nil
 }
 
-// MarkJobOrphaned updates a job's status to "orphaned" with a completed_at timestamp.
-// Uses conditional write to prevent race conditions with concurrent job completions.
-// Returns nil if the job's status has already changed (ConditionalCheckFailedException).
-func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64) error {
-	_, err := markJobOrphaned(ctx, dynamoClient, jobsTableName, jobID)
-	return err
-}
+// MarkJobOrphaned updates a job's status to "orphaned" with a completed_at timestamp,
+// under a conditional write pinned to observedStatus — the status the caller read when it
+// decided the job was orphaned. Candidates are selected by a scan and written back later,
+// and a requeued record is re-claimable by design (see db.evaluateClaim), so a stale
+// candidate can go live in between; pinning the write to what was observed is what stops
+// the sweep from retiring a job that has since been claimed.
+//
+// It reports whether THIS call performed the write. False means the record moved on
+// first, which a caller counting retirements must not present as its own success. An
+// observedStatus outside reconcilableStatuses is refused outright: the caller read a
+// settled record, and orphaning it would overwrite a real outcome.
+func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64, observedStatus string) (bool, error) {
+	if !statusIn(observedStatus, reconcilableStatuses) {
+		return false, fmt.Errorf("refusing to orphan job %d observed in status %q", jobID, observedStatus)
+	}
 
-// markJobOrphaned reports whether THIS call performed the write. A conditional-check
-// failure means the job reached a terminal state between the read and the write, which
-// a caller reporting the outcome to an operator must not present as its own success.
-func markJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64) (bool, error) {
 	now := time.Now().Format(time.RFC3339)
 
 	_, err := dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -306,15 +311,9 @@ func markJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":orphaned": &types.AttributeValueMemberS{Value: string(db.JobStatusOrphaned)},
 			":now":      &types.AttributeValueMemberS{Value: now},
-			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
-			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
-			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
-			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
+			":observed": &types.AttributeValueMemberS{Value: observedStatus},
 		},
-		// Requeued belongs here for the same reason the scan admits it: without it
-		// the write fails its condition, the caller swallows that as "already
-		// changed", and the sweep reports retiring a record it never touched.
-		ConditionExpression: aws.String("#status = :running OR #status = :claiming OR #status = :launched OR #status = :requeued"),
+		ConditionExpression: aws.String("#status = :observed"),
 	})
 
 	if err != nil {

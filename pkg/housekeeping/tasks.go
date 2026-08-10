@@ -1066,9 +1066,14 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		jobCtx := logging.ContextWith(ctx,
 			slog.Int64(logging.KeyJobID, c.JobID),
 			slog.String(logging.KeyInstanceID, c.InstanceID))
-		if err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID); err != nil {
+		marked, err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID, c.Status)
+		if err != nil {
 			t.logger().Error(jobCtx, "mark job orphaned failed",
 				slog.String("error", err.Error()))
+			continue
+		}
+		if !marked {
+			t.logger().Debug(jobCtx, "job left its scanned status before it could be orphaned")
 			continue
 		}
 		orphanedCount++
@@ -1437,9 +1442,9 @@ func (t *Tasks) partitionStaleByInstance(ctx context.Context, candidates []stale
 }
 
 // finalizeStaleJobsWithGoneInstance marks each candidate orphaned (terminal status +
-// completed_at) via a conditional write that only fires while the record is still
-// running/claiming, so a concurrent normal completion or spot-interruption requeue is
-// never clobbered. Returns the number of records finalized.
+// completed_at) via a conditional write that only fires while the record still holds the
+// status the scan saw, so a concurrent normal completion or spot-interruption requeue is
+// never clobbered. Returns the number of records actually finalized.
 func (t *Tasks) finalizeStaleJobsWithGoneInstance(ctx context.Context, gone []staleJobCandidate) int {
 	finalized := 0
 	for _, c := range gone {
@@ -1449,9 +1454,14 @@ func (t *Tasks) finalizeStaleJobsWithGoneInstance(ctx context.Context, gone []st
 			slog.String(logging.KeyRepo, c.Repo),
 			slog.String(logging.KeyInstanceID, c.InstanceID))
 
-		if err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID); err != nil {
+		marked, err := MarkJobOrphaned(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID, c.Status)
+		if err != nil {
 			t.logger().Error(jobCtx, "finalize stale job with gone instance failed",
 				slog.String("error", err.Error()))
+			continue
+		}
+		if !marked {
+			t.logger().Debug(jobCtx, "stale job left its scanned status before it could be finalized")
 			continue
 		}
 

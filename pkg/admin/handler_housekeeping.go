@@ -215,9 +215,14 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		jobCtx := logging.ContextWith(ctx,
 			slog.Int64(logging.KeyJobID, j.JobID),
 			slog.String(logging.KeyInstanceID, j.InstanceID))
-		if err := housekeeping.MarkJobOrphaned(ctx, h.dynamoClient, h.jobsTableName, j.JobID); err != nil {
+		marked, err := housekeeping.MarkJobOrphaned(ctx, h.dynamoClient, h.jobsTableName, j.JobID, j.Status)
+		if err != nil {
 			h.log.Error(jobCtx, "failed to mark job as orphaned",
 				slog.String(logging.KeyError, err.Error()))
+			continue
+		}
+		if !marked {
+			h.log.Info(jobCtx, "job left its scanned status before it could be orphaned")
 			continue
 		}
 		cleanedCount++

@@ -301,9 +301,12 @@ func TestBatchCheckInstanceExistence_DeduplicatesInstances(t *testing.T) {
 func TestMarkJobOrphaned_Success(t *testing.T) {
 	t.Parallel()
 	client := &mockOrphanDynamo{}
-	err := MarkJobOrphaned(context.Background(), client, "jobs", 123)
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !marked {
+		t.Error("expected the write to be reported as performed")
 	}
 	if client.updateCalls != 1 {
 		t.Errorf("expected 1 update call, got %d", client.updateCalls)
@@ -320,18 +323,60 @@ func TestMarkJobOrphaned_ConditionalCheckFailed(t *testing.T) {
 	client := &mockOrphanDynamo{
 		updateErr: &types.ConditionalCheckFailedException{Message: aws.String("condition failed")},
 	}
-	err := MarkJobOrphaned(context.Background(), client, "jobs", 123)
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning))
 	if err != nil {
 		t.Errorf("expected nil error for ConditionalCheckFailedException, got %v", err)
+	}
+	if marked {
+		t.Error("a lost condition must not be reported as a write")
 	}
 }
 
 func TestMarkJobOrphaned_OtherError(t *testing.T) {
 	t.Parallel()
 	client := &mockOrphanDynamo{updateErr: errors.New("dynamo error")}
-	err := MarkJobOrphaned(context.Background(), client, "jobs", 123)
-	if err == nil {
+	if _, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning)); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// The candidate's status is read by a scan and written back minutes later. Pinning
+// the write to the status that was observed is what stops the sweep from retiring a
+// record a worker claimed in between -- requeued in particular is re-claimable
+// (db.evaluateClaim), so a stale candidate can go live before the write lands.
+func TestMarkJobOrphaned_PinsWriteToObservedStatus(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{}
+	if _, err := MarkJobOrphaned(context.Background(), client, "jobs", 200, string(db.JobStatusRequeued)); err != nil {
+		t.Fatal(err)
+	}
+	if client.lastUpdate == nil || client.lastUpdate.ConditionExpression == nil {
+		t.Fatal("no conditional write captured")
+	}
+
+	condition := *client.lastUpdate.ConditionExpression
+	if condition != "#status = :observed" {
+		t.Errorf("condition = %q, want the write pinned to the observed status", condition)
+	}
+	v, ok := client.lastUpdate.ExpressionAttributeValues[":observed"].(*types.AttributeValueMemberS)
+	if !ok || v.Value != string(db.JobStatusRequeued) {
+		t.Errorf("condition must bind :observed to %q, got %v", db.JobStatusRequeued, client.lastUpdate.ExpressionAttributeValues[":observed"])
+	}
+}
+
+// A status outside the reconcilable set means the caller read a settled record;
+// orphaning it would overwrite a real outcome, so the write never goes out.
+func TestMarkJobOrphaned_RefusesSettledObservedStatus(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{}
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusSuccess))
+	if err == nil {
+		t.Fatal("expected an error for a settled observed status")
+	}
+	if marked || client.updateCalls != 0 {
+		t.Errorf("marked = %v with %d updates, want no write at all", marked, client.updateCalls)
 	}
 }
 
@@ -551,24 +596,17 @@ func TestFindOrphanedJobCandidates_AgesRequeuedByRequeuedAt(t *testing.T) {
 	}
 }
 
-// Without requeued in the condition the write silently no-ops: DynamoDB rejects
-// it, MarkJobOrphaned swallows the conditional failure, and the sweep counts a
-// record it never actually retired.
+// Without requeued among the statuses the write may start from, the sweep can find
+// a stranded record and then refuse to retire it.
 func TestMarkJobOrphaned_AcceptsRequeuedRecord(t *testing.T) {
 	t.Parallel()
 
 	client := &mockOrphanDynamo{}
-	if err := MarkJobOrphaned(context.Background(), client, "jobs", 200); err != nil {
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 200, string(db.JobStatusRequeued))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if client.lastUpdate == nil || client.lastUpdate.ConditionExpression == nil {
-		t.Fatal("no conditional write captured")
-	}
-	if !strings.Contains(*client.lastUpdate.ConditionExpression, ":requeued") {
-		t.Errorf("condition must permit a requeued record, got %q", *client.lastUpdate.ConditionExpression)
-	}
-	v, ok := client.lastUpdate.ExpressionAttributeValues[":requeued"].(*types.AttributeValueMemberS)
-	if !ok || v.Value != string(db.JobStatusRequeued) {
-		t.Errorf("update must bind :requeued to %q", db.JobStatusRequeued)
+	if !marked || client.updateCalls != 1 {
+		t.Errorf("marked = %v with %d updates, want the requeued record retired", marked, client.updateCalls)
 	}
 }
