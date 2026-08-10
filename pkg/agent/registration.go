@@ -68,7 +68,17 @@ func (r *Registrar) FetchConfig(ctx context.Context, runnerID string) (*secrets.
 }
 
 // RegisterRunner registers the runner with GitHub using the config.sh script.
+//
+// A JIT config makes this a no-op: GitHub created the registration when it minted
+// the config, so there is nothing to register. Running config.sh anyway would fail
+// (no token) and, with --replace, could disturb the JIT registration the runner is
+// about to use.
 func (r *Registrar) RegisterRunner(ctx context.Context, config *secrets.RunnerConfig, runnerPath string) error {
+	if config.JITConfig != "" {
+		r.logger.Printf("JIT config present; skipping config.sh registration")
+		return nil
+	}
+
 	configScript := filepath.Join(runnerPath, "config.sh")
 
 	if _, err := os.Stat(configScript); err != nil {
