@@ -25,9 +25,13 @@ func (s *EnvStore) Put(_ context.Context, _ string, _ *RunnerConfig) error {
 // Get retrieves runner configuration from environment variables.
 // The runnerID parameter is ignored as config is already in env vars.
 func (s *EnvStore) Get(_ context.Context, _ string) (*RunnerConfig, error) {
+	// Either credential registers a runner, so either alone is sufficient: a JIT
+	// config replaces token registration rather than supplementing it. Requiring
+	// the token unconditionally would lock the env backend out of JIT entirely.
 	jitToken := os.Getenv("RUNS_FLEET_JIT_TOKEN")
-	if jitToken == "" {
-		return nil, fmt.Errorf("RUNS_FLEET_JIT_TOKEN is required when using env backend")
+	jitConfig := os.Getenv("RUNS_FLEET_JIT_CONFIG")
+	if jitToken == "" && jitConfig == "" {
+		return nil, fmt.Errorf("RUNS_FLEET_JIT_TOKEN or RUNS_FLEET_JIT_CONFIG is required when using env backend")
 	}
 
 	org := os.Getenv("RUNS_FLEET_ORG")
@@ -41,6 +45,7 @@ func (s *EnvStore) Get(_ context.Context, _ string) (*RunnerConfig, error) {
 		Repo:                repo,
 		RunID:               os.Getenv("RUNS_FLEET_RUN_ID"),
 		JITToken:            jitToken,
+		JITConfig:           jitConfig,
 		JobID:               os.Getenv("RUNS_FLEET_JOB_ID"),
 		CacheToken:          os.Getenv("RUNS_FLEET_CACHE_TOKEN"),
 		CacheURL:            os.Getenv("RUNS_FLEET_CACHE_URL"),
