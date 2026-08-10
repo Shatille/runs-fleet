@@ -256,7 +256,7 @@ func (h *InstancesHandler) TerminateInstance(w http.ResponseWriter, r *http.Requ
 	inst, err := h.describeManagedInstance(ctx, id)
 	if err != nil {
 		if errors.Is(err, errInstanceNotFound) {
-			h.recordTerminateAudit(r, id, "", "denied", force, nil, "instance not found or not runs-fleet-managed")
+			h.recordTerminateAudit(r, id, "", auditDenied, force, nil, "instance not found or not runs-fleet-managed")
 			h.writeError(w, http.StatusNotFound, "Instance not found", "")
 			return
 		}
@@ -293,7 +293,7 @@ func (h *InstancesHandler) TerminateInstance(w http.ResponseWriter, r *http.Requ
 	if activeJob != nil && !force {
 		details := fmt.Sprintf("job %d (run %d) in %s is still running; retry with force=true to terminate anyway",
 			activeJob.JobID, activeJob.RunID, activeJob.Repo)
-		h.recordTerminateAudit(r, id, pool, "denied", force, activeJob, "instance has an active job")
+		h.recordTerminateAudit(r, id, pool, auditDenied, force, activeJob, "instance has an active job")
 		h.writeJSON(w, http.StatusConflict, TerminateInstanceConflict{
 			Error:     "Instance has an active job",
 			Details:   details,

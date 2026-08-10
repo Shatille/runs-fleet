@@ -183,10 +183,95 @@ func SeparateOrphanedJobs(candidates []OrphanedJobCandidate) (withInstance, with
 	return withInstance, withoutInstance
 }
 
+// ReconcileOutcome names what happened to one job's reconcile attempt.
+type ReconcileOutcome string
+
+// Outcomes of a single job's reconcile attempt.
+const (
+	ReconcileOrphaned      ReconcileOutcome = "orphaned"
+	ReconcileNotFound      ReconcileOutcome = "not_found"
+	ReconcileWrongStatus   ReconcileOutcome = "wrong_status"
+	ReconcileInstanceAlive ReconcileOutcome = "instance_alive"
+	ReconcileNoInstance    ReconcileOutcome = "no_instance"
+	ReconcileLostRace      ReconcileOutcome = "lost_race"
+)
+
+// ReconcileResult reports one job's reconcile.
+type ReconcileResult struct {
+	JobID      int64
+	Outcome    ReconcileOutcome
+	InstanceID string
+	Status     string
+}
+
+// reconcilableStatuses are the states a job can be stuck in with a dead instance —
+// the same set FindOrphanedJobCandidates scans.
+var reconcilableStatuses = []db.JobStatus{db.JobStatusRunning, db.JobStatusClaiming, db.JobStatusLaunched}
+
+// ReconcileJob retires a single job whose instance is gone, the targeted form of the
+// orphaned-jobs sweep. It refuses while the instance still exists: a job record is the
+// only thing tying a live runner to its work, and marking it orphaned would hide that
+// work rather than clean it up. An EC2 error counts as alive (see instanceStillExists),
+// so a transient outage never retires a live job.
+func ReconcileJob(ctx context.Context, scanAPI OrphanScanAPI, ec2Client OrphanEC2API, jobsTable string, jobID int64) (ReconcileResult, error) {
+	res := ReconcileResult{JobID: jobID}
+	if jobsTable == "" {
+		return res, fmt.Errorf("jobs table not configured")
+	}
+
+	job, err := GetRequeueableJob(ctx, scanAPI, jobsTable, jobID)
+	if err != nil {
+		return res, fmt.Errorf("read job %d: %w", jobID, err)
+	}
+	if job == nil {
+		res.Outcome = ReconcileNotFound
+		return res, nil
+	}
+
+	res.InstanceID = job.InstanceID
+	res.Status = job.Status
+	if !statusIn(job.Status, reconcilableStatuses) {
+		res.Outcome = ReconcileWrongStatus
+		return res, nil
+	}
+	// A running/launched record with no instance_id cannot be verified against EC2 at
+	// all, so retiring it would be a guess. FindOrphanedJobCandidates drops the same
+	// shape for the same reason; only claiming (where instance creation itself failed)
+	// is orphanable without an instance.
+	if job.InstanceID == "" {
+		if job.Status != string(db.JobStatusClaiming) {
+			res.Outcome = ReconcileNoInstance
+			return res, nil
+		}
+	} else if instanceStillExists(ctx, ec2Client, job.InstanceID) {
+		res.Outcome = ReconcileInstanceAlive
+		return res, nil
+	}
+
+	marked, err := markJobOrphaned(ctx, scanAPI, jobsTable, jobID)
+	if err != nil {
+		return res, fmt.Errorf("mark job %d orphaned: %w", jobID, err)
+	}
+	if !marked {
+		res.Outcome = ReconcileLostRace
+		return res, nil
+	}
+	res.Outcome = ReconcileOrphaned
+	return res, nil
+}
+
 // MarkJobOrphaned updates a job's status to "orphaned" with a completed_at timestamp.
 // Uses conditional write to prevent race conditions with concurrent job completions.
 // Returns nil if the job's status has already changed (ConditionalCheckFailedException).
 func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64) error {
+	_, err := markJobOrphaned(ctx, dynamoClient, jobsTableName, jobID)
+	return err
+}
+
+// markJobOrphaned reports whether THIS call performed the write. A conditional-check
+// failure means the job reached a terminal state between the read and the write, which
+// a caller reporting the outcome to an operator must not present as its own success.
+func markJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64) (bool, error) {
 	now := time.Now().Format(time.RFC3339)
 
 	_, err := dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -211,9 +296,9 @@ func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("failed to update job: %w", err)
+		return false, fmt.Errorf("failed to update job: %w", err)
 	}
-	return nil
+	return true, nil
 }

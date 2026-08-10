@@ -67,7 +67,29 @@ All should call `recordAdminAction` (pkg/admin/handler.go) once implemented, sam
 | Circuit breaker reset | `POST /api/circuit/{instance_type}/reset` | Reset a tripped breaker. `circuit.Breaker.ResetCircuit` already exists; inject the `*Breaker` rather than reaching for `CircuitHandler`'s direct-DynamoDB client, which would leave the orchestrator's in-process breaker cache stale for up to a minute |
 | Force pool reconciliation | `POST /api/pools/{name}/reconcile` | Enqueue to pool queue or invoke reconciler |
 | DLQ redrive | `POST /api/queues/{queue_name}/redrive` | SQS `StartMessageMoveTask` |
-| Housekeeping trigger | `POST /api/housekeeping/run` | Generalize the existing single-task `POST /api/housekeeping/orphaned-jobs` (which takes `threshold_minutes` / `dry_run`) toward a multi-task `{"tasks":[...]}` body covering orphaned instances, stale SSM, old jobs. Also the moment to fix `RequeueHandler.auditLog`, which is log-only and never reaches the persisted trail |
+| Housekeeping trigger | `POST /api/housekeeping/run` | Generalize the single-task endpoints (`orphaned-jobs`, `orphaned-instances`, each taking `dry_run`) toward a multi-task `{"tasks":[...]}` body that also covers stale SSM and old jobs |
+
+#### Per-job recovery and the instance reaper (shipped)
+
+`POST /api/jobs/{id}/requeue` re-dispatches one operator-chosen job through the same
+`housekeeping` code path as the fleet-wide sweep — `launched` only, bounded by
+`MaxRequeueRetries`, terminating an alive-but-dead-agent instance before the send. The
+staleness threshold is skipped: it exists to stop a *sweep* acting on jobs that may still be
+starting, and means nothing for a row someone picked. Refusals come back as **409** with the
+reason (`wrong_status`, `exhausted`, `lost_race`) rather than a generic failure.
+
+`POST /api/jobs/{id}/reconcile` is the targeted form of the orphaned-jobs sweep: it retires a
+job whose instance is gone and refuses with **409** while the instance is alive, since a job
+record is the only thing tying a live runner to its work.
+
+`POST /api/housekeeping/orphaned-instances[?dry_run=true]` runs the scheduled reaper's five
+detection phases on demand. It deliberately skips the housekeeping task lock — the scheduled
+sweep converges on the same idempotent `TerminateInstances`, so an overlap costs a duplicate
+call, while waiting on a 60s lock would make the button feel broken. It reports **503** when
+housekeeping is disabled (no pools table), since there is no sweeper to call.
+
+All three record through `recordAdminAction`, as does the bulk requeue sweep, which used to
+log without reaching the persisted trail.
 
 #### Instance termination semantics (shipped)
 

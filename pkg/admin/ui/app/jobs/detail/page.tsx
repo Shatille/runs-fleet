@@ -1,8 +1,9 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { DetailSkeleton } from '@/components/skeleton';
+import JobActions from '@/components/job-actions';
 import { Job } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
@@ -28,36 +29,34 @@ function JobDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const fetchJob = useCallback(async () => {
     if (!id) {
       setError('No job ID specified');
       setLoading(false);
       return;
     }
-
-    const jobId = id;
-    async function fetchJob() {
-      try {
-        setLoading(true);
-        const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`);
-        if (res.status === 404) {
-          setError('Job not found');
-          return;
-        }
-        if (!res.ok) {
-          throw new Error(`Failed to fetch job: ${res.statusText}`);
-        }
-        const data = await res.json();
-        setJob(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load job');
-      } finally {
-        setLoading(false);
+    try {
+      setLoading(true);
+      const res = await apiFetch(`/api/jobs/${encodeURIComponent(id)}`);
+      if (res.status === 404) {
+        setError('Job not found');
+        return;
       }
+      if (!res.ok) {
+        throw new Error(`Failed to fetch job: ${res.statusText}`);
+      }
+      const data = await res.json();
+      setJob(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load job');
+    } finally {
+      setLoading(false);
     }
-
-    fetchJob();
   }, [id]);
+
+  useEffect(() => {
+    fetchJob();
+  }, [fetchJob]);
 
   if (loading) {
     return (
@@ -106,6 +105,15 @@ function JobDetail() {
           Job {job.job_id}
         </h1>
         <StatusBadge status={job.status} exitCode={job.exit_code} />
+        <span className="ml-auto">
+          <JobActions
+            jobId={job.job_id}
+            status={job.status}
+            instanceId={job.instance_id}
+            createdAt={job.created_at}
+            onActed={fetchJob}
+          />
+        </span>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
+	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -102,7 +104,7 @@ func (m *mockHousekeepingDynamo) UpdateItem(_ context.Context, _ *dynamodb.Updat
 func TestHousekeepingHandler_CleanupOrphanedJobs_NoJobsTable(t *testing.T) {
 	t.Parallel()
 
-	handler := NewHousekeepingHandler(nil, nil, "", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(nil, nil, "", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -124,7 +126,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_NoCandidates(t *testing.T) {
 		items: []map[string]types.AttributeValue{},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -168,7 +170,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InstancesExist(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -217,7 +219,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_OrphanedFound(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -265,7 +267,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_PersistsAuditEntry(t *testing.T
 	}
 	auditDB := &mockAuditDB{}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", auditDB, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", auditDB, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -281,7 +283,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_PersistsAuditEntry(t *testing.T
 		t.Fatalf("got %d persisted audit entries, want 1", len(auditDB.entries))
 	}
 	entry := auditDB.entries[0]
-	if entry.Action != "housekeeping.orphaned-jobs" || entry.Result != "success" || entry.Target != "123" {
+	if entry.Action != "housekeeping.orphaned-jobs" || entry.Result != resultSuccess || entry.Target != "123" {
 		t.Errorf("entry = %+v, want action=housekeeping.orphaned-jobs result=success target=123", entry)
 	}
 }
@@ -302,7 +304,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_DryRun(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -357,7 +359,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ClaimingStatusNoInstance(t *tes
 		"i-exists": ec2types.InstanceStateNameRunning,
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -395,7 +397,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ScanError(t *testing.T) {
 		scanErr: errors.New("DynamoDB scan failed"),
 	}
 
-	handler := NewHousekeepingHandler(nil, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(nil, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -440,7 +442,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_UpdateError(t *testing.T) {
 		updateErr: errors.New("DynamoDB update failed"),
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -490,7 +492,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ConditionalCheckFailed(t *testi
 		updateErr: &types.ConditionalCheckFailedException{Message: aws.String("condition failed")},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -530,7 +532,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_CustomThreshold(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -555,7 +557,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ThresholdBelowMinimum(t *testin
 		items: []map[string]types.AttributeValue{},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -587,7 +589,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_RunningStatusNoInstance(t *test
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -664,7 +666,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_VariousInstanceStates(t *testin
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -708,7 +710,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_EC2Error(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -752,7 +754,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidInstanceIDError(t *testi
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -808,7 +810,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_BatchFailFallbackSuccess(t *tes
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -859,7 +861,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_InvalidJobID(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -925,7 +927,7 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_MixedScenario(t *testing.T) {
 		},
 	}
 
-	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, NewAuthMiddleware(""))
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
@@ -952,5 +954,124 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_MixedScenario(t *testing.T) {
 	// Job 1 and 4 have running instances
 	if resp.Cleaned != 2 {
 		t.Errorf("expected 2 cleaned, got %d", resp.Cleaned)
+	}
+}
+
+type mockOrphanSweeper struct {
+	sweep     housekeeping.OrphanInstanceSweep
+	err       error
+	dryRuns   []bool
+	callCount int
+}
+
+func (m *mockOrphanSweeper) SweepOrphanedInstances(_ context.Context, dryRun bool) (housekeeping.OrphanInstanceSweep, error) {
+	m.callCount++
+	m.dryRuns = append(m.dryRuns, dryRun)
+	if m.err != nil {
+		return housekeeping.OrphanInstanceSweep{}, m.err
+	}
+	sweep := m.sweep
+	sweep.DryRun = dryRun
+	if dryRun {
+		sweep.Terminated = 0
+	}
+	return sweep, nil
+}
+
+func newOrphanInstancesMux(sweeper OrphanInstanceSweeper, auditDB AuditDB) *http.ServeMux {
+	handler := NewHousekeepingHandler(&mockHousekeepingEC2{}, &mockHousekeepingDynamo{}, "test-jobs", auditDB, sweeper, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	return mux
+}
+
+func TestHousekeepingHandler_OrphanedInstances_Reaps(t *testing.T) {
+	t.Parallel()
+
+	sweeper := &mockOrphanSweeper{sweep: housekeeping.OrphanInstanceSweep{
+		InstanceIDs: []string{"i-zombie", "i-abandoned"},
+		Terminated:  2,
+	}}
+	auditDB := &mockAuditDB{}
+
+	rec := httptest.NewRecorder()
+	newOrphanInstancesMux(sweeper, auditDB).ServeHTTP(rec, httptest.NewRequest("POST", "/api/housekeeping/orphaned-instances", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var resp OrphanedInstancesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Terminated != 2 || len(resp.InstanceIDs) != 2 || resp.DryRun {
+		t.Errorf("response = %+v, want 2 terminated instances and dry_run=false", resp)
+	}
+	if !slices.Equal(sweeper.dryRuns, []bool{false}) {
+		t.Errorf("sweeper called with %v, want one wet run", sweeper.dryRuns)
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Action != "housekeeping.orphaned-instances" {
+		t.Errorf("audit entries = %+v, want one housekeeping.orphaned-instances entry", auditDB.entries)
+	}
+}
+
+// A dry run must reach the sweeper as a dry run: previewing a fleet-wide reap is the
+// whole point of the button next to it.
+func TestHousekeepingHandler_OrphanedInstances_DryRun(t *testing.T) {
+	t.Parallel()
+
+	sweeper := &mockOrphanSweeper{sweep: housekeeping.OrphanInstanceSweep{
+		InstanceIDs: []string{"i-zombie"},
+		Terminated:  1,
+	}}
+
+	rec := httptest.NewRecorder()
+	newOrphanInstancesMux(sweeper, &mockAuditDB{}).ServeHTTP(rec,
+		httptest.NewRequest("POST", "/api/housekeeping/orphaned-instances?dry_run=true", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var resp OrphanedInstancesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.DryRun || resp.Terminated != 0 || len(resp.InstanceIDs) != 1 {
+		t.Errorf("response = %+v, want a dry run reporting 1 candidate and 0 terminated", resp)
+	}
+	if !slices.Equal(sweeper.dryRuns, []bool{true}) {
+		t.Errorf("sweeper called with %v, want one dry run", sweeper.dryRuns)
+	}
+}
+
+// Housekeeping is disabled when no pools table is configured, which leaves no sweeper
+// to call — that is a configuration answer, not a server error.
+func TestHousekeepingHandler_OrphanedInstances_NoSweeper(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	newOrphanInstancesMux(nil, &mockAuditDB{}).ServeHTTP(rec,
+		httptest.NewRequest("POST", "/api/housekeeping/orphaned-instances", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHousekeepingHandler_OrphanedInstances_SweepError(t *testing.T) {
+	t.Parallel()
+
+	sweeper := &mockOrphanSweeper{err: errors.New("ec2 unavailable")}
+	auditDB := &mockAuditDB{}
+
+	rec := httptest.NewRecorder()
+	newOrphanInstancesMux(sweeper, auditDB).ServeHTTP(rec,
+		httptest.NewRequest("POST", "/api/housekeeping/orphaned-instances", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Result != "error" {
+		t.Errorf("audit entries = %+v, want one error entry", auditDB.entries)
 	}
 }

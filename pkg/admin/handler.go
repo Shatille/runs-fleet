@@ -30,6 +30,9 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 // (dry_run, force).
 const queryTrue = "true"
 
+// auditDenied marks an action the handler refused, as opposed to one that failed.
+const auditDenied = "denied"
+
 // PoolDB defines the database operations required by the admin handler.
 type PoolDB interface {
 	ListPools(ctx context.Context) ([]string, error)
@@ -239,7 +242,7 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.validatePoolRequest(&req, true); err != nil {
-		h.recordAudit(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, err.Error()))
+		h.recordAudit(r, "pool.create", req.PoolName, auditDenied, slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
@@ -251,7 +254,7 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
-		h.recordAudit(r, "pool.create", req.PoolName, "denied", slog.String(logging.KeyReason, "already exists"))
+		h.recordAudit(r, "pool.create", req.PoolName, auditDenied, slog.String(logging.KeyReason, "already exists"))
 		h.writeError(w, http.StatusConflict, "Pool already exists", "")
 		return
 	}
@@ -290,7 +293,7 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 	req.PoolName = name
 
 	if err := h.validatePoolRequest(&req, false); err != nil {
-		h.recordAudit(r, "pool.update", name, "denied", slog.String(logging.KeyReason, err.Error()))
+		h.recordAudit(r, "pool.update", name, auditDenied, slog.String(logging.KeyReason, err.Error()))
 		h.writeError(w, http.StatusBadRequest, "Validation failed", err.Error())
 		return
 	}
@@ -302,7 +305,7 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing == nil {
-		h.recordAudit(r, "pool.update", name, "denied", slog.String(logging.KeyReason, "not found"))
+		h.recordAudit(r, "pool.update", name, auditDenied, slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
@@ -342,13 +345,13 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing == nil {
-		h.recordAudit(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "not found"))
+		h.recordAudit(r, "pool.delete", name, auditDenied, slog.String(logging.KeyReason, "not found"))
 		h.writeError(w, http.StatusNotFound, "Pool not found", "")
 		return
 	}
 
 	if !existing.Ephemeral {
-		h.recordAudit(r, "pool.delete", name, "denied", slog.String(logging.KeyReason, "non-ephemeral"))
+		h.recordAudit(r, "pool.delete", name, auditDenied, slog.String(logging.KeyReason, "non-ephemeral"))
 		h.writeError(w, http.StatusForbidden, "Cannot delete non-ephemeral pool", "Only ephemeral pools can be deleted via API")
 		return
 	}
@@ -591,7 +594,7 @@ func logAdminAction(r *http.Request, action, target, result string, extra ...any
 
 	ctx := r.Context()
 	switch result {
-	case "denied":
+	case auditDenied:
 		auditLog.Warn(ctx, "admin action denied", attrs...)
 	case "error":
 		auditLog.Error(ctx, "admin action failed", attrs...)

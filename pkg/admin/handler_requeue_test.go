@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,7 @@ func (m *mockRequeueEC2) CancelSpotInstanceRequests(_ context.Context, _ *ec2.Ca
 type mockRequeueDynamo struct {
 	items        []map[string]types.AttributeValue
 	scanErr      error
+	updateErr    error
 	updateCalls  int
 	capturedScan *dynamodb.ScanInput
 }
@@ -87,6 +89,9 @@ func (m *mockRequeueDynamo) Scan(_ context.Context, in *dynamodb.ScanInput, _ ..
 
 func (m *mockRequeueDynamo) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	m.updateCalls++
+	if m.updateErr != nil {
+		return nil, m.updateErr
+	}
 	return &dynamodb.UpdateItemOutput{}, nil
 }
 
@@ -153,7 +158,7 @@ func requeueAdminItem(jobID int64, instanceID string, runID int64, retry int, st
 func TestRequeueHandler_NoJobsTable(t *testing.T) {
 	t.Parallel()
 
-	handler := NewRequeueHandler(nil, nil, nil, nil, "", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(nil, nil, nil, nil, "", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -172,7 +177,7 @@ func TestRequeueHandler_ScansLaunchedOnly(t *testing.T) {
 	t.Parallel()
 
 	dyn := &mockRequeueDynamo{}
-	handler := NewRequeueHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, nil, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, nil, "jobs-table", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -208,7 +213,7 @@ func TestRequeueHandler_RequeuesHungJob(t *testing.T) {
 	rq := &mockRequeuer{}
 	metrics := &mockRequeueMetrics{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, metrics, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, metrics, "jobs-table", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -254,7 +259,7 @@ func TestRequeueHandler_ExhaustedEmitsSchedulingFailure(t *testing.T) {
 	rq := &mockRequeuer{}
 	metrics := &mockRequeueMetrics{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, metrics, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, metrics, "jobs-table", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -289,7 +294,7 @@ func TestRequeueHandler_DryRunDoesNotMutate(t *testing.T) {
 	}}
 	rq := &mockRequeuer{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -322,7 +327,7 @@ func TestRequeueHandler_ScanError(t *testing.T) {
 	dyn := &mockRequeueDynamo{scanErr: context.DeadlineExceeded}
 	rq := &mockRequeuer{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -347,7 +352,7 @@ func TestRequeueHandler_ThresholdBelowMinimumClampsToDefault(t *testing.T) {
 	}}
 	rq := &mockRequeuer{}
 
-	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", NewAuthMiddleware(""))
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", nil, NewAuthMiddleware(""))
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -364,5 +369,281 @@ func TestRequeueHandler_ThresholdBelowMinimumClampsToDefault(t *testing.T) {
 	}
 	if resp.Requeued != 1 {
 		t.Errorf("expected requeued=1 with clamped threshold, got %+v", resp)
+	}
+}
+
+func newSingleJobHandler(ec2Client *mockRequeueEC2, dyn *mockRequeueDynamo, rq *mockRequeuer, auditDB AuditDB) *http.ServeMux {
+	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", auditDB, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	return mux
+}
+
+func postJSON(t *testing.T, mux *http.ServeMux, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", path, nil))
+	return rec
+}
+
+// The per-job button re-dispatches the row the operator picked, terminating its
+// dead-agent instance on the way.
+func TestRequeueHandler_RequeueJob(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockRequeueEC2{instances: map[string]ec2types.InstanceStateName{
+		"i-stuck": ec2types.InstanceStateNameRunning,
+	}}
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-stuck", 7, 0, "launched"),
+	}}
+	rq := &mockRequeuer{}
+	auditDB := &mockAuditDB{}
+
+	rec := postJSON(t, newSingleJobHandler(ec2Client, dyn, rq, auditDB), "/api/jobs/42/requeue")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp RequeueJobResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.JobID != 42 || resp.Outcome != "requeued" || !resp.InstanceTerminated {
+		t.Errorf("response = %+v, want job 42 requeued with its instance terminated", resp)
+	}
+	if len(rq.sent) != 1 || rq.sent[0].JobID != 42 || !rq.sent[0].ForceOnDemand {
+		t.Errorf("expected one on-demand requeue for job 42, got %+v", rq.sent)
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Action != "job.requeue" ||
+		auditDB.entries[0].Result != resultSuccess || auditDB.entries[0].Target != "42" {
+		t.Errorf("audit entries = %+v, want one job.requeue success for target 42", auditDB.entries)
+	}
+}
+
+// A refusal has to say why, or the operator cannot tell "already recovered" from
+// "the button is broken".
+func TestRequeueHandler_RequeueJobRefusals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		item        map[string]types.AttributeValue
+		wantCode    int
+		wantOutcome string
+		wantDetails string
+	}{
+		{
+			name:        "running job keeps its live runner",
+			item:        requeueAdminItem(42, "i-live", 7, 0, "running"),
+			wantCode:    http.StatusConflict,
+			wantOutcome: "wrong_status",
+			wantDetails: "running",
+		},
+		{
+			name:        "retry budget spent",
+			item:        requeueAdminItem(42, "i-stuck", 7, 2, "launched"),
+			wantCode:    http.StatusConflict,
+			wantOutcome: "exhausted",
+			wantDetails: "retries",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{tt.item}}
+			rq := &mockRequeuer{}
+			ec2Client := &mockRequeueEC2{instances: map[string]ec2types.InstanceStateName{
+				"i-live":  ec2types.InstanceStateNameRunning,
+				"i-stuck": ec2types.InstanceStateNameRunning,
+			}}
+			auditDB := &mockAuditDB{}
+
+			rec := postJSON(t, newSingleJobHandler(ec2Client, dyn, rq, auditDB), "/api/jobs/42/requeue")
+			if rec.Code != tt.wantCode {
+				t.Fatalf("expected %d, got %d (body %s)", tt.wantCode, rec.Code, rec.Body.String())
+			}
+
+			var resp RequeueJobResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", resp.Outcome, tt.wantOutcome)
+			}
+			if !strings.Contains(resp.Details, tt.wantDetails) {
+				t.Errorf("details = %q, want it to mention %q", resp.Details, tt.wantDetails)
+			}
+			if len(rq.sent) != 0 || ec2Client.terminateCalls != 0 {
+				t.Errorf("a refused requeue must not send or terminate; sent=%d terminates=%d",
+					len(rq.sent), ec2Client.terminateCalls)
+			}
+			if len(auditDB.entries) != 1 || auditDB.entries[0].Result != "denied" {
+				t.Errorf("audit entries = %+v, want one denied entry", auditDB.entries)
+			}
+		})
+	}
+}
+
+func TestRequeueHandler_RequeueJobNotFound(t *testing.T) {
+	t.Parallel()
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, &mockRequeueDynamo{}, &mockRequeuer{}, &mockAuditDB{}), "/api/jobs/42/requeue")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequeueHandler_RequeueJobInvalidID(t *testing.T) {
+	t.Parallel()
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, &mockRequeueDynamo{}, &mockRequeuer{}, &mockAuditDB{}), "/api/jobs/not-a-number/requeue")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// Reconcile is for the job whose instance is definitively gone: it retires the
+// record so the row stops looking live.
+func TestRequeueHandler_ReconcileJobMarksOrphaned(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-gone", 7, 0, "running"),
+	}}
+	auditDB := &mockAuditDB{}
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, auditDB), "/api/jobs/42/reconcile")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp ReconcileJobResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.JobID != 42 || !resp.Orphaned {
+		t.Errorf("response = %+v, want job 42 marked orphaned", resp)
+	}
+	if dyn.updateCalls != 1 {
+		t.Errorf("expected exactly one record update, got %d", dyn.updateCalls)
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Action != "job.reconcile" {
+		t.Errorf("audit entries = %+v, want one job.reconcile entry", auditDB.entries)
+	}
+}
+
+// Marking a job orphaned while its instance is alive would hide work in flight.
+func TestRequeueHandler_ReconcileRefusesLiveInstance(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockRequeueEC2{instances: map[string]ec2types.InstanceStateName{
+		"i-live": ec2types.InstanceStateNameRunning,
+	}}
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-live", 7, 0, "running"),
+	}}
+
+	rec := postJSON(t, newSingleJobHandler(ec2Client, dyn, &mockRequeuer{}, &mockAuditDB{}), "/api/jobs/42/reconcile")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if dyn.updateCalls != 0 {
+		t.Errorf("a live instance's job must not be mutated, got %d updates", dyn.updateCalls)
+	}
+}
+
+// A job that already reached a terminal state has nothing to reconcile.
+func TestRequeueHandler_ReconcileRefusesTerminalJob(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-gone", 7, 0, "success"),
+	}}
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, &mockAuditDB{}), "/api/jobs/42/reconcile")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if dyn.updateCalls != 0 {
+		t.Errorf("a finished job must not be mutated, got %d updates", dyn.updateCalls)
+	}
+}
+
+// The bulk sweep's outcome belongs in the persisted trail too, not only in logs.
+func TestRequeueHandler_BulkSweepPersistsAudit(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-gone", 7, 0, "launched"),
+	}}
+	auditDB := &mockAuditDB{}
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, auditDB), "/api/housekeeping/requeue-hung-jobs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Action != "housekeeping.requeue_hung_jobs" {
+		t.Errorf("audit entries = %+v, want one housekeeping.requeue_hung_jobs entry", auditDB.entries)
+	}
+}
+
+// A job that settles between the read and the guarded write was not reconciled by
+// this call, and the operator must not be told otherwise.
+func TestRequeueHandler_ReconcileLostRace(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockRequeueDynamo{
+		items:     []map[string]types.AttributeValue{requeueAdminItem(42, "i-gone", 7, 0, "running")},
+		updateErr: &types.ConditionalCheckFailedException{},
+	}
+	auditDB := &mockAuditDB{}
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, auditDB), "/api/jobs/42/reconcile")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp ReconcileJobResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Orphaned || resp.Outcome != "lost_race" {
+		t.Errorf("response = %+v, want a lost-race refusal that does not claim the job was orphaned", resp)
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Result != "denied" {
+		t.Errorf("audit entries = %+v, want one denied entry", auditDB.entries)
+	}
+}
+
+// Nothing to verify the record against, so the button refuses rather than
+// guessing the job is dead.
+func TestRequeueHandler_ReconcileRefusesJobWithNoInstance(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "", 7, 0, "running"),
+	}}
+	auditDB := &mockAuditDB{}
+
+	rec := postJSON(t, newSingleJobHandler(&mockRequeueEC2{}, dyn, &mockRequeuer{}, auditDB), "/api/jobs/42/reconcile")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp ReconcileJobResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Orphaned || resp.Outcome != "no_instance" {
+		t.Errorf("response = %+v, want a no-instance refusal", resp)
+	}
+	if dyn.updateCalls != 0 {
+		t.Errorf("an unverifiable record must not be mutated, got %d updates", dyn.updateCalls)
+	}
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Result != auditDenied {
+		t.Errorf("audit entries = %+v, want one denied entry", auditDB.entries)
 	}
 }

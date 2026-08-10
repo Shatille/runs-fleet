@@ -353,3 +353,135 @@ func TestBatchCheckInstanceExistence_NonexistentNotInMap(t *testing.T) {
 		t.Error("expected i-nonexistent to not exist")
 	}
 }
+
+func reconcileItem(jobID int64, instanceID string, status db.JobStatus) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		"job_id":      &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
+		"instance_id": &types.AttributeValueMemberS{Value: instanceID},
+		"status":      &types.AttributeValueMemberS{Value: string(status)},
+	}
+}
+
+func TestReconcileJob(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		item        map[string]types.AttributeValue
+		instances   map[string]ec2types.InstanceStateName
+		updateErr   error
+		wantOutcome ReconcileOutcome
+		wantUpdates int
+	}{
+		{
+			name:        "instance gone retires the record",
+			item:        reconcileItem(42, "i-gone", db.JobStatusRunning),
+			wantOutcome: ReconcileOrphaned,
+			wantUpdates: 1,
+		},
+		{
+			name:        "terminated instance counts as gone",
+			item:        reconcileItem(42, "i-dead", db.JobStatusLaunched),
+			instances:   map[string]ec2types.InstanceStateName{"i-dead": ec2types.InstanceStateNameTerminated},
+			wantOutcome: ReconcileOrphaned,
+			wantUpdates: 1,
+		},
+		{
+			// The record is the only thing tying a live runner to its work.
+			name:        "live instance is refused",
+			item:        reconcileItem(42, "i-live", db.JobStatusRunning),
+			instances:   map[string]ec2types.InstanceStateName{"i-live": ec2types.InstanceStateNameRunning},
+			wantOutcome: ReconcileInstanceAlive,
+		},
+		{
+			name:        "settled job has nothing to reconcile",
+			item:        reconcileItem(42, "i-gone", db.JobStatusSuccess),
+			wantOutcome: ReconcileWrongStatus,
+		},
+		{
+			// Unverifiable: there is nothing to check against EC2, and the bulk
+			// sweep drops this shape for the same reason.
+			name:        "running job with no instance is refused",
+			item:        reconcileItem(42, "", db.JobStatusRunning),
+			wantOutcome: ReconcileNoInstance,
+		},
+		{
+			name:        "launched job with no instance is refused",
+			item:        reconcileItem(42, "", db.JobStatusLaunched),
+			wantOutcome: ReconcileNoInstance,
+		},
+		{
+			// Instance creation itself failed, so there is no instance to verify
+			// against and the record is safe to retire — what the bulk sweep does.
+			name:        "claiming job with no instance is retired",
+			item:        reconcileItem(42, "", db.JobStatusClaiming),
+			wantOutcome: ReconcileOrphaned,
+			wantUpdates: 1,
+		},
+		{
+			// The job completed between the read and the guarded write, so the
+			// write never landed: reporting it as orphaned would be a lie in the
+			// response and in the audit trail.
+			name:        "job that settled mid-reconcile is not claimed as orphaned",
+			item:        reconcileItem(42, "i-gone", db.JobStatusRunning),
+			updateErr:   &types.ConditionalCheckFailedException{},
+			wantOutcome: ReconcileLostRace,
+			wantUpdates: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dyn := &mockOrphanDynamo{
+				items:     []map[string]types.AttributeValue{tt.item},
+				updateErr: tt.updateErr,
+			}
+			ec2Client := &mockOrphanEC2{instances: tt.instances}
+
+			res, err := ReconcileJob(context.Background(), dyn, ec2Client, "jobs-table", 42)
+			if err != nil {
+				t.Fatalf("ReconcileJob() error = %v", err)
+			}
+			if res.Outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", res.Outcome, tt.wantOutcome)
+			}
+			if dyn.updateCalls != tt.wantUpdates {
+				t.Errorf("update calls = %d, want %d", dyn.updateCalls, tt.wantUpdates)
+			}
+		})
+	}
+}
+
+func TestReconcileJob_NotFound(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockOrphanDynamo{}
+	res, err := ReconcileJob(context.Background(), dyn, &mockOrphanEC2{}, "jobs-table", 42)
+	if err != nil {
+		t.Fatalf("ReconcileJob() error = %v", err)
+	}
+	if res.Outcome != ReconcileNotFound || dyn.updateCalls != 0 {
+		t.Errorf("res = %+v with %d updates, want a not-found outcome and no write", res, dyn.updateCalls)
+	}
+}
+
+// An EC2 outage must not be read as "the instance is gone", or a transient failure
+// retires jobs that are running fine.
+func TestReconcileJob_DescribeErrorTreatsInstanceAsAlive(t *testing.T) {
+	t.Parallel()
+
+	dyn := &mockOrphanDynamo{items: []map[string]types.AttributeValue{
+		reconcileItem(42, "i-unknown", db.JobStatusRunning),
+	}}
+	ec2Client := &mockOrphanEC2{err: errors.New("ec2 unavailable")}
+
+	res, err := ReconcileJob(context.Background(), dyn, ec2Client, "jobs-table", 42)
+	if err != nil {
+		t.Fatalf("ReconcileJob() error = %v", err)
+	}
+	if res.Outcome != ReconcileInstanceAlive || dyn.updateCalls != 0 {
+		t.Errorf("res = %+v with %d updates, want the job left alone", res, dyn.updateCalls)
+	}
+}
