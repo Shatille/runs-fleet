@@ -40,6 +40,9 @@ type mockEC2API struct {
 	terminatedIDs       []string
 	cancelledSpotReqIDs []string
 	describeInput       *ec2.DescribeInstancesInput
+	// stateByID overrides an instance's state on a lookup by id, so a test can
+	// model state changing between a sweep's scan and its confirmation read.
+	stateByID map[string]ec2types.InstanceStateName
 }
 
 func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -50,6 +53,9 @@ func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstan
 	}
 	if m.describeErrOnCall == m.describeCalls {
 		return nil, errors.New("throttled")
+	}
+	if len(in.InstanceIds) > 0 {
+		return m.describeByIDs(in.InstanceIds), nil
 	}
 	// Honour instance-state-name the way EC2 does. Without this a sweep that asks
 	// for running instances is still handed stopped ones, so a test cannot tell a
@@ -84,6 +90,35 @@ func (m *mockEC2API) DescribeInstances(_ context.Context, in *ec2.DescribeInstan
 	return &ec2.DescribeInstancesOutput{Reservations: out}, nil
 }
 
+// describeByIDs answers a lookup by instance id, applying stateByID so a test
+// can model an instance whose state moved on since the scan.
+func (m *mockEC2API) describeByIDs(ids []string) *ec2.DescribeInstancesOutput {
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	var out []ec2types.Instance
+	for _, r := range m.instances {
+		for _, inst := range r.Instances {
+			id := aws.ToString(inst.InstanceId)
+			if !wanted[id] {
+				continue
+			}
+			if state, ok := m.stateByID[id]; ok {
+				copied := inst
+				copied.State = &ec2types.InstanceState{Name: state}
+				out = append(out, copied)
+				continue
+			}
+			out = append(out, inst)
+		}
+	}
+	if len(out) == 0 {
+		return &ec2.DescribeInstancesOutput{}
+	}
+	return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: out}}}
+}
+
 // instanceStateFilter returns the values of the instance-state-name filter from
 // a captured DescribeInstances request, failing the test if it is absent.
 func instanceStateFilter(t *testing.T, in *ec2.DescribeInstancesInput) []string {
@@ -102,7 +137,9 @@ func instanceStateFilter(t *testing.T, in *ec2.DescribeInstancesInput) []string 
 
 func (m *mockEC2API) TerminateInstances(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
 	m.terminateCalls++
-	m.terminatedIDs = params.InstanceIds
+	// Append, not assign: a sweep that terminates per instance rather than in one
+	// batch would otherwise show only its last call.
+	m.terminatedIDs = append(m.terminatedIDs, params.InstanceIds...)
 	if m.terminateErr != nil {
 		return nil, m.terminateErr
 	}

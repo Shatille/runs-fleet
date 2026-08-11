@@ -148,6 +148,15 @@ export interface CurrentAMI {
   version_created?: string;
 }
 
+export interface ReplaceStaleResult {
+  terminated?: string[];
+  busy?: string[];
+  skipped?: string[];
+  stale: number;
+  dry_run: boolean;
+  message: string;
+}
+
 export interface CurrentAMIsResponse {
   amis: CurrentAMI[];
   unresolved?: string[];

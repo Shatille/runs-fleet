@@ -361,7 +361,7 @@ func (m *Manager) checkFleetErrors(output *ec2.CreateFleetOutput) error {
 func (m *Manager) getLaunchTemplateForArch(arch string) string {
 	baseName := m.config.LaunchTemplateName
 	if baseName == "" {
-		baseName = "runs-fleet-runner"
+		baseName = defaultLaunchTemplateBase
 	}
 
 	// amd64 instances use a separate launch template (different AMI)

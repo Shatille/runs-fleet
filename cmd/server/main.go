@@ -155,6 +155,14 @@ func main() {
 	}
 	housekeepingRunner, housekeepingTasks := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, fleetManager, jobQueue, githubClient)
 
+	// One resolver for the console and the sweep: two would cache independently
+	// and could disagree about which AMI is current for a whole TTL, so the page
+	// could call an instance stale that the sweep considers fine, or the reverse.
+	amiResolver := fleet.NewAMIResolver(ec2Client, cfg.LaunchTemplateName)
+	if cfg.StaleAMISweepEnabled {
+		housekeepingTasks.SetAMIReference(amiResolver)
+	}
+
 	runnerManager := initRunnerManager(githubClient, secretsStore, cfg)
 
 	var subnetIndex uint64
@@ -185,6 +193,7 @@ func main() {
 		secretsStore:       secretsStore,
 		housekeepingTasks:  housekeepingTasks,
 		githubClient:       githubClient,
+		amiResolver:        amiResolver,
 	}
 	mux, err := ws.setupHTTPRoutes(ctx, cacheServer, prometheusHandler)
 	if err != nil {
@@ -498,6 +507,7 @@ type webhookServer struct {
 	secretsStore       secrets.Store
 	housekeepingTasks  *housekeeping.Tasks
 	githubClient       *gh.Client
+	amiResolver        *fleet.AMIResolver
 
 	// shuttingDown flips true on SIGTERM so /ready reports 503 and the load
 	// balancer deregisters this task before the listener is closed.
@@ -571,7 +581,7 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 
 	ec2Client := ec2.NewFromConfig(ws.awsCfg)
 	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
-	instancesHandler.SetAMISource(ec2Client, ws.cfg.LaunchTemplateName)
+	instancesHandler.SetAMIResolver(ws.amiResolver)
 	instancesHandler.RegisterRoutes(adminMux)
 
 	sqsClient := sqs.NewFromConfig(ws.sqsCfg)

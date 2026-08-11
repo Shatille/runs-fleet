@@ -70,6 +70,7 @@ const (
 	housekeepingActionUnconfirmedRunner = "unconfirmed_runners"
 	housekeepingActionDLQRedrive        = "dlq_redrive"
 	housekeepingActionDeadAssignment    = "dead_assignment"
+	housekeepingActionStaleAMI          = "stale_ami"
 )
 
 // dlqQueueName labels the main queue's dead-letter queue for depth metrics,
@@ -141,6 +142,7 @@ type Tasks struct {
 	sqsClient     SQSAPI
 	poolDB        PoolDBAPI
 	gitHubChecker GitHubJobChecker
+	amiReference  AMIReference
 	jobRequeuer   JobRequeuer
 	metrics       MetricsAPI
 	costReporter  CostReporter

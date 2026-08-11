@@ -40,6 +40,8 @@ type mockTaskExecutor struct {
 	packerCall         int
 	hotTunerCall       int
 	expiredClaimsCall  int
+	staleAMICall       int
+	staleAMIErr        error
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -105,6 +107,11 @@ func (m *mockTaskExecutor) ExecutePoolHotTuner(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteExpiredInstanceClaims(_ context.Context) error {
 	m.expiredClaimsCall++
 	return m.expiredClaimsErr
+}
+
+func (m *mockTaskExecutor) ExecuteStaleAMIInstances(_ context.Context) error {
+	m.staleAMICall++
+	return m.staleAMIErr
 }
 
 // mockTaskLocker implements TaskLocker for testing.
@@ -175,6 +182,7 @@ func longIntervals() SchedulerConfig {
 		OrphanedPackerInstancesInterval: d,
 		PoolHotTunerInterval:            d,
 		ExpiredInstanceClaimsInterval:   d,
+		StaleAMIInstancesInterval:       d,
 	}
 }
 
@@ -232,7 +240,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 		TaskOrphanedInstances, TaskStaleSecrets, TaskOldJobs, TaskOrphanedJobs,
 		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
 		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances, TaskPoolHotTuner,
-		TaskExpiredInstanceClaims,
+		TaskExpiredInstanceClaims, TaskStaleAMIInstances,
 	}
 	r := NewRunner(&mockTaskExecutor{}, DefaultSchedulerConfig())
 	specs := r.taskSpecs()

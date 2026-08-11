@@ -319,7 +319,7 @@ export default function InstancesPage() {
         </div>
       )}
 
-      <AMICard instances={instances} amiUnknown={amiUnknown} />
+      <AMICard instances={instances} amiUnknown={amiUnknown} onReplaced={fetchInstances} />
 
       <div className="mb-4 flex gap-4 items-center">
         <input
