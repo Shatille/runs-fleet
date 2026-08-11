@@ -82,6 +82,120 @@ func configWithJIT() *RunnerConfig {
 	}
 }
 
+// SSM rejects PutParameter outright when Tags and Overwrite are both set:
+// "tags and overwrite can't be used together". The mocks accept anything, so
+// only this assertion stands between that constraint and a dispatch outage.
+func TestSSMStore_Put_NeverCombinesTagsWithOverwrite(t *testing.T) {
+	t.Parallel()
+
+	var violations []string
+	mock := &mockSSMClient{
+		putFunc: func(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
+			if len(params.Tags) > 0 && aws.ToBool(params.Overwrite) {
+				violations = append(violations, aws.ToString(params.Name))
+			}
+			return &ssm.PutParameterOutput{}, nil
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	if err := store.Put(context.Background(), "i-123456", configWithJIT()); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	if len(violations) > 0 {
+		t.Errorf("PutParameter sent Tags together with Overwrite for %v; SSM rejects this", violations)
+	}
+}
+
+// Overwrite is what lets a runner ID be reused without an intervening Delete, so
+// every parameter Put writes must set it.
+func TestSSMStore_Put_SetsOverwriteOnEveryParameter(t *testing.T) {
+	t.Parallel()
+
+	missing := []string{}
+	mock := &mockSSMClient{
+		putFunc: func(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
+			if !aws.ToBool(params.Overwrite) {
+				missing = append(missing, aws.ToString(params.Name))
+			}
+			return &ssm.PutParameterOutput{}, nil
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	if err := store.Put(context.Background(), "i-123456", configWithJIT()); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	if len(missing) > 0 {
+		t.Errorf("PutParameter omitted Overwrite for %v", missing)
+	}
+}
+
+// The managed and job-id tags are what the housekeeping sweep and cost reporting
+// select on, so dropping them silently would break both. Since they cannot ride
+// on the Put itself, they must be applied separately.
+func TestSSMStore_Put_TagsTheConfigParameter(t *testing.T) {
+	t.Parallel()
+
+	tagged := map[string][]string{}
+	mock := &mockSSMClient{
+		addTagsFunc: func(_ context.Context, params *ssm.AddTagsToResourceInput, _ ...func(*ssm.Options)) (*ssm.AddTagsToResourceOutput, error) {
+			values := make([]string, 0, len(params.Tags))
+			for _, tag := range params.Tags {
+				values = append(values, aws.ToString(tag.Key)+"="+aws.ToString(tag.Value))
+			}
+			tagged[aws.ToString(params.ResourceId)] = values
+			return &ssm.AddTagsToResourceOutput{}, nil
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	config := configWithJIT()
+	if err := store.Put(context.Background(), "i-123456", config); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	tags, ok := tagged["/runs-fleet/runners/i-123456/config"]
+	if !ok {
+		t.Fatalf("config parameter was never tagged; tagged: %v", tagged)
+	}
+
+	want := map[string]bool{
+		"runs-fleet:managed=true":           false,
+		"runs-fleet:job-id=" + config.JobID: false,
+	}
+	for _, tag := range tags {
+		if _, expected := want[tag]; expected {
+			want[tag] = true
+		}
+	}
+	for tag, seen := range want {
+		if !seen {
+			t.Errorf("config parameter missing tag %q; got %v", tag, tags)
+		}
+	}
+}
+
+// Tagging is best-effort: the tags drive housekeeping and cost attribution, but a
+// runner whose config is stored yet untagged still boots and runs its job. Failing
+// the dispatch over them would trade a working runner for a reporting detail.
+func TestSSMStore_Put_SurvivesTaggingFailure(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSSMClient{
+		addTagsFunc: func(_ context.Context, _ *ssm.AddTagsToResourceInput, _ ...func(*ssm.Options)) (*ssm.AddTagsToResourceOutput, error) {
+			return nil, errors.New("AccessDeniedException")
+		},
+	}
+	store := NewSSMStoreWithClient(mock, "")
+
+	if err := store.Put(context.Background(), "i-123456", configWithJIT()); err != nil {
+		t.Errorf("Put() error = %v; tagging is best-effort and must not fail the dispatch", err)
+	}
+}
+
 // A single parameter carrying the whole config exceeds the Standard-tier ceiling
 // once a JIT config is present. Splitting the credential out is what keeps both
 // halves on the free tier; without it the store must be billed as Advanced.
