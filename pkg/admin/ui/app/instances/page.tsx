@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import InstancesTable from '@/components/instances-table';
+import AMICard from '@/components/ami-card';
 import { StatsCardSkeleton, TableSkeleton } from '@/components/skeleton';
 import ConfirmDialog from '@/components/confirm-dialog';
 import { useToast } from '@/components/toast';
@@ -22,6 +23,8 @@ export default function InstancesPage() {
 
   const [poolFilter, setPoolFilter] = useState<string>('');
   const [stateFilter, setStateFilter] = useState<string>('');
+  const [staleOnly, setStaleOnly] = useState(false);
+  const [amiUnknown, setAmiUnknown] = useState(false);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPending, setBulkPending] = useState(false);
@@ -53,6 +56,7 @@ export default function InstancesPage() {
       }
       const data = await res.json();
       setInstances(data.instances || []);
+      setAmiUnknown(Boolean(data.ami_current_unknown));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load instances');
     } finally {
@@ -76,6 +80,13 @@ export default function InstancesPage() {
   }, [instances]);
 
   const selectedIds = useMemo(() => [...selected], [selected]);
+
+  // Filtered client-side: staleness is derived from the reference AMI the server
+  // already resolved, so a round trip would buy nothing.
+  const visibleInstances = useMemo(
+    () => (staleOnly ? instances.filter((i) => i.ami_stale) : instances),
+    [instances, staleOnly],
+  );
 
   // Terminations run one at a time through the same endpoint the per-row button
   // uses, so each keeps its active-job 409 guard. A busy instance is reported, not
@@ -308,7 +319,9 @@ export default function InstancesPage() {
         </div>
       )}
 
-      <div className="mb-4 flex gap-4">
+      <AMICard instances={instances} amiUnknown={amiUnknown} />
+
+      <div className="mb-4 flex gap-4 items-center">
         <input
           type="text"
           placeholder="Filter by pool..."
@@ -316,6 +329,17 @@ export default function InstancesPage() {
           onChange={(e) => setPoolFilter(e.target.value)}
           className="rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500"
         />
+
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={staleOnly}
+            disabled={amiUnknown}
+            onChange={(e) => setStaleOnly(e.target.checked)}
+            className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 disabled:opacity-40"
+          />
+          Stale AMI only
+        </label>
 
         <select
           value={stateFilter}
@@ -338,7 +362,7 @@ export default function InstancesPage() {
         </div>
       ) : (
         <InstancesTable
-          instances={instances}
+          instances={visibleInstances}
           onTerminated={fetchInstances}
           selected={selected}
           onSelectionChange={setSelected}

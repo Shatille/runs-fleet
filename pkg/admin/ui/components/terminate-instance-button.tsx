@@ -68,8 +68,11 @@ export default function TerminateInstanceButton({
     }
   }
 
-  const busyNote = busy ? ' It is currently marked busy.' : '';
-  const poolNote = pool ? ` It belongs to pool "${pool}", which will launch a replacement.` : '';
+  const confirmLines = [
+    `Terminate ${instanceId}? This cannot be undone.`,
+    busy ? 'It is currently marked busy — a job may be running on it.' : '',
+    pool ? `It belongs to pool "${pool}", which will launch a replacement.` : '',
+  ];
 
   return (
     <>
@@ -87,7 +90,7 @@ export default function TerminateInstanceButton({
       <ConfirmDialog
         open={step === 'confirm'}
         title="Terminate Instance"
-        message={`Terminate ${instanceId}?${busyNote}${poolNote} This cannot be undone.`}
+        message={confirmLines}
         confirmLabel="Terminate"
         variant="danger"
         onConfirm={() => terminate(false)}
@@ -99,8 +102,11 @@ export default function TerminateInstanceButton({
         title="Instance is running a job"
         message={
           blockingJob
-            ? `${instanceId} is running job ${blockingJob.job_id} (run ${blockingJob.run_id}) in ${blockingJob.repo}. Terminating now fails that job on GitHub — it will not be re-run automatically. Terminate anyway?`
-            : `${instanceId} is running a job. Terminate anyway?`
+            ? [
+                `${instanceId} is running job ${blockingJob.job_id} (run ${blockingJob.run_id}) in ${blockingJob.repo}.`,
+                'Terminating now fails that job on GitHub — it will not be re-run automatically.',
+              ]
+            : [`${instanceId} is running a job.`, 'Terminating now fails it on GitHub.']
         }
         confirmLabel="Terminate anyway"
         variant="danger"
