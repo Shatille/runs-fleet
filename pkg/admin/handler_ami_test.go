@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -46,12 +47,6 @@ func (m *mockLaunchTemplateAPI) DescribeLaunchTemplateVersions(_ context.Context
 	return &ec2.DescribeLaunchTemplateVersionsOutput{LaunchTemplateVersions: []types.LaunchTemplateVersion{*v}}, nil
 }
 
-func (m *mockLaunchTemplateAPI) callCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.calls
-}
-
 func templateVersion(name, ami string, version int64) *types.LaunchTemplateVersion {
 	created := time.Date(2026, 8, 11, 10, 52, 0, 0, time.UTC)
 	return &types.LaunchTemplateVersion{
@@ -83,7 +78,7 @@ func instanceOn(id, ami, arch string) types.Instance {
 	}
 }
 
-func listWith(t *testing.T, instances []types.Instance, lt LaunchTemplateAPI) map[string]any {
+func listWith(t *testing.T, instances []types.Instance, lt fleet.LaunchTemplateAPI) map[string]any {
 	t.Helper()
 
 	ec2Mock := &mockEC2API{output: &ec2.DescribeInstancesOutput{
@@ -181,7 +176,7 @@ func TestListInstances_AMILookupFailureMarksNothingStale(t *testing.T) {
 
 	tests := []struct {
 		name string
-		lt   LaunchTemplateAPI
+		lt   fleet.LaunchTemplateAPI
 	}{
 		{name: "lookup fails", lt: &mockLaunchTemplateAPI{err: errors.New("AccessDenied: ec2:DescribeLaunchTemplateVersions")}},
 		{name: "no AMI source configured", lt: nil},
@@ -278,142 +273,5 @@ func TestAMIsEndpoint_Unconfigured(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 when no AMI source is wired", w.Code)
-	}
-}
-
-// A launch template changes a few times a month while the page auto-refreshes,
-// so re-resolving per request would spend an API call to learn nothing.
-func TestAMIResolver_CachesWithinTTL(t *testing.T) {
-	t.Parallel()
-
-	lt := healthyLaunchTemplates()
-	r := newAMIResolver(lt, "runs-fleet-runner")
-
-	for range 3 {
-		if _, err := r.current(context.Background()); err != nil {
-			t.Fatalf("current(): %v", err)
-		}
-	}
-	if lt.callCount() != 2 {
-		t.Errorf("template calls = %d, want 2 (one per architecture, then cached)", lt.callCount())
-	}
-
-	r.expireForTest()
-	if _, err := r.current(context.Background()); err != nil {
-		t.Fatalf("current(): %v", err)
-	}
-	if lt.callCount() != 4 {
-		t.Errorf("template calls = %d, want 4 after the cache expired", lt.callCount())
-	}
-}
-
-// A failed resolve must not be cached as "no AMIs" for the whole TTL — that
-// would keep the console blind long after the outage cleared.
-func TestAMIResolver_DoesNotCacheFailures(t *testing.T) {
-	t.Parallel()
-
-	lt := &mockLaunchTemplateAPI{err: errors.New("throttled")}
-	r := newAMIResolver(lt, "runs-fleet-runner")
-
-	for range 2 {
-		if _, err := r.current(context.Background()); err == nil {
-			t.Fatal("expected an error while the API is failing")
-		}
-	}
-	if lt.callCount() < 4 {
-		t.Errorf("template calls = %d, want a retry on every request while failing", lt.callCount())
-	}
-}
-
-// A flaky call on one architecture must not discard what the last refresh
-// learned about it. Dropping it would take every instance of that architecture
-// back to "unknown" for a whole TTL for no reason.
-func TestAMIResolver_RefreshFailureKeepsTheLastKnownGood(t *testing.T) {
-	t.Parallel()
-
-	lt := healthyLaunchTemplates()
-	r := newAMIResolver(lt, "runs-fleet-runner")
-
-	first, err := r.current(context.Background())
-	if err != nil {
-		t.Fatalf("current(): %v", err)
-	}
-	if len(first) != 2 {
-		t.Fatalf("first resolve returned %d architectures, want 2", len(first))
-	}
-
-	// amd64 goes away; arm64 keeps answering.
-	delete(lt.byName, "runs-fleet-runner-amd64")
-	r.expireForTest()
-
-	second, err := r.current(context.Background())
-	if err != nil {
-		t.Fatalf("current() after partial failure: %v", err)
-	}
-	if got, ok := second["x86_64"]; !ok || got.ImageID != currentAMD64AMI {
-		t.Errorf("x86_64 = %+v, want the previously resolved %s carried forward", got, currentAMD64AMI)
-	}
-	if got := second["arm64"]; got.ImageID != currentARM64AMI {
-		t.Errorf("arm64 = %+v, want %s", got, currentARM64AMI)
-	}
-	if len(r.unresolvedArchs()) != 0 {
-		t.Errorf("unresolved = %v, want none — the value is known, just not freshly", r.unresolvedArchs())
-	}
-}
-
-// A refresh that learns nothing must not reset the clock, or a blip would hold
-// the console on stale data for a full TTL.
-func TestAMIResolver_TotalRefreshFailureServesCacheAndStaysDue(t *testing.T) {
-	t.Parallel()
-
-	lt := healthyLaunchTemplates()
-	r := newAMIResolver(lt, "runs-fleet-runner")
-	if _, err := r.current(context.Background()); err != nil {
-		t.Fatalf("current(): %v", err)
-	}
-
-	lt.err = errors.New("throttled")
-	r.expireForTest()
-
-	before := lt.callCount()
-	got, err := r.current(context.Background())
-	if err != nil {
-		t.Fatalf("current() must serve the last known good, not fail: %v", err)
-	}
-	if len(got) != 2 {
-		t.Errorf("got %d architectures, want the 2 cached ones", len(got))
-	}
-
-	// Still due, so the very next call retries rather than waiting out the TTL.
-	if _, err := r.current(context.Background()); err != nil {
-		t.Fatalf("current(): %v", err)
-	}
-	if lt.callCount() <= before+2 {
-		t.Errorf("calls went %d -> %d, want a retry on the following request too", before, lt.callCount())
-	}
-}
-
-// The resolver is shared across concurrent requests; a cache miss must not let
-// them stampede the EC2 API.
-func TestAMIResolver_ConcurrentMissResolvesOnce(t *testing.T) {
-	t.Parallel()
-
-	lt := healthyLaunchTemplates()
-	r := newAMIResolver(lt, "runs-fleet-runner")
-
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := r.current(context.Background()); err != nil {
-				t.Errorf("current(): %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if lt.callCount() != 2 {
-		t.Errorf("template calls = %d, want 2 — concurrent misses must single-flight", lt.callCount())
 	}
 }

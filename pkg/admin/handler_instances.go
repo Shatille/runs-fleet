@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	"github.com/Shavakan/runs-fleet/pkg/events"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -105,7 +106,7 @@ type InstancesHandler struct {
 	db            InstancesDB
 	jobsTableName string
 	auditDB       AuditDB
-	amis          *amiResolver
+	amis          *fleet.AMIResolver
 	auth          *AuthMiddleware
 	log           *logging.Logger
 }
@@ -127,6 +128,7 @@ func (h *InstancesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/instances", h.auth.WrapFunc(h.ListInstances))
 	mux.Handle("GET /api/instances/amis", h.auth.WrapFunc(h.CurrentAMIs))
 	mux.Handle("GET /api/instances/{instance_id}", h.auth.WrapFunc(h.GetInstance))
+	mux.Handle("POST /api/instances/replace-stale", h.auth.WrapFunc(h.ReplaceStaleInstances))
 	mux.Handle("DELETE /api/instances/{instance_id}", h.auth.WrapFunc(h.TerminateInstance))
 }
 
@@ -511,16 +513,16 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 // referenceAMIs resolves what each architecture would launch today. The second
 // return reports that at least one architecture is unknown, so the caller can
 // say so instead of implying every instance is current.
-func (h *InstancesHandler) referenceAMIs(ctx context.Context) (map[string]CurrentAMI, bool) {
+func (h *InstancesHandler) referenceAMIs(ctx context.Context) (map[string]fleet.CurrentAMI, bool) {
 	if h.amis == nil {
 		return nil, true
 	}
-	current, err := h.amis.current(ctx)
+	current, err := h.amis.Current(ctx)
 	if err != nil {
 		h.log.Warn(ctx, "failed to resolve launch template AMIs", slog.String(logging.KeyError, err.Error()))
 		return nil, true
 	}
-	return current, len(h.amis.unresolvedArchs()) > 0
+	return current, len(h.amis.UnresolvedArchs()) > 0
 }
 
 func getEC2Tag(tags []types.Tag, key string) string {

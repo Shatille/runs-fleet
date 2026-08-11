@@ -1,19 +1,29 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { CurrentAMIsResponse, Instance } from '@/lib/types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CurrentAMIsResponse, Instance, ReplaceStaleResult } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
+import { useToast } from '@/components/toast';
+import ConfirmDialog from '@/components/confirm-dialog';
 
 interface AMICardProps {
   instances: Instance[];
   amiUnknown: boolean;
+  onReplaced: () => void;
 }
 
 // Answers "has the new AMI rolled out?" on sight. Without it the question costs
 // one click per instance, which is why nobody asked it.
-export default function AMICard({ instances, amiUnknown }: AMICardProps) {
+export default function AMICard({ instances, amiUnknown, onReplaced }: AMICardProps) {
+  const { toast } = useToast();
   const [data, setData] = useState<CurrentAMIsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [replacing, setReplacing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [result, setResult] = useState<ReplaceStaleResult | null>(null);
+  // ConfirmDialog stays open on confirm and its button carries no pending
+  // state, so a key repeat can fire it twice before React re-renders.
+  const inFlight = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -32,6 +42,30 @@ export default function AMICard({ instances, amiUnknown }: AMICardProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const replace = useCallback(async (dryRun: boolean) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setConfirming(false);
+    setReplacing(true);
+    try {
+      const res = await apiFetch(`/api/instances/replace-stale?dry_run=${dryRun}`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.details || body.error || `Failed to replace stale instances: ${res.statusText}`);
+      }
+      setResult(body as ReplaceStaleResult);
+      if (!dryRun) {
+        toast('success', body.message);
+        onReplaced();
+      }
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : 'Failed to replace stale instances');
+    } finally {
+      inFlight.current = false;
+      setReplacing(false);
+    }
+  }, [toast, onReplaced]);
 
   const stale = instances.filter((i) => i.ami_stale).length;
   const total = instances.length;
@@ -54,9 +88,25 @@ export default function AMICard({ instances, amiUnknown }: AMICardProps) {
           )}
         </div>
         {stale > 0 && !amiUnknown && (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
-            {stale} stale
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
+              {stale} stale
+            </span>
+            <button
+              onClick={() => replace(true)}
+              disabled={replacing}
+              className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-1.5 text-sm rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+            >
+              {replacing ? 'Checking...' : 'Dry Run'}
+            </button>
+            <button
+              onClick={() => setConfirming(true)}
+              disabled={replacing}
+              className="bg-red-600 text-white px-3 py-1.5 text-sm rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
+            >
+              {replacing ? 'Replacing...' : 'Replace stale'}
+            </button>
+          </div>
         )}
       </div>
 
@@ -74,6 +124,39 @@ export default function AMICard({ instances, amiUnknown }: AMICardProps) {
           ))}
         </dl>
       )}
+
+      {result && (
+        <div className="mt-3 p-3 rounded-md text-sm bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+          <p>{result.message}</p>
+          {result.terminated && result.terminated.length > 0 && (
+            <p className="mt-1 text-xs font-mono">Replacing: {result.terminated.join(', ')}</p>
+          )}
+          {result.busy && result.busy.length > 0 && (
+            <p className="mt-1 text-xs">
+              Left alone because a job is running on them: <span className="font-mono">{result.busy.join(', ')}</span>
+            </p>
+          )}
+          {result.skipped && result.skipped.length > 0 && (
+            <p className="mt-1 text-xs">
+              Left for a later run so the pool is not drained: <span className="font-mono">{result.skipped.join(', ')}</span>
+            </p>
+          )}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirming}
+        title="Replace stale instances"
+        message={[
+          `Terminate up to 5 instances that are not on the current AMI, so their pools relaunch them on it.`,
+          'Instances with a job running are skipped, not killed.',
+          'Each replacement is a fresh on-demand instance; this cannot be undone.',
+        ]}
+        confirmLabel="Replace"
+        variant="danger"
+        onConfirm={() => replace(false)}
+        onCancel={() => setConfirming(false)}
+      />
 
       {data && data.unresolved && data.unresolved.length > 0 && (
         <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
