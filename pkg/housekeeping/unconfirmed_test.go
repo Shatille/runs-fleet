@@ -314,8 +314,8 @@ func TestExecuteUnconfirmedRunners_SendFailureRollsBackFlip(t *testing.T) {
 	if len(updates) != 2 {
 		t.Fatalf("expected flip + rollback writes, got %d", len(updates))
 	}
-	if v, ok := updates[1].ExpressionAttributeValues[":launched"].(*types.AttributeValueMemberS); !ok || v.Value != "launched" {
-		t.Errorf("rollback must restore the launched status, got %v", updates[1].ExpressionAttributeValues[":launched"])
+	if v, ok := updates[1].ExpressionAttributeValues[":from"].(*types.AttributeValueMemberS); !ok || v.Value != "launched" {
+		t.Errorf("rollback must restore the launched status, got %v", updates[1].ExpressionAttributeValues[":from"])
 	}
 }
 

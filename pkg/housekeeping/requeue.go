@@ -139,9 +139,25 @@ type RequeueDeps struct {
 	// Metrics is optional; when set, emits operator_requeue counters mirroring the
 	// unconfirmed-runner watchdog. Nil-safe (no emit when unset). Never emits on a dry run.
 	Metrics MetricsAPI
+	// GitHub confirms that a job is still queued before a record past launched is
+	// re-dispatched. Optional, and unused for launched records; without it, only
+	// launched records can be requeued.
+	GitHub JobQueuedChecker
 	// Log is optional; a default is used when nil.
 	Log *logging.Logger
 }
+
+// JobQueuedChecker reports GitHub's status for a workflow job. GitHub is the only
+// authority on whether work is in progress: a runner runs-fleet minted and
+// confirmed may have been handed a different job, leaving this one queued while
+// our record reads running.
+type JobQueuedChecker interface {
+	GetWorkflowJobStatus(ctx context.Context, repo string, jobID int64) (string, error)
+}
+
+// gitHubStatusQueued is the status that proves no work is in progress, and so the
+// only one under which terminating a running job's instance is safe.
+const gitHubStatusQueued = "queued"
 
 // RequeueOptions controls a single operator-triggered requeue sweep.
 type RequeueOptions struct {
@@ -183,6 +199,15 @@ const (
 	OutcomeTerminateFailed RequeueOutcome = "terminate_failed"
 	OutcomeMarkFailed      RequeueOutcome = "mark_failed"
 	OutcomeSendFailed      RequeueOutcome = "send_failed"
+	// OutcomeNotQueued means GitHub is running or has finished the job, so a
+	// re-dispatch would destroy work rather than recover it.
+	OutcomeNotQueued RequeueOutcome = "not_queued"
+	// OutcomeGitHubUnknown means GitHub could not be reached. Unconfirmed is
+	// treated as unsafe, never as queued.
+	OutcomeGitHubUnknown RequeueOutcome = "github_unknown"
+	// OutcomeGitHubUnavailable means no GitHub client is configured, so a record
+	// past launched can never be confirmed safe to re-dispatch.
+	OutcomeGitHubUnavailable RequeueOutcome = "github_unavailable"
 )
 
 // SingleRequeueResult reports one job's re-dispatch in enough detail for an
@@ -197,6 +222,17 @@ type SingleRequeueResult struct {
 	RetryCount int
 	// Status is the record's status as last read.
 	Status string
+	// GitHubStatus is GitHub's status for the job, when it was consulted.
+	GitHubStatus string
+}
+
+// RequeueJobOptions controls one operator-chosen re-dispatch.
+type RequeueJobOptions struct {
+	// Force bypasses MaxRequeueRetries and nothing else. The cap exists to stop
+	// automated churn; an operator acting on a job GitHub confirms is still
+	// queued is the case it should not block. The queued confirmation itself is
+	// never bypassable — that is what keeps the terminate safe.
+	Force bool
 }
 
 // GetRequeueableJob reads a single job record with the same projection the sweep's
@@ -230,11 +266,15 @@ func GetRequeueableJob(ctx context.Context, scanAPI OrphanScanAPI, jobsTable str
 }
 
 // RequeueJob re-dispatches a fresh runner for one operator-chosen job. It runs the
-// same steps as the sweep with the same guardrails — launched only, bounded by
-// MaxRequeueRetries — minus the staleness threshold, which exists to stop a sweep
-// acting on jobs that may still be starting up and has no meaning for a row an
-// operator picked deliberately.
-func RequeueJob(ctx context.Context, deps RequeueDeps, jobID int64) (SingleRequeueResult, error) {
+// same steps as the sweep, minus the staleness threshold, which exists to stop a
+// sweep acting on jobs that may still be starting up and has no meaning for a row
+// an operator picked deliberately.
+//
+// It accepts running and claiming records as well as launched, because the hang
+// that strands a job for hours leaves a record reading running: a runner confirmed
+// but was handed someone else's job. Those statuses are gated on GitHub confirming
+// the job is still queued — proof that terminating the instance destroys nothing.
+func RequeueJob(ctx context.Context, deps RequeueDeps, jobID int64, opts RequeueJobOptions) (SingleRequeueResult, error) {
 	log := deps.Log
 	if log == nil {
 		log = logging.WithComponent(logging.LogTypeHousekeep, "requeue")
@@ -259,7 +299,18 @@ func RequeueJob(ctx context.Context, deps RequeueDeps, jobID int64) (SingleReque
 		slog.String(logging.KeyInstanceID, job.InstanceID))
 
 	alive := job.InstanceID != "" && instanceStillExists(jobCtx, deps.EC2, job.InstanceID)
-	return requeueCandidate(jobCtx, deps, *job, alive, []db.JobStatus{db.JobStatusLaunched}, false, log)
+	return requeueCandidate(jobCtx, deps, *job, alive, requeuePolicy{
+		Statuses: operatorRequeueStatuses,
+		Force:    opts.Force,
+	}, log)
+}
+
+// operatorRequeueStatuses are the record states an operator may re-dispatch from.
+// Everything past launched carries the queued confirmation requirement.
+var operatorRequeueStatuses = []db.JobStatus{
+	db.JobStatusLaunched,
+	db.JobStatusRunning,
+	db.JobStatusClaiming,
 }
 
 // RequeueHungJobs is the operator-triggered backstop to the unconfirmed-runner watchdog.
@@ -315,7 +366,10 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 			slog.String(logging.KeyInstanceID, c.InstanceID))
 
 		// Errors are already logged inside; one job's failure never aborts the sweep.
-		outcome, _ := requeueCandidate(jobCtx, deps, c, alive[c.InstanceID], opts.Statuses, opts.DryRun, log)
+		outcome, _ := requeueCandidate(jobCtx, deps, c, alive[c.InstanceID], requeuePolicy{
+			Statuses: opts.Statuses,
+			DryRun:   opts.DryRun,
+		}, log)
 		switch outcome.Outcome {
 		case OutcomeRequeued:
 			result.Requeued++
@@ -330,11 +384,23 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 	return result, nil
 }
 
+// requeuePolicy is what one caller is allowed to do to a candidate.
+type requeuePolicy struct {
+	// Statuses the record may be in to be eligible.
+	Statuses []db.JobStatus
+	// DryRun reports what would happen without terminating, sending, or writing.
+	DryRun bool
+	// Force ignores MaxRequeueRetries. Never the queued confirmation.
+	Force bool
+}
+
 // requeueCandidate re-dispatches one job. It is the single implementation shared by
 // the sweep and the operator's per-job action, so the two can never drift apart on
-// the ordering that makes a requeue safe: re-read the status, terminate an
-// alive-but-dead-agent instance, flip the record under a condition, then send.
-func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, instanceAlive bool, statuses []db.JobStatus, dryRun bool, log *logging.Logger) (SingleRequeueResult, error) {
+// the ordering that makes a requeue safe: re-read the status, confirm GitHub still
+// has the job queued, terminate an alive-but-dead-agent instance, flip the record
+// under a condition, then send.
+func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, instanceAlive bool, policy requeuePolicy, log *logging.Logger) (SingleRequeueResult, error) {
+	statuses, dryRun := policy.Statuses, policy.DryRun
 	res := SingleRequeueResult{
 		JobID:      c.JobID,
 		InstanceID: c.InstanceID,
@@ -342,7 +408,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 		Status:     c.Status,
 	}
 
-	if c.RetryCount >= MaxRequeueRetries {
+	if c.RetryCount >= MaxRequeueRetries && !policy.Force {
 		res.Outcome = OutcomeExhausted
 		log.Warn(ctx, "requeue skipped: retries exhausted", slog.Int("retry_count", c.RetryCount))
 		if !dryRun && deps.Metrics != nil {
@@ -377,6 +443,18 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 		return res, nil
 	}
 
+	// A launched record has no confirmed runner, so nothing can be executing and
+	// there is nothing for GitHub to settle. Past that, a runner did confirm —
+	// and only GitHub knows whether it was handed this job or someone else's.
+	if current != string(db.JobStatusLaunched) {
+		outcome, ghStatus := confirmStillQueued(ctx, deps, c, log)
+		res.GitHubStatus = ghStatus
+		if outcome != "" {
+			res.Outcome = outcome
+			return res, nil
+		}
+	}
+
 	if dryRun {
 		res.Outcome = OutcomeWouldRequeue
 		return res, nil
@@ -396,7 +474,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 	// lands drops it and the job is never re-dispatched. The send is gated on OUR
 	// write landing — a concurrent sweep whose flip won owns the dispatch, and
 	// sending on its state would let its rollback strand a message we put in flight.
-	flipped, err := markRequeued(ctx, deps.Scan, deps.JobsTable, c.JobID)
+	flipped, err := markRequeued(ctx, deps.Scan, deps.JobsTable, c.JobID, current)
 	if err != nil {
 		res.Outcome = OutcomeMarkFailed
 		log.Error(ctx, "requeue mark failed", slog.String("error", err.Error()))
@@ -413,7 +491,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 		// Only launched records are scanned, so a record left in requeued with no
 		// delivered message would be invisible to every future sweep. Undo the
 		// flip so the job is a candidate again.
-		rollbackRequeueFlip(ctx, deps.Scan, deps.JobsTable, c.JobID, log)
+		rollbackRequeueFlip(ctx, deps.Scan, deps.JobsTable, c.JobID, current, log)
 		res.Outcome = OutcomeSendFailed
 		return res, err
 	}
@@ -425,6 +503,32 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 	}
 	log.Info(ctx, "hung job requeued", slog.Int("retry_count", res.RetryCount))
 	return res, nil
+}
+
+// confirmStillQueued asks GitHub whether the job is waiting for a runner. It
+// returns an empty outcome when the re-dispatch may proceed, and otherwise the
+// refusal to report. Anything short of an explicit queued is a refusal: the next
+// step terminates an instance, and that cannot be undone if the job was running.
+func confirmStillQueued(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *logging.Logger) (RequeueOutcome, string) {
+	if deps.GitHub == nil {
+		log.Warn(ctx, "requeue skipped: no github client to confirm the job is still queued")
+		return OutcomeGitHubUnavailable, ""
+	}
+	if c.Repo == "" {
+		log.Warn(ctx, "requeue skipped: record has no repo, so github cannot be asked")
+		return OutcomeGitHubUnknown, ""
+	}
+
+	status, err := deps.GitHub.GetWorkflowJobStatus(ctx, c.Repo, c.JobID)
+	if err != nil {
+		log.Warn(ctx, "requeue skipped: github status lookup failed", slog.String("error", err.Error()))
+		return OutcomeGitHubUnknown, ""
+	}
+	if status != gitHubStatusQueued {
+		log.Info(ctx, "requeue skipped: github is not waiting for a runner", slog.String("github_status", status))
+		return OutcomeNotQueued, status
+	}
+	return "", status
 }
 
 // jobHasStatus reports whether a job is still in one of the given statuses.
@@ -533,17 +637,17 @@ func isConditionalCheckFailed(err error) bool {
 // records, so the job stays invisible until someone repairs it by hand. It takes
 // two consecutive DynamoDB failures to get there, and the error log is the only
 // signal, hence the severity.
-func rollbackRequeueFlip(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64, log *logging.Logger) {
+func rollbackRequeueFlip(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64, to string, log *logging.Logger) {
 	_, err := scanAPI.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(jobsTable),
 		Key: map[string]types.AttributeValue{
 			"job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
 		},
-		UpdateExpression:         aws.String("SET #status = :launched REMOVE requeued_at"),
+		UpdateExpression:         aws.String("SET #status = :from REMOVE requeued_at"),
 		ConditionExpression:      aws.String("#status = :requeued"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":from":     &types.AttributeValueMemberS{Value: to},
 			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
 		},
 	})
@@ -580,18 +684,18 @@ func currentJobStatus(ctx context.Context, scanAPI OrphanScanAPI, jobsTable stri
 // into running between the scan and now) is never clobbered. It reports whether THIS call
 // performed the write: a ConditionalCheckFailedException means another actor owns the
 // record's state, which the caller must not mistake for its own success.
-func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64) (bool, error) {
+func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, jobID int64, from string) (bool, error) {
 	_, err := scanAPI.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(jobsTable),
 		Key: map[string]types.AttributeValue{
 			"job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
 		},
 		UpdateExpression:         aws.String("SET #status = :requeued, requeued_at = :now"),
-		ConditionExpression:      aws.String("#status = :launched"),
+		ConditionExpression:      aws.String("#status = :from"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
-			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":from":     &types.AttributeValueMemberS{Value: from},
 			":now":      &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
 		},
 	})

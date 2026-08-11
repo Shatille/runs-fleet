@@ -525,7 +525,7 @@ func TestRequeueHungJobs_SendFailureRollsBackFlip(t *testing.T) {
 		t.Fatalf("expected flip + rollback writes, got %d", len(updates))
 	}
 	rollback := updates[1]
-	got := rollback.ExpressionAttributeValues[":launched"]
+	got := rollback.ExpressionAttributeValues[":from"]
 	if v, ok := got.(*types.AttributeValueMemberS); !ok || v.Value != string(db.JobStatusLaunched) {
 		t.Errorf("rollback must restore the launched status, got %v", got)
 	}
@@ -575,7 +575,7 @@ func TestRequeueJob_RecoversAliveInstance(t *testing.T) {
 	rq := &mockJobRequeuer{}
 	metrics := &mockTaskMetricsAPI{}
 
-	res, err := RequeueJob(context.Background(), newRequeueDepsWithMetrics(ec2, dyn, rq, metrics), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithMetrics(ec2, dyn, rq, metrics), 42, RequeueJobOptions{})
 	if err != nil {
 		t.Fatalf("RequeueJob() error = %v", err)
 	}
@@ -604,7 +604,7 @@ func TestRequeueJob_IgnoresAgeThreshold(t *testing.T) {
 	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{item}}
 	rq := &mockJobRequeuer{}
 
-	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42, RequeueJobOptions{})
 	if err != nil {
 		t.Fatalf("RequeueJob() error = %v", err)
 	}
@@ -624,7 +624,7 @@ func TestRequeueJob_MissingInstanceSkipsTerminate(t *testing.T) {
 	}}
 	rq := &mockJobRequeuer{}
 
-	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42, RequeueJobOptions{})
 	if err != nil {
 		t.Fatalf("RequeueJob() error = %v", err)
 	}
@@ -644,7 +644,7 @@ func TestRequeueJob_RefusesExhausted(t *testing.T) {
 	}}
 	rq := &mockJobRequeuer{}
 
-	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42, RequeueJobOptions{})
 	if err != nil {
 		t.Fatalf("RequeueJob() error = %v", err)
 	}
@@ -657,30 +657,9 @@ func TestRequeueJob_RefusesExhausted(t *testing.T) {
 	}
 }
 
-// A running job has a confirmed runner doing real work; requeue would kill it.
-func TestRequeueJob_RefusesRunningJob(t *testing.T) {
-	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-live")}}
-	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
-		requeueJobItem(42, "i-live", 7, 0, db.JobStatusRunning),
-	}}
-	rq := &mockJobRequeuer{}
-
-	res, err := RequeueJob(context.Background(), newRequeueDeps(ec2, dyn, rq), 42)
-	if err != nil {
-		t.Fatalf("RequeueJob() error = %v", err)
-	}
-	if res.Outcome != OutcomeWrongStatus || res.Status != string(db.JobStatusRunning) {
-		t.Errorf("expected a wrong-status refusal naming the live status, got %+v", res)
-	}
-	if ec2.terminateCalls != 0 || len(rq.sent) != 0 {
-		t.Errorf("a running job must not be terminated or requeued; terminates=%d sends=%d",
-			ec2.terminateCalls, len(rq.sent))
-	}
-}
-
 func TestRequeueJob_NotFound(t *testing.T) {
 	dyn := &mockTaskDynamoDBAPI{}
-	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, &mockJobRequeuer{}), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, &mockJobRequeuer{}), 42, RequeueJobOptions{})
 	if err != nil {
 		t.Fatalf("RequeueJob() error = %v", err)
 	}
@@ -693,7 +672,7 @@ func TestRequeueJob_NotFound(t *testing.T) {
 // live runner, so it surfaces as an error rather than a refusal.
 func TestRequeueJob_ReadErrorSurfaces(t *testing.T) {
 	dyn := &mockTaskDynamoDBAPI{getItemErr: errors.New("dynamo unavailable")}
-	_, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, &mockJobRequeuer{}), 42)
+	_, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, &mockJobRequeuer{}), 42, RequeueJobOptions{})
 	if err == nil {
 		t.Fatal("expected an error when the record cannot be read")
 	}
@@ -709,7 +688,7 @@ func TestRequeueJob_SendFailureRollsBackFlip(t *testing.T) {
 	}
 	rq := &mockJobRequeuer{sendErr: errors.New("sqs unavailable")}
 
-	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42, RequeueJobOptions{})
 	if err == nil {
 		t.Fatal("expected an error when the send fails")
 	}
@@ -734,11 +713,262 @@ func TestRequeueJob_LostFlipDoesNotSend(t *testing.T) {
 	}
 	rq := &mockJobRequeuer{}
 
-	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42)
+	res, err := RequeueJob(context.Background(), newRequeueDeps(&mockEC2API{}, dyn, rq), 42, RequeueJobOptions{})
 	if err != nil {
 		t.Fatalf("RequeueJob() error = %v", err)
 	}
 	if res.Outcome != OutcomeLostRace || len(rq.sent) != 0 {
 		t.Errorf("expected a lost-race refusal with no send, got %+v (sent=%d)", res, len(rq.sent))
+	}
+}
+
+// mockQueuedChecker stands in for GitHub's view of a job.
+type mockQueuedChecker struct {
+	status string
+	err    error
+	calls  int
+}
+
+func (m *mockQueuedChecker) GetWorkflowJobStatus(_ context.Context, _ string, _ int64) (string, error) {
+	m.calls++
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.status, nil
+}
+
+func newRequeueDepsWithGitHub(ec2 *mockEC2API, dyn *mockTaskDynamoDBAPI, rq JobRequeuer, gh JobQueuedChecker) RequeueDeps {
+	deps := newRequeueDeps(ec2, dyn, rq)
+	deps.GitHub = gh
+	return deps
+}
+
+// The production hang: our record says running because a runner confirmed, but
+// GitHub never handed it this job. GitHub reporting queued is proof no work is
+// in progress, which is the only thing that makes terminating the instance safe.
+func TestRequeueJob_RunningIsRequeuedWhenGitHubStillHasItQueued(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-idle")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-idle", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithGitHub(ec2, dyn, rq, gh), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Fatalf("expected a requeue, got %+v", res)
+	}
+	if res.GitHubStatus != "queued" {
+		t.Errorf("GitHubStatus = %q, want the observed status carried back", res.GitHubStatus)
+	}
+	if !res.InstanceTerminated || len(ec2.terminatedIDs) != 1 || ec2.terminatedIDs[0] != "i-idle" {
+		t.Errorf("the idle instance must be terminated first; terminated=%v ids=%v", res.InstanceTerminated, ec2.terminatedIDs)
+	}
+	if len(rq.sent) != 1 || rq.sent[0].RetryCount != 1 {
+		t.Errorf("requeue message wrong: %+v", rq.sent)
+	}
+}
+
+// The gate keys on "not launched", not on "running", so claiming has to be held
+// to it too — a refactor that special-cased running would silently exempt it.
+func TestRequeueJob_ClaimingIsGatedLikeRunning(t *testing.T) {
+	tests := []struct {
+		ghStatus    string
+		wantOutcome RequeueOutcome
+		wantSends   int
+	}{
+		{ghStatus: "queued", wantOutcome: OutcomeRequeued, wantSends: 1},
+		{ghStatus: "in_progress", wantOutcome: OutcomeNotQueued},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ghStatus, func(t *testing.T) {
+			ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-claiming")}}
+			dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+				requeueJobItem(42, "i-claiming", 7, 0, db.JobStatusClaiming),
+			}}
+			rq := &mockJobRequeuer{}
+			gh := &mockQueuedChecker{status: tt.ghStatus}
+
+			res, err := RequeueJob(context.Background(), newRequeueDepsWithGitHub(ec2, dyn, rq, gh), 42, RequeueJobOptions{})
+			if err != nil {
+				t.Fatalf("RequeueJob() error = %v", err)
+			}
+			if res.Outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", res.Outcome, tt.wantOutcome)
+			}
+			if gh.calls != 1 {
+				t.Errorf("GitHub calls = %d, want 1 — claiming must be confirmed, not assumed", gh.calls)
+			}
+			if len(rq.sent) != tt.wantSends {
+				t.Errorf("sends = %d, want %d", len(rq.sent), tt.wantSends)
+			}
+		})
+	}
+}
+
+// Terminating on an unconfirmed guess would kill real work, so every way of
+// failing to confirm must refuse, and must refuse before anything irreversible.
+func TestRequeueJob_RunningRefusedWithoutAQueuedConfirmation(t *testing.T) {
+	tests := []struct {
+		name        string
+		github      JobQueuedChecker
+		wantOutcome RequeueOutcome
+	}{
+		{
+			name:        "GitHub says the job is executing",
+			github:      &mockQueuedChecker{status: "in_progress"},
+			wantOutcome: OutcomeNotQueued,
+		},
+		{
+			name:        "GitHub says the job already finished",
+			github:      &mockQueuedChecker{status: "completed"},
+			wantOutcome: OutcomeNotQueued,
+		},
+		{
+			name:        "GitHub could not be reached",
+			github:      &mockQueuedChecker{err: errors.New("api rate limit exceeded")},
+			wantOutcome: OutcomeGitHubUnknown,
+		},
+		{
+			name:        "no GitHub client is configured",
+			github:      nil,
+			wantOutcome: OutcomeGitHubUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-live")}}
+			dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+				requeueJobItem(42, "i-live", 7, 0, db.JobStatusRunning),
+			}}
+			rq := &mockJobRequeuer{}
+
+			res, err := RequeueJob(context.Background(), newRequeueDepsWithGitHub(ec2, dyn, rq, tt.github), 42, RequeueJobOptions{})
+			if err != nil {
+				t.Fatalf("RequeueJob() error = %v", err)
+			}
+			if res.Outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", res.Outcome, tt.wantOutcome)
+			}
+			if ec2.terminateCalls != 0 || len(rq.sent) != 0 || dyn.updateCalls != 0 {
+				t.Errorf("nothing may be touched without a queued confirmation; terminates=%d sends=%d updates=%d",
+					ec2.terminateCalls, len(rq.sent), dyn.updateCalls)
+			}
+		})
+	}
+}
+
+// A launched record has no confirmed runner, so nothing can be executing and
+// there is nothing for GitHub to settle. Asking anyway would spend an API call
+// per click to learn what the status already says.
+func TestRequeueJob_LaunchedDoesNotConsultGitHub(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-dead-agent")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-dead-agent", 7, 0, db.JobStatusLaunched),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "in_progress"}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithGitHub(ec2, dyn, rq, gh), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Errorf("a launched job must requeue exactly as before, got %+v", res)
+	}
+	if gh.calls != 0 {
+		t.Errorf("GitHub calls = %d, want 0 for a launched record", gh.calls)
+	}
+}
+
+// The cap exists to stop automated churn. An operator acting on a job GitHub
+// confirms is still queued is the case it should not block — but force buys
+// nothing else.
+func TestRequeueJob_ForceBypassesOnlyTheRetryCap(t *testing.T) {
+	newDeps := func(status db.JobStatus, ghStatus string) (*mockEC2API, *mockTaskDynamoDBAPI, *mockJobRequeuer, RequeueDeps) {
+		ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-idle")}}
+		dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+			requeueJobItem(42, "i-idle", 7, MaxRequeueRetries, status),
+		}}
+		rq := &mockJobRequeuer{}
+		return ec2, dyn, rq, newRequeueDepsWithGitHub(ec2, dyn, rq, &mockQueuedChecker{status: ghStatus})
+	}
+
+	t.Run("force re-dispatches an exhausted job GitHub still has queued", func(t *testing.T) {
+		ec2, _, rq, deps := newDeps(db.JobStatusRunning, "queued")
+		res, err := RequeueJob(context.Background(), deps, 42, RequeueJobOptions{Force: true})
+		if err != nil {
+			t.Fatalf("RequeueJob() error = %v", err)
+		}
+		if res.Outcome != OutcomeRequeued || len(rq.sent) != 1 {
+			t.Fatalf("expected a forced requeue, got %+v (sent=%d)", res, len(rq.sent))
+		}
+		if res.RetryCount != MaxRequeueRetries+1 || ec2.terminateCalls != 1 {
+			t.Errorf("retry=%d terminates=%d, want %d and 1", res.RetryCount, ec2.terminateCalls, MaxRequeueRetries+1)
+		}
+	})
+
+	t.Run("force does not bypass the queued confirmation", func(t *testing.T) {
+		ec2, _, rq, deps := newDeps(db.JobStatusRunning, "in_progress")
+		res, err := RequeueJob(context.Background(), deps, 42, RequeueJobOptions{Force: true})
+		if err != nil {
+			t.Fatalf("RequeueJob() error = %v", err)
+		}
+		if res.Outcome != OutcomeNotQueued {
+			t.Errorf("outcome = %q, want %q — force must never override the safety gate", res.Outcome, OutcomeNotQueued)
+		}
+		if ec2.terminateCalls != 0 || len(rq.sent) != 0 {
+			t.Errorf("nothing may be touched; terminates=%d sends=%d", ec2.terminateCalls, len(rq.sent))
+		}
+	})
+
+	t.Run("without force the cap still binds", func(t *testing.T) {
+		_, _, rq, deps := newDeps(db.JobStatusRunning, "queued")
+		res, err := RequeueJob(context.Background(), deps, 42, RequeueJobOptions{})
+		if err != nil {
+			t.Fatalf("RequeueJob() error = %v", err)
+		}
+		if res.Outcome != OutcomeExhausted || len(rq.sent) != 0 {
+			t.Errorf("expected an exhausted refusal, got %+v (sent=%d)", res, len(rq.sent))
+		}
+	})
+}
+
+// The guarded flip and its rollback must pin the status that was actually read.
+// Hard-coding launched would make the write silently no-op on a running record
+// and strand the job in requeued if the send then failed.
+func TestRequeueJob_FlipPinsTheObservedStatus(t *testing.T) {
+	var updates []*dynamodb.UpdateItemInput
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-idle")}}
+	dyn := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{requeueJobItem(42, "i-idle", 7, 0, db.JobStatusRunning)},
+		captureUpdates: &updates,
+	}
+	rq := &mockJobRequeuer{sendErr: errors.New("sqs unavailable")}
+
+	res, _ := RequeueJob(context.Background(),
+		newRequeueDepsWithGitHub(ec2, dyn, rq, &mockQueuedChecker{status: "queued"}), 42, RequeueJobOptions{})
+	if res.Outcome != OutcomeSendFailed {
+		t.Fatalf("expected a send failure, got %+v", res)
+	}
+
+	if len(updates) != 2 {
+		t.Fatalf("expected flip + rollback writes, got %d", len(updates))
+	}
+	flip := updates[0]
+	if flip.ConditionExpression == nil || !strings.Contains(*flip.ConditionExpression, ":from") {
+		t.Fatalf("flip condition = %v, want it pinned to the observed status", flip.ConditionExpression)
+	}
+	if v, ok := flip.ExpressionAttributeValues[":from"].(*types.AttributeValueMemberS); !ok || v.Value != string(db.JobStatusRunning) {
+		t.Errorf("flip pinned %v, want running", flip.ExpressionAttributeValues[":from"])
+	}
+	rollback := updates[1]
+	if v, ok := rollback.ExpressionAttributeValues[":from"].(*types.AttributeValueMemberS); !ok || v.Value != string(db.JobStatusRunning) {
+		t.Errorf("rollback restored %v, want running", rollback.ExpressionAttributeValues[":from"])
 	}
 }
