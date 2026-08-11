@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/logging"
@@ -187,4 +188,46 @@ func (c *Client) ReleaseInstanceClaim(ctx context.Context, instanceID string, jo
 	}
 
 	return nil
+}
+
+// HasLiveInstanceClaim reports whether a job currently holds a claim on an
+// instance. A claim is written before the instance is started, so during that
+// window EC2 still reports the instance stopped while it is already promised to
+// a job — this is the only signal that says so.
+//
+// An unreadable claim counts as held: the caller uses this to decide whether
+// destroying the instance is safe, and an unanswered question is not a yes.
+func (c *Client) HasLiveInstanceClaim(ctx context.Context, instanceID string) (bool, error) {
+	if instanceID == "" {
+		return false, fmt.Errorf("instance ID cannot be empty")
+	}
+	if c.poolsTable == "" {
+		return false, fmt.Errorf("pools table not configured")
+	}
+
+	out, err := c.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.poolsTable),
+		Key: map[string]types.AttributeValue{
+			"pool_name": &types.AttributeValueMemberS{Value: instanceClaimKey(instanceID)},
+		},
+		ProjectionExpression: aws.String("claim_expiry"),
+		ConsistentRead:       aws.Bool(true),
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to read instance claim for %s: %w", instanceID, err)
+	}
+	if len(out.Item) == 0 {
+		return false, nil
+	}
+
+	expiry, ok := out.Item["claim_expiry"].(*types.AttributeValueMemberN)
+	if !ok {
+		// A claim row with no readable expiry cannot be judged expired.
+		return true, nil
+	}
+	seconds, err := strconv.ParseInt(expiry.Value, 10, 64)
+	if err != nil {
+		return true, nil
+	}
+	return time.Now().Unix() < seconds, nil
 }

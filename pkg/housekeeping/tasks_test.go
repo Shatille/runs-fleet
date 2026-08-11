@@ -2267,6 +2267,8 @@ type mockPoolDBAPI struct {
 	expiredClaimsCalls   int
 
 	activeJobInstances map[string]bool
+	claimedInstances   map[string]bool
+	claimErr           error
 	activeJobErr       error
 
 	lastCompletion    map[string]time.Time
@@ -2330,6 +2332,13 @@ func (m *mockPoolDBAPI) DeleteExpiredInstanceClaims(_ context.Context, _ time.Ti
 		return 0, m.expiredClaimsErr
 	}
 	return m.expiredClaimsDeleted, nil
+}
+
+func (m *mockPoolDBAPI) HasLiveInstanceClaim(_ context.Context, instanceID string) (bool, error) {
+	if m.claimErr != nil {
+		return false, m.claimErr
+	}
+	return m.claimedInstances[instanceID], nil
 }
 
 func (m *mockPoolDBAPI) HasActiveJobForInstance(_ context.Context, instanceID string) (bool, error) {
