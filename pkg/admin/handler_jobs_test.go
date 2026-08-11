@@ -12,12 +12,15 @@ import (
 )
 
 type mockJobsDB struct {
-	jobs  []db.AdminJobEntry
-	stats *db.AdminJobStats
-	err   error
+	jobs       []db.AdminJobEntry
+	stats      *db.AdminJobStats
+	err        error
+	gotFilter  db.AdminJobFilter
+	gotStalled time.Time
 }
 
-func (m *mockJobsDB) ListJobsForAdmin(_ context.Context, _ db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+func (m *mockJobsDB) ListJobsForAdmin(_ context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error) {
+	m.gotFilter = filter
 	if m.err != nil {
 		return nil, 0, m.err
 	}
@@ -36,11 +39,200 @@ func (m *mockJobsDB) GetJobForAdmin(_ context.Context, jobID int64) (*db.AdminJo
 	return nil, nil
 }
 
-func (m *mockJobsDB) GetJobStatsForAdmin(_ context.Context, _ time.Time) (*db.AdminJobStats, error) {
+func (m *mockJobsDB) GetJobStatsForAdmin(_ context.Context, _, stalledBefore time.Time) (*db.AdminJobStats, error) {
+	m.gotStalled = stalledBefore
 	if m.err != nil {
 		return nil, m.err
 	}
 	return m.stats, nil
+}
+
+func TestJobEntryToResponse_ElapsedAndStalled(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 11, 11, 0, 0, 0, time.UTC)
+	const staleAfter = 15 * time.Minute
+
+	tests := []struct {
+		name        string
+		entry       db.AdminJobEntry
+		wantElapsed int
+		wantStalled bool
+	}{
+		{
+			name: "the production hang: running, started three hours ago, never completed",
+			entry: db.AdminJobEntry{
+				Status:    string(db.JobStatusRunning),
+				CreatedAt: now.Add(-3 * time.Hour),
+				StartedAt: now.Add(-3 * time.Hour),
+			},
+			wantElapsed: 10800,
+			wantStalled: true,
+		},
+		{
+			name: "no started_at falls back to created_at",
+			entry: db.AdminJobEntry{
+				Status:    string(db.JobStatusLaunched),
+				CreatedAt: now.Add(-20 * time.Minute),
+			},
+			wantElapsed: 1200,
+			wantStalled: true,
+		},
+		{
+			name: "a stranded requeued record is stalled like any other open record",
+			entry: db.AdminJobEntry{
+				Status:    string(db.JobStatusRequeued),
+				CreatedAt: now.Add(-40 * time.Minute),
+			},
+			wantElapsed: 2400,
+			wantStalled: true,
+		},
+		{
+			name: "young enough that the watchdog has not had its turn",
+			entry: db.AdminJobEntry{
+				Status:    string(db.JobStatusRunning),
+				CreatedAt: now.Add(-time.Minute),
+				StartedAt: now.Add(-time.Minute),
+			},
+			wantElapsed: 60,
+			wantStalled: false,
+		},
+		{
+			name: "a completed record reports no elapsed however old it is",
+			entry: db.AdminJobEntry{
+				Status:      string(db.JobStatusSuccess),
+				CreatedAt:   now.Add(-9 * time.Hour),
+				StartedAt:   now.Add(-9 * time.Hour),
+				CompletedAt: now.Add(-8 * time.Hour),
+			},
+		},
+		{
+			name: "a timestamp ahead of the server clock reports nothing rather than a fabricated age",
+			entry: db.AdminJobEntry{
+				Status:    string(db.JobStatusRunning),
+				CreatedAt: now.Add(time.Minute),
+				StartedAt: now.Add(time.Minute),
+			},
+		},
+		{
+			name:  "no timestamps at all",
+			entry: db.AdminJobEntry{Status: string(db.JobStatusRunning)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := jobEntryToResponse(tt.entry, now, staleAfter)
+			if got.ElapsedSeconds != tt.wantElapsed {
+				t.Errorf("ElapsedSeconds = %d, want %d", got.ElapsedSeconds, tt.wantElapsed)
+			}
+			if got.Stalled != tt.wantStalled {
+				t.Errorf("Stalled = %v, want %v", got.Stalled, tt.wantStalled)
+			}
+		})
+	}
+}
+
+func TestJobsHandler_ListJobs_StaleFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		query         string
+		wantStatus    int
+		wantStale     bool
+		wantStaleSpan time.Duration
+	}{
+		{
+			name:       "no stale param leaves the filter unbounded",
+			query:      "",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:          "stale=true applies the default window",
+			query:         "?stale=true",
+			wantStatus:    http.StatusOK,
+			wantStale:     true,
+			wantStaleSpan: defaultStaleAfter,
+		},
+		{
+			name:          "stale_minutes overrides the window",
+			query:         "?stale=true&stale_minutes=60",
+			wantStatus:    http.StatusOK,
+			wantStale:     true,
+			wantStaleSpan: time.Hour,
+		},
+		{
+			name:       "a non-numeric window is rejected rather than silently defaulted",
+			query:      "?stale=true&stale_minutes=soon",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "an out-of-range window is rejected",
+			query:      "?stale=true&stale_minutes=0",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockDB := &mockJobsDB{}
+			handler := NewJobsHandler(mockDB, NewAuthMiddleware(""), "")
+
+			before := time.Now()
+			req := httptest.NewRequest(http.MethodGet, "/api/jobs"+tt.query, nil)
+			w := httptest.NewRecorder()
+			handler.ListJobs(w, req)
+			after := time.Now()
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			got := mockDB.gotFilter.StaleBefore
+			if got.IsZero() == tt.wantStale {
+				t.Fatalf("StaleBefore zero = %v, want stale = %v", got.IsZero(), tt.wantStale)
+			}
+			if !tt.wantStale {
+				return
+			}
+			if got.Before(before.Add(-tt.wantStaleSpan-time.Minute)) || got.After(after.Add(-tt.wantStaleSpan)) {
+				t.Errorf("StaleBefore = %v, want roughly now-%v", got, tt.wantStaleSpan)
+			}
+		})
+	}
+}
+
+func TestJobsHandler_GetJobStats_ReportsStalled(t *testing.T) {
+	t.Parallel()
+
+	mockDB := &mockJobsDB{stats: &db.AdminJobStats{Total: 10, Running: 4, Stalled: 2}}
+	handler := NewJobsHandler(mockDB, NewAuthMiddleware(""), "")
+
+	w := httptest.NewRecorder()
+	handler.GetJobStats(w, httptest.NewRequest(http.MethodGet, "/api/jobs/stats", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var resp JobStatsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Stalled != 2 {
+		t.Errorf("Stalled = %d, want 2", resp.Stalled)
+	}
+	if mockDB.gotStalled.IsZero() {
+		t.Error("GetJobStatsForAdmin was passed a zero cutoff, so Stalled could never be counted")
+	}
 }
 
 func TestJobsHandler_ListJobs(t *testing.T) {

@@ -233,7 +233,7 @@ func TestGetJobStatsForAdmin_Paginates(t *testing.T) {
 
 	client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
 
-	stats, err := client.GetJobStatsForAdmin(context.Background(), time.Now().Add(-time.Hour))
+	stats, err := client.GetJobStatsForAdmin(context.Background(), time.Now().Add(-time.Hour), time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -458,6 +458,10 @@ func (c *Client) GetRegistrationToken(ctx context.Context, repo string) (*Regist
 type WorkflowJobInfo struct {
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", "timed_out", etc.
+	// RunnerName is the runner GitHub actually gave the job to. It need not be
+	// the runner runs-fleet minted for it: registration binds a runner to a
+	// label, not a job, so it names who really took the work.
+	RunnerName string
 }
 
 // GetWorkflowJobByID retrieves a workflow job by its ID from GitHub API.
@@ -515,6 +519,7 @@ func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int6
 		return &WorkflowJobInfo{
 			Status:     job.GetStatus(),
 			Conclusion: job.GetConclusion(),
+			RunnerName: job.GetRunnerName(),
 		}, nil
 	}
 	return nil, lastErr

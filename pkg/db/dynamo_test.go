@@ -3890,6 +3890,78 @@ func TestListJobsForAdmin_CompletedOnlyFilter(t *testing.T) {
 	}
 }
 
+func TestListJobsForAdmin_StaleBeforeFilter(t *testing.T) {
+	t.Parallel()
+
+	const openClause = "attribute_not_exists(completed_at)"
+	const ageClause = "created_at < :stale_before"
+
+	cutoff := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		filter     AdminJobFilter
+		wantClause bool
+		wantStatus bool
+	}{
+		{
+			name:       "StaleBefore emits both the open-record and age predicates",
+			filter:     AdminJobFilter{StaleBefore: cutoff},
+			wantClause: true,
+		},
+		{
+			name:   "zero StaleBefore adds nothing",
+			filter: AdminJobFilter{},
+		},
+		{
+			name:       "StaleBefore composes with a status filter",
+			filter:     AdminJobFilter{Status: string(JobStatusRunning), StaleBefore: cutoff},
+			wantClause: true,
+			wantStatus: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotExpr string
+			var gotValues map[string]types.AttributeValue
+			mock := &MockDynamoDBAPI{
+				ScanFunc: func(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+					if input.FilterExpression != nil {
+						gotExpr = *input.FilterExpression
+					}
+					gotValues = input.ExpressionAttributeValues
+					return &dynamodb.ScanOutput{}, nil
+				},
+			}
+
+			client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
+			if _, _, err := client.ListJobsForAdmin(context.Background(), tt.filter); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, clause := range []string{openClause, ageClause} {
+				if got := strings.Contains(gotExpr, clause); got != tt.wantClause {
+					t.Errorf("filter expression %q contains %q = %v, want %v", gotExpr, clause, got, tt.wantClause)
+				}
+			}
+			if got := strings.Contains(gotExpr, "#status = :status"); got != tt.wantStatus {
+				t.Errorf("filter expression %q contains status clause = %v, want %v", gotExpr, got, tt.wantStatus)
+			}
+
+			v, ok := gotValues[":stale_before"].(*types.AttributeValueMemberS)
+			if ok != tt.wantClause {
+				t.Fatalf(":stale_before bound = %v, want %v", ok, tt.wantClause)
+			}
+			if ok && v.Value != cutoff.Format(time.RFC3339) {
+				t.Errorf(":stale_before = %q, want %q", v.Value, cutoff.Format(time.RFC3339))
+			}
+		})
+	}
+}
+
 func TestListJobsForAdmin_JobsTableNotConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -4132,7 +4204,7 @@ func TestGetJobStatsForAdmin(t *testing.T) {
 				jobsTable:    "jobs-table",
 			}
 
-			stats, err := client.GetJobStatsForAdmin(context.Background(), since)
+			stats, err := client.GetJobStatsForAdmin(context.Background(), since, time.Time{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetJobStatsForAdmin() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -4170,6 +4242,69 @@ func TestGetJobStatsForAdmin(t *testing.T) {
 	}
 }
 
+func TestGetJobStatsForAdmin_StalledCount(t *testing.T) {
+	t.Parallel()
+
+	stalledBefore := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	old := stalledBefore.Add(-3 * time.Hour).Format(time.RFC3339)
+	recent := stalledBefore.Add(30 * time.Minute).Format(time.RFC3339)
+
+	item := func(id, status, createdAt string, completed bool) map[string]types.AttributeValue {
+		av := map[string]types.AttributeValue{
+			"job_id":     &types.AttributeValueMemberN{Value: id},
+			"status":     &types.AttributeValueMemberS{Value: status},
+			"created_at": &types.AttributeValueMemberS{Value: createdAt},
+		}
+		if completed {
+			av["completed_at"] = &types.AttributeValueMemberS{Value: createdAt}
+		}
+		return av
+	}
+
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					// The production shape: running, no completion, hours old.
+					item("1", "running", old, false),
+					// A stranded requeued record is just as stalled.
+					item("2", "requeued", old, false),
+					// Open but young enough that the watchdog has not had its turn.
+					item("3", "running", recent, false),
+					// Old but finished — the age alone must not flag it.
+					item("4", "success", old, true),
+					// Unjudgeable: no created_at to compare.
+					{
+						"job_id": &types.AttributeValueMemberN{Value: "5"},
+						"status": &types.AttributeValueMemberS{Value: "running"},
+					},
+				},
+			}, nil
+		},
+	}
+
+	client := &Client{dynamoClient: mock, jobsTable: "jobs-table"}
+
+	stats, err := client.GetJobStatsForAdmin(context.Background(), stalledBefore.Add(-24*time.Hour), stalledBefore)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Stalled != 2 {
+		t.Errorf("Stalled = %d, want 2", stats.Stalled)
+	}
+	if stats.Running != 3 {
+		t.Errorf("Running = %d, want 3 (Stalled must not change what Running means)", stats.Running)
+	}
+
+	zero, err := client.GetJobStatsForAdmin(context.Background(), stalledBefore.Add(-24*time.Hour), time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if zero.Stalled != 0 {
+		t.Errorf("Stalled = %d with no cutoff, want 0", zero.Stalled)
+	}
+}
+
 func TestGetJobStatsForAdmin_JobsTableNotConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -4178,7 +4313,7 @@ func TestGetJobStatsForAdmin_JobsTableNotConfigured(t *testing.T) {
 		jobsTable:    "",
 	}
 
-	stats, err := client.GetJobStatsForAdmin(context.Background(), time.Now())
+	stats, err := client.GetJobStatsForAdmin(context.Background(), time.Now(), time.Time{})
 	if err == nil {
 		t.Error("GetJobStatsForAdmin() should fail when jobs table not configured")
 	}

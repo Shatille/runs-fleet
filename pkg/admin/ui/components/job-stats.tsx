@@ -9,6 +9,14 @@ export default function JobStatsCard({ stats }: JobStatsProps) {
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
       <StatCard label="Total" value={stats.total} />
       <StatCard label="Running" value={stats.running} color="blue" />
+      {stats.stalled > 0 && (
+        <StatCard
+          label="Stalled"
+          value={stats.stalled}
+          color="amber"
+          title="Open records with no completion, older than 15 minutes. They are also counted under Running or Requeued — that overlap is the point, since a hang is invisible in those numbers."
+        />
+      )}
       <StatCard label="Completed" value={stats.completed} color="green" />
       <StatCard label="Failed" value={stats.failed} color="red" />
       <StatCard label="Requeued" value={stats.requeued} color="yellow" />
@@ -25,10 +33,11 @@ export default function JobStatsCard({ stats }: JobStatsProps) {
 interface StatCardProps {
   label: string;
   value: number | string;
-  color?: 'blue' | 'green' | 'red' | 'yellow' | 'purple' | 'indigo';
+  color?: 'blue' | 'green' | 'red' | 'yellow' | 'purple' | 'indigo' | 'amber';
+  title?: string;
 }
 
-function StatCard({ label, value, color }: StatCardProps) {
+function StatCard({ label, value, color, title }: StatCardProps) {
   const colorClasses = {
     blue: 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
     green: 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400',
@@ -36,12 +45,13 @@ function StatCard({ label, value, color }: StatCardProps) {
     yellow: 'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400',
     purple: 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
     indigo: 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400',
+    amber: 'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
   };
 
   const bgClass = color ? colorClasses[color] : 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
 
   return (
-    <div className={`rounded-lg p-4 ${bgClass}`}>
+    <div className={`rounded-lg p-4 ${bgClass}`} title={title}>
       <div className="text-sm font-medium opacity-75">{label}</div>
       <div className="text-2xl font-bold">{value}</div>
     </div>

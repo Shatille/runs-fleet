@@ -184,6 +184,7 @@ func main() {
 		fleetManager:       fleetManager,
 		secretsStore:       secretsStore,
 		housekeepingTasks:  housekeepingTasks,
+		githubClient:       githubClient,
 	}
 	mux, err := ws.setupHTTPRoutes(ctx, cacheServer, prometheusHandler)
 	if err != nil {
@@ -496,6 +497,7 @@ type webhookServer struct {
 	fleetManager       *fleet.Manager
 	secretsStore       secrets.Store
 	housekeepingTasks  *housekeeping.Tasks
+	githubClient       *gh.Client
 
 	// shuttingDown flips true on SIGTERM so /ready reports 503 and the load
 	// balancer deregisters this task before the listener is closed.
@@ -556,6 +558,16 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 
 	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth, ws.cfg.TraceUIURL)
 	jobsHandler.RegisterRoutes(adminMux)
+
+	// Same typed-nil guard as orphanSweeper below: a nil *gh.Client stored
+	// directly would make the interface non-nil, and the handler would call
+	// GitHub instead of reporting that it cannot.
+	var adminJobChecker admin.GitHubJobStatusChecker
+	if ws.githubClient != nil {
+		adminJobChecker = &adminJobCheckerAdapter{client: ws.githubClient}
+	}
+	hungHandler := admin.NewHungHandler(ws.dbClient, adminJobChecker, adminAuth)
+	hungHandler.RegisterRoutes(adminMux)
 
 	ec2Client := ec2.NewFromConfig(ws.awsCfg)
 	instancesHandler := admin.NewInstancesHandler(ec2Client, ws.dbClient, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
@@ -849,6 +861,26 @@ func (r *runnerConfigCheckerAdapter) HasRunnerConfig(ctx context.Context, instan
 		return false, err
 	}
 	return true, nil
+}
+
+// adminJobCheckerAdapter adapts *gh.Client to admin.GitHubJobStatusChecker,
+// preserving the raw status and the runner that actually took the job — the
+// console needs "queued" specifically, which the housekeeping adapter collapses
+// away.
+type adminJobCheckerAdapter struct {
+	client *gh.Client
+}
+
+func (a *adminJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, repo string, jobID int64) (*admin.GitHubJobStatus, error) {
+	info, err := a.client.GetWorkflowJobByID(ctx, repo, jobID)
+	if err != nil {
+		return nil, err
+	}
+	return &admin.GitHubJobStatus{
+		Status:     info.Status,
+		Conclusion: info.Conclusion,
+		RunnerName: info.RunnerName,
+	}, nil
 }
 
 // githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.

@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { DetailSkeleton } from '@/components/skeleton';
 import JobActions from '@/components/job-actions';
-import { Job } from '@/lib/types';
+import { GitHubJobStatus, Job } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
 export default function JobDetailPage() {
@@ -172,7 +172,17 @@ function JobDetail() {
           <Field label="Exit Code" value={job.exit_code !== undefined ? String(job.exit_code) : '-'} mono />
           <Field label="Retry Count" value={String(job.retry_count)} />
           <Field label="Duration" value={formatDuration(job.duration_seconds)} />
+          {job.elapsed_seconds !== undefined && (
+            <Field label="Open for">
+              <span className={`text-sm ${job.stalled ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-gray-900 dark:text-gray-100'}`}>
+                {formatDuration(job.elapsed_seconds)}
+                {job.stalled && <span className="ml-1 text-xs opacity-75">stalled</span>}
+              </span>
+            </Field>
+          )}
         </Section>
+
+        <GitHubSection jobId={job.job_id} autoFetch={!job.completed_at} />
 
         <Section title="Timestamps">
           <Field label="Created" value={formatTimestamp(job.created_at)} />
@@ -180,6 +190,73 @@ function JobDetail() {
           <Field label="Completed" value={formatTimestamp(job.completed_at)} />
         </Section>
       </div>
+    </div>
+  );
+}
+
+// GitHub's own view of the job. Our record can say "running" for a job GitHub
+// never started, so this panel is the only place the two can be compared.
+//
+// autoFetch is off for a finished job: its record already carries GitHub's
+// answer, and every view would otherwise spend an API call restating it.
+function GitHubSection({ jobId, autoFetch }: { jobId: number; autoFetch: boolean }) {
+  const [status, setStatus] = useState<GitHubJobStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [fetched, setFetched] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/github`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.details || body.error || `Failed to reach GitHub: ${res.statusText}`);
+      }
+      setStatus(body as GitHubJobStatus);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reach GitHub');
+    } finally {
+      setFetched(true);
+      setLoading(false);
+    }
+  }, [jobId]);
+
+  useEffect(() => {
+    if (autoFetch) void fetchStatus();
+  }, [autoFetch, fetchStatus]);
+
+  return (
+    <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">GitHub</h2>
+        <button
+          onClick={fetchStatus}
+          disabled={loading}
+          className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-1 text-xs rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+        >
+          {loading ? 'Checking...' : fetched ? 'Refresh' : 'Check GitHub'}
+        </button>
+      </div>
+      {!fetched && !loading ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          This job has finished, so its record already agrees with GitHub. Check anyway if you want to confirm.
+        </p>
+      ) : error ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">{error}</p>
+      ) : (
+        <dl className="space-y-3">
+          <Field label="Status" value={status?.status || '-'} />
+          <Field label="Conclusion" value={status?.conclusion || '-'} />
+          <Field label="Runner" value={status?.runner_name || '-'} mono />
+          {status?.status === 'queued' && (
+            <p className="text-sm text-red-700 dark:text-red-400">
+              GitHub still has this job queued — nothing is running it, whatever our record says.
+            </p>
+          )}
+        </dl>
+      )}
     </div>
   );
 }
