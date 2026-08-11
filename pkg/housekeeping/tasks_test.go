@@ -3041,17 +3041,26 @@ func TestExecuteOrphanedSpotRequests_DescribeInstancesError(t *testing.T) {
 	}
 }
 
-// mockGitHubJobChecker implements GitHubJobChecker for testing.
+// mockGitHubJobChecker implements GitHubJobChecker for testing. statusSeq, when
+// set for a job, is consumed one entry per call before falling back to statuses,
+// so a test can model GitHub state changing between the sweep's first look and
+// the requeue path's re-confirmation.
 type mockGitHubJobChecker struct {
-	statuses map[int64]*GitHubJobStatus
-	err      error
-	calls    int
+	statuses  map[int64]*GitHubJobStatus
+	statusSeq map[int64][]*GitHubJobStatus
+	err       error
+	calls     int
 }
 
 func (m *mockGitHubJobChecker) GetWorkflowJobStatus(_ context.Context, _, _ string, jobID int64) (*GitHubJobStatus, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
+	}
+	if seq, ok := m.statusSeq[jobID]; ok && len(seq) > 0 {
+		s := seq[0]
+		m.statusSeq[jobID] = seq[1:]
+		return s, nil
 	}
 	if s, ok := m.statuses[jobID]; ok {
 		return s, nil
@@ -3325,6 +3334,251 @@ func TestExecuteStaleJobs_SkipsInvalidRepo(t *testing.T) {
 
 	if checker.calls != 0 {
 		t.Errorf("expected 0 GitHub API calls for invalid repo, got %d", checker.calls)
+	}
+}
+
+// staleQueuedRecord builds a full running-job record whose runner idles while
+// GitHub still has the job queued — the projection GetRequeueableJob needs to
+// rebuild a launch message.
+func staleQueuedRecord(jobID int64, instanceID string, retryCount int) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		"job_id":        &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
+		"run_id":        &types.AttributeValueMemberN{Value: "67890"},
+		"repo":          &types.AttributeValueMemberS{Value: "org/repo"},
+		"instance_id":   &types.AttributeValueMemberS{Value: instanceID},
+		"instance_type": &types.AttributeValueMemberS{Value: "m7i.large"},
+		"pool":          &types.AttributeValueMemberS{Value: "lingua-franca"},
+		"retry_count":   &types.AttributeValueMemberN{Value: strconv.Itoa(retryCount)},
+		"status":        &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+	}
+}
+
+func aliveInstances(ids ...string) []ec2types.Reservation {
+	instances := make([]ec2types.Instance, 0, len(ids))
+	for _, id := range ids {
+		instances = append(instances, ec2types.Instance{
+			InstanceId: strPtr(id),
+			State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+		})
+	}
+	return []ec2types.Reservation{{Instances: instances}}
+}
+
+func staleQueuedTasks(dynamoClient *mockTaskDynamoDBAPI, ec2Client *mockEC2API, checker *mockGitHubJobChecker, requeuer JobRequeuer, metrics MetricsAPI) *Tasks {
+	return &Tasks{
+		dynamoClient:  dynamoClient,
+		ec2Client:     ec2Client,
+		gitHubChecker: checker,
+		jobRequeuer:   requeuer,
+		metrics:       metrics,
+		config: &config.Config{
+			JobsTableName: "jobs-table",
+		},
+	}
+}
+
+func TestExecuteStaleJobs_RequeuesQueuedJobWithIdleRunner(t *testing.T) {
+	t.Parallel()
+
+	var updates []*dynamodb.UpdateItemInput
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items:          []map[string]types.AttributeValue{staleQueuedRecord(12345, "i-idle", 0)},
+		captureUpdates: &updates,
+	}
+	ec2Client := &mockEC2API{instances: aliveInstances("i-idle")}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Status: "queued"},
+		},
+	}
+	requeuer := &mockJobRequeuer{}
+	metrics := &mockTaskMetricsAPI{}
+
+	tasks := staleQueuedTasks(dynamoClient, ec2Client, checker, requeuer, metrics)
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-idle" {
+		t.Errorf("expected idle instance terminated, got %v", ec2Client.terminatedIDs)
+	}
+	if len(requeuer.sent) != 1 {
+		t.Fatalf("expected 1 requeue message, got %d", len(requeuer.sent))
+	}
+	msg := requeuer.sent[0]
+	if msg.JobID != 12345 || msg.RetryCount != 1 || !msg.ForceOnDemand || msg.Pool != "lingua-franca" {
+		t.Errorf("requeue message = %+v, want job 12345 retry 1 on-demand pool lingua-franca", msg)
+	}
+	// The sweep saw queued once; the shared requeue path must re-confirm right
+	// before terminating.
+	if checker.calls != 2 {
+		t.Errorf("expected 2 GitHub API calls (sweep + re-confirmation), got %d", checker.calls)
+	}
+	var flips int
+	for _, u := range updates {
+		if v, ok := u.ExpressionAttributeValues[":requeued"].(*types.AttributeValueMemberS); ok && v.Value == string(db.JobStatusRequeued) {
+			flips++
+			if from, ok := u.ExpressionAttributeValues[":from"].(*types.AttributeValueMemberS); !ok || from.Value != string(db.JobStatusRunning) {
+				t.Errorf("requeue flip must be conditional on the running status it read, got %v", u.ExpressionAttributeValues[":from"])
+			}
+		}
+	}
+	if flips != 1 {
+		t.Errorf("expected 1 conditional flip to requeued, got %d", flips)
+	}
+	if len(metrics.requeuedReasons) != 1 || metrics.requeuedReasons[0] != "stale_queued" {
+		t.Errorf("expected requeue metric with reason stale_queued, got %v", metrics.requeuedReasons)
+	}
+}
+
+func TestExecuteStaleJobs_LeavesInProgressJobsAlone(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{staleQueuedRecord(12345, "i-busy", 0)},
+	}
+	ec2Client := &mockEC2API{instances: aliveInstances("i-busy")}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Status: "in_progress"},
+		},
+	}
+	requeuer := &mockJobRequeuer{}
+
+	tasks := staleQueuedTasks(dynamoClient, ec2Client, checker, requeuer, &mockTaskMetricsAPI{})
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("in-progress job's instance must not be terminated, got %v", ec2Client.terminatedIDs)
+	}
+	if len(requeuer.sent) != 0 {
+		t.Errorf("in-progress job must not be requeued, got %d messages", len(requeuer.sent))
+	}
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 DDB updates for in-progress job, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteStaleJobs_QueuedRequeueRespectsRetryCap(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{staleQueuedRecord(12345, "i-idle", MaxRequeueRetries)},
+	}
+	ec2Client := &mockEC2API{instances: aliveInstances("i-idle")}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Status: "queued"},
+		},
+	}
+	requeuer := &mockJobRequeuer{}
+	metrics := &mockTaskMetricsAPI{}
+
+	tasks := staleQueuedTasks(dynamoClient, ec2Client, checker, requeuer, metrics)
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("retry-exhausted job's instance must not be terminated, got %v", ec2Client.terminatedIDs)
+	}
+	if len(requeuer.sent) != 0 {
+		t.Errorf("retry-exhausted job must not be requeued, got %d messages", len(requeuer.sent))
+	}
+	if len(metrics.schedulingFailures) != 1 || metrics.schedulingFailures[0] != "stale_queued" {
+		t.Errorf("expected scheduling failure labeled stale_queued, got %v", metrics.schedulingFailures)
+	}
+}
+
+func TestExecuteStaleJobs_QueuedRequeueCappedPerCycle(t *testing.T) {
+	t.Parallel()
+
+	var items []map[string]types.AttributeValue
+	statuses := make(map[int64]*GitHubJobStatus)
+	var instanceIDs []string
+	for i := int64(0); i < int64(maxStaleQueuedRequeues)+2; i++ {
+		id := fmt.Sprintf("i-idle-%d", i)
+		items = append(items, staleQueuedRecord(10000+i, id, 0))
+		statuses[10000+i] = &GitHubJobStatus{Status: "queued"}
+		instanceIDs = append(instanceIDs, id)
+	}
+	dynamoClient := &mockTaskDynamoDBAPI{items: items}
+	ec2Client := &mockEC2API{instances: aliveInstances(instanceIDs...)}
+	checker := &mockGitHubJobChecker{statuses: statuses}
+	requeuer := &mockJobRequeuer{}
+
+	tasks := staleQueuedTasks(dynamoClient, ec2Client, checker, requeuer, &mockTaskMetricsAPI{})
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(requeuer.sent) != maxStaleQueuedRequeues {
+		t.Errorf("expected %d requeues this cycle, got %d", maxStaleQueuedRequeues, len(requeuer.sent))
+	}
+	if ec2Client.terminateCalls != maxStaleQueuedRequeues {
+		t.Errorf("expected %d terminations this cycle, got %d", maxStaleQueuedRequeues, ec2Client.terminateCalls)
+	}
+}
+
+func TestExecuteStaleJobs_QueuedRequeueNeedsRequeuer(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{staleQueuedRecord(12345, "i-idle", 0)},
+	}
+	ec2Client := &mockEC2API{instances: aliveInstances("i-idle")}
+	checker := &mockGitHubJobChecker{
+		statuses: map[int64]*GitHubJobStatus{
+			12345: {Status: "queued"},
+		},
+	}
+
+	tasks := staleQueuedTasks(dynamoClient, ec2Client, checker, nil, &mockTaskMetricsAPI{})
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Without a queue to re-dispatch on, terminating the instance would strand
+	// the job entirely; nothing destructive may happen.
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("no instance may be terminated without a requeuer, got %v", ec2Client.terminatedIDs)
+	}
+	if dynamoClient.updateCalls != 0 {
+		t.Errorf("expected 0 DDB updates without a requeuer, got %d", dynamoClient.updateCalls)
+	}
+}
+
+func TestExecuteStaleJobs_QueuedRequeueAbortsWhenRecheckSeesDispatch(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{staleQueuedRecord(12345, "i-idle", 0)},
+	}
+	ec2Client := &mockEC2API{instances: aliveInstances("i-idle")}
+	checker := &mockGitHubJobChecker{
+		statusSeq: map[int64][]*GitHubJobStatus{
+			12345: {
+				{Status: "queued"},
+				{Status: "in_progress"},
+			},
+		},
+	}
+	requeuer := &mockJobRequeuer{}
+
+	tasks := staleQueuedTasks(dynamoClient, ec2Client, checker, requeuer, &mockTaskMetricsAPI{})
+	if err := tasks.ExecuteStaleJobs(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// GitHub dispatched the job between the sweep's look and the requeue path's
+	// re-confirmation: the runner is now doing real work and must survive.
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("dispatched job's instance must not be terminated, got %v", ec2Client.terminatedIDs)
+	}
+	if len(requeuer.sent) != 0 {
+		t.Errorf("dispatched job must not be requeued, got %d messages", len(requeuer.sent))
 	}
 }
 

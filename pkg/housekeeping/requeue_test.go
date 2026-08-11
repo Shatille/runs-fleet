@@ -863,6 +863,32 @@ func TestRequeueJob_RunningRefusedWithoutAQueuedConfirmation(t *testing.T) {
 	}
 }
 
+// A running record whose repo was never persisted cannot be checked against
+// GitHub at all, and an unverifiable record must never reach the terminate.
+func TestRequeueJob_RunningWithoutRepoRefused(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-live")}}
+	item := requeueJobItem(42, "i-live", 7, 0, db.JobStatusRunning)
+	item["repo"] = &types.AttributeValueMemberS{Value: ""}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{item}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithGitHub(ec2, dyn, rq, gh), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeGitHubUnknown {
+		t.Errorf("outcome = %q, want %q", res.Outcome, OutcomeGitHubUnknown)
+	}
+	if gh.calls != 0 {
+		t.Errorf("GitHub calls = %d, want 0: there is no repo to ask about", gh.calls)
+	}
+	if ec2.terminateCalls != 0 || len(rq.sent) != 0 || dyn.updateCalls != 0 {
+		t.Errorf("nothing may be touched for an unverifiable record; terminates=%d sends=%d updates=%d",
+			ec2.terminateCalls, len(rq.sent), dyn.updateCalls)
+	}
+}
+
 // A launched record has no confirmed runner, so nothing can be executing and
 // there is nothing for GitHub to settle. Asking anyway would spend an API call
 // per click to learn what the status already says.

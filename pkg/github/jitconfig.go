@@ -39,9 +39,13 @@ type runnerGroupEntry struct {
 
 // JITConfigRequest describes the runner to mint a just-in-time config for.
 //
-// Unlike a registration token, a JIT config binds the runner to a single job at
-// GitHub's scheduler: the runner cannot be handed a different queued job that
-// merely shares its labels.
+// A JIT config makes the runner ephemeral — it runs exactly one job and GitHub
+// deregisters it — but it does NOT bind the runner to a specific job: the API
+// takes only name, group, and labels, and GitHub's scheduler hands the runner
+// whichever queued job matches those labels. When several jobs share a label
+// set, runners still serve each other's jobs; the termination handler's
+// still-queued redispatch and the stale-jobs sweep are what make the fleet
+// converge afterward.
 type JITConfigRequest struct {
 	Name          string
 	RunnerGroupID int64
