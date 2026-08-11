@@ -49,18 +49,39 @@ func NewSSMStoreWithClient(client SSMAPI, prefix string) *SSMStore {
 }
 
 // Put stores runner configuration in SSM Parameter Store as SecureString.
+//
+// The config is written as two parameters: the plaintext fields under
+// {prefix}/{id}/config, and the registration credential — a GitHub JIT config or
+// registration token — under {prefix}/{id}/credential. A JIT config embeds a
+// 2048-bit RSA private key and alone exceeds the 4096-character Standard-tier
+// ceiling; combining both halves in one parameter forces the whole store onto the
+// paid Advanced tier. Split, and with the credential stored decoded-and-gzipped
+// (stripping a base64 layer GitHub applied before compressing), both halves stay
+// under the ceiling and the store stays free.
 func (s *SSMStore) Put(ctx context.Context, runnerID string, config *RunnerConfig) error {
-	configJSON, err := json.Marshal(config)
+	configJSON, err := marshalConfigHalf(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal runner config: %w", err)
+		return err
 	}
 
-	paramPath := s.parameterPath(runnerID)
+	credential, err := packCredential(config)
+	if err != nil {
+		return fmt.Errorf("failed to pack runner credential: %w", err)
+	}
+
+	// Credential first: a config parameter visible without its credential is a
+	// runner that boots and hangs, whereas an orphaned credential registers
+	// nothing on its own. List reports either half, so the housekeeping sweep can
+	// still see one left behind by a crash between these two writes.
+	if putErr := s.putCredential(ctx, runnerID, credential); putErr != nil {
+		return putErr
+	}
 
 	_, err = s.client.PutParameter(ctx, &ssm.PutParameterInput{
-		Name:  aws.String(paramPath),
-		Value: aws.String(string(configJSON)),
-		Type:  types.ParameterTypeSecureString,
+		Name:      aws.String(s.parameterPath(runnerID)),
+		Value:     aws.String(string(configJSON)),
+		Type:      types.ParameterTypeSecureString,
+		Overwrite: aws.Bool(true),
 		Tags: []types.Tag{
 			{
 				Key:   aws.String("runs-fleet:managed"),
@@ -74,6 +95,22 @@ func (s *SSMStore) Put(ctx context.Context, runnerID string, config *RunnerConfi
 	})
 	if err != nil {
 		return fmt.Errorf("failed to store runner config in SSM: %w", err)
+	}
+
+	return nil
+}
+
+// putCredential writes the packed credential. It carries no tags: a tag value is
+// readable by anyone with DescribeTags, and this parameter registers a runner.
+func (s *SSMStore) putCredential(ctx context.Context, runnerID, credential string) error {
+	_, err := s.client.PutParameter(ctx, &ssm.PutParameterInput{
+		Name:      aws.String(s.credentialPath(runnerID)),
+		Value:     aws.String(credential),
+		Type:      types.ParameterTypeSecureString,
+		Overwrite: aws.Bool(true),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to store runner credential in SSM: %w", err)
 	}
 
 	return nil
@@ -104,21 +141,84 @@ func (s *SSMStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, err
 		return nil, fmt.Errorf("failed to parse runner config: %w", err)
 	}
 
+	if err := s.loadCredential(ctx, runnerID, &config); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
+}
+
+// loadCredential reads the credential parameter and restores it onto config.
+//
+// An absent credential parameter is not an error: it is the legacy layout, where
+// the credential rode inside the config parameter itself. Agents already booted
+// from an older AMI read configs written by a newer orchestrator and vice versa,
+// so both layouts must resolve for the length of an AMI rollout. config already
+// carries the legacy credential in that case, having been unmarshalled from the
+// same JSON — there is nothing further to restore.
+//
+// A config with neither a credential parameter nor an inline credential is a real
+// failure: the agent would boot, find nothing to register with, and hang until its
+// watchdog fires.
+func (s *SSMStore) loadCredential(ctx context.Context, runnerID string, config *RunnerConfig) error {
+	credPath := s.credentialPath(runnerID)
+
+	output, err := s.client.GetParameter(ctx, &ssm.GetParameterInput{
+		Name:           aws.String(credPath),
+		WithDecryption: aws.Bool(true),
+	})
+	if err != nil {
+		var notFound *types.ParameterNotFound
+		if errors.As(err, &notFound) || strings.Contains(err.Error(), "ParameterNotFound") {
+			if config.JITConfig == "" && config.RegistrationToken == "" {
+				return fmt.Errorf("%s: %w", credPath, ErrConfigNotFound)
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to get runner credential from SSM: %w", err)
+	}
+
+	if output.Parameter == nil || output.Parameter.Value == nil {
+		return fmt.Errorf("credential parameter value is nil")
+	}
+
+	return unpackCredential(*output.Parameter.Value, config)
 }
 
 // Delete removes runner configuration from SSM Parameter Store.
 func (s *SSMStore) Delete(ctx context.Context, runnerID string) error {
-	paramPath := s.parameterPath(runnerID)
+	// Both halves are deleted even if the first fails, so a transient error on
+	// one cannot strand the other: a surviving credential is a live registration
+	// credential outliving the instance it was minted for.
+	//
+	// Config first, mirroring Put's reverse order, so either crash point leaves at
+	// most a lone credential rather than a config that cannot be read. List
+	// reports both halves, so a leftover is still enumerated; the sweep deletes it
+	// outright once the instance is gone, which is the state a leftover outlives.
+	configErr := s.deleteParameter(ctx, s.parameterPath(runnerID))
+	credErr := s.deleteParameter(ctx, s.credentialPath(runnerID))
 
+	if configErr != nil {
+		return fmt.Errorf("failed to delete runner config from SSM: %w", configErr)
+	}
+	if credErr != nil {
+		return fmt.Errorf("failed to delete runner credential from SSM: %w", credErr)
+	}
+
+	return nil
+}
+
+// deleteParameter removes one parameter, treating an absent one as success.
+func (s *SSMStore) deleteParameter(ctx context.Context, path string) error {
 	_, err := s.client.DeleteParameter(ctx, &ssm.DeleteParameterInput{
-		Name: aws.String(paramPath),
+		Name: aws.String(path),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "ParameterNotFound") {
+		var notFound *types.ParameterNotFound
+		if errors.As(err, &notFound) || strings.Contains(err.Error(), "ParameterNotFound") {
 			return nil
 		}
-		return fmt.Errorf("failed to delete runner config from SSM: %w", err)
+		return err
 	}
 
 	return nil
@@ -128,6 +228,9 @@ func (s *SSMStore) Delete(ctx context.Context, runnerID string) error {
 func (s *SSMStore) List(ctx context.Context) ([]string, error) {
 	var runnerIDs []string
 	var nextToken *string
+	// A runner holding both halves appears under two paths; without this the
+	// housekeeping sweep would act on each runner twice.
+	seen := map[string]bool{}
 
 	path := s.prefix + "/"
 
@@ -149,9 +252,11 @@ func (s *SSMStore) List(ctx context.Context) ([]string, error) {
 			}
 
 			runnerID := s.extractRunnerID(*param.Name)
-			if runnerID != "" {
-				runnerIDs = append(runnerIDs, runnerID)
+			if runnerID == "" || seen[runnerID] {
+				continue
 			}
+			seen[runnerID] = true
+			runnerIDs = append(runnerIDs, runnerID)
 		}
 
 		nextToken = output.NextToken
@@ -168,13 +273,27 @@ func (s *SSMStore) parameterPath(runnerID string) string {
 	return fmt.Sprintf("%s/%s/config", s.prefix, runnerID)
 }
 
+// credentialPath returns the path holding the runner's registration credential.
+func (s *SSMStore) credentialPath(runnerID string) string {
+	return fmt.Sprintf("%s/%s/credential", s.prefix, runnerID)
+}
+
 // extractRunnerID extracts the runner ID from a parameter path.
-// Expected format: {prefix}/{runner-id}/config
+// Expected format: {prefix}/{runner-id}/{config,credential}
+//
+// Both halves yield the runner ID so that List reports a runner holding either
+// one. A crash between Put's two writes leaves a credential with no config; were
+// that path unmatched here, the housekeeping sweep — List is its only source of
+// runner IDs — could never see it, and a live registration credential would sit
+// in the store forever.
 func (s *SSMStore) extractRunnerID(paramPath string) string {
 	trimmed := strings.TrimPrefix(paramPath, s.prefix+"/")
 	parts := strings.Split(trimmed, "/")
-	// Must have at least 2 parts: runner-id and config
-	if len(parts) >= 2 && parts[len(parts)-1] == "config" {
+	if len(parts) < 2 {
+		return ""
+	}
+	switch parts[len(parts)-1] {
+	case "config", "credential":
 		return parts[0]
 	}
 	return ""
