@@ -5,7 +5,10 @@ import { useEffect, useRef, useCallback } from 'react';
 interface ConfirmDialogProps {
   open: boolean;
   title: string;
-  message: string;
+  // A single string reads as one run-on sentence once it carries an instance id
+  // and a pool name. An array renders as separate lines: what happens, then what
+  // it costs.
+  message: string | string[];
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: 'danger' | 'default';
@@ -75,12 +78,20 @@ export default function ConfirmDialog({
       <div className="absolute inset-0 bg-black/50" onClick={onCancel} />
       <div
         ref={dialogRef}
-        className="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4 p-6"
+        className="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full mx-4 p-6"
       >
         <h2 id="confirm-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">
           {title}
         </h2>
-        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{message}</p>
+        <div className="mt-2 space-y-1.5 text-sm text-gray-600 dark:text-gray-400">
+          {(Array.isArray(message) ? message : [message])
+            .filter(Boolean)
+            .map((line, i) => (
+              <p key={i} className="break-words">
+                {line}
+              </p>
+            ))}
+        </div>
         <div className="mt-6 flex justify-end gap-3">
           <button
             onClick={onCancel}

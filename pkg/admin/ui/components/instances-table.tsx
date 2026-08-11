@@ -6,13 +6,16 @@ import { useSortable } from '@/hooks/use-sortable';
 import TerminateInstanceButton from '@/components/terminate-instance-button';
 import { isTerminable } from '@/lib/instance-state';
 
-type InstanceSortField = 'instance_id' | 'state' | 'pool' | 'instance_type' | 'launch_time';
+type InstanceSortField = 'instance_id' | 'state' | 'pool' | 'instance_type' | 'launch_time' | 'ami';
 
 const INSTANCE_COMPARATORS: Record<InstanceSortField, (a: Instance, b: Instance) => number> = {
   instance_id: (a, b) => a.instance_id.localeCompare(b.instance_id),
   state: (a, b) => a.state.localeCompare(b.state),
   pool: (a, b) => (a.pool || '').localeCompare(b.pool || ''),
   instance_type: (a, b) => a.instance_type.localeCompare(b.instance_type),
+  // Stale first: the reason to sort by AMI is to find what has not rolled over.
+  ami: (a, b) => Number(b.ami_stale ?? false) - Number(a.ami_stale ?? false)
+    || (a.image_id || '').localeCompare(b.image_id || ''),
   launch_time: (a, b) => {
     const da = a.launch_time ? new Date(a.launch_time).getTime() : 0;
     const db = b.launch_time ? new Date(b.launch_time).getTime() : 0;
@@ -93,6 +96,9 @@ export default function InstancesTable({
             <th className={thBase}>
               Status
             </th>
+            <th className={thSortable} onClick={() => requestSort('ami')}>
+              AMI{getSortIndicator('ami')}
+            </th>
             <th className={thBase}>
               Private IP
             </th>
@@ -151,6 +157,9 @@ export default function InstancesTable({
                     </span>
                   ) : null}
                 </div>
+              </td>
+              <td className="px-4 py-3 whitespace-nowrap text-sm">
+                <AMICell instance={inst} />
               </td>
               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">
                 {inst.private_ip || '-'}
@@ -215,4 +224,26 @@ function formatTime(isoString?: string): string {
   if (diffDays < 7) return `${diffDays}d ago`;
 
   return date.toLocaleDateString();
+}
+
+// An AMI id is 21 characters of noise; the last six identify it well enough to
+// compare rows at a glance, and the title carries the whole thing.
+function AMICell({ instance }: { instance: Instance }) {
+  if (!instance.image_id) {
+    return <span className="text-gray-400 dark:text-gray-500">-</span>;
+  }
+  const short = instance.image_id.slice(-6);
+  return (
+    <span
+      className="font-mono text-gray-500 dark:text-gray-400"
+      title={`${instance.image_id}${instance.architecture ? ` (${instance.architecture})` : ''}`}
+    >
+      {short}
+      {instance.ami_stale && (
+        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
+          stale
+        </span>
+      )}
+    </span>
+  );
 }

@@ -133,6 +133,24 @@ export interface Instance {
   private_ip?: string;
   spot: boolean;
   busy: boolean;
+  image_id?: string;
+  architecture?: string;
+  // Not running what this instance's own architecture would launch today.
+  // Always false while the reference AMI is unknown.
+  ami_stale?: boolean;
+}
+
+export interface CurrentAMI {
+  architecture: string;
+  image_id: string;
+  launch_template: string;
+  version: number;
+  version_created?: string;
+}
+
+export interface CurrentAMIsResponse {
+  amis: CurrentAMI[];
+  unresolved?: string[];
 }
 
 export interface InstanceDetail extends Instance {

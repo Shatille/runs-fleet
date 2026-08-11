@@ -52,6 +52,12 @@ type InstanceResponse struct {
 	PrivateIP    string `json:"private_ip,omitempty"`
 	Spot         bool   `json:"spot"`
 	Busy         bool   `json:"busy"`
+	ImageID      string `json:"image_id,omitempty"`
+	Architecture string `json:"architecture,omitempty"`
+	// AMIStale reports that this instance is not running what its own
+	// architecture's launch template would boot today. False whenever the
+	// reference AMI is unknown — see ami_current_unknown on the list response.
+	AMIStale bool `json:"ami_stale,omitempty"`
 }
 
 // InstanceDetailResponse is the single-instance view: the list fields plus
@@ -99,6 +105,7 @@ type InstancesHandler struct {
 	db            InstancesDB
 	jobsTableName string
 	auditDB       AuditDB
+	amis          *amiResolver
 	auth          *AuthMiddleware
 	log           *logging.Logger
 }
@@ -118,6 +125,7 @@ func NewInstancesHandler(ec2Client EC2API, db InstancesDB, jobsTableName string,
 // RegisterRoutes registers instance API routes on the given mux.
 func (h *InstancesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/instances", h.auth.WrapFunc(h.ListInstances))
+	mux.Handle("GET /api/instances/amis", h.auth.WrapFunc(h.CurrentAMIs))
 	mux.Handle("GET /api/instances/{instance_id}", h.auth.WrapFunc(h.GetInstance))
 	mux.Handle("DELETE /api/instances/{instance_id}", h.auth.WrapFunc(h.TerminateInstance))
 }
@@ -455,9 +463,15 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// A reference AMI we could not read leaves staleness unanswered rather than
+	// answered wrongly: marking the fleet stale on a transient error would
+	// invite an operator to replace all of it.
+	currentAMIs, amiUnknown := h.referenceAMIs(ctx)
+
 	var instances []InstanceResponse
 	for _, res := range allReservations {
 		for _, inst := range res.Instances {
+			arch := string(inst.Architecture)
 			resp := InstanceResponse{
 				InstanceID:   aws.ToString(inst.InstanceId),
 				InstanceType: string(inst.InstanceType),
@@ -465,6 +479,11 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 				Pool:         getEC2Tag(inst.Tags, "runs-fleet:pool"),
 				Spot:         inst.InstanceLifecycle == types.InstanceLifecycleTypeSpot,
 				Busy:         busySet[aws.ToString(inst.InstanceId)],
+				ImageID:      aws.ToString(inst.ImageId),
+				Architecture: arch,
+			}
+			if ref, ok := currentAMIs[arch]; ok && resp.ImageID != "" {
+				resp.AMIStale = resp.ImageID != ref.ImageID
 			}
 			if inst.LaunchTime != nil {
 				resp.LaunchTime = inst.LaunchTime.Format("2006-01-02T15:04:05Z")
@@ -480,10 +499,28 @@ func (h *InstancesHandler) ListInstances(w http.ResponseWriter, r *http.Request)
 		"instances": instances,
 		"total":     len(instances),
 	}
+	if amiUnknown {
+		response["ami_current_unknown"] = true
+	}
 	if len(warnings) > 0 {
 		response["warnings"] = warnings
 	}
 	h.writeJSON(w, http.StatusOK, response)
+}
+
+// referenceAMIs resolves what each architecture would launch today. The second
+// return reports that at least one architecture is unknown, so the caller can
+// say so instead of implying every instance is current.
+func (h *InstancesHandler) referenceAMIs(ctx context.Context) (map[string]CurrentAMI, bool) {
+	if h.amis == nil {
+		return nil, true
+	}
+	current, err := h.amis.current(ctx)
+	if err != nil {
+		h.log.Warn(ctx, "failed to resolve launch template AMIs", slog.String(logging.KeyError, err.Error()))
+		return nil, true
+	}
+	return current, len(h.amis.unresolvedArchs()) > 0
 }
 
 func getEC2Tag(tags []types.Tag, key string) string {
