@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -365,7 +366,7 @@ func TestBackendParity_MissingConfigIsNotFound(t *testing.T) {
 			if err == nil {
 				t.Fatal("Get() on a missing config returned nil error")
 			}
-			if !isConfigNotFound(err) {
+			if !errors.Is(err, ErrConfigNotFound) {
 				t.Errorf("Get() error = %v, want one wrapping ErrConfigNotFound", err)
 			}
 		})
@@ -429,10 +430,6 @@ func TestBackendParity_PreservesCredentialBytes(t *testing.T) {
 			}
 		})
 	}
-}
-
-func isConfigNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), ErrConfigNotFound.Error())
 }
 
 func assertRunnerConfigsEqual(t *testing.T, got, want *RunnerConfig) {
