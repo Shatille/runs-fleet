@@ -510,9 +510,11 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_ConditionalCheckFailed(t *testi
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// ConditionalCheckFailedException is treated as success (job already completed)
-	if resp.Cleaned != 1 {
-		t.Errorf("expected 1 cleaned (conditional check = already done), got %d", resp.Cleaned)
+	// The record left the status the scan saw, so this call never wrote: reporting it
+	// as cleaned would put a retirement that never happened in the response and the
+	// audit trail.
+	if resp.Cleaned != 0 {
+		t.Errorf("expected 0 cleaned (the write lost its condition), got %d", resp.Cleaned)
 	}
 }
 

@@ -38,16 +38,30 @@ const (
 	orphanInstanceCheckBatchSize = 100
 )
 
-// FindOrphanedJobCandidates scans DynamoDB for jobs in "running", "claiming", or
-// "launched" status older than the given threshold. Jobs in "running" or "launched"
-// status without an instance_id are excluded (they need an instance to verify against).
-// Jobs in "claiming" status without an instance_id are included (instance creation failed).
+// FindOrphanedJobCandidates scans DynamoDB for jobs in "running", "claiming",
+// "launched", or "requeued" status older than the given threshold. Jobs in "running" or
+// "launched" status without an instance_id are excluded (they need an instance to verify
+// against). Jobs in "claiming" status without an instance_id are included (instance
+// creation failed).
+//
+// A requeued record is aged on requeued_at rather than created_at. Requeued is meant to
+// be transient — the record sits there only until a worker claims the re-dispatch — so
+// ageing it on created_at would retire a job re-dispatched seconds ago merely because its
+// first attempt was hours earlier. Its recorded instance is always gone (the requeue
+// terminates it), which makes requeued_at the only thing separating a live re-dispatch
+// from one that never landed.
+//
+// Requeued has to be here because nothing else can see it: the stale-jobs sweep scans
+// running/claiming, the requeue sweep scans launched, and the old-jobs GC keys off
+// completed_at, which a requeued record never gets. A re-dispatch that is never claimed
+// strands its record permanently otherwise.
 func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, threshold time.Duration) ([]OrphanedJobCandidate, error) {
 	cutoffTime := time.Now().Add(-threshold).Format(time.RFC3339)
 
 	input := &dynamodb.ScanInput{
-		TableName:        aws.String(jobsTableName),
-		FilterExpression: aws.String("(#status = :running OR #status = :claiming OR #status = :launched) AND created_at < :cutoff"),
+		TableName: aws.String(jobsTableName),
+		FilterExpression: aws.String("((#status = :running OR #status = :claiming OR #status = :launched) AND created_at < :cutoff)" +
+			" OR (#status = :requeued AND requeued_at < :cutoff)"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},
@@ -55,6 +69,7 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
 			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":requeued": &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
 			":cutoff":   &types.AttributeValueMemberS{Value: cutoffTime},
 		},
 		ProjectionExpression: aws.String("job_id, instance_id, #status"),
@@ -204,9 +219,15 @@ type ReconcileResult struct {
 	Status     string
 }
 
-// reconcilableStatuses are the states a job can be stuck in with a dead instance —
-// the same set FindOrphanedJobCandidates scans.
-var reconcilableStatuses = []db.JobStatus{db.JobStatusRunning, db.JobStatusClaiming, db.JobStatusLaunched}
+// reconcilableStatuses are the states a job can be stuck in with a dead instance — the
+// same set FindOrphanedJobCandidates scans, and the only ones MarkJobOrphaned retires
+// from.
+var reconcilableStatuses = []db.JobStatus{
+	db.JobStatusRunning,
+	db.JobStatusClaiming,
+	db.JobStatusLaunched,
+	db.JobStatusRequeued,
+}
 
 // ReconcileJob retires a single job whose instance is gone, the targeted form of the
 // orphaned-jobs sweep. It refuses while the instance still exists: a job record is the
@@ -248,7 +269,7 @@ func ReconcileJob(ctx context.Context, scanAPI OrphanScanAPI, ec2Client OrphanEC
 		return res, nil
 	}
 
-	marked, err := markJobOrphaned(ctx, scanAPI, jobsTable, jobID)
+	marked, err := MarkJobOrphaned(ctx, scanAPI, jobsTable, jobID, job.Status)
 	if err != nil {
 		return res, fmt.Errorf("mark job %d orphaned: %w", jobID, err)
 	}
@@ -260,18 +281,22 @@ func ReconcileJob(ctx context.Context, scanAPI OrphanScanAPI, ec2Client OrphanEC
 	return res, nil
 }
 
-// MarkJobOrphaned updates a job's status to "orphaned" with a completed_at timestamp.
-// Uses conditional write to prevent race conditions with concurrent job completions.
-// Returns nil if the job's status has already changed (ConditionalCheckFailedException).
-func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64) error {
-	_, err := markJobOrphaned(ctx, dynamoClient, jobsTableName, jobID)
-	return err
-}
+// MarkJobOrphaned updates a job's status to "orphaned" with a completed_at timestamp,
+// under a conditional write pinned to observedStatus — the status the caller read when it
+// decided the job was orphaned. Candidates are selected by a scan and written back later,
+// and a requeued record is re-claimable by design (see db.evaluateClaim), so a stale
+// candidate can go live in between; pinning the write to what was observed is what stops
+// the sweep from retiring a job that has since been claimed.
+//
+// It reports whether THIS call performed the write. False means the record moved on
+// first, which a caller counting retirements must not present as its own success. An
+// observedStatus outside reconcilableStatuses is refused outright: the caller read a
+// settled record, and orphaning it would overwrite a real outcome.
+func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64, observedStatus string) (bool, error) {
+	if !statusIn(observedStatus, reconcilableStatuses) {
+		return false, fmt.Errorf("refusing to orphan job %d observed in status %q", jobID, observedStatus)
+	}
 
-// markJobOrphaned reports whether THIS call performed the write. A conditional-check
-// failure means the job reached a terminal state between the read and the write, which
-// a caller reporting the outcome to an operator must not present as its own success.
-func markJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, jobID int64) (bool, error) {
 	now := time.Now().Format(time.RFC3339)
 
 	_, err := dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -286,11 +311,9 @@ func markJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":orphaned": &types.AttributeValueMemberS{Value: string(db.JobStatusOrphaned)},
 			":now":      &types.AttributeValueMemberS{Value: now},
-			":running":  &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
-			":claiming": &types.AttributeValueMemberS{Value: string(db.JobStatusClaiming)},
-			":launched": &types.AttributeValueMemberS{Value: string(db.JobStatusLaunched)},
+			":observed": &types.AttributeValueMemberS{Value: observedStatus},
 		},
-		ConditionExpression: aws.String("#status = :running OR #status = :claiming OR #status = :launched"),
+		ConditionExpression: aws.String("#status = :observed"),
 	})
 
 	if err != nil {

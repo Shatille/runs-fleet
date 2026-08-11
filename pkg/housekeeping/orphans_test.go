@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ type mockOrphanDynamo struct {
 	updateErr   error
 	updateCalls int
 	lastUpdate  *dynamodb.UpdateItemInput
+	lastScan    *dynamodb.ScanInput
 }
 
 func (m *mockOrphanDynamo) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -36,7 +38,8 @@ func (m *mockOrphanDynamo) GetItem(_ context.Context, in *dynamodb.GetItemInput,
 	return &dynamodb.GetItemOutput{}, nil
 }
 
-func (m *mockOrphanDynamo) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+func (m *mockOrphanDynamo) Scan(_ context.Context, in *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	m.lastScan = in
 	if m.scanErr != nil {
 		return nil, m.scanErr
 	}
@@ -298,9 +301,12 @@ func TestBatchCheckInstanceExistence_DeduplicatesInstances(t *testing.T) {
 func TestMarkJobOrphaned_Success(t *testing.T) {
 	t.Parallel()
 	client := &mockOrphanDynamo{}
-	err := MarkJobOrphaned(context.Background(), client, "jobs", 123)
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !marked {
+		t.Error("expected the write to be reported as performed")
 	}
 	if client.updateCalls != 1 {
 		t.Errorf("expected 1 update call, got %d", client.updateCalls)
@@ -317,18 +323,60 @@ func TestMarkJobOrphaned_ConditionalCheckFailed(t *testing.T) {
 	client := &mockOrphanDynamo{
 		updateErr: &types.ConditionalCheckFailedException{Message: aws.String("condition failed")},
 	}
-	err := MarkJobOrphaned(context.Background(), client, "jobs", 123)
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning))
 	if err != nil {
 		t.Errorf("expected nil error for ConditionalCheckFailedException, got %v", err)
+	}
+	if marked {
+		t.Error("a lost condition must not be reported as a write")
 	}
 }
 
 func TestMarkJobOrphaned_OtherError(t *testing.T) {
 	t.Parallel()
 	client := &mockOrphanDynamo{updateErr: errors.New("dynamo error")}
-	err := MarkJobOrphaned(context.Background(), client, "jobs", 123)
-	if err == nil {
+	if _, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning)); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// The candidate's status is read by a scan and written back minutes later. Pinning
+// the write to the status that was observed is what stops the sweep from retiring a
+// record a worker claimed in between -- requeued in particular is re-claimable
+// (db.evaluateClaim), so a stale candidate can go live before the write lands.
+func TestMarkJobOrphaned_PinsWriteToObservedStatus(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{}
+	if _, err := MarkJobOrphaned(context.Background(), client, "jobs", 200, string(db.JobStatusRequeued)); err != nil {
+		t.Fatal(err)
+	}
+	if client.lastUpdate == nil || client.lastUpdate.ConditionExpression == nil {
+		t.Fatal("no conditional write captured")
+	}
+
+	condition := *client.lastUpdate.ConditionExpression
+	if condition != "#status = :observed" {
+		t.Errorf("condition = %q, want the write pinned to the observed status", condition)
+	}
+	v, ok := client.lastUpdate.ExpressionAttributeValues[":observed"].(*types.AttributeValueMemberS)
+	if !ok || v.Value != string(db.JobStatusRequeued) {
+		t.Errorf("condition must bind :observed to %q, got %v", db.JobStatusRequeued, client.lastUpdate.ExpressionAttributeValues[":observed"])
+	}
+}
+
+// A status outside the reconcilable set means the caller read a settled record;
+// orphaning it would overwrite a real outcome, so the write never goes out.
+func TestMarkJobOrphaned_RefusesSettledObservedStatus(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{}
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusSuccess))
+	if err == nil {
+		t.Fatal("expected an error for a settled observed status")
+	}
+	if marked || client.updateCalls != 0 {
+		t.Errorf("marked = %v with %d updates, want no write at all", marked, client.updateCalls)
 	}
 }
 
@@ -397,6 +445,14 @@ func TestReconcileJob(t *testing.T) {
 			name:        "settled job has nothing to reconcile",
 			item:        reconcileItem(42, "i-gone", db.JobStatusSuccess),
 			wantOutcome: ReconcileWrongStatus,
+		},
+		{
+			// The sweep retires these; the per-job button has to agree, or it
+			// refuses exactly the records the sweep was taught to find.
+			name:        "record stranded in requeued is retired",
+			item:        reconcileItem(42, "i-gone", db.JobStatusRequeued),
+			wantOutcome: ReconcileOrphaned,
+			wantUpdates: 1,
 		},
 		{
 			// Unverifiable: there is nothing to check against EC2, and the bulk
@@ -483,5 +539,74 @@ func TestReconcileJob_DescribeErrorTreatsInstanceAsAlive(t *testing.T) {
 	}
 	if res.Outcome != ReconcileInstanceAlive || dyn.updateCalls != 0 {
 		t.Errorf("res = %+v with %d updates, want the job left alone", res, dyn.updateCalls)
+	}
+}
+
+// A record flipped to requeued whose re-dispatch never landed is invisible to
+// every other sweep -- stale jobs scans running/claiming, the requeue sweep scans
+// launched, and the old-jobs GC keys off completed_at, which a requeued record
+// never gets. The orphan sweep is the only thing that can retire it.
+func TestFindOrphanedJobCandidates_IncludesStrandedRequeued(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "200"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-gone"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRequeued)},
+			},
+		},
+	}
+
+	candidates, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].JobID != 200 {
+		t.Fatalf("candidates = %+v, want the stranded requeued record", candidates)
+	}
+}
+
+// A requeue is transient by design: the record sits in requeued only until a
+// worker claims it. Ageing it on created_at would retire a job re-dispatched
+// seconds ago just because its first attempt was hours earlier, so the scan has
+// to anchor on requeued_at.
+func TestFindOrphanedJobCandidates_AgesRequeuedByRequeuedAt(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{}
+	if _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if client.lastScan == nil || client.lastScan.FilterExpression == nil {
+		t.Fatal("no scan filter captured")
+	}
+
+	filter := *client.lastScan.FilterExpression
+	if !strings.Contains(filter, "requeued_at < :cutoff") {
+		t.Errorf("filter must age requeued records on requeued_at, got %q", filter)
+	}
+	if !strings.Contains(filter, "created_at < :cutoff") {
+		t.Errorf("filter must still age the other statuses on created_at, got %q", filter)
+	}
+	v, ok := client.lastScan.ExpressionAttributeValues[":requeued"].(*types.AttributeValueMemberS)
+	if !ok || v.Value != string(db.JobStatusRequeued) {
+		t.Errorf("scan must bind :requeued to %q, got %v", db.JobStatusRequeued, client.lastScan.ExpressionAttributeValues[":requeued"])
+	}
+}
+
+// Without requeued among the statuses the write may start from, the sweep can find
+// a stranded record and then refuse to retire it.
+func TestMarkJobOrphaned_AcceptsRequeuedRecord(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{}
+	marked, err := MarkJobOrphaned(context.Background(), client, "jobs", 200, string(db.JobStatusRequeued))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !marked || client.updateCalls != 1 {
+		t.Errorf("marked = %v with %d updates, want the requeued record retired", marked, client.updateCalls)
 	}
 }

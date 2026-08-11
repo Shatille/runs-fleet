@@ -1623,6 +1623,7 @@ func TestExecuteOrphanedJobs_WithOrphanedJobs(t *testing.T) {
 			{
 				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
 				"instance_id": &types.AttributeValueMemberS{Value: "i-orphaned1"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
 			},
 		},
 	}
