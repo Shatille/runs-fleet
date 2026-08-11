@@ -7,12 +7,16 @@ import JobActions from '@/components/job-actions';
 
 type JobSortField = 'job_id' | 'repo' | 'status' | 'pool' | 'duration' | 'created_at';
 
+// An unfinished job's elapsed time sorts alongside a finished one's duration,
+// so "what has been going the longest" reaches the top whether or not it ended.
+const jobSeconds = (j: Job) => j.duration_seconds || j.elapsed_seconds || 0;
+
 const JOB_COMPARATORS: Record<JobSortField, (a: Job, b: Job) => number> = {
   job_id: (a, b) => a.job_id - b.job_id,
   repo: (a, b) => (a.repo || '').localeCompare(b.repo || ''),
   status: (a, b) => a.status.localeCompare(b.status),
   pool: (a, b) => (a.pool || '').localeCompare(b.pool || ''),
-  duration: (a, b) => (a.duration_seconds || 0) - (b.duration_seconds || 0),
+  duration: (a, b) => jobSeconds(a) - jobSeconds(b),
   created_at: (a, b) => {
     const da = a.created_at ? new Date(a.created_at).getTime() : 0;
     const db = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -118,7 +122,7 @@ export default function JobsTable({ jobs, traceURL, onActed }: JobsTableProps) {
                 {job.instance_type || '-'}
               </td>
               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                {formatDuration(job.duration_seconds)}
+                <JobDuration job={job} />
               </td>
               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {formatTime(job.created_at)}
@@ -160,6 +164,23 @@ export default function JobsTable({ jobs, traceURL, onActed }: JobsTableProps) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// Elapsed time on an unfinished row is the only figure that makes a hang
+// visible in this table; duration_seconds stays blank until completion.
+export function JobDuration({ job }: { job: Job }) {
+  if (job.duration_seconds) {
+    return <>{formatDuration(job.duration_seconds)}</>;
+  }
+  if (!job.elapsed_seconds) {
+    return <>-</>;
+  }
+  return (
+    <span className={job.stalled ? 'text-amber-600 dark:text-amber-400 font-medium' : undefined}>
+      {formatDuration(job.elapsed_seconds)}
+      {job.stalled && <span className="ml-1 text-xs opacity-75">stalled</span>}
+    </span>
   );
 }
 

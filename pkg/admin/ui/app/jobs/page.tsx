@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import JobsTable from '@/components/jobs-table';
 import JobStatsCard from '@/components/job-stats';
+import HungJobsCard from '@/components/hung-jobs-card';
 import { TableSkeleton, StatsCardSkeleton } from '@/components/skeleton';
 import ConfirmDialog from '@/components/confirm-dialog';
 import { useToast } from '@/components/toast';
@@ -238,6 +239,8 @@ export default function JobsPage() {
       </div>
 
       {stats ? <JobStatsCard stats={stats} /> : loading && <StatsCardSkeleton count={7} />}
+
+      <HungJobsCard onActed={handleRefresh} />
 
       <div className="mb-4 p-4 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
         <div className="flex items-center justify-between">

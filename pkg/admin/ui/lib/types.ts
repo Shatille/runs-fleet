@@ -73,6 +73,10 @@ export interface Job {
   status: string;
   exit_code?: number;
   duration_seconds?: number;
+  // How long an unfinished job has been open. duration_seconds is written only
+  // at completion, so without this a job hung for six hours reports nothing.
+  elapsed_seconds?: number;
+  stalled?: boolean;
   trace_id?: string;
   spot_request_id?: string;
   created_at?: string;
@@ -86,8 +90,38 @@ export interface JobStats {
   failed: number;
   running: number;
   requeued: number;
+  stalled: number;
   warm_pool_hit: number;
   hit_rate: number;
+}
+
+// What GitHub says about a job our own record still calls open. 'hung' is the
+// only definitive verdict: GitHub still has it queued, so nothing is running it.
+export type HungClassification = 'hung' | 'running' | 'completed_upstream' | 'unknown';
+
+export interface HungJob extends Job {
+  github_status?: string;
+  github_conclusion?: string;
+  runner_name?: string;
+  classification: HungClassification;
+  detail?: string;
+}
+
+export interface HungJobsResponse {
+  jobs: HungJob[];
+  candidates: number;
+  checked: number;
+  truncated: boolean;
+  github_available: boolean;
+  stale_minutes: number;
+}
+
+export interface GitHubJobStatus {
+  job_id: number;
+  repo: string;
+  status: string;
+  conclusion?: string;
+  runner_name?: string;
 }
 
 export interface Instance {

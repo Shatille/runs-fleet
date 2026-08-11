@@ -18,7 +18,7 @@ type mockMetricsDB struct {
 	err     error
 }
 
-func (m *mockMetricsDB) GetJobStatsForAdmin(_ context.Context, _ time.Time) (*db.AdminJobStats, error) {
+func (m *mockMetricsDB) GetJobStatsForAdmin(_ context.Context, _, _ time.Time) (*db.AdminJobStats, error) {
 	if m.err != nil {
 		return nil, m.err
 	}

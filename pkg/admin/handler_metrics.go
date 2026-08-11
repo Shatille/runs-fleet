@@ -18,7 +18,7 @@ const metricsWindow = 24 * time.Hour
 
 // metricsDB is the subset of job queries the metrics summary needs.
 type metricsDB interface {
-	GetJobStatsForAdmin(ctx context.Context, since time.Time) (*db.AdminJobStats, error)
+	GetJobStatsForAdmin(ctx context.Context, since, stalledBefore time.Time) (*db.AdminJobStats, error)
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
 }
 
@@ -79,7 +79,7 @@ func (h *MetricsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	since := time.Now().Add(-metricsWindow)
 
-	stats, err := h.db.GetJobStatsForAdmin(ctx, since)
+	stats, err := h.db.GetJobStatsForAdmin(ctx, since, time.Time{})
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "Failed to get job stats", err.Error())
 		return

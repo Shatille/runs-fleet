@@ -1096,9 +1096,10 @@ func TestGetWorkflowJobByID_Success(t *testing.T) {
 		case testPathWorkflowJob:
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":         99999,
-				"status":     "completed",
-				"conclusion": "success",
+				"id":          99999,
+				"status":      "completed",
+				"conclusion":  "success",
+				"runner_name": "runs-fleet-runner-cc-578807-3bb09",
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -1122,6 +1123,9 @@ func TestGetWorkflowJobByID_Success(t *testing.T) {
 	}
 	if info.Conclusion != "success" {
 		t.Errorf("expected conclusion 'success', got %q", info.Conclusion)
+	}
+	if info.RunnerName != "runs-fleet-runner-cc-578807-3bb09" {
+		t.Errorf("expected the runner that actually took the job, got %q", info.RunnerName)
 	}
 }
 

@@ -1289,6 +1289,13 @@ type AdminJobFilter struct {
 	// a vocabulary that drifts, while completed_at is written only by
 	// MarkJobComplete alongside duration_seconds.
 	CompletedOnly bool
+
+	// StaleBefore restricts results to records that never completed and were
+	// created before it — the inverse of CompletedOnly, keyed on the same
+	// attribute for the same reason. Zero means unbounded. It selects jobs
+	// worth suspecting, not jobs proven hung: only GitHub can say whether an
+	// old open record is still doing work.
+	StaleBefore time.Time
 }
 
 // AdminJobStats contains aggregate job statistics.
@@ -1299,6 +1306,11 @@ type AdminJobStats struct {
 	Running     int
 	Requeued    int
 	WarmPoolHit int
+	// Stalled counts records that never completed and are older than the
+	// caller's cutoff. It overlaps Running and Requeued deliberately: a hung
+	// job is indistinguishable from a healthy one in those counts, which is
+	// the reason this one exists.
+	Stalled int
 }
 
 // ListJobsForAdmin retrieves jobs with filtering for admin API.
@@ -1320,6 +1332,11 @@ func (c *Client) ListJobsForAdmin(ctx context.Context, filter AdminJobFilter) ([
 
 	if filter.CompletedOnly {
 		filterParts = append(filterParts, "attribute_exists(completed_at)")
+	}
+
+	if !filter.StaleBefore.IsZero() {
+		filterParts = append(filterParts, "attribute_not_exists(completed_at)", "created_at < :stale_before")
+		exprValues[":stale_before"] = &types.AttributeValueMemberS{Value: filter.StaleBefore.Format(time.RFC3339)}
 	}
 
 	if filter.Pool != "" {
@@ -1430,7 +1447,9 @@ func (c *Client) GetJobForAdmin(ctx context.Context, jobID int64) (*AdminJobEntr
 }
 
 // GetJobStatsForAdmin retrieves aggregate job statistics for admin API.
-func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*AdminJobStats, error) {
+// stalledBefore is the cutoff for AdminJobStats.Stalled; a zero value skips
+// that count.
+func (c *Client) GetJobStatsForAdmin(ctx context.Context, since, stalledBefore time.Time) (*AdminJobStats, error) {
 	if c.jobsTable == "" {
 		return nil, fmt.Errorf("jobs table not configured")
 	}
@@ -1476,6 +1495,10 @@ func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*Adm
 					stats.WarmPoolHit++
 				}
 			}
+
+			if isStalled(item, stalledBefore) {
+				stats.Stalled++
+			}
 		}
 
 		lastEvaluatedKey = output.LastEvaluatedKey
@@ -1485,6 +1508,27 @@ func (c *Client) GetJobStatsForAdmin(ctx context.Context, since time.Time) (*Adm
 	}
 
 	return stats, nil
+}
+
+// isStalled reports whether a raw job item never completed and predates the
+// cutoff. A record with no parseable created_at is left uncounted rather than
+// assumed stalled — an unjudgeable record is not evidence of a hang.
+func isStalled(item map[string]types.AttributeValue, cutoff time.Time) bool {
+	if cutoff.IsZero() {
+		return false
+	}
+	if _, done := item["completed_at"]; done {
+		return false
+	}
+	created, ok := item["created_at"].(*types.AttributeValueMemberS)
+	if !ok {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, created.Value)
+	if err != nil {
+		return false
+	}
+	return t.Before(cutoff)
 }
 
 func parseJobItem(item map[string]types.AttributeValue) AdminJobEntry {

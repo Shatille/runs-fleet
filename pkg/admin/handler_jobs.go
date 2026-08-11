@@ -18,28 +18,47 @@ import (
 type JobsDB interface {
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
 	GetJobForAdmin(ctx context.Context, jobID int64) (*db.AdminJobEntry, error)
-	GetJobStatsForAdmin(ctx context.Context, since time.Time) (*db.AdminJobStats, error)
+	GetJobStatsForAdmin(ctx context.Context, since, stalledBefore time.Time) (*db.AdminJobStats, error)
 }
+
+// defaultStaleAfter is how long an open job record may sit before the console
+// calls it stalled. It is deliberately longer than housekeeping's own
+// staleJobThreshold (10m): the console should not flag a job the automated
+// sweep has not yet had a turn at.
+//
+// Stalled is suspicion, not diagnosis — an open record this old may be a
+// perfectly healthy long build. Only GitHub can tell the two apart, which is
+// what the hung endpoint is for.
+const defaultStaleAfter = 15 * time.Minute
+
+// maxStaleAfter bounds the operator-supplied window at a day; past that the
+// filter selects the whole table and stops meaning anything.
+const maxStaleAfter = 24 * time.Hour
 
 // JobResponse represents a job in the admin API response.
 type JobResponse struct {
-	JobID           int64      `json:"job_id"`
-	RunID           int64      `json:"run_id,omitempty"`
-	Repo            string     `json:"repo,omitempty"`
-	InstanceID      string     `json:"instance_id,omitempty"`
-	InstanceType    string     `json:"instance_type,omitempty"`
-	Pool            string     `json:"pool,omitempty"`
-	Spot            bool       `json:"spot"`
-	WarmPoolHit     bool       `json:"warm_pool_hit"`
-	RetryCount      int        `json:"retry_count"`
-	Status          string     `json:"status"`
-	ExitCode        int        `json:"exit_code,omitempty"`
-	DurationSeconds int        `json:"duration_seconds,omitempty"`
-	SpotRequestID   string     `json:"spot_request_id,omitempty"`
-	TraceID         string     `json:"trace_id,omitempty"`
-	CreatedAt       *time.Time `json:"created_at,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	JobID           int64  `json:"job_id"`
+	RunID           int64  `json:"run_id,omitempty"`
+	Repo            string `json:"repo,omitempty"`
+	InstanceID      string `json:"instance_id,omitempty"`
+	InstanceType    string `json:"instance_type,omitempty"`
+	Pool            string `json:"pool,omitempty"`
+	Spot            bool   `json:"spot"`
+	WarmPoolHit     bool   `json:"warm_pool_hit"`
+	RetryCount      int    `json:"retry_count"`
+	Status          string `json:"status"`
+	ExitCode        int    `json:"exit_code,omitempty"`
+	DurationSeconds int    `json:"duration_seconds,omitempty"`
+	// ElapsedSeconds is how long an unfinished job has been open. It is the
+	// live counterpart to DurationSeconds, which is written only at
+	// completion — leaving a job that hung for six hours reporting nothing.
+	ElapsedSeconds int        `json:"elapsed_seconds,omitempty"`
+	Stalled        bool       `json:"stalled,omitempty"`
+	SpotRequestID  string     `json:"spot_request_id,omitempty"`
+	TraceID        string     `json:"trace_id,omitempty"`
+	CreatedAt      *time.Time `json:"created_at,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 }
 
 // JobStatsResponse contains aggregate job statistics.
@@ -49,6 +68,7 @@ type JobStatsResponse struct {
 	Failed      int     `json:"failed"`
 	Running     int     `json:"running"`
 	Requeued    int     `json:"requeued"`
+	Stalled     int     `json:"stalled"`
 	WarmPoolHit int     `json:"warm_pool_hit"`
 	HitRate     float64 `json:"hit_rate"`
 }
@@ -130,6 +150,16 @@ func (h *JobsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	staleAfter, err := parseStaleAfter(q.Get("stale_minutes"))
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid stale_minutes", err.Error())
+		return
+	}
+	now := time.Now()
+	if q.Get("stale") == "true" {
+		filter.StaleBefore = now.Add(-staleAfter)
+	}
+
 	entries, total, err := h.db.ListJobsForAdmin(ctx, filter)
 	if err != nil {
 		h.log.Error(ctx, "failed to list jobs", slog.String(logging.KeyError, err.Error()))
@@ -139,7 +169,7 @@ func (h *JobsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 
 	jobs := make([]JobResponse, len(entries))
 	for i, e := range entries {
-		jobs[i] = jobEntryToResponse(e)
+		jobs[i] = jobEntryToResponse(e, now, staleAfter)
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -178,7 +208,7 @@ func (h *JobsHandler) GetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, jobEntryToResponse(*entry))
+	h.writeJSON(w, http.StatusOK, jobEntryToResponse(*entry, time.Now(), defaultStaleAfter))
 }
 
 // GetJobStats handles GET /api/jobs/stats.
@@ -191,7 +221,7 @@ func (h *JobsHandler) GetJobStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stats, err := h.db.GetJobStatsForAdmin(r.Context(), since)
+	stats, err := h.db.GetJobStatsForAdmin(r.Context(), since, time.Now().Add(-defaultStaleAfter))
 	if err != nil {
 		h.log.Error(r.Context(), "failed to get job stats", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to get job stats", err.Error())
@@ -204,6 +234,7 @@ func (h *JobsHandler) GetJobStats(w http.ResponseWriter, r *http.Request) {
 		Failed:      stats.Failed,
 		Running:     stats.Running,
 		Requeued:    stats.Requeued,
+		Stalled:     stats.Stalled,
 		WarmPoolHit: stats.WarmPoolHit,
 	}
 	if stats.Completed > 0 {
@@ -213,7 +244,7 @@ func (h *JobsHandler) GetJobStats(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, resp)
 }
 
-func jobEntryToResponse(e db.AdminJobEntry) JobResponse {
+func jobEntryToResponse(e db.AdminJobEntry, now time.Time, staleAfter time.Duration) JobResponse {
 	resp := JobResponse{
 		JobID:           e.JobID,
 		RunID:           e.RunID,
@@ -238,8 +269,44 @@ func jobEntryToResponse(e db.AdminJobEntry) JobResponse {
 	}
 	if !e.CompletedAt.IsZero() {
 		resp.CompletedAt = &e.CompletedAt
+		return resp
+	}
+
+	// Prefer started_at: for a record that reached a runner, elapsed-since-start
+	// is what an operator is judging. created_at covers everything earlier.
+	since := e.StartedAt
+	if since.IsZero() {
+		since = e.CreatedAt
+	}
+	if since.IsZero() {
+		return resp
+	}
+	// A timestamp ahead of the server clock yields a negative age; reporting one
+	// would be a fabricated figure, so an unusable age says nothing at all.
+	if elapsed := now.Sub(since); elapsed > 0 {
+		resp.ElapsedSeconds = int(elapsed.Seconds())
+		resp.Stalled = elapsed >= staleAfter
 	}
 	return resp
+}
+
+// parseStaleAfter resolves the operator-supplied staleness window. An empty
+// value takes the default; anything unparseable or out of range is an error
+// rather than a silent fallback, so a mistyped window cannot quietly widen or
+// narrow what the operator is looking at.
+func parseStaleAfter(raw string) (time.Duration, error) {
+	if raw == "" {
+		return defaultStaleAfter, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number of minutes, got %q", raw)
+	}
+	d := time.Duration(n) * time.Minute
+	if d <= 0 || d > maxStaleAfter {
+		return 0, fmt.Errorf("must be between 1 and %d minutes, got %d", int(maxStaleAfter.Minutes()), n)
+	}
+	return d, nil
 }
 
 // GetTraceURL handles GET /api/config/trace-url.
