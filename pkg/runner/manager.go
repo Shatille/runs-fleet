@@ -28,6 +28,15 @@ type ManagerConfig struct {
 	// region for the cache backend.
 	BuildkitCacheBucket string
 	BuildkitCacheRegion string
+	// RunnerGroup is the GitHub runner group to place runners in. Empty = GitHub's
+	// Default group, resolved without an API call. Only consulted on the JIT path,
+	// which needs the group's numeric ID; token registration passes the name
+	// straight through to config.sh.
+	//
+	// Not yet reachable from config: cmd/server/main.go leaves this empty because
+	// there is no RUNS_FLEET_RUNNER_GROUP and production runners already use
+	// Default. Wiring it up is a standalone change, not a prerequisite for JIT.
+	RunnerGroup string
 }
 
 // registrationTokenGetter is the subset of a git-hosting provider's API that
@@ -35,6 +44,17 @@ type ManagerConfig struct {
 // future provider can satisfy it without Manager changing.
 type registrationTokenGetter interface {
 	GetRegistrationToken(ctx context.Context, repo string) (*github.RegistrationResult, error)
+}
+
+// jitConfigGenerator is the optional capability for minting a just-in-time runner
+// config. A provider that satisfies it gets job-bound runners: GitHub ties a JIT
+// runner to the single job it was minted for, so it cannot be handed a different
+// queued job that merely shares its labels. A provider that does not keeps
+// working via token registration, which is why this is a separate interface
+// rather than an addition to registrationTokenGetter.
+type jitConfigGenerator interface {
+	GenerateJITConfig(ctx context.Context, repo string, req github.JITConfigRequest) (string, error)
+	ResolveRunnerGroupID(ctx context.Context, repo, groupName string) (*github.RunnerGroupResolution, error)
 }
 
 // Manager handles runner registration and secrets configuration.
@@ -105,14 +125,20 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		buildkitPrefix = fmt.Sprintf("buildkit/%s/%s/", org, repoName)
 	}
 
+	// Prefer a job-bound JIT config; the token stays populated as the fallback so
+	// a mint failure costs a steal-able runner rather than the whole dispatch.
+	jitConfig := m.mintJITConfig(ctx, req, runnerName)
+
 	// Build runner config with dynamic org from repo
 	config := &secrets.RunnerConfig{
 		Org:                 org,
 		Repo:                req.Repo,
 		RunID:               req.RunID,
 		CreatedAt:           time.Now().Format(time.RFC3339),
-		JITToken:            regResult.Token,
+		RegistrationToken:   regResult.Token,
+		JITConfig:           jitConfig,
 		Labels:              req.Labels,
+		RunnerGroup:         m.config.RunnerGroup,
 		RunnerName:          runnerName,
 		JobID:               req.JobID,
 		CacheToken:          cacheToken,
@@ -131,6 +157,59 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 
 	runnerLog.Info(ctx, "runner config stored")
 	return nil
+}
+
+// mintJITConfig returns an encoded just-in-time runner config, or "" to leave the
+// agent on the token path.
+//
+// Every failure degrades to "" rather than an error: a JIT config is what stops
+// another job from stealing this runner, but a runner that never boots is strictly
+// worse than a steal-able one. The JIT config itself is never logged — it is a
+// credential that registers a runner.
+func (m *Manager) mintJITConfig(ctx context.Context, req PrepareRunnerRequest, runnerName string) string {
+	generator, ok := m.github.(jitConfigGenerator)
+	if !ok {
+		return ""
+	}
+
+	// Both failure shapes below mean "the requested group did not resolve", so they
+	// share one message: alerting greps a single string rather than needing to know
+	// which layer failed. The outcome field distinguishes them.
+	const groupUnresolved = "runner group unresolved"
+
+	resolution, err := generator.ResolveRunnerGroupID(ctx, req.Repo, m.config.RunnerGroup)
+	if err != nil {
+		runnerLog.Warn(ctx, groupUnresolved,
+			slog.String("runner_group", m.config.RunnerGroup),
+			slog.String("outcome", "token_registration"),
+			slog.String("error", err.Error()))
+		return ""
+	}
+	// pkg/github cannot log (it is a pure API client), so the Default-group
+	// substitution is only visible if this layer reports it. Left silent, a
+	// misconfigured group would place every runner in Default unnoticed.
+	if resolution.FallbackErr != nil {
+		runnerLog.Warn(ctx, groupUnresolved,
+			slog.String("runner_group", m.config.RunnerGroup),
+			slog.String("outcome", "default_group"),
+			slog.Int64("runner_group_id", resolution.ID),
+			slog.String("error", resolution.FallbackErr.Error()))
+	}
+
+	encoded, err := generator.GenerateJITConfig(ctx, req.Repo, github.JITConfigRequest{
+		Name:          runnerName,
+		RunnerGroupID: resolution.ID,
+		Labels:        req.Labels,
+	})
+	if err != nil {
+		runnerLog.Warn(ctx, "jit config generation failed; falling back to token registration",
+			slog.String("error", err.Error()))
+		return ""
+	}
+
+	runnerLog.Info(ctx, "jit config minted",
+		slog.Int64("runner_group_id", resolution.ID))
+	return encoded
 }
 
 // CleanupRunner deletes the runner configuration from the secrets backend.

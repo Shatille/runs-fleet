@@ -57,10 +57,10 @@ func (m *mockSecretsStore) List(ctx context.Context) ([]string, error) {
 
 func TestRegistrar_FetchConfig_Success(t *testing.T) {
 	config := &secrets.RunnerConfig{
-		Org:      "test-org",
-		JITToken: testTokenValue,
-		Labels:   []string{"self-hosted", "linux"},
-		IsOrg:    true,
+		Org:               "test-org",
+		RegistrationToken: testTokenValue,
+		Labels:            []string{"self-hosted", "linux"},
+		IsOrg:             true,
 	}
 
 	mock := &mockSecretsStore{
@@ -82,8 +82,8 @@ func TestRegistrar_FetchConfig_Success(t *testing.T) {
 	if result.Org != "test-org" {
 		t.Errorf("expected org 'test-org', got %q", result.Org)
 	}
-	if result.JITToken != testTokenValue {
-		t.Errorf("expected jit_token '%s', got %q", testTokenValue, result.JITToken)
+	if result.RegistrationToken != testTokenValue {
+		t.Errorf("expected RegistrationToken '%s', got %q", testTokenValue, result.RegistrationToken)
 	}
 	if !result.IsOrg {
 		t.Error("expected IsOrg to be true")
@@ -92,7 +92,7 @@ func TestRegistrar_FetchConfig_Success(t *testing.T) {
 
 func TestRegistrar_FetchConfig_RetryOnError(t *testing.T) {
 	attempts := 0
-	config := &secrets.RunnerConfig{Org: "test-org", JITToken: "token", IsOrg: true}
+	config := &secrets.RunnerConfig{Org: "test-org", RegistrationToken: "token", IsOrg: true}
 
 	mock := &mockSecretsStore{
 		getFunc: func(_ context.Context, _ string) (*secrets.RunnerConfig, error) {
@@ -224,9 +224,9 @@ func TestRegistrar_RegisterRunner_ConfigNotFound(t *testing.T) {
 	}
 
 	config := &secrets.RunnerConfig{
-		Org:      "test-org",
-		JITToken: "token",
-		IsOrg:    true,
+		Org:               "test-org",
+		RegistrationToken: "token",
+		IsOrg:             true,
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
@@ -247,9 +247,9 @@ func TestRegistrar_RegisterRunner_RepoRequired(t *testing.T) {
 	}
 
 	config := &secrets.RunnerConfig{
-		Repo:     "",
-		JITToken: "token",
-		IsOrg:    false,
+		Repo:              "",
+		RegistrationToken: "token",
+		IsOrg:             false,
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
@@ -272,9 +272,9 @@ func TestRegistrar_RegisterRunner_UsesConfigRunnerName(t *testing.T) {
 	}
 
 	config := &secrets.RunnerConfig{
-		Repo:       "org/myapp",
-		JITToken:   "token",
-		RunnerName: "runs-fleet-runner-default",
+		Repo:              "org/myapp",
+		RegistrationToken: "token",
+		RunnerName:        "runs-fleet-runner-default",
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)
@@ -306,9 +306,9 @@ func TestRegistrar_RegisterRunner_FallbackToDefault(t *testing.T) {
 	}
 
 	config := &secrets.RunnerConfig{
-		Repo:       "org/myapp",
-		JITToken:   "token",
-		RunnerName: "",
+		Repo:              "org/myapp",
+		RegistrationToken: "token",
+		RunnerName:        "",
 	}
 
 	err := registrar.RegisterRunner(context.Background(), config, tmpDir)

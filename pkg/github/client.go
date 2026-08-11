@@ -133,11 +133,40 @@ type Client struct {
 
 	tokenMu    sync.Mutex
 	tokenCache map[string]*installationInfo // keyed by owner
+
+	runnerGroupMu    sync.Mutex
+	runnerGroupCache map[string]runnerGroupEntry // keyed by repo+group name
+}
+
+// splitRepo splits an "owner/repo" string into its parts.
+func splitRepo(repo string) (owner, name string, err error) {
+	if repo == "" {
+		return "", "", fmt.Errorf("repo is required (owner/repo format)")
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+	}
+	return parts[0], parts[1], nil
+}
+
+// Option configures a Client.
+type Option func(*Client)
+
+// WithBaseURL overrides the GitHub API base URL. The client already honors a
+// non-default base URL internally (for GitHub Enterprise Server); this is the
+// only way to actually set one.
+func WithBaseURL(url string) Option {
+	return func(c *Client) {
+		if url != "" {
+			c.baseURL = url
+		}
+	}
 }
 
 // NewClient creates a new GitHub client for runner operations.
 // privateKeyBase64 should be the base64-encoded PEM private key.
-func NewClient(appID string, privateKeyBase64 string) (*Client, error) {
+func NewClient(appID string, privateKeyBase64 string, opts ...Option) (*Client, error) {
 	id, err := strconv.ParseInt(appID, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid app ID: %w", err)
@@ -167,13 +196,17 @@ func NewClient(appID string, privateKeyBase64 string) (*Client, error) {
 		}
 	}
 
-	return &Client{
+	c := &Client{
 		appID:      id,
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		baseURL:    "https://api.github.com",
 		tokenCache: make(map[string]*installationInfo),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // generateJWT creates a JWT for GitHub App authentication.
@@ -353,15 +386,10 @@ type RegistrationResult struct {
 // Extracts owner from repo string (owner/repo format) for installation token.
 // Retries transient errors with exponential backoff.
 func (c *Client) GetRegistrationToken(ctx context.Context, repo string) (*RegistrationResult, error) {
-	// Extract owner from repo string (required)
-	if repo == "" {
-		return nil, fmt.Errorf("repo is required (owner/repo format)")
+	owner, _, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
 	}
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
-	}
-	owner := parts[0]
 
 	info, err := c.getInstallationInfo(ctx, owner)
 	if err != nil {
@@ -435,11 +463,10 @@ type WorkflowJobInfo struct {
 // GetWorkflowJobByID retrieves a workflow job by its ID from GitHub API.
 // The repo parameter must be in "owner/repo" format.
 func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int64) (*WorkflowJobInfo, error) {
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("invalid repo format, expected owner/repo: %s", repo)
+	owner, repoName, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
 	}
-	owner := parts[0]
 
 	var lastErr error
 	var nextDelay time.Duration
@@ -468,7 +495,7 @@ func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int6
 			ghClient.BaseURL = u
 		}
 
-		job, resp, err := ghClient.Actions.GetWorkflowJobByID(ctx, parts[0], parts[1], jobID)
+		job, resp, err := ghClient.Actions.GetWorkflowJobByID(ctx, owner, repoName, jobID)
 		if err != nil {
 			var httpResp *http.Response
 			if resp != nil {

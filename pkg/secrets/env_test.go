@@ -38,8 +38,8 @@ func TestEnvStore_Get(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, cfg *RunnerConfig) {
-				if cfg.JITToken != "test-jit-token" {
-					t.Errorf("JITToken = %q, want %q", cfg.JITToken, "test-jit-token")
+				if cfg.RegistrationToken != "test-jit-token" {
+					t.Errorf("RegistrationToken = %q, want %q", cfg.RegistrationToken, "test-jit-token")
 				}
 				if cfg.Org != "test-org" {
 					t.Errorf("Org = %q, want %q", cfg.Org, "test-org")
@@ -78,8 +78,8 @@ func TestEnvStore_Get(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, cfg *RunnerConfig) {
-				if cfg.JITToken != "test-jit-token" {
-					t.Errorf("JITToken = %q, want %q", cfg.JITToken, "test-jit-token")
+				if cfg.RegistrationToken != "test-jit-token" {
+					t.Errorf("RegistrationToken = %q, want %q", cfg.RegistrationToken, "test-jit-token")
 				}
 				if cfg.Repo != "owner/repo" {
 					t.Errorf("Repo = %q, want %q", cfg.Repo, "owner/repo")

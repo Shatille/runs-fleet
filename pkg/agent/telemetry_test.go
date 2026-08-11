@@ -69,6 +69,10 @@ type mockLogger struct {
 	messages []string
 }
 
+// Discards the format arguments, so an assertion over m.messages can only see
+// the static format string. Use renderingLogger (jitconfig_test.go) when a test
+// needs to inspect interpolated values — notably to prove a credential was not
+// logged.
 func (m *mockLogger) Printf(format string, _ ...interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

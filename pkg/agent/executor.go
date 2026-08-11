@@ -50,8 +50,30 @@ func (e *Executor) SetCloudWatchLogger(cwLogger *CloudWatchLogger) {
 	e.cloudWatchLogger = cwLogger
 }
 
-// ExecuteJob runs the GitHub Actions runner and monitors it.
+// ExecuteJob runs the GitHub Actions runner and monitors it, for a runner already
+// registered by config.sh.
 func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResult, error) {
+	return e.ExecuteJobWithConfig(ctx, runnerPath, "")
+}
+
+// jitConfigEnvVar hands the encoded JIT config to the runner. The runner accepts
+// any CLI arg as ACTIONS_RUNNER_INPUT_<ARGNAME>, and this is the form GitHub's own
+// actions-runner-controller uses. Preferred over `--jitconfig <blob>` because argv
+// is world-readable through /proc/<pid>/cmdline.
+const jitConfigEnvVar = "ACTIONS_RUNNER_INPUT_JITCONFIG"
+
+// ExecuteJobWithConfig runs the GitHub Actions runner, supplying an encoded
+// just-in-time config when one is available.
+//
+// A JIT config replaces config.sh registration: GitHub created the registration
+// when it minted the config and bound it to a single job, so the runner cannot be
+// handed a different queued job that shares its labels. It also carries the
+// ephemeral setting, so no --ephemeral/--once flag is needed. An empty jitConfig
+// runs run.sh unchanged, which is the pre-existing token-registration path.
+//
+// The config is a credential: it goes in the child's environment, never in argv,
+// and never in the agent's log stream (which ships off-host).
+func (e *Executor) ExecuteJobWithConfig(ctx context.Context, runnerPath, jitConfig string) (*JobResult, error) {
 	runScript := filepath.Join(runnerPath, "run.sh")
 
 	if _, err := os.Stat(runScript); err != nil {
@@ -67,6 +89,9 @@ func (e *Executor) ExecuteJob(ctx context.Context, runnerPath string) (*JobResul
 	cmd.Env = append(os.Environ(),
 		"RUNNER_ALLOW_RUNASROOT=1",
 	)
+	if jitConfig != "" {
+		cmd.Env = append(cmd.Env, jitConfigEnvVar+"="+jitConfig)
+	}
 
 	// Set up process group for signal handling
 	cmd.SysProcAttr = &syscall.SysProcAttr{

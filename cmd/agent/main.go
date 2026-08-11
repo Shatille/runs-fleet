@@ -284,7 +284,11 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 
 	logger.Println("Phase 3: Executing job...")
-	result, err := executor.ExecuteJob(ctx, runnerPath)
+	// Every .env writer above (SetRunnerEnvironment, WriteBuildkitCacheEnv, the
+	// cache interceptor) must run before this point: run.sh reads .env at startup.
+	// That ordering held when config.sh created the runner directory and still
+	// holds on the JIT path, where the directory comes from the tarball extract.
+	result, err := executor.ExecuteJobWithConfig(ctx, runnerPath, ac.runnerConfig.JITConfig)
 	if err != nil {
 		logger.Printf("Job execution error: %v", err)
 	}
