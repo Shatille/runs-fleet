@@ -847,6 +847,10 @@ func (p *poolDBAdapter) LastJobCompletionForInstance(ctx context.Context, instan
 	return p.client.LastJobCompletionForInstance(ctx, instanceID)
 }
 
+func (p *poolDBAdapter) HasLiveInstanceClaim(ctx context.Context, instanceID string) (bool, error) {
+	return p.client.HasLiveInstanceClaim(ctx, instanceID)
+}
+
 // terminationJobCheckerAdapter adapts *gh.Client to
 // termination.GitHubJobStatusChecker, preserving the raw status string —
 // unlike the housekeeping adapter, which collapses it to a Completed bool.

@@ -83,9 +83,16 @@ func (t *Tasks) ExecuteStaleAMIInstances(ctx context.Context) error {
 				slog.String("state", state))
 			continue
 		}
+		if t.instancePromisedToJob(ctx, c.instanceID) {
+			continue
+		}
 		// Terminate immediately after confirming this instance rather than
 		// batching at the end: batching would stretch the gap between "confirmed
 		// stopped" and "destroyed" across every other candidate's re-read.
+		//
+		// No spot-request cancellation, unlike the operator path: warm pools are
+		// on-demand only by design, so a pool member has no persistent request
+		// that could relaunch it on the image being retired.
 		if _, err := t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 			InstanceIds: []string{c.instanceID},
 		}); err != nil {
@@ -105,6 +112,46 @@ func (t *Tasks) ExecuteStaleAMIInstances(ctx context.Context) error {
 		_ = t.metrics.PublishHousekeepingAction(ctx, housekeepingActionStaleAMI, len(terminated))
 	}
 	return errors.Join(errs...)
+}
+
+// instancePromisedToJob reports whether an instance that EC2 calls stopped is
+// nonetheless spoken for. EC2 state alone is not enough: a pool member is
+// claimed in DynamoDB before it is started, so for that window it reads stopped
+// while a job is already waiting on it.
+//
+// Every uncertainty answers yes. This gates a terminate, and the cost of a false
+// yes is one instance left on an old AMI for another hour.
+func (t *Tasks) instancePromisedToJob(ctx context.Context, instanceID string) bool {
+	if t.poolDB == nil {
+		return true
+	}
+
+	claimed, err := t.poolDB.HasLiveInstanceClaim(ctx, instanceID)
+	if err != nil {
+		t.logger().Warn(ctx, "stale-ami candidate skipped: claim check failed",
+			slog.String(logging.KeyInstanceID, instanceID),
+			slog.String(logging.KeyError, err.Error()))
+		return true
+	}
+	if claimed {
+		t.logger().Info(ctx, "stale-ami candidate skipped: claimed for a job",
+			slog.String(logging.KeyInstanceID, instanceID))
+		return true
+	}
+
+	active, err := t.poolDB.HasActiveJobForInstance(ctx, instanceID)
+	if err != nil {
+		t.logger().Warn(ctx, "stale-ami candidate skipped: active-job check failed",
+			slog.String(logging.KeyInstanceID, instanceID),
+			slog.String(logging.KeyError, err.Error()))
+		return true
+	}
+	if active {
+		t.logger().Info(ctx, "stale-ami candidate skipped: holds a live job",
+			slog.String(logging.KeyInstanceID, instanceID))
+		return true
+	}
+	return false
 }
 
 // staleAMICandidate is a stopped pool member on an outdated image.

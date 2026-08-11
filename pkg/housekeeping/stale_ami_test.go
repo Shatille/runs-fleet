@@ -48,10 +48,17 @@ func poolInstance(id, pool, ami, arch string, state ec2types.InstanceStateName) 
 }
 
 func staleAMITasks(ec2Client *mockEC2API, ref AMIReference) *Tasks {
+	return staleAMITasksWithPoolDB(ec2Client, ref, &mockPoolDBAPI{})
+}
+
+func staleAMITasksWithPoolDB(ec2Client *mockEC2API, ref AMIReference, poolDB PoolDBAPI) *Tasks {
 	tasks := &Tasks{
 		ec2Client:    ec2Client,
 		dynamoClient: &mockTaskDynamoDBAPI{},
 		config:       &config.Config{JobsTableName: "jobs-table"},
+	}
+	if poolDB != nil {
+		tasks.SetPoolDB(poolDB)
 	}
 	if ref != nil {
 		tasks.SetAMIReference(ref)
@@ -247,5 +254,52 @@ func TestExecuteStaleAMIInstances_TerminateFailureIsReported(t *testing.T) {
 
 	if err := staleAMITasks(ec2Client, currentAMIs()).ExecuteStaleAMIInstances(context.Background()); err == nil {
 		t.Fatal("expected the terminate failure to surface")
+	}
+}
+
+// EC2 state alone does not say whether an instance is spoken for: a pool member
+// is claimed in DynamoDB before it is started, so for that window it reads
+// stopped while a job is already waiting on it.
+func TestExecuteStaleAMIInstances_SkipsInstancesSpokenFor(t *testing.T) {
+	tests := []struct {
+		name   string
+		poolDB PoolDBAPI
+	}{
+		{
+			name:   "claimed for a job that has not started it yet",
+			poolDB: &mockPoolDBAPI{claimedInstances: map[string]bool{"i-0claimed": true}},
+		},
+		{
+			name:   "claim check failed, so the answer is unknown",
+			poolDB: &mockPoolDBAPI{claimErr: errors.New("dynamo unavailable")},
+		},
+		{
+			name:   "holds a live job record",
+			poolDB: &mockPoolDBAPI{activeJobInstances: map[string]bool{"i-0claimed": true}},
+		},
+		{
+			name:   "active-job check failed",
+			poolDB: &mockPoolDBAPI{activeJobErr: errors.New("dynamo unavailable")},
+		},
+		{
+			name:   "no pool database to ask",
+			poolDB: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+				poolInstance("i-0claimed", "cc", amiStaleARM64, "arm64", ec2types.InstanceStateNameStopped),
+			}}}}
+
+			tasks := staleAMITasksWithPoolDB(ec2Client, currentAMIs(), tt.poolDB)
+			if err := tasks.ExecuteStaleAMIInstances(context.Background()); err != nil {
+				t.Fatalf("ExecuteStaleAMIInstances(): %v", err)
+			}
+			if len(ec2Client.terminatedIDs) != 0 {
+				t.Errorf("terminated %v, want nothing while the instance may be spoken for", ec2Client.terminatedIDs)
+			}
+		})
 	}
 }

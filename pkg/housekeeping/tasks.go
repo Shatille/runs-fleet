@@ -116,6 +116,10 @@ type PoolDBAPI interface {
 	ListJobsForAdmin(ctx context.Context, filter db.AdminJobFilter) ([]db.AdminJobEntry, int, error)
 	UpdatePoolAutoTune(ctx context.Context, poolName string, rec db.AutoTuneRec) error
 	DeleteExpiredInstanceClaims(ctx context.Context, now time.Time) (int, error)
+	// HasLiveInstanceClaim reports whether a job holds a claim on the instance.
+	// The claim is written before the instance is started, so during that window
+	// EC2 still reports it stopped while it is already promised to a job.
+	HasLiveInstanceClaim(ctx context.Context, instanceID string) (bool, error)
 	// HasActiveJobForInstance reports whether the instance holds a job that is
 	// running or launched. Backed by db.GetJobByInstance, which knows to query the
 	// instance_id GSI: instance_id is not the jobs table's key, so a query against
