@@ -80,7 +80,6 @@ type Config struct {
 	// stopped instance destroys its volume, so it stays opt-in.
 	StoppedInstanceGraceHours int
 	LaunchTemplateName        string
-	StaleAMISweepEnabled      bool
 	RunnerImage               string            // Container image for EC2 runners (ECR URL)
 	Tags                      map[string]string // Custom tags for EC2 resources
 
@@ -219,7 +218,6 @@ func Load() (*Config, error) {
 		CompletedInstanceGraceMinutes: completedInstanceGraceMinutes,
 		StoppedInstanceGraceHours:     stoppedInstanceGraceHours,
 		LaunchTemplateName:            getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
-		StaleAMISweepEnabled:          getEnvBool("RUNS_FLEET_STALE_AMI_SWEEP_ENABLED", false),
 		RunnerImage:                   getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
 		Tags:                          make(map[string]string),
 		TagKeyApplication:             getEnv("RUNS_FLEET_TAG_KEY_APPLICATION", "Application"),

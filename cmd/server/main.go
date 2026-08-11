@@ -159,9 +159,7 @@ func main() {
 	// and could disagree about which AMI is current for a whole TTL, so the page
 	// could call an instance stale that the sweep considers fine, or the reverse.
 	amiResolver := fleet.NewAMIResolver(ec2Client, cfg.LaunchTemplateName)
-	if cfg.StaleAMISweepEnabled {
-		housekeepingTasks.SetAMIReference(amiResolver)
-	}
+	housekeepingTasks.SetAMIReference(amiResolver)
 
 	runnerManager := initRunnerManager(githubClient, secretsStore, cfg)
 
