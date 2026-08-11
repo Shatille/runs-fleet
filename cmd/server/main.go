@@ -886,7 +886,9 @@ func (a *adminJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, repo 
 	}, nil
 }
 
-// githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker.
+// githubJobCheckerAdapter adapts *gh.Client to housekeeping.GitHubJobChecker,
+// carrying the raw status through: the stale-jobs sweep needs "queued"
+// specifically to tell a starving job from one that is genuinely running.
 type githubJobCheckerAdapter struct {
 	client *gh.Client
 }
@@ -898,6 +900,7 @@ func (g *githubJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, _ st
 	}
 	return &housekeeping.GitHubJobStatus{
 		Completed:  info.Status == "completed",
+		Status:     info.Status,
 		Conclusion: info.Conclusion,
 	}, nil
 }

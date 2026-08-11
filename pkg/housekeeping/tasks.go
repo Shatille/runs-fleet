@@ -84,6 +84,7 @@ type CostReporter interface {
 // GitHubJobStatus represents the status of a job as reported by GitHub.
 type GitHubJobStatus struct {
 	Completed  bool
+	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", "timed_out", etc.
 }
 
@@ -1268,7 +1269,14 @@ func (t *Tasks) SetGitHubJobChecker(checker GitHubJobChecker) {
 // Jobs younger than this are likely still legitimately starting up.
 const staleJobThreshold = 10 * time.Minute
 
-// maxStaleJobChecks limits GitHub API calls per cycle to stay within rate limits.
+// maxStaleQueuedRequeues bounds how many stale-but-still-queued jobs one cycle may
+// re-dispatch. Each requeue terminates an instance and mints a replacement, so a
+// mass hang drains gradually across 5-minute cycles instead of thundering.
+const maxStaleQueuedRequeues = 5
+
+// maxStaleJobChecks limits the sweep's own GitHub API calls per cycle to stay
+// within rate limits. Each requeue attempt re-confirms queued with one extra
+// call, so a cycle's true ceiling is maxStaleJobChecks + maxStaleQueuedRequeues.
 // At 5-min intervals: 30 * 12 = 360 calls/hour, well within 5000/hour.
 const maxStaleJobChecks = 30
 
@@ -1385,8 +1393,8 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 	gone, alive := t.partitionStaleByInstance(ctx, candidates)
 
 	finalized := t.finalizeStaleJobsWithGoneInstance(ctx, gone)
-	reconciled := t.reconcileStaleJobsViaGitHub(ctx, alive)
-	total := finalized + reconciled
+	reconciled, requeued := t.reconcileStaleJobsViaGitHub(ctx, alive)
+	total := finalized + reconciled + requeued
 
 	if t.metrics != nil && total > 0 {
 		if err := t.metrics.PublishHousekeepingAction(ctx, housekeepingActionStaleJobs, total); err != nil {
@@ -1398,6 +1406,7 @@ func (t *Tasks) ExecuteStaleJobs(ctx context.Context) error {
 		t.logger().Info(ctx, "stale jobs reconciled",
 			slog.Int("finalized", finalized),
 			slog.Int("github_reconciled", reconciled),
+			slog.Int("requeued", requeued),
 			slog.Int(logging.KeyCount, total))
 	}
 	return nil
@@ -1471,20 +1480,26 @@ func (t *Tasks) finalizeStaleJobsWithGoneInstance(ctx context.Context, gone []st
 	return finalized
 }
 
-// reconcileStaleJobsViaGitHub finalizes candidates whose instance still exists by
+// reconcileStaleJobsViaGitHub settles candidates whose instance still exists by
 // consulting the GitHub workflow-job status, bounded by maxStaleJobChecks to stay
-// within API rate limits. Returns the number of records reconciled.
-func (t *Tasks) reconcileStaleJobsViaGitHub(ctx context.Context, alive []staleJobCandidate) int {
+// within API rate limits. Completed jobs are finalized with GitHub's conclusion.
+// Jobs GitHub still has queued are the hang this sweep exists to break: a runner
+// confirmed but was handed someone else's work (or none), so the record reads
+// running while nothing will ever finish it — those are re-dispatched, bounded
+// by maxStaleQueuedRequeues per cycle. In-progress jobs are genuinely running
+// and left alone. Returns the number of records finalized and re-dispatched.
+func (t *Tasks) reconcileStaleJobsViaGitHub(ctx context.Context, alive []staleJobCandidate) (int, int) {
 	if len(alive) == 0 {
-		return 0
+		return 0, 0
 	}
 	if t.gitHubChecker == nil {
 		t.logger().Warn(ctx, "stale job github reconcile skipped: GitHub job checker not configured")
-		return 0
+		return 0, 0
 	}
 
 	checked := 0
 	reconciled := 0
+	requeued := 0
 	for _, c := range alive {
 		if checked >= maxStaleJobChecks {
 			t.logger().Info(ctx, "stale jobs check limit reached",
@@ -1511,8 +1526,22 @@ func (t *Tasks) reconcileStaleJobsViaGitHub(ctx context.Context, alive []staleJo
 				slog.String("error", err.Error()))
 			continue
 		}
+		if ghStatus == nil {
+			continue
+		}
 
-		if ghStatus == nil || !ghStatus.Completed {
+		if !ghStatus.Completed {
+			if ghStatus.Status != gitHubStatusQueued {
+				continue
+			}
+			if requeued >= maxStaleQueuedRequeues {
+				t.logger().Info(jobCtx, "stale queued job deferred to the next cycle: requeue budget spent",
+					slog.Int("requeued", requeued))
+				continue
+			}
+			if t.requeueStaleQueuedJob(jobCtx, c) {
+				requeued++
+			}
 			continue
 		}
 
@@ -1526,7 +1555,75 @@ func (t *Tasks) reconcileStaleJobsViaGitHub(ctx context.Context, alive []staleJo
 		t.logger().Info(jobCtx, "stale job reconciled",
 			slog.String("conclusion", ghStatus.Conclusion))
 	}
-	return reconciled
+	return reconciled, requeued
+}
+
+// requeueStaleQueuedJob re-dispatches one stale record whose runner idles while
+// GitHub still has the job queued. It rides the same requeueCandidate path as the
+// operator action — re-read, re-confirm queued, terminate, guarded flip, send —
+// so the sweep can never be less careful than a human. Reports whether a requeue
+// message actually went out.
+func (t *Tasks) requeueStaleQueuedJob(ctx context.Context, c staleJobCandidate) bool {
+	if t.jobRequeuer == nil {
+		t.logger().Warn(ctx, "stale queued job left alone: no job requeuer wired")
+		return false
+	}
+	log := t.logger()
+	deps := RequeueDeps{
+		Scan:         t.dynamoClient,
+		EC2:          t.ec2Client,
+		TerminateEC2: t.ec2Client,
+		Requeuer:     t.jobRequeuer,
+		Metrics:      t.metrics,
+		GitHub:       staleQueuedChecker{checker: t.gitHubChecker},
+		JobsTable:    t.config.JobsTableName,
+		Log:          log,
+	}
+
+	job, err := GetRequeueableJob(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID)
+	if err != nil {
+		log.Warn(ctx, "stale queued job read failed", slog.String("error", err.Error()))
+		return false
+	}
+	if job == nil {
+		return false
+	}
+
+	// Candidates come from the alive partition, so a non-empty instance is one
+	// DescribeInstances already saw; claiming records carry no instance at all.
+	res, err := requeueCandidate(ctx, deps, *job, job.InstanceID != "", requeuePolicy{
+		Statuses: []db.JobStatus{db.JobStatusRunning, db.JobStatusClaiming},
+		Reason:   requeueReasonStaleQueued,
+	}, log)
+	if err != nil || res.Outcome != OutcomeRequeued {
+		return false
+	}
+	log.Info(ctx, "stale queued job re-dispatched",
+		slog.Int("retry_count", res.RetryCount),
+		slog.String(logging.KeyInstanceID, res.InstanceID))
+	return true
+}
+
+// staleQueuedChecker adapts the sweep's GitHubJobChecker to the requeue path's
+// JobQueuedChecker, so requeueCandidate can re-confirm the job is still queued
+// right before the irreversible terminate.
+type staleQueuedChecker struct {
+	checker GitHubJobChecker
+}
+
+func (a staleQueuedChecker) GetWorkflowJobStatus(ctx context.Context, repo string, jobID int64) (string, error) {
+	owner, _, ok := splitRepo(repo)
+	if !ok {
+		return "", fmt.Errorf("invalid repo format: %q", repo)
+	}
+	s, err := a.checker.GetWorkflowJobStatus(ctx, owner, repo, jobID)
+	if err != nil {
+		return "", err
+	}
+	if s == nil {
+		return "", fmt.Errorf("no status returned for job %d", jobID)
+	}
+	return s.Status, nil
 }
 
 // markJobCompleted updates a job's status to "completed" with the real GitHub conclusion.

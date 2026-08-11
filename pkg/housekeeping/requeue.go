@@ -29,6 +29,11 @@ const MaxRequeueRetries = 2
 // unconfirmed_runners so a spike signals the automated watchdog isn't keeping up.
 const requeueReasonOperator = "operator_requeue"
 
+// requeueReasonStaleQueued labels requeues by the stale-jobs sweep: a confirmed
+// runner sat idle while GitHub still had its job queued. A spike means runners
+// are being handed each other's jobs faster than the fleet can converge.
+const requeueReasonStaleQueued = "stale_queued"
+
 // RequeueableJob carries the fields needed to rebuild a launch message for a job whose
 // runner needs to be re-dispatched.
 type RequeueableJob struct {
@@ -392,6 +397,9 @@ type requeuePolicy struct {
 	DryRun bool
 	// Force ignores MaxRequeueRetries. Never the queued confirmation.
 	Force bool
+	// Reason labels the requeue and scheduling-failure metrics so dashboards can
+	// tell an operator's click from automated recovery. Empty means operator.
+	Reason string
 }
 
 // requeueCandidate re-dispatches one job. It is the single implementation shared by
@@ -401,6 +409,10 @@ type requeuePolicy struct {
 // under a condition, then send.
 func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, instanceAlive bool, policy requeuePolicy, log *logging.Logger) (SingleRequeueResult, error) {
 	statuses, dryRun := policy.Statuses, policy.DryRun
+	reason := policy.Reason
+	if reason == "" {
+		reason = requeueReasonOperator
+	}
 	res := SingleRequeueResult{
 		JobID:      c.JobID,
 		InstanceID: c.InstanceID,
@@ -412,7 +424,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 		res.Outcome = OutcomeExhausted
 		log.Warn(ctx, "requeue skipped: retries exhausted", slog.Int("retry_count", c.RetryCount))
 		if !dryRun && deps.Metrics != nil {
-			_ = deps.Metrics.PublishSchedulingFailure(ctx, requeueReasonOperator)
+			_ = deps.Metrics.PublishSchedulingFailure(ctx, reason)
 		}
 		return res, nil
 	}
@@ -499,7 +511,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 	res.Outcome = OutcomeRequeued
 	res.RetryCount = c.RetryCount + 1
 	if deps.Metrics != nil {
-		_ = deps.Metrics.PublishJobRequeued(ctx, requeueReasonOperator)
+		_ = deps.Metrics.PublishJobRequeued(ctx, reason)
 	}
 	log.Info(ctx, "hung job requeued", slog.Int("retry_count", res.RetryCount))
 	return res, nil
@@ -509,6 +521,11 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 // returns an empty outcome when the re-dispatch may proceed, and otherwise the
 // refusal to report. Anything short of an explicit queued is a refusal: the next
 // step terminates an instance, and that cannot be undone if the job was running.
+//
+// The confirmation is point-in-time: GitHub can dispatch the job in the window
+// between this check and the terminate that follows. The guarded status flip
+// covers the DB race but nothing can cover the EC2 one; the caller's staleness
+// threshold is what keeps that window from mattering in practice.
 func confirmStillQueued(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *logging.Logger) (RequeueOutcome, string) {
 	if deps.GitHub == nil {
 		log.Warn(ctx, "requeue skipped: no github client to confirm the job is still queued")
