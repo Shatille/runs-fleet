@@ -13,11 +13,14 @@ import (
 )
 
 // SSMAPI defines SSM operations required by SSMStore.
+//
+//nolint:dupl // Interface mirrors the test mock's method set - intentional pattern
 type SSMAPI interface {
 	PutParameter(ctx context.Context, params *ssm.PutParameterInput, optFns ...func(*ssm.Options)) (*ssm.PutParameterOutput, error)
 	GetParameter(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 	DeleteParameter(ctx context.Context, params *ssm.DeleteParameterInput, optFns ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error)
 	GetParametersByPath(ctx context.Context, params *ssm.GetParametersByPathInput, optFns ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error)
+	AddTagsToResource(ctx context.Context, params *ssm.AddTagsToResourceInput, optFns ...func(*ssm.Options)) (*ssm.AddTagsToResourceOutput, error)
 }
 
 // SSMStore implements Store using AWS SSM Parameter Store.
@@ -77,11 +80,35 @@ func (s *SSMStore) Put(ctx context.Context, runnerID string, config *RunnerConfi
 		return putErr
 	}
 
+	configPath := s.parameterPath(runnerID)
+
 	_, err = s.client.PutParameter(ctx, &ssm.PutParameterInput{
-		Name:      aws.String(s.parameterPath(runnerID)),
+		Name:      aws.String(configPath),
 		Value:     aws.String(string(configJSON)),
 		Type:      types.ParameterTypeSecureString,
 		Overwrite: aws.Bool(true),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to store runner config in SSM: %w", err)
+	}
+
+	s.tagConfig(ctx, configPath, config.JobID)
+
+	return nil
+}
+
+// tagConfig applies the ownership tags in a second call, because SSM rejects a
+// PutParameter carrying both Tags and Overwrite. Overwrite is the one that must
+// stay on the Put — without it a reused runner ID fails outright, whereas these
+// tags only feed housekeeping selection and cost attribution.
+//
+// Failures are logged by the caller's absence of an error rather than returned:
+// a stored-but-untagged config still boots a runner, so failing the dispatch here
+// would trade a working job for a reporting detail.
+func (s *SSMStore) tagConfig(ctx context.Context, paramPath, jobID string) {
+	_, _ = s.client.AddTagsToResource(ctx, &ssm.AddTagsToResourceInput{
+		ResourceType: types.ResourceTypeForTaggingParameter,
+		ResourceId:   aws.String(paramPath),
 		Tags: []types.Tag{
 			{
 				Key:   aws.String("runs-fleet:managed"),
@@ -89,15 +116,10 @@ func (s *SSMStore) Put(ctx context.Context, runnerID string, config *RunnerConfi
 			},
 			{
 				Key:   aws.String("runs-fleet:job-id"),
-				Value: aws.String(config.JobID),
+				Value: aws.String(jobID),
 			},
 		},
 	})
-	if err != nil {
-		return fmt.Errorf("failed to store runner config in SSM: %w", err)
-	}
-
-	return nil
 }
 
 // putCredential writes the packed credential. It carries no tags: a tag value is

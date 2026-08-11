@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -116,11 +117,24 @@ type flowSSM struct {
 }
 
 func (f *flowSSM) PutParameter(_ context.Context, in *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
+	// The real API rejects this combination outright, so a store that sends both
+	// stores nothing in production. Reproduced here because a fake that accepts
+	// it turns a dispatch-wide outage into a green test run.
+	if len(in.Tags) > 0 && aws.ToBool(in.Overwrite) {
+		return nil, errors.New("ValidationException: tags and overwrite can't be used together")
+	}
 	f.stored[aws.ToString(in.Name)] = aws.ToString(in.Value)
 	for _, t := range in.Tags {
 		f.tags = append(f.tags, aws.ToString(t.Key)+"="+aws.ToString(t.Value))
 	}
 	return &ssm.PutParameterOutput{}, nil
+}
+
+func (f *flowSSM) AddTagsToResource(_ context.Context, in *ssm.AddTagsToResourceInput, _ ...func(*ssm.Options)) (*ssm.AddTagsToResourceOutput, error) {
+	for _, t := range in.Tags {
+		f.tags = append(f.tags, aws.ToString(t.Key)+"="+aws.ToString(t.Value))
+	}
+	return &ssm.AddTagsToResourceOutput{}, nil
 }
 
 func (f *flowSSM) GetParameter(_ context.Context, in *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
