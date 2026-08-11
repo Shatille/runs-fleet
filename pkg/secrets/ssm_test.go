@@ -11,7 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
-const testExpectedPath = "/runs-fleet/runners/i-123456/config"
+const (
+	testExpectedPath           = "/runs-fleet/runners/i-123456/config"
+	testExpectedCredentialPath = "/runs-fleet/runners/i-123456/credential"
+)
 
 type mockSSMClient struct {
 	putFunc             func(ctx context.Context, params *ssm.PutParameterInput, optFns ...func(*ssm.Options)) (*ssm.PutParameterOutput, error)
@@ -68,7 +71,7 @@ func TestSSMStore_Put(t *testing.T) {
 				JobID:             "job-1",
 			},
 			putFunc: func(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
-				if *params.Name != testExpectedPath {
+				if *params.Name != testExpectedPath && *params.Name != testExpectedCredentialPath {
 					t.Errorf("unexpected parameter path: %s", *params.Name)
 				}
 				if params.Type != types.ParameterTypeSecureString {
@@ -125,17 +128,26 @@ func TestSSMStore_Get(t *testing.T) {
 			name:     "successful get",
 			runnerID: "i-123456",
 			getFunc: func(_ context.Context, params *ssm.GetParameterInput, _ ...func(*ssm.Options)) (*ssm.GetParameterOutput, error) {
-				if *params.Name != testExpectedPath {
-					t.Errorf("unexpected parameter path: %s", *params.Name)
-				}
 				if !*params.WithDecryption {
 					t.Errorf("expected WithDecryption to be true")
 				}
-				return &ssm.GetParameterOutput{
-					Parameter: &types.Parameter{
-						Value: aws.String(string(configJSON)),
-					},
-				}, nil
+				switch *params.Name {
+				case testExpectedPath:
+					return &ssm.GetParameterOutput{
+						Parameter: &types.Parameter{
+							Value: aws.String(string(configJSON)),
+						},
+					}, nil
+				case testExpectedCredentialPath:
+					return &ssm.GetParameterOutput{
+						Parameter: &types.Parameter{
+							Value: aws.String(`{"jit_token":"token123"}`),
+						},
+					}, nil
+				default:
+					t.Errorf("unexpected parameter path: %s", *params.Name)
+					return nil, errors.New("unexpected path")
+				}
 			},
 			wantErr: false,
 		},
@@ -218,7 +230,7 @@ func TestSSMStore_Delete(t *testing.T) {
 			name:     "successful delete",
 			runnerID: "i-123456",
 			deleteFunc: func(_ context.Context, params *ssm.DeleteParameterInput, _ ...func(*ssm.Options)) (*ssm.DeleteParameterOutput, error) {
-				if *params.Name != testExpectedPath {
+				if *params.Name != testExpectedPath && *params.Name != testExpectedCredentialPath {
 					t.Errorf("unexpected parameter path: %s", *params.Name)
 				}
 				return &ssm.DeleteParameterOutput{}, nil
@@ -376,9 +388,9 @@ func TestSSMStore_CustomPrefix(t *testing.T) {
 
 	mock := &mockSSMClient{
 		putFunc: func(_ context.Context, params *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
-			expected := "/custom/prefix/i-123/config"
-			if *params.Name != expected {
-				t.Errorf("expected path %s, got %s", expected, *params.Name)
+			if *params.Name != "/custom/prefix/i-123/config" &&
+				*params.Name != "/custom/prefix/i-123/credential" {
+				t.Errorf("unexpected path %s", *params.Name)
 			}
 			return &ssm.PutParameterOutput{}, nil
 		},
