@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -373,10 +375,30 @@ func TestRequeueHandler_ThresholdBelowMinimumClampsToDefault(t *testing.T) {
 }
 
 func newSingleJobHandler(ec2Client *mockRequeueEC2, dyn *mockRequeueDynamo, rq *mockRequeuer, auditDB AuditDB) *http.ServeMux {
+	return newSingleJobHandlerWithGitHub(ec2Client, dyn, rq, auditDB, nil)
+}
+
+func newSingleJobHandlerWithGitHub(ec2Client *mockRequeueEC2, dyn *mockRequeueDynamo, rq *mockRequeuer, auditDB AuditDB, gh housekeeping.JobQueuedChecker) *http.ServeMux {
 	handler := NewRequeueHandler(ec2Client, dyn, rq, nil, "jobs-table", auditDB, NewAuthMiddleware(""))
+	if gh != nil {
+		handler.SetGitHubChecker(gh)
+	}
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	return mux
+}
+
+// mockAdminQueuedChecker stands in for GitHub's view of a job.
+type mockAdminQueuedChecker struct {
+	status string
+	err    error
+}
+
+func (m *mockAdminQueuedChecker) GetWorkflowJobStatus(_ context.Context, _ string, _ int64) (string, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.status, nil
 }
 
 func postJSON(t *testing.T, mux *http.ServeMux, path string) *httptest.ResponseRecorder {
@@ -434,11 +456,11 @@ func TestRequeueHandler_RequeueJobRefusals(t *testing.T) {
 		wantDetails string
 	}{
 		{
-			name:        "running job keeps its live runner",
-			item:        requeueAdminItem(42, "i-live", 7, 0, "running"),
+			name:        "a job that already settled has nothing to re-dispatch",
+			item:        requeueAdminItem(42, "i-live", 7, 0, "success"),
 			wantCode:    http.StatusConflict,
 			wantOutcome: "wrong_status",
-			wantDetails: "running",
+			wantDetails: "success",
 		},
 		{
 			name:        "retry budget spent",
@@ -646,4 +668,171 @@ func TestRequeueHandler_ReconcileRefusesJobWithNoInstance(t *testing.T) {
 	if len(auditDB.entries) != 1 || auditDB.entries[0].Result != auditDenied {
 		t.Errorf("audit entries = %+v, want one denied entry", auditDB.entries)
 	}
+}
+
+// The hang this exists for: our record reads running because a runner confirmed,
+// but GitHub never gave it this job. GitHub saying queued is what makes the
+// terminate-and-re-dispatch safe.
+func TestRequeueHandler_RequeueRunningJobConfirmedQueued(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockRequeueEC2{instances: map[string]ec2types.InstanceStateName{
+		"i-idle": ec2types.InstanceStateNameRunning,
+	}}
+	dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+		requeueAdminItem(42, "i-idle", 7, 0, "running"),
+	}}
+	rq := &mockRequeuer{}
+	auditDB := &mockAuditDB{}
+
+	mux := newSingleJobHandlerWithGitHub(ec2Client, dyn, rq, auditDB, &mockAdminQueuedChecker{status: "queued"})
+	rec := postJSON(t, mux, "/api/jobs/42/requeue")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp RequeueJobResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Outcome != "requeued" || !resp.InstanceTerminated {
+		t.Errorf("response = %+v, want a requeue that terminated the idle instance", resp)
+	}
+	if resp.GitHubStatus != "queued" {
+		t.Errorf("github_status = %q, want the confirmation reported back", resp.GitHubStatus)
+	}
+	if len(rq.sent) != 1 {
+		t.Errorf("expected one re-dispatch, got %+v", rq.sent)
+	}
+}
+
+// Every refusal has to name what it saw, because the operator's next move
+// differs: force for a spent budget, hands off for a job that is really running.
+func TestRequeueHandler_RunningJobRefusals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		github      housekeeping.JobQueuedChecker
+		wantOutcome string
+		wantDetails string
+	}{
+		{
+			name:        "GitHub is executing the job",
+			github:      &mockAdminQueuedChecker{status: "in_progress"},
+			wantOutcome: "not_queued",
+			wantDetails: "in_progress",
+		},
+		{
+			name:        "GitHub could not be reached",
+			github:      &mockAdminQueuedChecker{err: errors.New("api rate limit exceeded")},
+			wantOutcome: "github_unknown",
+			wantDetails: "could not confirm",
+		},
+		{
+			name:        "no GitHub client is configured",
+			github:      nil,
+			wantOutcome: "github_unavailable",
+			wantDetails: "no GitHub client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ec2Client := &mockRequeueEC2{instances: map[string]ec2types.InstanceStateName{
+				"i-live": ec2types.InstanceStateNameRunning,
+			}}
+			dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+				requeueAdminItem(42, "i-live", 7, 0, "running"),
+			}}
+			rq := &mockRequeuer{}
+			auditDB := &mockAuditDB{}
+
+			mux := newSingleJobHandlerWithGitHub(ec2Client, dyn, rq, auditDB, tt.github)
+			rec := postJSON(t, mux, "/api/jobs/42/requeue")
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+			}
+
+			var resp RequeueJobResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", resp.Outcome, tt.wantOutcome)
+			}
+			if !strings.Contains(resp.Details, tt.wantDetails) {
+				t.Errorf("details = %q, want it to mention %q", resp.Details, tt.wantDetails)
+			}
+			if len(rq.sent) != 0 {
+				t.Errorf("nothing may be re-dispatched, got %+v", rq.sent)
+			}
+			if len(auditDB.entries) != 1 || auditDB.entries[0].Result != auditDenied {
+				t.Errorf("audit entries = %+v, want one denial recorded", auditDB.entries)
+			}
+		})
+	}
+}
+
+// force is for the dead end where the cap has been spent on a job GitHub is
+// still holding. It buys nothing else.
+func TestRequeueHandler_Force(t *testing.T) {
+	t.Parallel()
+
+	newMux := func(auditDB AuditDB, ghStatus string, rq *mockRequeuer) *http.ServeMux {
+		ec2Client := &mockRequeueEC2{instances: map[string]ec2types.InstanceStateName{
+			"i-idle": ec2types.InstanceStateNameRunning,
+		}}
+		dyn := &mockRequeueDynamo{items: []map[string]types.AttributeValue{
+			requeueAdminItem(42, "i-idle", 7, 2, "running"),
+		}}
+		return newSingleJobHandlerWithGitHub(ec2Client, dyn, rq, auditDB, &mockAdminQueuedChecker{status: ghStatus})
+	}
+
+	t.Run("force=true re-dispatches past the spent budget", func(t *testing.T) {
+		t.Parallel()
+		rq := &mockRequeuer{}
+		auditDB := &mockAuditDB{}
+		rec := postJSON(t, newMux(auditDB, "queued", rq), "/api/jobs/42/requeue?force=true")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+		}
+		if len(rq.sent) != 1 {
+			t.Errorf("expected one re-dispatch, got %+v", rq.sent)
+		}
+		if len(auditDB.entries) != 1 || auditDB.entries[0].Result != resultSuccess {
+			t.Fatalf("audit entries = %+v, want one success", auditDB.entries)
+		}
+		if forced, _ := auditDB.entries[0].Details["forced"].(bool); !forced {
+			t.Errorf("audit details = %v, want the override recorded", auditDB.entries[0].Details)
+		}
+	})
+
+	t.Run("force=true still cannot override the queued confirmation", func(t *testing.T) {
+		t.Parallel()
+		rq := &mockRequeuer{}
+		rec := postJSON(t, newMux(&mockAuditDB{}, "in_progress", rq), "/api/jobs/42/requeue?force=true")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+		}
+		if len(rq.sent) != 0 {
+			t.Errorf("a job GitHub is running must never be re-dispatched, got %+v", rq.sent)
+		}
+	})
+
+	t.Run("without force the spent budget still refuses", func(t *testing.T) {
+		t.Parallel()
+		rq := &mockRequeuer{}
+		rec := postJSON(t, newMux(&mockAuditDB{}, "queued", rq), "/api/jobs/42/requeue")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d (body %s)", rec.Code, rec.Body.String())
+		}
+		var resp RequeueJobResponse
+		_ = json.NewDecoder(rec.Body).Decode(&resp)
+		if resp.Outcome != "exhausted" || !strings.Contains(resp.Details, "force") {
+			t.Errorf("response = %+v, want an exhausted refusal that names force as the way out", resp)
+		}
+	})
 }

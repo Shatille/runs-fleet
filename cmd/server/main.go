@@ -599,6 +599,9 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	housekeepingHandler.RegisterRoutes(adminMux)
 
 	requeueHandler := admin.NewRequeueHandler(ec2Client, dynamoClient, ws.jobQueue, ws.metricsPublisher, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
+	if ws.githubClient != nil {
+		requeueHandler.SetGitHubChecker(&terminationJobCheckerAdapter{client: ws.githubClient})
+	}
 	requeueHandler.RegisterRoutes(adminMux)
 
 	costPriceFetcher := cost.NewPriceFetcher(ws.awsCfg, ws.awsCfg.Region)

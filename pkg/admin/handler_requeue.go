@@ -29,8 +29,16 @@ type RequeueHandler struct {
 	metrics       housekeeping.MetricsAPI
 	jobsTableName string
 	auditDB       AuditDB
+	github        housekeeping.JobQueuedChecker
 	auth          *AuthMiddleware
 	log           *logging.Logger
+}
+
+// SetGitHubChecker wires the confirmation that gates re-dispatching a record past
+// launched. Without it those records are refused, because nothing else can tell a
+// job whose runner was stolen from one that is being executed right now.
+func (h *RequeueHandler) SetGitHubChecker(checker housekeeping.JobQueuedChecker) {
+	h.github = checker
 }
 
 // NewRequeueHandler creates a requeue admin handler. metrics is optional (nil-safe)
@@ -151,16 +159,21 @@ type RequeueJobResponse struct {
 	InstanceTerminated bool   `json:"instance_terminated"`
 	RetryCount         int    `json:"retry_count"`
 	Status             string `json:"status,omitempty"`
+	GitHubStatus       string `json:"github_status,omitempty"`
 	Message            string `json:"message"`
 	Details            string `json:"details,omitempty"`
 }
 
 // RequeueJob handles POST /api/jobs/{id}/requeue.
 //
-// Same guardrails as the sweep — launched only, bounded by MaxRequeueRetries — minus
-// the staleness threshold, which exists to stop a sweep acting on jobs that may still
-// be starting and has no meaning for a row an operator picked. A refusal is a 409
-// carrying the reason, so the UI can say why rather than "failed".
+// It accepts launched, running and claiming, minus the sweep's staleness threshold,
+// which exists to stop a sweep acting on jobs that may still be starting and has no
+// meaning for a row an operator picked. Anything past launched is gated on GitHub
+// confirming the job is still queued. A refusal is a 409 carrying the reason, so the
+// UI can say why rather than "failed".
+//
+// Query params:
+//   - force: if "true", ignore the retry cap. The queued confirmation still applies.
 func (h *RequeueHandler) RequeueJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -172,7 +185,8 @@ func (h *RequeueHandler) RequeueJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := housekeeping.RequeueJob(ctx, h.requeueDeps(), jobID)
+	force := r.URL.Query().Get("force") == queryTrue
+	result, err := housekeeping.RequeueJob(ctx, h.requeueDeps(), jobID, housekeeping.RequeueJobOptions{Force: force})
 	if err != nil {
 		h.log.Error(ctx, "requeue job failed",
 			slog.Int64(logging.KeyJobID, jobID),
@@ -189,16 +203,23 @@ func (h *RequeueHandler) RequeueJob(w http.ResponseWriter, r *http.Request) {
 		InstanceTerminated: result.InstanceTerminated,
 		RetryCount:         result.RetryCount,
 		Status:             result.Status,
+		GitHubStatus:       result.GitHubStatus,
 	}
 
 	if result.Outcome == housekeeping.OutcomeRequeued {
-		resp.Message = fmt.Sprintf("Job %d requeued (attempt %d of %d)", jobID, result.RetryCount, housekeeping.MaxRequeueRetries)
+		if force {
+			resp.Message = fmt.Sprintf("Job %d requeued past its retry cap (attempt %d)", jobID, result.RetryCount)
+		} else {
+			resp.Message = fmt.Sprintf("Job %d requeued (attempt %d of %d)", jobID, result.RetryCount, housekeeping.MaxRequeueRetries)
+		}
 		if result.InstanceTerminated {
 			resp.Message += fmt.Sprintf("; instance %s terminated", result.InstanceID)
 		}
 		h.recordJobAction(r, "job.requeue", jobID, "success",
 			slog.String("instance_id", result.InstanceID),
 			slog.Bool("instance_terminated", result.InstanceTerminated),
+			slog.Bool("forced", force),
+			slog.String("github_status", result.GitHubStatus),
 			slog.Int("retry_count", result.RetryCount))
 		h.writeJSON(w, http.StatusOK, resp)
 		return
@@ -214,6 +235,8 @@ func (h *RequeueHandler) RequeueJob(w http.ResponseWriter, r *http.Request) {
 	}
 	h.recordJobAction(r, "job.requeue", jobID, auditDenied,
 		slog.String("outcome", string(result.Outcome)),
+		slog.Bool("forced", force),
+		slog.String("github_status", result.GitHubStatus),
 		slog.String(logging.KeyReason, details))
 	h.writeJSON(w, status, resp)
 }
@@ -225,11 +248,20 @@ func requeueRefusal(result housekeeping.SingleRequeueResult, jobID int64) (int, 
 	case housekeeping.OutcomeNotFound:
 		return http.StatusNotFound, fmt.Sprintf("job %d has no record", jobID)
 	case housekeeping.OutcomeExhausted:
-		return http.StatusConflict, fmt.Sprintf("job %d has spent its %d requeue retries; a fresh runner has already failed to register twice",
+		return http.StatusConflict, fmt.Sprintf("job %d has spent its %d requeue retries; retry with force to re-dispatch it anyway",
 			jobID, housekeeping.MaxRequeueRetries)
 	case housekeeping.OutcomeWrongStatus:
-		return http.StatusConflict, fmt.Sprintf("job %d is %s, not launched — only a job whose runner never confirmed can be re-dispatched",
+		return http.StatusConflict, fmt.Sprintf("job %d is %s, which is not re-dispatchable — only a launched, running or claiming job is",
 			jobID, result.Status)
+	case housekeeping.OutcomeNotQueued:
+		return http.StatusConflict, fmt.Sprintf("GitHub reports job %d as %s, not queued — a runner is doing this work and re-dispatching would destroy it",
+			jobID, result.GitHubStatus)
+	case housekeeping.OutcomeGitHubUnknown:
+		return http.StatusConflict, fmt.Sprintf("GitHub could not confirm job %d is still queued, and a %s record is only safe to re-dispatch once it has",
+			jobID, result.Status)
+	case housekeeping.OutcomeGitHubUnavailable:
+		return http.StatusConflict, fmt.Sprintf("no GitHub client is configured, so a %s record cannot be confirmed safe to re-dispatch (a launched one still can)",
+			result.Status)
 	case housekeeping.OutcomeNoRunID:
 		return http.StatusConflict, fmt.Sprintf("job %d has no run_id, so no launch message can be rebuilt for it", jobID)
 	case housekeeping.OutcomeLostRace:
@@ -350,6 +382,7 @@ func (h *RequeueHandler) requeueDeps() housekeeping.RequeueDeps {
 		TerminateEC2: h.ec2Client,
 		Requeuer:     h.requeuer,
 		Metrics:      h.metrics,
+		GitHub:       h.github,
 		JobsTable:    h.jobsTableName,
 		Log:          h.log,
 	}

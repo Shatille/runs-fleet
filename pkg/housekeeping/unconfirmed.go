@@ -149,7 +149,7 @@ func (t *Tasks) requeueUnconfirmed(ctx context.Context, c RequeueableJob) error 
 		return nil
 	}
 	if err := t.jobRequeuer.SendMessage(ctx, BuildRequeueMessage(c)); err != nil {
-		rollbackRequeueFlip(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID, t.logger())
+		rollbackRequeueFlip(ctx, t.dynamoClient, t.config.JobsTableName, c.JobID, string(db.JobStatusLaunched), t.logger())
 		return fmt.Errorf("send requeue message: %w", err)
 	}
 	if t.metrics != nil {
