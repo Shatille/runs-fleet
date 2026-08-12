@@ -69,6 +69,11 @@ type jobRecord struct {
 	SpotRequestID  string `dynamodbav:"spot_request_id,omitempty"`
 	PersistentSpot bool   `dynamodbav:"persistent_spot,omitempty"`
 	TraceID        string `dynamodbav:"trace_id,omitempty"`
+	// GitHub dispatches by exact label-set membership, so a requeue that cannot
+	// read back the workflow's requested label registers its runner under the
+	// synthesized legacy form and the job it was launched for can never match it.
+	// omitempty keeps records written before this field readable.
+	OriginalLabel string `dynamodbav:"original_label,omitempty"`
 }
 
 // JobRecord contains job information for storage.
@@ -86,6 +91,7 @@ type JobRecord struct {
 	SpotRequestID  string
 	PersistentSpot bool
 	Traceparent    string
+	OriginalLabel  string
 }
 
 // JobHistoryEntry represents a job with timing information for auto-scaling calculations.
@@ -131,6 +137,7 @@ func (c *Client) SaveJob(ctx context.Context, job *JobRecord) error {
 		SpotRequestID:  job.SpotRequestID,
 		PersistentSpot: job.PersistentSpot,
 		TraceID:        extractTraceID(job.Traceparent),
+		OriginalLabel:  job.OriginalLabel,
 	}
 
 	item, err := attributevalue.MarshalMap(record)
@@ -684,17 +691,18 @@ func unmarshalJobInfo(item map[string]types.AttributeValue) (*events.JobInfo, er
 	createdAt, _ := time.Parse(time.RFC3339, record.CreatedAt)
 
 	return &events.JobInfo{
-		JobID:        record.JobID,
-		RunID:        record.RunID,
-		Repo:         record.Repo,
-		InstanceID:   record.InstanceID,
-		InstanceType: record.InstanceType,
-		Pool:         record.Pool,
-		Spot:         record.Spot,
-		RetryCount:   record.RetryCount,
-		WarmPoolHit:  record.WarmPoolHit,
-		HotPoolHit:   record.HotPoolHit,
-		CreatedAt:    createdAt,
+		JobID:         record.JobID,
+		RunID:         record.RunID,
+		Repo:          record.Repo,
+		InstanceID:    record.InstanceID,
+		InstanceType:  record.InstanceType,
+		Pool:          record.Pool,
+		Spot:          record.Spot,
+		RetryCount:    record.RetryCount,
+		WarmPoolHit:   record.WarmPoolHit,
+		HotPoolHit:    record.HotPoolHit,
+		CreatedAt:     createdAt,
+		OriginalLabel: record.OriginalLabel,
 	}, nil
 }
 

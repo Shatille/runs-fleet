@@ -99,7 +99,7 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 
 	// Prepare runner config for this instance (updates SSM)
 	// Instance is starting but agent won't read SSM until fully booted (~30s)
-	label := handler.BuildRunnerLabel(job)
+	label := handler.BuildRunnerLabel(ctx, job)
 	prepareReq := runner.PrepareRunnerRequest{
 		InstanceID: instance.InstanceID,
 		JobID:      fmt.Sprintf("%d", job.JobID),
@@ -130,8 +130,9 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 			RetryCount:   job.RetryCount,
 			WarmPoolHit:  true,
 			// A running spare served this job with no boot — the hot-pool win.
-			HotPoolHit:  instance.IsFromRunningSpare(),
-			Traceparent: job.Traceparent,
+			HotPoolHit:    instance.IsFromRunningSpare(),
+			Traceparent:   job.Traceparent,
+			OriginalLabel: job.OriginalLabel,
 		}
 		if err := w.DB.SaveJob(ctx, jobRecord); err != nil {
 			warmPoolLog.Error(ctx, "job record save failed",

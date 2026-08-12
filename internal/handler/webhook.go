@@ -342,6 +342,7 @@ func HandleJobFailure(ctx context.Context, event *github.WorkflowJobEvent, q que
 		Spot:          false,
 		RetryCount:    jobInfo.RetryCount + 1,
 		ForceOnDemand: true,
+		OriginalLabel: jobInfo.OriginalLabel,
 	}
 
 	ctx = logging.ContextWithJob(ctx, jobInfo.JobID, jobInfo.RunID, jobInfo.Repo)
@@ -446,9 +447,21 @@ func PublishJobStartupMetrics(ctx context.Context, m metrics.Publisher, dbc JobS
 }
 
 // BuildRunnerLabel returns the runs-fleet label for GitHub runner registration.
-func BuildRunnerLabel(job *queue.JobMessage) string {
+//
+// The synthesized fallback only matches a workflow using the legacy
+// "runs-fleet=<run-id>/..." form. A re-dispatch (RetryCount > 0) reaching it has
+// lost the label its first dispatch carried, so it registers a runner that the
+// starving job cannot be handed to — the recovery burns an instance and the job
+// keeps waiting. That is worth an alert, not a silent degrade.
+func BuildRunnerLabel(ctx context.Context, job *queue.JobMessage) string {
 	if job.OriginalLabel != "" {
 		return job.OriginalLabel
+	}
+	if job.RetryCount > 0 {
+		webhookLog.Warn(ctx, "re-dispatch has no requested label; runner may not match the job",
+			slog.Int64(logging.KeyJobID, job.JobID),
+			slog.Int64(logging.KeyRunID, job.RunID),
+			slog.Int("retry_count", job.RetryCount))
 	}
 	label := fmt.Sprintf("runs-fleet=%d", job.RunID)
 	if job.Pool != "" {

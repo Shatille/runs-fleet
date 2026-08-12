@@ -157,15 +157,16 @@ func (p *DirectProcessor) ProcessJobDirect(ctx context.Context, job *queue.JobMe
 	if p.DB != nil && p.DB.HasJobsTable() {
 		for _, instanceID := range instanceIDs {
 			jobRecord := &db.JobRecord{
-				JobID:        job.JobID,
-				RunID:        job.RunID,
-				Repo:         job.Repo,
-				InstanceID:   instanceID,
-				InstanceType: job.InstanceType,
-				Pool:         job.Pool,
-				Spot:         job.Spot,
-				RetryCount:   job.RetryCount,
-				Traceparent:  job.Traceparent,
+				JobID:         job.JobID,
+				RunID:         job.RunID,
+				Repo:          job.Repo,
+				InstanceID:    instanceID,
+				InstanceType:  job.InstanceType,
+				Pool:          job.Pool,
+				Spot:          job.Spot,
+				RetryCount:    job.RetryCount,
+				Traceparent:   job.Traceparent,
+				OriginalLabel: job.OriginalLabel,
 			}
 			if err := p.DB.SaveJob(ctx, jobRecord); err != nil {
 				directLog.Error(ctx, "job record save failed",

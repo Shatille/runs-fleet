@@ -586,7 +586,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildRunnerLabel(tt.job)
+			got := BuildRunnerLabel(context.Background(), tt.job)
 			if got != tt.want {
 				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}
@@ -1005,7 +1005,7 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildRunnerLabel(tt.job)
+			got := BuildRunnerLabel(context.Background(), tt.job)
 			if got != tt.want {
 				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}

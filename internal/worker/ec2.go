@@ -452,15 +452,16 @@ func SaveJobRecords(ctx context.Context, dbc *db.Client, job *queue.JobMessage, 
 	}
 	for _, instanceID := range instanceIDs {
 		jobRecord := &db.JobRecord{
-			JobID:        job.JobID,
-			RunID:        job.RunID,
-			Repo:         job.Repo,
-			InstanceID:   instanceID,
-			InstanceType: job.InstanceType,
-			Pool:         job.Pool,
-			Spot:         job.Spot,
-			RetryCount:   job.RetryCount,
-			Traceparent:  job.Traceparent,
+			JobID:         job.JobID,
+			RunID:         job.RunID,
+			Repo:          job.Repo,
+			InstanceID:    instanceID,
+			InstanceType:  job.InstanceType,
+			Pool:          job.Pool,
+			Spot:          job.Spot,
+			RetryCount:    job.RetryCount,
+			Traceparent:   job.Traceparent,
+			OriginalLabel: job.OriginalLabel,
 		}
 		var saveErr error
 		for attempt := 0; attempt < 3; attempt++ {
@@ -493,7 +494,7 @@ func PrepareRunners(ctx context.Context, preparer RunnerPreparer, job *queue.Job
 		// storing config, config stored) carry it on the direct/cold-start path,
 		// matching the warm-pool path which stashes it before PrepareRunner.
 		instanceCtx := logging.ContextWith(ctx, slog.String(logging.KeyInstanceID, instanceID))
-		label := handler.BuildRunnerLabel(job)
+		label := handler.BuildRunnerLabel(instanceCtx, job)
 		prepareReq := runner.PrepareRunnerRequest{
 			InstanceID: instanceID,
 			JobID:      fmt.Sprintf("%d", job.JobID),
