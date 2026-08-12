@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/Shavakan/runs-fleet/pkg/config"
 )
 
 type stubRunnerRegistry struct {
@@ -65,7 +67,7 @@ func (f *fakeSightings) ForgetRunnerOffline(_ context.Context, repo string, id i
 // can assert on which runners the sweep selects rather than on the age gate.
 func (f *fakeSightings) backdate() {
 	for k := range f.firstSeen {
-		f.firstSeen[k] = time.Now().Add(-2 * minOfflineAge)
+		f.firstSeen[k] = time.Now().Add(-30 * 24 * time.Hour)
 	}
 }
 
@@ -75,6 +77,7 @@ func runnersTask(reg RunnerRegistry, repos []string) (*Tasks, *fakeSightings) {
 		runnerRegistry: reg,
 		activeRepos:    func(context.Context) ([]string, error) { return repos, nil },
 		sightings:      s,
+		config:         &config.Config{MaxRuntimeMinutes: 360},
 	}, s
 }
 
@@ -89,6 +92,36 @@ func sweepPastWindow(t *testing.T, tk *Tasks, s *fakeSightings) {
 	s.backdate()
 	if err := tk.ExecuteOrphanedRunners(context.Background()); err != nil {
 		t.Fatalf("ExecuteOrphanedRunners() error = %v", err)
+	}
+}
+
+// The window must be derived from the configured runtime ceiling, not fixed:
+// the validator permits up to 24h, and a deploy that raises the ceiling for a
+// slower job class would otherwise leave the threshold below it — the same
+// hazard deadAssignmentAge is derived to avoid.
+func TestOfflineWindow_ClearsTheConfiguredRuntimeCeiling(t *testing.T) {
+	tests := []struct {
+		name           string
+		runtimeMinutes int
+	}{
+		{name: "default ceiling", runtimeMinutes: 360},
+		{name: "raised ceiling for a slow job class", runtimeMinutes: 1440},
+		{name: "ceiling below the standby allowance", runtimeMinutes: 30},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tk := &Tasks{config: &config.Config{MaxRuntimeMinutes: tt.runtimeMinutes}}
+			got := tk.minOfflineAge()
+
+			ceiling := time.Duration(tt.runtimeMinutes) * time.Minute
+			if got <= ceiling {
+				t.Errorf("minOfflineAge %v does not clear the runtime ceiling %v", got, ceiling)
+			}
+			if got <= agentStandbyAllowance {
+				t.Errorf("minOfflineAge %v does not clear the standby allowance %v", got, agentStandbyAllowance)
+			}
+		})
 	}
 }
 

@@ -37,10 +37,18 @@ type RunnerRegistry interface {
 //
 // A registration exists from the moment its JIT config is minted — before the
 // instance boots — so a live runner reads offline for its whole startup, and an
-// agent may sit in standby for up to RUNS_FLEET_STANDBY_DEADLINE_MINUTES (2h by
-// default) before it ever registers a job. This window clears both with room to
-// spare, so anything past it has outlived every path that could explain it.
-const minOfflineAge = 6 * time.Hour
+// agent may sit in standby for the standby deadline before it ever takes a job.
+//
+// Derived from the configured runtime ceiling rather than hardcoded, for the
+// same reason deadAssignmentAge is: the validator permits up to 24h, and a
+// deploy that raised the ceiling for a slower job class would otherwise leave
+// this threshold below it and the sweep would start deleting live runners.
+func (t *Tasks) minOfflineAge() time.Duration {
+	if t.config == nil {
+		return agentStandbyAllowance + deadAssignmentSlack
+	}
+	return t.deadAssignmentAge()
+}
 
 // RunnerSightingStore records when a registration was first seen offline. It is
 // durable rather than in-process because the orchestrator runs multiple replicas
@@ -121,7 +129,7 @@ func (t *Tasks) ExecuteOrphanedRunners(ctx context.Context) error {
 					slog.String("error", err.Error()))
 				continue
 			}
-			if age < minOfflineAge || deleted >= maxRunnerDeregistrations {
+			if age < t.minOfflineAge() || deleted >= maxRunnerDeregistrations {
 				continue
 			}
 
