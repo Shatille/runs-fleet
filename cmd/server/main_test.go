@@ -94,7 +94,7 @@ func TestBuildRunnerLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := handler.BuildRunnerLabel(tt.job)
+			got := handler.BuildRunnerLabel(context.Background(), tt.job)
 			if got != tt.want {
 				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}
@@ -250,7 +250,7 @@ func TestBuildRunnerLabel_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := handler.BuildRunnerLabel(tt.job)
+			got := handler.BuildRunnerLabel(context.Background(), tt.job)
 			if got != tt.want {
 				t.Errorf("BuildRunnerLabel() = %q, want %q", got, tt.want)
 			}
@@ -316,7 +316,7 @@ func TestBuildRunnerLabel_AllCombinations(t *testing.T) {
 				RunID: 12345,
 				Spot:  tt.spot,
 			}
-			label := handler.BuildRunnerLabel(job)
+			label := handler.BuildRunnerLabel(context.Background(), job)
 			if label == "" {
 				t.Error("BuildRunnerLabel() returned empty string")
 			}
@@ -367,7 +367,7 @@ func TestBuildRunnerLabel_EmptyOriginalLabel(t *testing.T) {
 		Spot:          true,
 	}
 
-	label := handler.BuildRunnerLabel(job)
+	label := handler.BuildRunnerLabel(context.Background(), job)
 	expected := "runs-fleet=12345"
 	if label != expected {
 		t.Errorf("BuildRunnerLabel() = %q, want %q", label, expected)
@@ -381,7 +381,7 @@ func TestBuildRunnerLabel_WhitespaceOriginalLabel(t *testing.T) {
 		Spot:          true,
 	}
 
-	label := handler.BuildRunnerLabel(job)
+	label := handler.BuildRunnerLabel(context.Background(), job)
 	if label != "   " {
 		t.Errorf("BuildRunnerLabel() = %q, want whitespace", label)
 	}

@@ -58,6 +58,10 @@ type JobInfo struct {
 	WarmPoolHit  bool      // Whether the job was served by a warm-pool instance
 	HotPoolHit   bool      // Whether the job was served by a RUNNING hot-pool spare (no boot)
 	CreatedAt    time.Time // Assignment time (SaveJob stamp); zero if unparseable
+	// OriginalLabel is the runs-on label the workflow asked for. A requeue must
+	// re-register under it: GitHub matches runners by exact label set, so the
+	// synthesized fallback produces a runner this job can never be handed to.
+	OriginalLabel string
 }
 
 // MetricsAPI provides CloudWatch metrics publishing.
@@ -393,8 +397,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 
 	// Re-queue with ForceOnDemand to ensure job completes on retry
 	// Increment RetryCount to track how many times this job has been retried
-	// Note: Some fields (OriginalLabel, Region, etc.) are not stored in JobInfo.
-	// Re-queued jobs use basic config. Full field storage is a future enhancement.
+	// Note: Region is not stored in JobInfo; re-queued jobs use basic config.
 	requeueMsg := &queue.JobMessage{
 		JobID:         job.JobID,
 		RunID:         job.RunID,
@@ -404,6 +407,7 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 		Spot:          false,              // ForceOnDemand uses on-demand instances
 		RetryCount:    job.RetryCount + 1, // Increment retry count
 		ForceOnDemand: true,               // Force on-demand for retries after spot interruption
+		OriginalLabel: job.OriginalLabel,
 	}
 	if h.jobQueue == nil {
 		return fmt.Errorf("job queue not configured; cannot re-queue job %d", job.JobID)

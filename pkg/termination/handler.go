@@ -419,6 +419,7 @@ func (h *Handler) processBootstrapFailure(ctx context.Context, msg *Message) err
 					Spot:          false,
 					RetryCount:    job.RetryCount + 1,
 					ForceOnDemand: true,
+					OriginalLabel: job.OriginalLabel,
 				}
 				if err := h.jobQueue.SendMessage(ctx, requeueMsg); err != nil {
 					return fmt.Errorf("failed to re-queue job %d after bootstrap failure: %w", job.JobID, err)
@@ -812,6 +813,7 @@ func (h *Handler) redispatchIfStillQueued(ctx context.Context, jobID int64, msg 
 		Spot:          false,
 		RetryCount:    rec.RetryCount + 1,
 		ForceOnDemand: true,
+		OriginalLabel: rec.OriginalLabel,
 	}
 	if sendErr := h.jobQueue.SendMessage(ctx, requeueMsg); sendErr != nil {
 		return false, fmt.Errorf("failed to re-queue still-queued job: %w", sendErr)

@@ -37,14 +37,15 @@ const requeueReasonStaleQueued = "stale_queued"
 // RequeueableJob carries the fields needed to rebuild a launch message for a job whose
 // runner needs to be re-dispatched.
 type RequeueableJob struct {
-	JobID        int64
-	InstanceID   string
-	RunID        int64
-	Repo         string
-	InstanceType string
-	Pool         string
-	RetryCount   int
-	Status       string
+	JobID         int64
+	InstanceID    string
+	RunID         int64
+	Repo          string
+	InstanceType  string
+	Pool          string
+	RetryCount    int
+	Status        string
+	OriginalLabel string
 }
 
 // FindRequeueableJobs scans DynamoDB for jobs in any of the given statuses whose
@@ -75,7 +76,7 @@ func FindRequeueableJobs(ctx context.Context, scanAPI OrphanScanAPI, jobsTable s
 		FilterExpression:          aws.String(filter),
 		ExpressionAttributeNames:  map[string]string{"#status": "status", "#pool": "pool"},
 		ExpressionAttributeValues: exprValues,
-		ProjectionExpression:      aws.String("job_id, instance_id, run_id, repo, instance_type, #pool, retry_count, #status"),
+		ProjectionExpression:      aws.String("job_id, instance_id, run_id, repo, instance_type, #pool, retry_count, #status, original_label"),
 	}
 
 	var jobs []RequeueableJob
@@ -88,14 +89,15 @@ func FindRequeueableJobs(ctx context.Context, scanAPI OrphanScanAPI, jobsTable s
 		}
 		for _, item := range output.Items {
 			j := RequeueableJob{
-				JobID:        avInt64(item, "job_id"),
-				InstanceID:   avString(item, "instance_id"),
-				RunID:        avInt64(item, "run_id"),
-				Repo:         avString(item, "repo"),
-				InstanceType: avString(item, "instance_type"),
-				Pool:         avString(item, "pool"),
-				RetryCount:   int(avInt64(item, "retry_count")),
-				Status:       avString(item, "status"),
+				JobID:         avInt64(item, "job_id"),
+				InstanceID:    avString(item, "instance_id"),
+				RunID:         avInt64(item, "run_id"),
+				Repo:          avString(item, "repo"),
+				InstanceType:  avString(item, "instance_type"),
+				Pool:          avString(item, "pool"),
+				RetryCount:    int(avInt64(item, "retry_count")),
+				Status:        avString(item, "status"),
+				OriginalLabel: avString(item, "original_label"),
 			}
 			if j.JobID == 0 {
 				continue
@@ -125,6 +127,7 @@ func BuildRequeueMessage(job RequeueableJob) *queue.JobMessage {
 		Spot:          false,
 		RetryCount:    job.RetryCount + 1,
 		ForceOnDemand: true,
+		OriginalLabel: job.OriginalLabel,
 	}
 }
 
