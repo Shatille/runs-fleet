@@ -42,6 +42,9 @@ type mockTaskExecutor struct {
 	expiredClaimsCall  int
 	staleAMICall       int
 	staleAMIErr        error
+
+	orphanedRunnersCall int
+	orphanedRunnersErr  error
 }
 
 func (m *mockTaskExecutor) ExecuteOrphanedInstances(_ context.Context) error {
@@ -114,6 +117,11 @@ func (m *mockTaskExecutor) ExecuteStaleAMIInstances(_ context.Context) error {
 	return m.staleAMIErr
 }
 
+func (m *mockTaskExecutor) ExecuteOrphanedRunners(_ context.Context) error {
+	m.orphanedRunnersCall++
+	return m.orphanedRunnersErr
+}
+
 // mockTaskLocker implements TaskLocker for testing.
 type mockTaskLocker struct {
 	acquireErr   error
@@ -183,6 +191,19 @@ func longIntervals() SchedulerConfig {
 		PoolHotTunerInterval:            d,
 		ExpiredInstanceClaimsInterval:   d,
 		StaleAMIInstancesInterval:       d,
+		OrphanedRunnersInterval:         d,
+	}
+}
+
+// A zero interval reaches time.NewTicker, which panics and takes the whole
+// orchestrator down — a config omission must disable the task, not crash it.
+func TestRunner_SkipsTasksWithNonPositiveInterval(t *testing.T) {
+	executor := &mockTaskExecutor{}
+	r := NewRunner(executor, SchedulerConfig{})
+	for _, s := range r.taskSpecs() {
+		if s.interval <= 0 {
+			t.Fatalf("task %s scheduled with non-positive interval %v", s.taskType, s.interval)
+		}
 	}
 }
 
@@ -240,7 +261,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 		TaskOrphanedInstances, TaskStaleSecrets, TaskOldJobs, TaskOrphanedJobs,
 		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
 		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances, TaskPoolHotTuner,
-		TaskExpiredInstanceClaims, TaskStaleAMIInstances,
+		TaskExpiredInstanceClaims, TaskStaleAMIInstances, TaskOrphanedRunners,
 	}
 	r := NewRunner(&mockTaskExecutor{}, DefaultSchedulerConfig())
 	specs := r.taskSpecs()

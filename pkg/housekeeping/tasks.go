@@ -148,10 +148,15 @@ type Tasks struct {
 	gitHubChecker GitHubJobChecker
 	amiReference  AMIReference
 	jobRequeuer   JobRequeuer
-	metrics       MetricsAPI
-	costReporter  CostReporter
-	config        *config.Config
-	log           *logging.Logger
+
+	runnerRegistry RunnerRegistry
+	activeRepos    ActiveReposFunc
+	sightings      RunnerSightingStore
+
+	metrics      MetricsAPI
+	costReporter CostReporter
+	config       *config.Config
+	log          *logging.Logger
 }
 
 // SetJobRequeuer wires the main-queue requeuer used by the unconfirmed-runner

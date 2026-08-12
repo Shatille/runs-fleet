@@ -36,7 +36,7 @@ Forward progress sidesteps all three by making the system **eventually correct**
 |---|---|
 | Tagged instance with no job | Housekeeping orphan-instance sweep |
 | Job with no instance | SQS visibility timeout → re-deliver → new instance |
-| Runner registered with GitHub but no instance | GitHub auto-deregisters offline runners after 14 days; or housekeeping deregisters proactively |
+| Runner registered with GitHub but no instance | Housekeeping `TaskOrphanedRunners` removes offline runs-fleet registrations; GitHub's own ephemeral cleanup only fires after a runner *completes* a job, so one that never got work is never collected |
 | SSM parameter for a terminated instance | Housekeeping `TaskStaleSecrets` |
 | Job stuck in `claiming` | Housekeeping `TaskStaleJobs` (10-min threshold) → mark failed |
 

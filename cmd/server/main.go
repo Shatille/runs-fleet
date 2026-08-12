@@ -427,6 +427,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 
 	if githubClient != nil {
 		tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})
+		tasksExecutor.SetRunnerRegistry(&runnerRegistryAdapter{client: githubClient}, dbClient.ListActiveRepos, dbClient)
 	}
 
 	r := housekeeping.NewRunner(tasksExecutor, housekeeping.DefaultSchedulerConfig())
@@ -916,4 +917,31 @@ func (g *githubJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, _ st
 		Status:     info.Status,
 		Conclusion: info.Conclusion,
 	}, nil
+}
+
+// runnerRegistryAdapter adapts *gh.Client to housekeeping.RunnerRegistry for the
+// orphaned-runner sweep.
+type runnerRegistryAdapter struct {
+	client *gh.Client
+}
+
+func (a *runnerRegistryAdapter) ListRunners(ctx context.Context, repo string) ([]housekeeping.RegisteredRunner, error) {
+	runners, err := a.client.ListRunners(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]housekeeping.RegisteredRunner, 0, len(runners))
+	for _, r := range runners {
+		out = append(out, housekeeping.RegisteredRunner{
+			ID:     r.ID,
+			Name:   r.Name,
+			Status: r.Status,
+			Busy:   r.Busy,
+		})
+	}
+	return out, nil
+}
+
+func (a *runnerRegistryAdapter) DeleteRunner(ctx context.Context, repo string, runnerID int64) error {
+	return a.client.DeleteRunner(ctx, repo, runnerID)
 }

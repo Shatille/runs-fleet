@@ -48,6 +48,10 @@ const (
 	// TaskExpiredInstanceClaims reaps expired instance-claim rows from the pools
 	// table so they cannot accumulate and bloat it past the Scan page limit.
 	TaskExpiredInstanceClaims TaskType = "expired_instance_claims"
+	// TaskOrphanedRunners removes GitHub runner registrations left behind by
+	// runners that never ran a job, which GitHub's ephemeral cleanup never
+	// collects.
+	TaskOrphanedRunners TaskType = "orphaned_runners"
 )
 
 // TaskLocker provides distributed locking for housekeeping tasks.
@@ -72,6 +76,7 @@ type TaskExecutor interface {
 	ExecutePoolHotTuner(ctx context.Context) error
 	ExecuteExpiredInstanceClaims(ctx context.Context) error
 	ExecuteStaleAMIInstances(ctx context.Context) error
+	ExecuteOrphanedRunners(ctx context.Context) error
 }
 
 // RunnerMetricsAPI publishes the housekeeping runner's per-task execution
@@ -146,6 +151,9 @@ type SchedulerConfig struct {
 	// StaleAMIInstancesInterval is how often to retire stopped pool instances
 	// stuck on an outdated AMI. Default: 1 hour
 	StaleAMIInstancesInterval time.Duration
+	// OrphanedRunnersInterval is how often to remove GitHub runner registrations
+	// left behind by runners that never ran a job. Default: 1 hour
+	OrphanedRunnersInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default per-task run intervals.
@@ -165,6 +173,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		PoolHotTunerInterval:            1 * time.Hour,
 		ExpiredInstanceClaimsInterval:   15 * time.Minute,
 		StaleAMIInstancesInterval:       1 * time.Hour,
+		OrphanedRunnersInterval:         1 * time.Hour,
 	}
 }
 
@@ -219,10 +228,14 @@ type taskSpec struct {
 
 // taskSpecs returns the per-task schedule. Tasks marked initial run once on
 // start, matching the former scheduler's startup behavior.
+//
+// A task whose interval is unset is dropped rather than scheduled: a zero
+// duration reaches time.NewTicker, which panics and takes every other task's
+// loop down with the process.
 func (r *Runner) taskSpecs() []taskSpec {
 	e := r.executor
 	c := r.config
-	return []taskSpec{
+	all := []taskSpec{
 		{taskType: TaskOrphanedInstances, interval: c.OrphanedInstancesInterval, execute: e.ExecuteOrphanedInstances, initial: true},
 		{taskType: TaskDLQRedrive, interval: c.DLQRedriveInterval, execute: e.ExecuteDLQRedrive, initial: true},
 		{taskType: TaskStaleSecrets, interval: c.StaleSSMInterval, execute: e.ExecuteStaleSecrets},
@@ -236,8 +249,20 @@ func (r *Runner) taskSpecs() []taskSpec {
 		{taskType: TaskOrphanedPackerInstances, interval: c.OrphanedPackerInstancesInterval, execute: e.ExecuteOrphanedPackerInstances},
 		{taskType: TaskPoolHotTuner, interval: c.PoolHotTunerInterval, execute: e.ExecutePoolHotTuner},
 		{taskType: TaskExpiredInstanceClaims, interval: c.ExpiredInstanceClaimsInterval, execute: e.ExecuteExpiredInstanceClaims},
+		{taskType: TaskOrphanedRunners, interval: c.OrphanedRunnersInterval, execute: e.ExecuteOrphanedRunners},
 		{taskType: TaskStaleAMIInstances, interval: c.StaleAMIInstancesInterval, execute: e.ExecuteStaleAMIInstances},
 	}
+
+	specs := make([]taskSpec, 0, len(all))
+	for _, s := range all {
+		if s.interval <= 0 {
+			r.logger().Warn(context.Background(), "task disabled: interval not configured",
+				slog.String("task", string(s.taskType)))
+			continue
+		}
+		specs = append(specs, s)
+	}
+	return specs
 }
 
 // Run launches one timer loop per task and blocks until ctx is cancelled and
