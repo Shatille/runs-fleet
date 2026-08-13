@@ -58,6 +58,7 @@ func (t *Tasks) minOfflineAge() time.Duration {
 type RunnerSightingStore interface {
 	RecordRunnerOffline(ctx context.Context, repo string, runnerID int64, now time.Time) (time.Duration, error)
 	ForgetRunnerOffline(ctx context.Context, repo string, runnerID int64) error
+	DeleteStaleRunnerSightings(ctx context.Context, now time.Time) (int, error)
 }
 
 // ActiveReposFunc returns the repos worth sweeping.
@@ -87,9 +88,9 @@ func (t *Tasks) ExecuteOrphanedRunners(ctx context.Context) error {
 		return nil
 	}
 
-	repos, err := t.activeRepos(ctx)
-	if err != nil {
-		return err
+	repos, reposErr := t.activeRepos(ctx)
+	if reposErr != nil {
+		return reposErr
 	}
 
 	now := time.Now()
@@ -153,6 +154,19 @@ func (t *Tasks) ExecuteOrphanedRunners(ctx context.Context) error {
 		t.logger().Info(ctx, "deregistered orphaned runners", slog.Int(logging.KeyCount, deleted))
 	} else {
 		t.logger().Debug(ctx, "no orphaned runner registrations to remove")
+	}
+
+	// Runs after the deletions, and its failure is logged rather than returned:
+	// reaping is bookkeeping, while deregistration is what frees runners, so a
+	// broken reap must not cost a cycle of deletions.
+	reaped, err := t.sightings.DeleteStaleRunnerSightings(ctx, now)
+	if err != nil {
+		t.logger().Warn(ctx, "reaping stale runner sightings failed",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	if reaped > 0 {
+		t.logger().Info(ctx, "reaped stale runner sightings", slog.Int(logging.KeyCount, reaped))
 	}
 	return nil
 }

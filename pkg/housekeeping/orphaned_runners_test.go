@@ -37,6 +37,9 @@ func (s *stubRunnerRegistry) DeleteRunner(_ context.Context, _ string, runnerID 
 type fakeSightings struct {
 	firstSeen map[string]time.Time
 	recordErr error
+	reapErr   error
+	reaped    int
+	reapCalls int
 }
 
 func newFakeSightings() *fakeSightings {
@@ -61,6 +64,14 @@ func (f *fakeSightings) RecordRunnerOffline(_ context.Context, repo string, id i
 func (f *fakeSightings) ForgetRunnerOffline(_ context.Context, repo string, id int64) error {
 	delete(f.firstSeen, f.key(repo, id))
 	return nil
+}
+
+func (f *fakeSightings) DeleteStaleRunnerSightings(_ context.Context, _ time.Time) (int, error) {
+	if f.reapErr != nil {
+		return 0, f.reapErr
+	}
+	f.reapCalls++
+	return f.reaped, nil
 }
 
 // backdate makes every recorded sighting old enough to be eligible, so a test
@@ -323,5 +334,36 @@ func TestRunnerSweepInterval_IsSane(t *testing.T) {
 	}
 	if c.OrphanedRunnersInterval < time.Minute {
 		t.Errorf("interval %v is too aggressive for an API-bound sweep", c.OrphanedRunnersInterval)
+	}
+}
+
+// Sightings for repos that stop reporting jobs are never revisited by the sweep,
+// and the pools table's only TTL slot belongs to claim_expiry, so the sweep has
+// to reap them itself or they accumulate as phantom pool rows.
+func TestExecuteOrphanedRunners_ReapsStaleSightings(t *testing.T) {
+	reg := &stubRunnerRegistry{byRepo: map[string][]RegisteredRunner{"octo/repo": nil}}
+	tk, sight := runnersTask(reg, []string{"octo/repo"})
+	sight.reaped = 3
+
+	if err := tk.ExecuteOrphanedRunners(context.Background()); err != nil {
+		t.Fatalf("ExecuteOrphanedRunners() error = %v", err)
+	}
+	if sight.reapCalls != 1 {
+		t.Errorf("reap called %d times, want exactly 1 per sweep", sight.reapCalls)
+	}
+}
+
+// Reaping is bookkeeping; deregistration is what frees runners. A reap failure
+// must not fail the sweep and cost a cycle of deletions.
+func TestExecuteOrphanedRunners_ReapFailureDoesNotFailSweep(t *testing.T) {
+	reg := &stubRunnerRegistry{byRepo: map[string][]RegisteredRunner{
+		"octo/repo": {{ID: 1, Name: "runs-fleet-runner-a", Status: "offline"}},
+	}}
+	tk, sight := runnersTask(reg, []string{"octo/repo"})
+	sight.reapErr = errors.New("scan boom")
+
+	sweepPastWindow(t, tk, sight)
+	if len(reg.deleted) != 1 {
+		t.Errorf("deleted %d runners, want 1 despite the reap failure", len(reg.deleted))
 	}
 }

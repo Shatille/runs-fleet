@@ -98,56 +98,7 @@ func (c *Client) DeleteExpiredInstanceClaims(ctx context.Context, now time.Time)
 		return 0, fmt.Errorf("pools table not configured")
 	}
 
-	nowUnix := fmt.Sprintf("%d", now.Unix())
-	input := &dynamodb.ScanInput{
-		TableName:            aws.String(c.poolsTable),
-		ProjectionExpression: aws.String("pool_name"),
-		FilterExpression:     aws.String("begins_with(pool_name, :p) AND claim_expiry < :now"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":p":   &types.AttributeValueMemberS{Value: instanceClaimPrefix},
-			":now": &types.AttributeValueMemberN{Value: nowUnix},
-		},
-	}
-
-	var deleted int
-	var lastEvaluatedKey map[string]types.AttributeValue
-	for {
-		input.ExclusiveStartKey = lastEvaluatedKey
-
-		output, err := c.dynamoClient.Scan(ctx, input)
-		if err != nil {
-			return deleted, fmt.Errorf("failed to scan expired instance claims: %w", err)
-		}
-
-		for _, item := range output.Items {
-			claimKey, ok := item["pool_name"]
-			if !ok {
-				continue
-			}
-
-			_, err := c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-				TableName:           aws.String(c.poolsTable),
-				Key:                 map[string]types.AttributeValue{"pool_name": claimKey},
-				ConditionExpression: aws.String("claim_expiry < :now"),
-				ExpressionAttributeValues: map[string]types.AttributeValue{
-					":now": &types.AttributeValueMemberN{Value: nowUnix},
-				},
-			})
-			if err != nil {
-				var condErr *types.ConditionalCheckFailedException
-				if errors.As(err, &condErr) {
-					continue
-				}
-				return deleted, fmt.Errorf("failed to delete expired instance claim: %w", err)
-			}
-			deleted++
-		}
-
-		lastEvaluatedKey = output.LastEvaluatedKey
-		if lastEvaluatedKey == nil {
-			return deleted, nil
-		}
-	}
+	return c.reapReservedRows(ctx, instanceClaimPrefix, "claim_expiry", now.Unix(), "expired instance claims")
 }
 
 // ReleaseInstanceClaim releases an instance claim for a specific job.

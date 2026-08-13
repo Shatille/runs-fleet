@@ -18,6 +18,10 @@ const runnerSightingPrefix = "__runner_offline:"
 // runnerSightingTTL bounds how long an unrevisited sighting survives. The row is
 // deleted the moment a runner comes back online or is deregistered; this only
 // reclaims rows for registrations that vanished without either.
+//
+// DynamoDB TTL cannot do this: the pools table already spends its single TTL
+// attribute on claim_expiry, so the ttl attribute written below is inert and the
+// rows are reaped by DeleteStaleRunnerSightings instead.
 const runnerSightingTTL = 7 * 24 * time.Hour
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
@@ -93,4 +97,20 @@ func (c *Client) ForgetRunnerOffline(ctx context.Context, repo string, runnerID 
 		return fmt.Errorf("failed to forget runner sighting: %w", err)
 	}
 	return nil
+}
+
+// DeleteStaleRunnerSightings removes sighting rows older than runnerSightingTTL
+// and returns how many were deleted.
+//
+// The sweep that writes these rows only revisits repos ListActiveRepos still
+// reports, so a repo that stops using runs-fleet strands its sightings, and the
+// table's TTL slot is taken by claim_expiry. Without this reaper those rows
+// accumulate in the pools table forever.
+//
+// A runner seen offline again between the scan and the delete keeps its row: the
+// conditional delete in reapReservedRows rejects the rewritten stamp, so the
+// reaper cannot restart an offline clock and delay a deregistration.
+func (c *Client) DeleteStaleRunnerSightings(ctx context.Context, now time.Time) (int, error) {
+	cutoff := now.Add(-runnerSightingTTL).Unix()
+	return c.reapReservedRows(ctx, runnerSightingPrefix, "first_seen_offline", cutoff, "stale runner sightings")
 }

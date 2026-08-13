@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,15 +93,83 @@ type AutoTuneRec struct {
 }
 
 // IsReservedPoolKey reports whether a pools-table partition key is an internal
-// reserved record — a housekeeping task lock or an instance claim — rather than
-// a real pool configuration. These records share the pools table but are keyed
-// by a sentinel prefix, so every path that enumerates or resolves pools must
-// exclude them; otherwise they get reconciled as phantom pools and inflate
-// per-pool CloudWatch metric cardinality (one zero-valued series per ephemeral
-// instance ID).
+// reserved record — a housekeeping task lock, an instance claim, or a runner
+// offline sighting — rather than a real pool configuration. These records share
+// the pools table but are keyed by a sentinel prefix, so every path that
+// enumerates or resolves pools must exclude them; otherwise they get reconciled
+// as phantom pools and inflate per-pool CloudWatch metric cardinality (one
+// zero-valued series per ephemeral instance ID).
 func IsReservedPoolKey(poolName string) bool {
 	return strings.HasPrefix(poolName, taskLockPrefix) ||
-		strings.HasPrefix(poolName, instanceClaimPrefix)
+		strings.HasPrefix(poolName, instanceClaimPrefix) ||
+		strings.HasPrefix(poolName, runnerSightingPrefix)
+}
+
+// reapReservedRows deletes every pools-table row whose key carries prefix and
+// whose attr is below cutoff, returning how many were removed. Both reserved-row
+// reapers (instance claims, runner sightings) are this same sweep over a
+// different attribute.
+//
+// Each row is re-checked with a conditional DeleteItem rather than deleted
+// outright: a row rewritten between the scan and the delete is still live, and
+// dropping it would undo whatever the rewrite recorded. A failed condition means
+// exactly that and is skipped, not counted, not an error.
+func (c *Client) reapReservedRows(ctx context.Context, prefix, attr string, cutoff int64, what string) (int, error) {
+	if c.poolsTable == "" {
+		return 0, fmt.Errorf("pools table not configured")
+	}
+
+	cutoffVal := strconv.FormatInt(cutoff, 10)
+	cond := attr + " < :cutoff"
+	input := &dynamodb.ScanInput{
+		TableName:            aws.String(c.poolsTable),
+		ProjectionExpression: aws.String("pool_name"),
+		FilterExpression:     aws.String("begins_with(pool_name, :p) AND " + cond),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":p":      &types.AttributeValueMemberS{Value: prefix},
+			":cutoff": &types.AttributeValueMemberN{Value: cutoffVal},
+		},
+	}
+
+	var deleted int
+	var lastEvaluatedKey map[string]types.AttributeValue
+	for {
+		input.ExclusiveStartKey = lastEvaluatedKey
+
+		output, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return deleted, fmt.Errorf("failed to scan %s: %w", what, err)
+		}
+
+		for _, item := range output.Items {
+			key, ok := item["pool_name"]
+			if !ok {
+				continue
+			}
+
+			_, err := c.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+				TableName:           aws.String(c.poolsTable),
+				Key:                 map[string]types.AttributeValue{"pool_name": key},
+				ConditionExpression: aws.String(cond),
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":cutoff": &types.AttributeValueMemberN{Value: cutoffVal},
+				},
+			})
+			if err != nil {
+				var condErr *types.ConditionalCheckFailedException
+				if errors.As(err, &condErr) {
+					continue
+				}
+				return deleted, fmt.Errorf("failed to delete %s: %w", what, err)
+			}
+			deleted++
+		}
+
+		lastEvaluatedKey = output.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			return deleted, nil
+		}
+	}
 }
 
 // GetPoolConfig retrieves pool configuration from DynamoDB. Reserved keys (task

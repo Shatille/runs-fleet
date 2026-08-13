@@ -42,15 +42,15 @@ func TestDeleteExpiredInstanceClaims(t *testing.T) {
 				if params.ExclusiveStartKey != nil {
 					t.Error("first page must not set ExclusiveStartKey")
 				}
-				const wantFilter = "begins_with(pool_name, :p) AND claim_expiry < :now"
+				const wantFilter = "begins_with(pool_name, :p) AND claim_expiry < :cutoff"
 				if params.FilterExpression == nil || *params.FilterExpression != wantFilter {
 					t.Errorf("Scan FilterExpression = %v, want %q", params.FilterExpression, wantFilter)
 				}
 				if v, ok := params.ExpressionAttributeValues[":p"].(*types.AttributeValueMemberS); !ok || v.Value != instanceClaimPrefix {
 					t.Errorf("Scan :p = %#v, want %q", params.ExpressionAttributeValues[":p"], instanceClaimPrefix)
 				}
-				if v, ok := params.ExpressionAttributeValues[":now"].(*types.AttributeValueMemberN); !ok || v.Value != fmt.Sprintf("%d", now.Unix()) {
-					t.Errorf("Scan :now = %#v, want %d", params.ExpressionAttributeValues[":now"], now.Unix())
+				if v, ok := params.ExpressionAttributeValues[":cutoff"].(*types.AttributeValueMemberN); !ok || v.Value != fmt.Sprintf("%d", now.Unix()) {
+					t.Errorf("Scan :cutoff = %#v, want %d", params.ExpressionAttributeValues[":cutoff"], now.Unix())
 				}
 				return &dynamodb.ScanOutput{
 					Items: []map[string]types.AttributeValue{
@@ -77,13 +77,13 @@ func TestDeleteExpiredInstanceClaims(t *testing.T) {
 				t.Fatalf("DeleteItem key pool_name not a string: %#v", params.Key["pool_name"])
 			}
 			key := keyAttr.Value
-			const wantCond = "claim_expiry < :now"
+			const wantCond = "claim_expiry < :cutoff"
 			if params.ConditionExpression == nil || *params.ConditionExpression != wantCond {
 				t.Errorf("DeleteItem for %q condition = %v, want %q", key, params.ConditionExpression, wantCond)
 			}
 			// Simulate the server-side guard: the live claim, the pool row (no
 			// claim_expiry), and a claim renewed between scan and delete all fail
-			// the claim_expiry < :now condition, so they must be skipped, not counted.
+			// the claim_expiry < :cutoff condition, so they must be skipped, not counted.
 			switch key {
 			case keyLive, keyPool, keyRenewed:
 				return nil, &types.ConditionalCheckFailedException{Message: nil}

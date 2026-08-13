@@ -85,12 +85,15 @@ resource "aws_dynamodb_table" "jobs" {
 
 # runs-fleet-pools
 # ---
-# Primary key: pool_name. One physical table, three logical concerns:
+# Primary key: pool_name. One physical table, four logical concerns:
 #   - pool configuration rows (one per pool name)
 #   - reconciliation locks (rows keyed by lock-specific names)
 #   - instance claim rows (rows keyed by claim-specific names)
+#   - runner offline sightings (rows keyed __runner_offline:<repo>:<runner_id>)
 #
-# All three share the pool_name partition; no GSIs needed.
+# All four share the pool_name partition; no GSIs needed. Every non-pool row kind
+# must also be registered in db.IsReservedPoolKey, or it surfaces as a phantom
+# pool everywhere pools are enumerated.
 resource "aws_dynamodb_table" "pools" {
   name         = "runs-fleet-pools"
   billing_mode = "PAY_PER_REQUEST"
@@ -103,6 +106,9 @@ resource "aws_dynamodb_table" "pools" {
 
   # Only __instance_claim: rows carry claim_expiry, so TTL reaps expired claims
   # and never touches pool-config or reconcile/task-lock rows (which lack it).
+  #
+  # This is the table's one TTL slot. __runner_offline: rows therefore cannot be
+  # expired by TTL and are reaped by the orphaned_runners housekeeping sweep.
   ttl {
     attribute_name = "claim_expiry"
     enabled        = true
