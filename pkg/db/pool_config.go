@@ -92,15 +92,16 @@ type AutoTuneRec struct {
 }
 
 // IsReservedPoolKey reports whether a pools-table partition key is an internal
-// reserved record — a housekeeping task lock or an instance claim — rather than
-// a real pool configuration. These records share the pools table but are keyed
-// by a sentinel prefix, so every path that enumerates or resolves pools must
-// exclude them; otherwise they get reconciled as phantom pools and inflate
-// per-pool CloudWatch metric cardinality (one zero-valued series per ephemeral
-// instance ID).
+// reserved record — a housekeeping task lock, an instance claim, or a runner
+// offline sighting — rather than a real pool configuration. These records share
+// the pools table but are keyed by a sentinel prefix, so every path that
+// enumerates or resolves pools must exclude them; otherwise they get reconciled
+// as phantom pools and inflate per-pool CloudWatch metric cardinality (one
+// zero-valued series per ephemeral instance ID).
 func IsReservedPoolKey(poolName string) bool {
 	return strings.HasPrefix(poolName, taskLockPrefix) ||
-		strings.HasPrefix(poolName, instanceClaimPrefix)
+		strings.HasPrefix(poolName, instanceClaimPrefix) ||
+		strings.HasPrefix(poolName, runnerSightingPrefix)
 }
 
 // GetPoolConfig retrieves pool configuration from DynamoDB. Reserved keys (task
