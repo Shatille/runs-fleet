@@ -30,6 +30,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-buildx-shim ./cmd/buildx-shim
 
+# The local Docker Hub mirror proxy. Extracted from this image by the runner
+# AMI provisioner and run as a host systemd service when the deployment
+# declares an ECR pull-through cache endpoint; not used inside the container.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+    -ldflags "-s -w -X main.version=$VERSION" \
+    -o /bin/runs-fleet-mirror-proxy ./cmd/mirror-proxy
+
 # Stage 2: Official GitHub Actions runner base
 # Provides: actions-runner at /home/runner, Node.js externals, sudo, common
 # workflow tooling. Docker tooling is replaced below with apt-managed packages
@@ -143,6 +150,9 @@ RUN chmod +x /usr/local/bin/runs-fleet-agent
 # the container. See packer/provision-runs-fleet.sh.
 COPY --from=builder /bin/runs-fleet-buildx-shim /usr/local/bin/runs-fleet-buildx-shim
 RUN chmod +x /usr/local/bin/runs-fleet-buildx-shim
+
+COPY --from=builder /bin/runs-fleet-mirror-proxy /usr/local/bin/runs-fleet-mirror-proxy
+RUN chmod +x /usr/local/bin/runs-fleet-mirror-proxy
 
 COPY docker/runner/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

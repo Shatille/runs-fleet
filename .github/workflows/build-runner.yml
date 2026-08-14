@@ -9,6 +9,8 @@ on:
     paths:
       - "docker/runner/**"
       - "cmd/agent/**"
+      - "cmd/buildx-shim/**"
+      - "cmd/mirror-proxy/**"
       # The agent binary is compiled into this image, so any package it can
       # depend on must rebuild it (a fix in e.g. pkg/secrets must reach :latest,
       # else a stale agent is baked into the next AMI). Broad on purpose —
@@ -97,13 +99,14 @@ jobs:
             exit 0
           fi
 
-          # Rebuild only when something the agent binary actually depends on
-          # changed. Derive the agent's first-party package dirs from its import
-          # graph rather than a broad pkg/** glob, so orchestrator-only package
-          # changes (e.g. the pkg/cache v1 server) don't rebuild the runner
-          # image. Not over-rebuilding, not a hand-maintained list. A go list
-          # failure falls back to building (safe default).
-          if ! AGENT_PKGS=$(go list -deps ./cmd/agent 2>&1); then
+          # Rebuild only when something the baked binaries (agent, buildx shim,
+          # mirror proxy) actually depend on changed. Derive their first-party
+          # package dirs from the import graph rather than a broad pkg/** glob,
+          # so orchestrator-only package changes (e.g. the pkg/cache v1 server)
+          # don't rebuild the runner image. Not over-rebuilding, not a
+          # hand-maintained list. A go list failure falls back to building
+          # (safe default).
+          if ! AGENT_PKGS=$(go list -deps ./cmd/agent ./cmd/buildx-shim ./cmd/mirror-proxy 2>&1); then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "go list failed, building to be safe: $AGENT_PKGS"
             exit 0

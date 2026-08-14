@@ -34,6 +34,12 @@ variable "ecr_repository" {
   description = "ECR repository (no registry host, no tag) holding the runner image whose agent binary is extracted into the AMI. Override to match `vars.ECR_REPOSITORY_RUNNER` if your fork publishes under a different path (e.g. `runs-fleet/runner`)."
 }
 
+variable "ecr_pull_through_endpoint" {
+  type        = string
+  default     = ""
+  description = "ECR pull-through cache endpoint for Docker Hub, e.g. \"https://<account>.dkr.ecr.<region>.amazonaws.com/docker-hub\". Declaring it is the whole opt-in: runner instances then run a local mirror proxy against it and route every Docker Hub pull — pre-baked images, boot units, job docker pull/build, and docker-container-driver buildx builds — through the cache, falling back to Hub whenever the path is unavailable. Empty (the default) bakes the proxy inert and changes nothing."
+}
+
 source "amazon-ebs" "runs_fleet_runner_amd64" {
   ami_name             = "runs-fleet-runner-amd64-{{timestamp}}"
   instance_type        = "c7i.xlarge"
@@ -139,6 +145,7 @@ build {
   provisioner "shell" {
     environment_vars = [
       "ECR_REPOSITORY=${var.ecr_repository}",
+      "ECR_PULL_THROUGH_ENDPOINT=${var.ecr_pull_through_endpoint}",
     ]
     script = "${path.root}/provision-runs-fleet.sh"
   }

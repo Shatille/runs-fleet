@@ -177,13 +177,22 @@ func isBuild(argv []string) bool {
 // Returns "" when argv holds no bare token or an unrecognized flag makes the
 // subcommand position ambiguous.
 func subcommand(argv []string) string {
+	sub, _ := splitSubcommand(argv)
+	return sub
+}
+
+// splitSubcommand is the single pre-subcommand flag walk shared by the
+// subcommand dispatch and the create-path argument scan, so the two can never
+// disagree about where the subcommand sits. ("", nil) when there is no bare
+// token or an unrecognized flag makes the position ambiguous.
+func splitSubcommand(argv []string) (string, []string) {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		if a == "buildx" {
 			continue
 		}
 		if !strings.HasPrefix(a, "-") {
-			return a
+			return a, argv[i+1:]
 		}
 		name, _, inlineValue := strings.Cut(a, "=")
 		switch {
@@ -193,10 +202,10 @@ func subcommand(argv []string) string {
 			}
 		case dockerBoolFlags[name]:
 		default:
-			return ""
+			return "", nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // hasCacheFlag reports whether the user already specified cache flags, in either

@@ -7,37 +7,6 @@ imds_bootstrap || exit 1
 
 echo "[$(date)] runs-fleet boot script starting for ${INSTANCE_ID}"
 
-# When the AMI was baked against an ECR pull-through cache, the binfmt/buildx
-# units reference it and the token baked in at build time has long expired.
-# Re-authenticate before those units run. Best-effort: the images they need are
-# already in the AMI's image store, so a failure here costs a re-pull at worst
-# and must not strand the instance.
-ECR_MIRROR_REGISTRY_FILE="/opt/runs-fleet/ecr-mirror-registry"
-if [ -s "$ECR_MIRROR_REGISTRY_FILE" ]; then
-  ECR_MIRROR_REGISTRY=$(cat "$ECR_MIRROR_REGISTRY_FILE")
-  if aws ecr get-login-password --region "$REGION" 2>/dev/null \
-    | docker login --username AWS --password-stdin "$ECR_MIRROR_REGISTRY" >/dev/null 2>&1; then
-    echo "[$(date)] Authenticated to ${ECR_MIRROR_REGISTRY}"
-  else
-    echo "[$(date)] WARN: could not authenticate to ${ECR_MIRROR_REGISTRY}; pulls fall back to Docker Hub"
-  fi
-fi
-
-# Downstream extension point. Upstream ships an empty stub; forks rewrite it
-# from the BOOT_HOOK secret for per-boot state that cannot be baked into the AMI
-# — typically refreshing registry credentials that expire between bake and boot.
-# Runs before the agent so dockerd is configured before the first job pull.
-#
-# Deliberately best-effort: an unreachable mirror or an expired credential must
-# degrade to pulling from the upstream registry, never strand the instance. The
-# `||` branch is what keeps `set -e` from turning a hook failure into a boot
-# failure — which would otherwise self-terminate the instance below.
-BOOT_HOOK="/opt/runs-fleet/boot-hook.sh"
-if [ -s "$BOOT_HOOK" ]; then
-  echo "[$(date)] Running downstream boot hook"
-  bash -euo pipefail "$BOOT_HOOK" || echo "[$(date)] WARN: boot hook failed; continuing without it"
-fi
-
 # Capture bootstrap output so a failure can report *why* (the orchestrator only
 # sees this SQS message; terminated instances retain no console log). Still echo
 # it to the console log for the success path and local debugging.

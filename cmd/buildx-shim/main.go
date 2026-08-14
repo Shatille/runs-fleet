@@ -53,7 +53,8 @@ func safePlan(ctx context.Context, argv []string, fetcher buildxshim.CredsFetche
 	}()
 	env := environ()
 	loadState := func() buildxshim.BuildxState { return buildxshim.LoadBuildxState(env) }
-	args, outcome := plan(ctx, argv, env, fetcher, loadState)
+	builderConfig := func() string { return resolveBuilderConfig(env) }
+	args, outcome := plan(ctx, argv, env, fetcher, loadState, builderConfig)
 	recordOutcome(env, outcome)
 	return args
 }
@@ -62,7 +63,17 @@ func safePlan(ctx context.Context, argv []string, fetcher buildxshim.CredsFetche
 // credentials only when the invocation is otherwise injection-eligible, so
 // non-build invocations (and the metadata handshake) never touch IMDS; Decide
 // likewise consults loadState only past its cheap gates.
-func plan(ctx context.Context, argv []string, env map[string]string, fetcher buildxshim.CredsFetcher, loadState func() buildxshim.BuildxState) (finalArgv []string, outcome string) {
+func plan(ctx context.Context, argv []string, env map[string]string, fetcher buildxshim.CredsFetcher, loadState func() buildxshim.BuildxState, builderConfig func() string) (finalArgv []string, outcome string) {
+	// `create` gets the baked BuildKit mirror config attached; the decision
+	// needs no credentials and no builder state, only the file's presence.
+	if buildxshim.IsCreate(argv) {
+		extra, createOutcome := buildxshim.DecideCreate(argv, builderConfig())
+		if len(extra) == 0 {
+			return argv, createOutcome
+		}
+		return append(append([]string{}, argv...), extra...), createOutcome
+	}
+
 	// Fast passthrough decision without creds first: Decide will tell us
 	// not-build / disabled / opt-out / user-flags / no-cache-builder before we
 	// ever reach IMDS. We pass empty creds; if Decide would otherwise engage it
@@ -88,6 +99,16 @@ func plan(ctx context.Context, argv []string, env map[string]string, fetcher bui
 // var. Best-effort; never fails the build.
 func recordOutcome(env map[string]string, outcome string) {
 	buildxshim.WriteOutcome(env[buildxshim.EnvOutcomeFile], outcome)
+}
+
+// resolveBuilderConfig returns the baked BuildKit mirror config path when the
+// file exists, "" otherwise — the one os.Stat, kept out of DecideCreate.
+func resolveBuilderConfig(env map[string]string) string {
+	path := firstNonEmpty(env[buildxshim.EnvBuilderConfigFile], buildxshim.DefaultBuilderConfigFile)
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return path
 }
 
 func environ() map[string]string {

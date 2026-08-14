@@ -28,12 +28,6 @@ variable "extra_tags" {
   description = "Additional tags merged onto the final AMI. Intended for downstream forks/environments. Keys take precedence over the built-in tag set (Stage, Architecture, etc.) — pick non-colliding names unless overriding is intentional."
 }
 
-variable "ecr_pull_through_prefix" {
-  type        = string
-  default     = ""
-  description = "ECR pull-through cache prefix for Docker Hub, e.g. \"docker-hub\". Empty (the default) pulls from Docker Hub directly. When set, pre-baked images and the binfmt/buildkit boot units resolve through <account>.dkr.ecr.<region>.amazonaws.com/<prefix>/ — the account and region are read from the build instance, so only the prefix is configured here. Images are re-tagged to their canonical names so workflows still request them unprefixed."
-}
-
 variable "runner_version" {
   type        = string
   description = "actions/runner version to bake, without the leading 'v'. Resolved from releases/latest by the Resolve actions/runner version step in build-amis.yml. No default: GitHub expires a given version ~30 days after its release, so a stale fallback would silently bake a non-compliant runner."
@@ -126,7 +120,7 @@ build {
   sources = ["source.amazon-ebs.runner_base_amd64"]
 
   # Downstream extension hook. Upstream ships an empty stub at
-  # packer/provision-base-hook.sh; the build-amis workflow rewrites it
+  # packer/provision-base-hook.sh; the build-base-ami workflow rewrites it
   # from the PROVISION_BASE_HOOK secret when set, otherwise it stays empty.
   provisioner "file" {
     source      = "${path.root}/provision-base-hook.sh"
@@ -137,7 +131,6 @@ build {
     environment_vars = [
       "RUNNER_VERSION=${var.runner_version}",
       "RUNNER_SHA256=${var.runner_sha256}",
-      "ECR_PULL_THROUGH_PREFIX=${var.ecr_pull_through_prefix}",
     ]
     script = "${path.root}/provision-base.sh"
   }
