@@ -5,7 +5,7 @@ ARG TARGETARCH
 ARG RUNNER_BASE_TAG=2.335.1
 
 # Stage 1: Build the runs-fleet agent binary
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 ARG TARGETARCH
 ARG VERSION=dev

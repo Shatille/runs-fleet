@@ -6,7 +6,7 @@
 # fails ONLY on findings we can act on:
 #
 #   - OS / apt packages    (Class == "os-pkgs")      -> fixed by apt-get upgrade
-#   - our own Go binaries  (Target ~ runs-fleet-agent | runs-fleet-buildx-shim) -> fixed via go.mod
+#   - our own Go binaries  (Target ~ runs-fleet-agent | runs-fleet-buildx-shim | runs-fleet-mirror-proxy) -> fixed via go.mod
 #
 # Findings that live ONLY in third-party prebuilt binaries we install but do not
 # build (Docker/containerd cli-plugins, dockerd) or in upstream-bundled
@@ -34,7 +34,7 @@ findings() {
   jq -r "$prog" "$report_file"
 }
 
-ours='(.Target | test("runs-fleet-agent|runs-fleet-buildx-shim"))'
+ours='(.Target | test("runs-fleet-agent|runs-fleet-buildx-shim|runs-fleet-mirror-proxy"))'
 controlled="select(.Class == \"os-pkgs\" or ${ours})"
 third_party="select((.Class == \"os-pkgs\" or ${ours}) | not)"
 
