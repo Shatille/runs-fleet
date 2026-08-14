@@ -38,6 +38,20 @@ If you're tempted to add anything else to `provision-runs-fleet.sh`, that's a si
 
 `provision-base.sh` pulls a small set of common CI images (databases, Redis, buildkit, binfmt, Playwright) into the AMI's Docker image store so ephemeral runners don't re-pull them from Docker Hub on every job. The list lives in the `PREBAKE_IMAGES` array in `provision-base.sh` — edit it there to add or drop an image. This belongs in the base layer (not the runner layer) because the images are a CI-workload concern that's stable across agent-binary revisions, and because the host dockerd's image store lives on the AMI root volume, so images pulled during base provisioning persist into the snapshot. Nothing bounds staleness on a timer — base rebuilds are triggered, not scheduled — but a moved tag at job time re-pulls only changed layers.
 
+### Pulling through an ECR cache instead of Docker Hub
+
+Docker Hub rate-limits anonymous pulls per source IP, and ephemeral runners hit that limit. Set the repository variable `ECR_PULL_THROUGH_PREFIX` to the name of an [ECR pull-through cache rule](https://docs.aws.amazon.com/AmazonECR/latest/userguide/pull-through-cache.html) for Docker Hub (e.g. `docker-hub`) and the base build routes every image it bakes through that cache. Unset (the default) pulls from Hub directly.
+
+Only the rule prefix is configured: the registry host is derived from the build instance's own account and region, the same way `provision-runs-fleet.sh` resolves the runner image's registry. The build authenticates to it once, up front — ECR refuses anonymous pulls.
+
+Three details worth knowing:
+
+- **Official images get the `library/` infix reinstated** — `mysql:8.0` resolves to `<registry>/<prefix>/library/mysql:8.0`, because `mysql` is shorthand for `docker.io/library/mysql` and the cache keys on the upstream repository path.
+- **Images are re-tagged to their canonical names** after pulling, so workflows keep requesting `mysql:8.0` and hit the AMI's image store either way.
+- **The `binfmt` and `buildkit` boot units reference the cache**, and they run on *every* instance boot. Since an ECR token outlives neither the AMI nor a long-running fleet, `cloud-init-boot.sh` re-authenticates at boot. That step is best-effort: the images are already in the image store, so a failure costs a re-pull at worst.
+
+This does **not** cover a bare `docker pull` written inside a workflow job, which still goes to Hub — dockerd's `registry-mirrors` can't help, since it only rewrites `docker.io/library/*` and sends no credentials to the mirror. The IAM role needs `ecr:BatchImportUpstreamImage` and `ecr:CreateRepository` on the cache prefix for first-miss population.
+
 Prefer floating tags so the next rebuild picks up updates on its own. The Playwright image is the exception: its tag is coupled to the `@playwright/test` version a consumer repo pins in its workflow (`container: mcr.microsoft.com/playwright:vX.Y.Z-noble`), and only an exact match is a cache hit. When a consumer upgrades Playwright, bump the pin here too — a stale pin degrades to a miss (the job re-pulls, as it did before the prebake), never a break.
 
 ## Go tool cache and exact-patch matching
