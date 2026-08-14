@@ -61,6 +61,14 @@ export default function HungJobsCard({ onActed }: HungJobsCardProps) {
     void load(staleMinutes);
   }, [load, staleMinutes]);
 
+  const [showSettled, setShowSettled] = useState(false);
+
+  // Age alone made every old record look like an incident. Only 'hung' means
+  // nothing is running the job; a record GitHub says finished is bookkeeping
+  // behind, and re-dispatching it would be wrong. Split them so the count at the
+  // top and the rows underneath tell the same story.
+  const actionable = data?.jobs.filter((j) => j.classification === 'hung' || j.classification === 'unknown') ?? [];
+  const settled = data?.jobs.filter((j) => j.classification === 'completed_upstream' || j.classification === 'running') ?? [];
   const hungCount = data?.jobs.filter((j) => j.classification === 'hung').length ?? 0;
 
   return (
@@ -76,7 +84,8 @@ export default function HungJobsCard({ onActed }: HungJobsCardProps) {
             )}
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Open records older than the window, each checked against GitHub. Only GitHub can tell a hang from a long build.
+            Open records older than the window, each checked against GitHub. Only GitHub can tell a hang from a long
+            build — or from a job that finished while our record stayed open.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -123,27 +132,62 @@ export default function HungJobsCard({ onActed }: HungJobsCardProps) {
       )}
 
       {data && data.jobs.length > 0 && (
-        <div className="mt-3 overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="py-2 pr-4">Job</th>
-                <th className="py-2 pr-4">Repo</th>
-                <th className="py-2 pr-4">Open for</th>
-                <th className="py-2 pr-4">Our status</th>
-                <th className="py-2 pr-4">GitHub</th>
-                <th className="py-2 pr-4">Verdict</th>
-                <th className="py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {data.jobs.map((job) => (
-                <HungRow key={job.job_id} job={job} onActed={onActed} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="mt-4">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Needs attention ({actionable.length})
+            </h4>
+            {actionable.length === 0 ? (
+              <p className="mt-2 p-3 rounded-md text-sm bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+                Nothing is stuck. Every open record older than {data.stale_minutes} minutes has been accounted for.
+              </p>
+            ) : (
+              <HungTable jobs={actionable} onActed={onActed} />
+            )}
+          </div>
+
+          {settled.length > 0 && (
+            <div className="mt-4">
+              <button
+                onClick={() => setShowSettled((v) => !v)}
+                className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+              >
+                {showSettled ? '▾' : '▸'} Bookkeeping behind ({settled.length})
+              </button>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                These are not stuck: GitHub has already finished them, or is running them right now. A finished one is
+                retired by Orphaned Jobs Cleanup, not by a requeue.
+              </p>
+              {showSettled && <HungTable jobs={settled} onActed={onActed} />}
+            </div>
+          )}
+        </>
       )}
+    </div>
+  );
+}
+
+function HungTable({ jobs, onActed }: { jobs: HungJob[]; onActed: () => void }) {
+  return (
+    <div className="mt-2 overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            <th className="py-2 pr-4">Job</th>
+            <th className="py-2 pr-4">Repo</th>
+            <th className="py-2 pr-4">Open for</th>
+            <th className="py-2 pr-4">Our status</th>
+            <th className="py-2 pr-4">GitHub</th>
+            <th className="py-2 pr-4">Verdict</th>
+            <th className="py-2 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+          {jobs.map((job) => (
+            <HungRow key={job.job_id} job={job} onActed={onActed} />
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

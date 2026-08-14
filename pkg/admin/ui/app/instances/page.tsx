@@ -136,7 +136,12 @@ export default function InstancesPage() {
         const params = new URLSearchParams();
         if (dryRun) params.set('dry_run', 'true');
 
-        const res = await apiFetch(`/api/housekeeping/orphaned-instances?${params}`, { method: 'POST' });
+        // A five-phase EC2 sweep outlives the default read timeout on a busy fleet.
+        const res = await apiFetch(
+          `/api/housekeeping/orphaned-instances?${params}`,
+          { method: 'POST' },
+          60000,
+        );
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data.details || data.error || 'Failed to sweep orphaned instances');

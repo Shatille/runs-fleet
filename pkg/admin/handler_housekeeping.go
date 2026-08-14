@@ -20,7 +20,28 @@ import (
 const (
 	defaultOrphanedJobThreshold = 2 * time.Hour
 	minOrphanedJobThreshold     = 10 * time.Minute
+	// defaultHousekeepingMaxItems bounds one operator-triggered sweep. The console
+	// drains successive batches, so this trades a few more requests for the
+	// certainty that no single one outlives the browser's fetch timeout.
+	defaultHousekeepingMaxItems = 100
+	maxHousekeepingMaxItems     = 500
 )
+
+// parseMaxItems reads the batch cap shared by the housekeeping sweeps, answering
+// false once it has written the 400 for an out-of-range value.
+func parseMaxItems(w http.ResponseWriter, r *http.Request, writeErr func(http.ResponseWriter, int, string, string)) (int, bool) {
+	raw := r.URL.Query().Get("max_items")
+	if raw == "" {
+		return defaultHousekeepingMaxItems, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > maxHousekeepingMaxItems {
+		writeErr(w, http.StatusBadRequest, "Invalid max_items",
+			"must be a whole number between 1 and "+strconv.Itoa(maxHousekeepingMaxItems))
+		return 0, false
+	}
+	return n, true
+}
 
 // OrphanInstanceSweeper runs the orphaned-instance reaper on demand. It is the
 // scheduled housekeeping task's detection and termination, callable with a dry run.
@@ -129,12 +150,21 @@ type CleanupOrphanedJobsResponse struct {
 	Cleaned    int     `json:"cleaned"`
 	Candidates int     `json:"candidates"`
 	JobIDs     []int64 `json:"job_ids,omitempty"`
-	Message    string  `json:"message"`
+	// Truncated reports that the batch cap left candidates unread, so another
+	// call has more to do.
+	Truncated bool   `json:"truncated"`
+	Message   string `json:"message"`
 }
 
 // CleanupOrphanedJobs handles POST /api/housekeeping/orphaned-jobs.
+//
+// It reports Truncated when the batch cap left candidates unread, which is how the
+// console knows to send another batch. Bounding one call is what keeps this endpoint
+// inside the browser's fetch timeout on a large jobs table.
+//
 // Query params:
 //   - threshold_minutes: minimum age in minutes for jobs to be considered orphaned (default: 120, min: 10)
+//   - max_items: how many candidates to take on this call (default 100, max 500)
 //   - dry_run: if "true", only report what would be cleaned without actually cleaning
 func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -151,9 +181,15 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		}
 	}
 
+	maxItems, ok := parseMaxItems(w, r, h.writeError)
+	if !ok {
+		return
+	}
+
 	dryRun := r.URL.Query().Get("dry_run") == queryTrue
 
-	candidates, err := housekeeping.FindOrphanedJobCandidates(ctx, h.dynamoClient, h.jobsTableName, threshold)
+	candidates, truncated, err := housekeeping.FindOrphanedJobCandidates(ctx, h.dynamoClient, h.jobsTableName, threshold,
+		housekeeping.WithMaxItems(maxItems))
 	if err != nil {
 		h.log.Error(ctx, "failed to find orphaned job candidates", slog.String(logging.KeyError, err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "Failed to scan for orphaned jobs", err.Error())
@@ -166,6 +202,7 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 			Cleaned:    0,
 			Candidates: 0,
+			Truncated:  truncated,
 			Message:    "No orphaned jobs found",
 		})
 		return
@@ -188,6 +225,7 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 		h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 			Cleaned:    0,
 			Candidates: len(candidates),
+			Truncated:  truncated,
 			Message:    "All candidate jobs have running instances",
 		})
 		return
@@ -199,11 +237,13 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 			jobIDs[i] = j.JobID
 		}
 		recordAdminAction(r, h.auditDB, "housekeeping.orphaned-jobs", joinJobIDs(jobIDs), "success",
-			slog.Bool("dry_run", true), slog.Int("cleaned", 0), slog.Int("candidates", len(candidates)))
+			slog.Bool("dry_run", true), slog.Int("cleaned", 0), slog.Int("candidates", len(candidates)),
+			slog.Bool("truncated", truncated))
 		h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 			Cleaned:    0,
 			Candidates: len(candidates),
 			JobIDs:     jobIDs,
+			Truncated:  truncated,
 			Message:    "Dry run: would clean " + strconv.Itoa(len(orphanedJobs)) + " orphaned jobs",
 		})
 		return
@@ -231,11 +271,13 @@ func (h *HousekeepingHandler) CleanupOrphanedJobs(w http.ResponseWriter, r *http
 	}
 
 	recordAdminAction(r, h.auditDB, "housekeeping.orphaned-jobs", joinJobIDs(cleanedJobIDs), "success",
-		slog.Bool("dry_run", false), slog.Int("cleaned", cleanedCount), slog.Int("candidates", len(candidates)))
+		slog.Bool("dry_run", false), slog.Int("cleaned", cleanedCount), slog.Int("candidates", len(candidates)),
+		slog.Bool("truncated", truncated))
 	h.writeJSON(w, http.StatusOK, CleanupOrphanedJobsResponse{
 		Cleaned:    cleanedCount,
 		Candidates: len(candidates),
 		JobIDs:     cleanedJobIDs,
+		Truncated:  truncated,
 		Message:    "Cleaned " + strconv.Itoa(cleanedCount) + " orphaned jobs",
 	})
 }

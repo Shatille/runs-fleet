@@ -1049,7 +1049,7 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		return nil
 	}
 
-	candidates, err := FindOrphanedJobCandidates(ctx, t.dynamoClient, t.config.JobsTableName, orphanedJobThreshold)
+	candidates, _, err := FindOrphanedJobCandidates(ctx, t.dynamoClient, t.config.JobsTableName, orphanedJobThreshold)
 	if err != nil {
 		return fmt.Errorf("failed to scan jobs: %w", err)
 	}

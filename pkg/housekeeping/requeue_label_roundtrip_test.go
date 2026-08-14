@@ -23,7 +23,7 @@ func TestRequeue_PreservesRequestedLabelEndToEnd(t *testing.T) {
 		labelledJobItem(94023466800, requestedLabel),
 	}}
 
-	jobs, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", time.Minute, []db.JobStatus{db.JobStatusLaunched})
+	jobs, _, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", time.Minute, []db.JobStatus{db.JobStatusLaunched})
 	if err != nil {
 		t.Fatalf("FindRequeueableJobs() error = %v", err)
 	}

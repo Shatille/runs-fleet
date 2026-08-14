@@ -225,6 +225,10 @@ type mockTaskDynamoDBAPI struct {
 	statusOverride map[int64]string
 	onUpdateItem   func()
 	captureUpdates *[]*dynamodb.UpdateItemInput
+	// pages, when set, serves one Scan page per entry and sets LastEvaluatedKey
+	// on all but the last, so a cap can be observed short-circuiting pagination.
+	// items is ignored while it is set.
+	pages [][]map[string]types.AttributeValue
 }
 
 func (m *mockTaskDynamoDBAPI) GetItem(_ context.Context, params *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -731,9 +735,30 @@ func (m *mockTaskDynamoDBAPI) Scan(_ context.Context, params *dynamodb.ScanInput
 	if m.scanErr != nil {
 		return nil, m.scanErr
 	}
+	if m.pages != nil {
+		return m.scanPage(params), nil
+	}
 	return &dynamodb.ScanOutput{
 		Items: m.items,
 	}, nil
+}
+
+// scanPage serves the page addressed by ExclusiveStartKey, keyed by page index.
+func (m *mockTaskDynamoDBAPI) scanPage(params *dynamodb.ScanInput) *dynamodb.ScanOutput {
+	idx := 0
+	if start, ok := params.ExclusiveStartKey["page"].(*types.AttributeValueMemberN); ok {
+		idx, _ = strconv.Atoi(start.Value)
+	}
+	if idx >= len(m.pages) {
+		return &dynamodb.ScanOutput{}
+	}
+	out := &dynamodb.ScanOutput{Items: m.pages[idx]}
+	if idx+1 < len(m.pages) {
+		out.LastEvaluatedKey = map[string]types.AttributeValue{
+			"page": &types.AttributeValueMemberN{Value: strconv.Itoa(idx + 1)},
+		}
+	}
+	return out
 }
 
 func (m *mockTaskDynamoDBAPI) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {

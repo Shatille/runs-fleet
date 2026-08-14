@@ -43,7 +43,7 @@ func (t *Tasks) ExecuteUnconfirmedRunners(ctx context.Context) error {
 		return nil
 	}
 
-	candidates, err := FindRequeueableJobs(ctx, t.dynamoClient, t.config.JobsTableName, launchedConfirmThreshold, []db.JobStatus{db.JobStatusLaunched})
+	candidates, _, err := FindRequeueableJobs(ctx, t.dynamoClient, t.config.JobsTableName, launchedConfirmThreshold, []db.JobStatus{db.JobStatusLaunched})
 	if err != nil {
 		return fmt.Errorf("failed to scan launched jobs: %w", err)
 	}

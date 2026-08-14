@@ -23,6 +23,20 @@ type mockOrphanDynamo struct {
 	updateCalls int
 	lastUpdate  *dynamodb.UpdateItemInput
 	lastScan    *dynamodb.ScanInput
+	scanCalls   int
+	scanInputs  []*dynamodb.ScanInput
+	// pages, when set, serves one Scan page per entry and sets LastEvaluatedKey
+	// on all but the last, so a cap can be observed short-circuiting pagination.
+	// items is ignored while it is set.
+	pages [][]map[string]types.AttributeValue
+}
+
+func orphanItem(jobID int64, instanceID string) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		"job_id":      &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
+		"instance_id": &types.AttributeValueMemberS{Value: instanceID},
+		"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+	}
 }
 
 func (m *mockOrphanDynamo) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -40,10 +54,29 @@ func (m *mockOrphanDynamo) GetItem(_ context.Context, in *dynamodb.GetItemInput,
 
 func (m *mockOrphanDynamo) Scan(_ context.Context, in *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 	m.lastScan = in
+	m.scanCalls++
+	m.scanInputs = append(m.scanInputs, in)
 	if m.scanErr != nil {
 		return nil, m.scanErr
 	}
-	return &dynamodb.ScanOutput{Items: m.items}, nil
+	if m.pages == nil {
+		return &dynamodb.ScanOutput{Items: m.items}, nil
+	}
+
+	idx := 0
+	if start, ok := in.ExclusiveStartKey["page"].(*types.AttributeValueMemberN); ok {
+		idx, _ = strconv.Atoi(start.Value)
+	}
+	if idx >= len(m.pages) {
+		return &dynamodb.ScanOutput{}, nil
+	}
+	out := &dynamodb.ScanOutput{Items: m.pages[idx]}
+	if idx+1 < len(m.pages) {
+		out.LastEvaluatedKey = map[string]types.AttributeValue{
+			"page": &types.AttributeValueMemberN{Value: strconv.Itoa(idx + 1)},
+		}
+	}
+	return out, nil
 }
 
 func (m *mockOrphanDynamo) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
@@ -89,7 +122,7 @@ func (m *mockOrphanEC2) DescribeInstances(_ context.Context, params *ec2.Describ
 func TestFindOrphanedJobCandidates_ScanError(t *testing.T) {
 	t.Parallel()
 	client := &mockOrphanDynamo{scanErr: errors.New("scan failed")}
-	_, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	_, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -98,7 +131,7 @@ func TestFindOrphanedJobCandidates_ScanError(t *testing.T) {
 func TestFindOrphanedJobCandidates_NoCandidates(t *testing.T) {
 	t.Parallel()
 	client := &mockOrphanDynamo{items: nil}
-	candidates, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	candidates, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +159,7 @@ func TestFindOrphanedJobCandidates_FiltersRunningWithoutInstance(t *testing.T) {
 			},
 		},
 	}
-	candidates, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	candidates, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +192,7 @@ func TestFindOrphanedJobCandidates_SkipsZeroJobID(t *testing.T) {
 			},
 		},
 	}
-	candidates, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	candidates, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +212,7 @@ func TestFindOrphanedJobCandidates_SkipsInvalidJobID(t *testing.T) {
 			},
 		},
 	}
-	candidates, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	candidates, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,12 +592,80 @@ func TestFindOrphanedJobCandidates_IncludesStrandedRequeued(t *testing.T) {
 		},
 	}
 
-	candidates, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	candidates, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(candidates) != 1 || candidates[0].JobID != 200 {
 		t.Fatalf("candidates = %+v, want the stranded requeued record", candidates)
+	}
+}
+
+// A cap bounds the work one call takes on and stops paginating once it is met.
+// The admin console's cleanup drains in batches, and a single request that grew
+// with the table is exactly what made that button time out.
+func TestFindOrphanedJobCandidates_CapStopsPagination(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{pages: [][]map[string]types.AttributeValue{
+		{orphanItem(1, "i-a"), orphanItem(2, "i-b")},
+		{orphanItem(3, "i-c")},
+	}}
+
+	candidates, truncated, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour, WithMaxItems(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected the cap to bound results to 2, got %d", len(candidates))
+	}
+	if !truncated {
+		t.Error("expected truncated=true while a further page remains")
+	}
+	if client.scanCalls != 1 {
+		t.Errorf("expected the cap to short-circuit before page 2, got %d scans", client.scanCalls)
+	}
+	if len(client.scanInputs[0].ExclusiveStartKey) != 0 {
+		t.Error("first page must not set ExclusiveStartKey")
+	}
+}
+
+// The last batch must report truncated=false, or the console's drain never ends.
+func TestFindOrphanedJobCandidates_CapNotReachedIsNotTruncated(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{pages: [][]map[string]types.AttributeValue{
+		{orphanItem(1, "i-a")},
+	}}
+
+	candidates, truncated, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour, WithMaxItems(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || truncated {
+		t.Fatalf("candidates = %d truncated = %v, want 1 and false", len(candidates), truncated)
+	}
+}
+
+// The scheduled sweep passes no cap and must keep draining every page.
+func TestFindOrphanedJobCandidates_NoCapDrainsAllPages(t *testing.T) {
+	t.Parallel()
+
+	client := &mockOrphanDynamo{pages: [][]map[string]types.AttributeValue{
+		{orphanItem(1, "i-a")},
+		{orphanItem(2, "i-b")},
+		{orphanItem(3, "i-c")},
+	}}
+
+	candidates, truncated, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 3 || truncated {
+		t.Fatalf("candidates = %d truncated = %v, want all 3 and false", len(candidates), truncated)
+	}
+	if client.scanCalls != 3 {
+		t.Errorf("expected all 3 pages drained, got %d scans", client.scanCalls)
 	}
 }
 
@@ -576,7 +677,7 @@ func TestFindOrphanedJobCandidates_AgesRequeuedByRequeuedAt(t *testing.T) {
 	t.Parallel()
 
 	client := &mockOrphanDynamo{}
-	if _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour); err != nil {
+	if _, _, err := FindOrphanedJobCandidates(context.Background(), client, "jobs", 2*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if client.lastScan == nil || client.lastScan.FilterExpression == nil {

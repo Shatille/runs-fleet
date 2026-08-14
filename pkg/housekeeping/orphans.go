@@ -38,6 +38,38 @@ const (
 	orphanInstanceCheckBatchSize = 100
 )
 
+// ScanOption bounds one sweep's scan. Options exist so the scheduled sweeps,
+// which must keep draining the whole table, can go on calling these functions
+// unchanged while the admin endpoints ask for a bounded batch.
+type ScanOption func(*scanOptions)
+
+type scanOptions struct {
+	// maxItems caps how many candidates one call collects. Zero means no cap.
+	maxItems int
+}
+
+// WithMaxItems caps a scan at n candidates and reports whether more remain, so an
+// operator-triggered sweep does not grow with the table. A non-positive n is no cap.
+//
+// The cap is applied to matched candidates rather than through ScanInput.Limit,
+// which bounds items *read* and so cannot express "stop after n matches" behind a
+// filter expression.
+func WithMaxItems(n int) ScanOption {
+	return func(o *scanOptions) {
+		if n > 0 {
+			o.maxItems = n
+		}
+	}
+}
+
+func newScanOptions(opts []ScanOption) scanOptions {
+	var o scanOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
 // FindOrphanedJobCandidates scans DynamoDB for jobs in "running", "claiming",
 // "launched", or "requeued" status older than the given threshold. Jobs in "running" or
 // "launched" status without an instance_id are excluded (they need an instance to verify
@@ -55,7 +87,11 @@ const (
 // running/claiming, the requeue sweep scans launched, and the old-jobs GC keys off
 // completed_at, which a requeued record never gets. A re-dispatch that is never claimed
 // strands its record permanently otherwise.
-func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, threshold time.Duration) ([]OrphanedJobCandidate, error) {
+// It returns truncated=true when a cap from WithMaxItems stopped it with candidates
+// still unread, which is the signal an operator-triggered sweep uses to ask for
+// another batch.
+func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableName string, threshold time.Duration, opts ...ScanOption) ([]OrphanedJobCandidate, bool, error) {
+	scanOpts := newScanOptions(opts)
 	cutoffTime := time.Now().Add(-threshold).Format(time.RFC3339)
 
 	input := &dynamodb.ScanInput{
@@ -83,10 +119,10 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 
 		output, err := dynamoClient.Scan(ctx, input)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 
-		for _, item := range output.Items {
+		for i, item := range output.Items {
 			var jobID int64
 			var instanceID string
 			var status string
@@ -118,6 +154,14 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 				InstanceID: instanceID,
 				Status:     status,
 			})
+
+			if scanOpts.maxItems > 0 && len(candidates) >= scanOpts.maxItems {
+				// More candidates remain if this page has unread items left or
+				// another page follows. Anything less would end the caller's
+				// drain with work still stranded.
+				more := i+1 < len(output.Items) || output.LastEvaluatedKey != nil
+				return candidates, more, nil
+			}
 		}
 
 		lastEvaluatedKey = output.LastEvaluatedKey
@@ -126,7 +170,7 @@ func FindOrphanedJobCandidates(ctx context.Context, dynamoClient OrphanScanAPI, 
 		}
 	}
 
-	return candidates, nil
+	return candidates, false, nil
 }
 
 // InstanceExistsChecker determines whether a single EC2 instance exists.

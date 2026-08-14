@@ -53,11 +53,15 @@ type RequeueableJob struct {
 // launch message. It is the single source of truth for "which records describe a job
 // whose runner may need re-dispatching" — shared by the watchdog and the
 // operator-triggered action (both pass launched only; see RequeueOptions.Statuses).
-func FindRequeueableJobs(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, threshold time.Duration, statuses []db.JobStatus) ([]RequeueableJob, error) {
+// It returns truncated=true when a cap from WithMaxItems stopped it with candidates
+// still unread, which is the signal an operator-triggered sweep uses to ask for
+// another batch.
+func FindRequeueableJobs(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, threshold time.Duration, statuses []db.JobStatus, opts ...ScanOption) ([]RequeueableJob, bool, error) {
 	if len(statuses) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
+	scanOpts := newScanOptions(opts)
 	cutoff := time.Now().Add(-threshold).Format(time.RFC3339)
 
 	statusNames := make([]string, len(statuses))
@@ -85,9 +89,9 @@ func FindRequeueableJobs(ctx context.Context, scanAPI OrphanScanAPI, jobsTable s
 		input.ExclusiveStartKey = lastKey
 		output, err := scanAPI.Scan(ctx, input)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		for _, item := range output.Items {
+		for i, item := range output.Items {
 			j := RequeueableJob{
 				JobID:         avInt64(item, "job_id"),
 				InstanceID:    avString(item, "instance_id"),
@@ -103,13 +107,21 @@ func FindRequeueableJobs(ctx context.Context, scanAPI OrphanScanAPI, jobsTable s
 				continue
 			}
 			jobs = append(jobs, j)
+
+			if scanOpts.maxItems > 0 && len(jobs) >= scanOpts.maxItems {
+				// More candidates remain if this page has unread items left or
+				// another page follows. Anything less would end the caller's
+				// drain with work still stranded.
+				more := i+1 < len(output.Items) || output.LastEvaluatedKey != nil
+				return jobs, more, nil
+			}
 		}
 		lastKey = output.LastEvaluatedKey
 		if lastKey == nil {
 			break
 		}
 	}
-	return jobs, nil
+	return jobs, false, nil
 }
 
 // BuildRequeueMessage builds the SQS launch message that re-dispatches a fresh runner
@@ -179,6 +191,10 @@ type RequeueOptions struct {
 	Statuses []db.JobStatus
 	// DryRun reports candidates without terminating, sending, or mutating anything.
 	DryRun bool
+	// MaxItems caps how many candidates one sweep takes on, so an operator's call
+	// does not grow with the table. Zero means no cap, which is what the scheduled
+	// watchdog wants. A capped sweep sets RequeueResult.Truncated when more remain.
+	MaxItems int
 }
 
 // RequeueResult summarizes a requeue sweep.
@@ -187,6 +203,9 @@ type RequeueResult struct {
 	Requeued         int
 	SkippedExhausted int
 	JobIDs           []int64
+	// Truncated reports that MaxItems stopped the scan with candidates still
+	// unread, so another sweep has more to do.
+	Truncated bool
 }
 
 // RequeueOutcome names what happened to one job's re-dispatch attempt. Refusals
@@ -340,10 +359,12 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 		return result, fmt.Errorf("jobs table not configured")
 	}
 
-	candidates, err := FindRequeueableJobs(ctx, deps.Scan, deps.JobsTable, opts.Threshold, opts.Statuses)
+	candidates, truncated, err := FindRequeueableJobs(ctx, deps.Scan, deps.JobsTable, opts.Threshold, opts.Statuses,
+		WithMaxItems(opts.MaxItems))
 	if err != nil {
 		return result, fmt.Errorf("scan requeueable jobs: %w", err)
 	}
+	result.Truncated = truncated
 	if len(candidates) == 0 {
 		return result, nil
 	}

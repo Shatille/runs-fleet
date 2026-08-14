@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/Shavakan/runs-fleet/pkg/housekeeping"
@@ -330,6 +331,98 @@ func TestHousekeepingHandler_CleanupOrphanedJobs_DryRun(t *testing.T) {
 	}
 	if dynamoClient.updateCalls != 0 {
 		t.Errorf("expected 0 update calls in dry run, got %d", dynamoClient.updateCalls)
+	}
+}
+
+// The console drains this endpoint in batches, so one call must bound its work and
+// say whether more is left. Without the cap a big enough table blows the browser's
+// fetch timeout and the operator is told the cleanup failed when it did not.
+func TestHousekeepingHandler_CleanupOrphanedJobs_CapsAndReportsTruncated(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockHousekeepingEC2{instances: map[string]ec2types.InstanceStateName{}}
+	dynamoClient := &mockHousekeepingDynamo{
+		items: []map[string]types.AttributeValue{
+			orphanRow(1, "i-a"),
+			orphanRow(2, "i-b"),
+			orphanRow(3, "i-c"),
+		},
+	}
+
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/housekeeping/orphaned-jobs?max_items=2", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var resp CleanupOrphanedJobsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Cleaned != 2 {
+		t.Errorf("expected the cap to bound the batch to 2, got %d", resp.Cleaned)
+	}
+	if !resp.Truncated {
+		t.Error("expected truncated=true so the console asks for another batch")
+	}
+}
+
+// A batch that exhausts the candidates must report truncated=false, or the
+// console's drain loop never terminates.
+func TestHousekeepingHandler_CleanupOrphanedJobs_LastBatchNotTruncated(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockHousekeepingEC2{instances: map[string]ec2types.InstanceStateName{}}
+	dynamoClient := &mockHousekeepingDynamo{
+		items: []map[string]types.AttributeValue{orphanRow(1, "i-a")},
+	}
+
+	handler := NewHousekeepingHandler(ec2Client, dynamoClient, "test-jobs", nil, nil, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/housekeeping/orphaned-jobs?max_items=50", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var resp CleanupOrphanedJobsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Cleaned != 1 || resp.Truncated {
+		t.Errorf("cleaned = %d truncated = %v, want 1 and false", resp.Cleaned, resp.Truncated)
+	}
+}
+
+func TestHousekeepingHandler_CleanupOrphanedJobs_RejectsInvalidMaxItems(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHousekeepingHandler(&mockHousekeepingEC2{}, &mockHousekeepingDynamo{}, "test-jobs", nil, nil, NewAuthMiddleware(""))
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	for _, raw := range []string{"0", "-1", "abc", "501"} {
+		req := httptest.NewRequest("POST", "/api/housekeeping/orphaned-jobs?max_items="+raw, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("max_items=%s: expected status 400, got %d", raw, rec.Code)
+		}
+	}
+}
+
+func orphanRow(jobID int64, instanceID string) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		"job_id":      &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
+		"instance_id": &types.AttributeValueMemberS{Value: instanceID},
+		"status":      &types.AttributeValueMemberS{Value: "running"},
 	}
 }
 
