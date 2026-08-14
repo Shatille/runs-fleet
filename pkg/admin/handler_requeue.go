@@ -69,7 +69,10 @@ type RequeueHungJobsResponse struct {
 	Candidates       int     `json:"candidates"`
 	SkippedExhausted int     `json:"skipped_exhausted"`
 	JobIDs           []int64 `json:"job_ids,omitempty"`
-	Message          string  `json:"message"`
+	// Truncated reports that the batch cap left candidates unread, so another
+	// call has more to do.
+	Truncated bool   `json:"truncated"`
+	Message   string `json:"message"`
 }
 
 // RequeueHungJobs handles POST /api/housekeeping/requeue-hung-jobs.
@@ -101,6 +104,11 @@ func (h *RequeueHandler) RequeueHungJobs(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	maxItems, ok := parseMaxItems(w, r, h.writeError)
+	if !ok {
+		return
+	}
+
 	dryRun := r.URL.Query().Get("dry_run") == queryTrue
 
 	result, err := housekeeping.RequeueHungJobs(ctx, housekeeping.RequeueDeps{
@@ -119,6 +127,7 @@ func (h *RequeueHandler) RequeueHungJobs(w http.ResponseWriter, r *http.Request)
 		// reaper, not this operator action.
 		Statuses: []db.JobStatus{db.JobStatusLaunched},
 		DryRun:   dryRun,
+		MaxItems: maxItems,
 	})
 	if err != nil {
 		h.log.Error(ctx, "requeue hung jobs failed", slog.String(logging.KeyError, err.Error()))
@@ -131,10 +140,17 @@ func (h *RequeueHandler) RequeueHungJobs(w http.ResponseWriter, r *http.Request)
 		Candidates:       result.Candidates,
 		SkippedExhausted: result.SkippedExhausted,
 		JobIDs:           result.JobIDs,
+		Truncated:        result.Truncated,
 	}
 	switch {
 	case result.Candidates == 0:
-		resp.Message = "No hung jobs found"
+		// Say which records this action is about. The hung-jobs panel above it
+		// lists every old open record, most of which are not launched, and a bare
+		// "none found" under a panel showing hundreds reads as a broken button.
+		resp.Message = fmt.Sprintf(
+			"No launched jobs older than %d minutes. This action only re-drives jobs whose runner never confirmed; "+
+				"a record that finished at GitHub needs Orphaned Jobs Cleanup instead.",
+			int(threshold.Minutes()))
 	case dryRun:
 		resp.Message = fmt.Sprintf("Dry run: would requeue %d hung job(s)", len(result.JobIDs))
 	default:
@@ -145,7 +161,8 @@ func (h *RequeueHandler) RequeueHungJobs(w http.ResponseWriter, r *http.Request)
 		slog.Bool("dry_run", dryRun),
 		slog.Int("candidates", result.Candidates),
 		slog.Int("requeued", result.Requeued),
-		slog.Int("skipped_exhausted", result.SkippedExhausted))
+		slog.Int("skipped_exhausted", result.SkippedExhausted),
+		slog.Bool("truncated", result.Truncated))
 
 	h.writeJSON(w, http.StatusOK, resp)
 }

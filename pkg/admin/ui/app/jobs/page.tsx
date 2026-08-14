@@ -15,7 +15,9 @@ interface CleanupResult {
   cleaned: number;
   candidates: number;
   job_ids?: number[];
+  truncated?: boolean;
   message: string;
+  batches?: number;
 }
 
 interface RequeueResult {
@@ -23,8 +25,26 @@ interface RequeueResult {
   candidates: number;
   skipped_exhausted: number;
   job_ids?: number[];
+  truncated?: boolean;
   message: string;
+  batches?: number;
 }
+
+// Housekeeping sweeps scan the whole jobs table and can outlive the default
+// read timeout, so they get their own.
+const HOUSEKEEPING_TIMEOUT_MS = 60000;
+
+// Bounds the drain so a server that never stops reporting more work cannot spin
+// the browser forever. At the 100-item default batch this is 10k records.
+const MAX_DRAIN_BATCHES = 100;
+
+// How many consecutive batches may act on nothing before the drain gives up.
+// One idle batch is normal -- its candidates were all still alive, or all
+// refused -- but a run of them means the scan is stuck on rows it cannot act on.
+// Three covers ~300 unactionable rows at the default batch size, chosen against
+// the ~250 stranded records this was built to clear. A longer run stops with
+// truncated still set, so the result says to run it again.
+const MAX_IDLE_DRAIN_BATCHES = 3;
 
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -48,6 +68,9 @@ export default function JobsPage() {
   const [requeueLoading, setRequeueLoading] = useState(false);
   const [requeueResult, setRequeueResult] = useState<RequeueResult | null>(null);
   const [showRequeueConfirm, setShowRequeueConfirm] = useState(false);
+  // ConfirmDialog stays open on confirm, so a key repeat can fire a drain twice.
+  const cleanupInFlight = useRef(false);
+  const requeueInFlight = useRef(false);
   const [traceURL, setTraceURL] = useState<string>('');
   const { toast } = useToast();
 
@@ -137,22 +160,59 @@ export default function JobsPage() {
   );
 
   const handleCleanupOrphanedJobs = async (dryRun: boolean = false) => {
+    if (cleanupInFlight.current) return;
+    cleanupInFlight.current = true;
     try {
       setCleanupLoading(true);
       setCleanupResult(null);
       const params = new URLSearchParams();
       if (dryRun) params.set('dry_run', 'true');
 
-      const res = await apiFetch(`/api/housekeeping/orphaned-jobs?${params}`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to cleanup orphaned jobs: ${res.statusText}`);
-      }
-      const data = await res.json();
-      setCleanupResult(data);
-      if (!dryRun && data.cleaned > 0) {
-        toast('success', `Cleaned up ${data.cleaned} orphaned job(s)`);
+      let cleaned = 0;
+      let candidates = 0;
+      let jobIDs: number[] = [];
+      let truncated = false;
+      let batches = 0;
+      let idleBatches = 0;
+
+      // The server's truncated flag is the only thing that knows whether rows
+      // remain, so it drives the loop. A batch can legitimately clean nothing --
+      // every candidate it saw still had a live instance -- while real orphans sit
+      // further down the table, so no-progress is tolerated rather than fatal. It
+      // is still bounded: a scan that keeps returning the same unactionable rows
+      // would otherwise loop until MAX_DRAIN_BATCHES.
+      //
+      // A dry run mutates nothing, so re-POSTing it would re-scan identical rows
+      // forever. It reports one batch and says more remain.
+      do {
+        const res = await apiFetch(
+          `/api/housekeeping/orphaned-jobs?${params}`,
+          { method: 'POST' },
+          HOUSEKEEPING_TIMEOUT_MS
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.details || body.error || `Failed to cleanup orphaned jobs: ${res.statusText}`);
+        }
+        const data: CleanupResult = await res.json();
+        batches++;
+        cleaned += data.cleaned;
+        candidates += data.candidates;
+        if (data.job_ids) jobIDs = jobIDs.concat(data.job_ids);
+        truncated = Boolean(data.truncated);
+
+        idleBatches = data.cleaned === 0 ? idleBatches + 1 : 0;
+        if (idleBatches >= MAX_IDLE_DRAIN_BATCHES) break;
+      } while (!dryRun && truncated && batches < MAX_DRAIN_BATCHES);
+
+      const message = dryRun
+        ? `Dry run: would clean ${jobIDs.length} orphaned job(s)${truncated ? ', and more remain after this batch' : ''}`
+        : `Cleaned ${cleaned} orphaned job(s)${batches > 1 ? ` in ${batches} batches` : ''}` +
+          `${truncated ? '; more remain — run again' : ''}`;
+      setCleanupResult({ cleaned, candidates, job_ids: jobIDs, truncated, batches, message });
+
+      if (!dryRun && cleaned > 0) {
+        toast('success', `Cleaned up ${cleaned} orphaned job(s)`);
         fetchJobs();
         fetchStats();
       } else if (!dryRun) {
@@ -162,26 +222,78 @@ export default function JobsPage() {
       toast('error', err instanceof Error ? err.message : 'Failed to cleanup orphaned jobs');
     } finally {
       setCleanupLoading(false);
+      cleanupInFlight.current = false;
     }
   };
 
   const handleRequeueHungJobs = async (dryRun: boolean = false) => {
+    if (requeueInFlight.current) return;
+    requeueInFlight.current = true;
     try {
       setRequeueLoading(true);
       setRequeueResult(null);
       const params = new URLSearchParams();
       if (dryRun) params.set('dry_run', 'true');
 
-      const res = await apiFetch(`/api/housekeeping/requeue-hung-jobs?${params}`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to requeue hung jobs: ${res.statusText}`);
+      let requeued = 0;
+      let candidates = 0;
+      let skipped = 0;
+      let jobIDs: number[] = [];
+      let truncated = false;
+      let batches = 0;
+      let idleBatches = 0;
+      let lastMessage = '';
+
+      // As with cleanup, truncated drives the loop: a batch whose candidates were
+      // all refused (retries exhausted, GitHub says the job is running) requeues
+      // nothing while re-dispatchable records may still sit further down the
+      // table. Bounded so a scan that keeps returning the same refused rows stops.
+      do {
+        const res = await apiFetch(
+          `/api/housekeeping/requeue-hung-jobs?${params}`,
+          { method: 'POST' },
+          HOUSEKEEPING_TIMEOUT_MS
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.details || body.error || `Failed to requeue hung jobs: ${res.statusText}`);
+        }
+        const data: RequeueResult = await res.json();
+        batches++;
+        requeued += data.requeued;
+        candidates += data.candidates;
+        skipped += data.skipped_exhausted;
+        if (data.job_ids) jobIDs = jobIDs.concat(data.job_ids);
+        truncated = Boolean(data.truncated);
+        lastMessage = data.message;
+
+        idleBatches = data.requeued === 0 ? idleBatches + 1 : 0;
+        if (idleBatches >= MAX_IDLE_DRAIN_BATCHES) break;
+      } while (!dryRun && truncated && batches < MAX_DRAIN_BATCHES);
+
+      let message: string;
+      if (candidates === 0) {
+        // The server explains which records this action is even about.
+        message = lastMessage;
+      } else if (dryRun) {
+        message = `Dry run: would requeue ${jobIDs.length} hung job(s)${truncated ? ', and more remain after this batch' : ''}`;
+      } else {
+        message =
+          `Requeued ${requeued} hung job(s)${batches > 1 ? ` in ${batches} batches` : ''}` +
+          `${truncated ? '; more remain — run again' : ''}`;
       }
-      const data = await res.json();
-      setRequeueResult(data);
-      if (!dryRun && data?.requeued > 0) {
-        toast('success', `Requeued ${data.requeued} hung job(s)`);
+      setRequeueResult({
+        requeued,
+        candidates,
+        skipped_exhausted: skipped,
+        job_ids: jobIDs,
+        truncated,
+        batches,
+        message,
+      });
+
+      if (!dryRun && requeued > 0) {
+        toast('success', `Requeued ${requeued} hung job(s)`);
         fetchJobs();
         fetchStats();
       } else if (!dryRun) {
@@ -191,6 +303,7 @@ export default function JobsPage() {
       toast('error', err instanceof Error ? err.message : 'Failed to requeue hung jobs');
     } finally {
       setRequeueLoading(false);
+      requeueInFlight.current = false;
     }
   };
 
@@ -271,6 +384,11 @@ export default function JobsPage() {
             {cleanupResult.job_ids && cleanupResult.job_ids.length > 0 && (
               <p className="mt-1 text-xs">Job IDs: {cleanupResult.job_ids.join(', ')}</p>
             )}
+            {cleanupResult.truncated && (
+              <p className="mt-1 text-xs">
+                The cap stopped this run before the end of the table. Run Clean Up again to continue.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -278,8 +396,12 @@ export default function JobsPage() {
       <div className="mb-4 p-4 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Requeue Hung Jobs</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Re-dispatch a fresh runner for jobs whose instance launched but whose runner died or never registered. The GitHub job is preserved; only the runner is re-driven.</p>
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Requeue Unconfirmed Runners</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Re-dispatch a fresh runner for jobs whose instance launched but whose runner never confirmed. The GitHub job
+              is preserved; only the runner is re-driven. This acts on <span className="font-mono">launched</span> records
+              only — a job listed above as done upstream needs Orphaned Jobs Cleanup instead.
+            </p>
           </div>
           <div className="flex gap-2">
             <button
@@ -402,8 +524,8 @@ export default function JobsPage() {
 
       <ConfirmDialog
         open={showRequeueConfirm}
-        title="Requeue Hung Jobs"
-        message="This re-dispatches a fresh runner for hung jobs by re-enqueuing into the runs-fleet queue. The GitHub job is not cancelled or re-run. Run a dry run first to preview affected jobs. Continue?"
+        title="Requeue Unconfirmed Runners"
+        message="This re-dispatches a fresh runner for launched jobs whose runner never confirmed, by re-enqueuing into the runs-fleet queue. The GitHub job is not cancelled or re-run. Run a dry run first to preview affected jobs. Continue?"
         confirmLabel="Requeue"
         variant="default"
         onConfirm={() => {

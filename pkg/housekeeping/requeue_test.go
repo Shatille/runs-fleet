@@ -38,7 +38,7 @@ func TestFindRequeueableJobs_ScansRequestedStatuses(t *testing.T) {
 		requeueJobItem(2, "i-b", 11, 1, db.JobStatusRunning),
 	}}
 
-	jobs, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
+	jobs, _, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
 		[]db.JobStatus{db.JobStatusLaunched, db.JobStatusRunning})
 	if err != nil {
 		t.Fatalf("FindRequeueableJobs() error = %v", err)
@@ -61,13 +61,108 @@ func TestFindRequeueableJobs_SkipsRowsMissingJobID(t *testing.T) {
 		requeueJobItem(2, "i-b", 11, 0, db.JobStatusLaunched),
 	}}
 
-	jobs, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
+	jobs, _, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
 		[]db.JobStatus{db.JobStatusLaunched})
 	if err != nil {
 		t.Fatalf("FindRequeueableJobs() error = %v", err)
 	}
 	if len(jobs) != 1 || jobs[0].JobID != 2 {
 		t.Fatalf("expected only job 2, got %+v", jobs)
+	}
+}
+
+// A cap bounds the work one call takes on, and stops paginating once it is met:
+// the admin console's drain depends on a single request never growing with the
+// table.
+func TestFindRequeueableJobs_CapStopsPagination(t *testing.T) {
+	dyn := &mockTaskDynamoDBAPI{pages: [][]map[string]types.AttributeValue{
+		{
+			requeueJobItem(1, "i-a", 10, 0, db.JobStatusLaunched),
+			requeueJobItem(2, "i-b", 11, 0, db.JobStatusLaunched),
+		},
+		{requeueJobItem(3, "i-c", 12, 0, db.JobStatusLaunched)},
+	}}
+
+	jobs, truncated, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
+		[]db.JobStatus{db.JobStatusLaunched}, WithMaxItems(2))
+	if err != nil {
+		t.Fatalf("FindRequeueableJobs() error = %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected the cap to bound results to 2, got %d", len(jobs))
+	}
+	if !truncated {
+		t.Error("expected truncated=true while a further page remains")
+	}
+	if dyn.scanCalls != 1 {
+		t.Errorf("expected the cap to short-circuit before page 2, got %d scans", dyn.scanCalls)
+	}
+	if len(dyn.scanInputs[0].ExclusiveStartKey) != 0 {
+		t.Error("first page must not set ExclusiveStartKey")
+	}
+}
+
+// The last batch must report truncated=false, or the console's drain never ends.
+func TestFindRequeueableJobs_CapNotReachedIsNotTruncated(t *testing.T) {
+	dyn := &mockTaskDynamoDBAPI{pages: [][]map[string]types.AttributeValue{
+		{requeueJobItem(1, "i-a", 10, 0, db.JobStatusLaunched)},
+	}}
+
+	jobs, truncated, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
+		[]db.JobStatus{db.JobStatusLaunched}, WithMaxItems(10))
+	if err != nil {
+		t.Fatalf("FindRequeueableJobs() error = %v", err)
+	}
+	if len(jobs) != 1 || truncated {
+		t.Fatalf("jobs = %d truncated = %v, want 1 and false", len(jobs), truncated)
+	}
+}
+
+// The scheduled watchdog passes no cap and must keep draining every page.
+func TestFindRequeueableJobs_NoCapDrainsAllPages(t *testing.T) {
+	dyn := &mockTaskDynamoDBAPI{pages: [][]map[string]types.AttributeValue{
+		{requeueJobItem(1, "i-a", 10, 0, db.JobStatusLaunched)},
+		{requeueJobItem(2, "i-b", 11, 0, db.JobStatusLaunched)},
+		{requeueJobItem(3, "i-c", 12, 0, db.JobStatusLaunched)},
+	}}
+
+	jobs, truncated, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
+		[]db.JobStatus{db.JobStatusLaunched})
+	if err != nil {
+		t.Fatalf("FindRequeueableJobs() error = %v", err)
+	}
+	if len(jobs) != 3 || truncated {
+		t.Fatalf("jobs = %d truncated = %v, want all 3 and false", len(jobs), truncated)
+	}
+	if dyn.scanCalls != 3 {
+		t.Errorf("expected all 3 pages drained, got %d scans", dyn.scanCalls)
+	}
+}
+
+// The sweep surfaces the cap's verdict so the console knows to ask for more.
+func TestRequeueHungJobs_ReportsTruncatedUnderCap(t *testing.T) {
+	ec2 := &mockEC2API{}
+	dyn := &mockTaskDynamoDBAPI{pages: [][]map[string]types.AttributeValue{
+		{
+			requeueJobItem(1, "i-a", 10, 0, db.JobStatusLaunched),
+			requeueJobItem(2, "i-b", 11, 0, db.JobStatusLaunched),
+		},
+		{requeueJobItem(3, "i-c", 12, 0, db.JobStatusLaunched)},
+	}}
+
+	res, err := RequeueHungJobs(context.Background(), newRequeueDeps(ec2, dyn, &mockJobRequeuer{}), RequeueOptions{
+		Threshold: 15 * time.Minute,
+		Statuses:  []db.JobStatus{db.JobStatusLaunched},
+		MaxItems:  2,
+	})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+	if res.Candidates != 2 {
+		t.Errorf("Candidates = %d, want the cap's 2", res.Candidates)
+	}
+	if !res.Truncated {
+		t.Error("expected Truncated=true so the console keeps draining")
 	}
 }
 
@@ -192,7 +287,7 @@ func (m *capturingScanDynamo) Scan(ctx context.Context, in *dynamodb.ScanInput, 
 // statuses, so a fresh or wrong-status job is never even returned as a candidate.
 func TestFindRequeueableJobs_FiltersByStalenessAndStatus(t *testing.T) {
 	dyn := &capturingScanDynamo{}
-	_, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
+	_, _, err := FindRequeueableJobs(context.Background(), dyn, "jobs-table", 15*time.Minute,
 		[]db.JobStatus{db.JobStatusLaunched, db.JobStatusRunning})
 	if err != nil {
 		t.Fatalf("FindRequeueableJobs() error = %v", err)
