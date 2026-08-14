@@ -217,6 +217,10 @@ jobs:
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
           PKR_VAR_runner_version: ${{ steps.runner.outputs.version }}
           PKR_VAR_runner_sha256: ${{ steps.runner.outputs.sha256 }}
+          # Set vars.ECR_PULL_THROUGH_PREFIX to the name of an ECR pull-through
+          # cache rule for Docker Hub (e.g. 'docker-hub') to bake images through
+          # it instead of pulling from Hub. Unset → pulls from Hub directly.
+          PKR_VAR_ecr_pull_through_prefix: ${{ vars.ECR_PULL_THROUGH_PREFIX }}
         run: |
           packer validate \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
@@ -229,6 +233,7 @@ jobs:
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
           PKR_VAR_runner_version: ${{ steps.runner.outputs.version }}
           PKR_VAR_runner_sha256: ${{ steps.runner.outputs.sha256 }}
+          PKR_VAR_ecr_pull_through_prefix: ${{ vars.ECR_PULL_THROUGH_PREFIX }}
         run: |
           packer build \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
