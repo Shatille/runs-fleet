@@ -38,6 +38,13 @@ func mustNotLoadState(t *testing.T) func() buildxshim.BuildxState {
 	}
 }
 
+func mustNotResolveConfig(t *testing.T) func() string {
+	return func() string {
+		t.Error("builder config must not be resolved for this invocation")
+		return ""
+	}
+}
+
 func TestPlan_InjectsWhenEligible(t *testing.T) {
 	argv := []string{"buildx", "build", "--platform", "linux/arm64", "."}
 	env := map[string]string{
@@ -46,7 +53,7 @@ func TestPlan_InjectsWhenEligible(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX": "buildkit/o/r/",
 		"BUILDX_BUILDER":                   "multiarch",
 	}
-	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()}, capableLoader())
+	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()}, capableLoader(), mustNotResolveConfig(t))
 
 	if outcome != outcomeEngaged {
 		t.Fatalf("outcome = %q, want engaged", outcome)
@@ -62,7 +69,7 @@ func TestPlan_InjectsWhenEligible(t *testing.T) {
 
 func TestPlan_PassthroughWhenBucketAbsent(t *testing.T) {
 	argv := []string{"buildx", "build", "."}
-	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, fakeFetcher{creds: fullCreds()}, mustNotLoadState(t))
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, fakeFetcher{creds: fullCreds()}, mustNotLoadState(t), mustNotResolveConfig(t))
 	if !reflect.DeepEqual(finalArgv, argv) {
 		t.Errorf("expected byte-identical argv, got %v", finalArgv)
 	}
@@ -79,7 +86,7 @@ func TestPlan_PassthroughOnCredsFailure(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX": "buildkit/o/r/",
 		"BUILDX_BUILDER":                   "multiarch",
 	}
-	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{err: context.DeadlineExceeded}, capableLoader())
+	finalArgv, outcome := plan(context.Background(), argv, env, fakeFetcher{err: context.DeadlineExceeded}, capableLoader(), mustNotResolveConfig(t))
 	if !reflect.DeepEqual(finalArgv, argv) {
 		t.Errorf("expected passthrough argv on creds failure, got %v", finalArgv)
 	}
@@ -98,12 +105,57 @@ func TestPlan_MetadataHandshakeNeverFetchesCreds(t *testing.T) {
 	}
 	// A fetcher and state loader that fail the test if called: the metadata
 	// handshake is pure passthrough and touches neither IMDS nor the filesystem.
-	finalArgv, outcome := plan(context.Background(), argv, env, panicFetcher{t}, mustNotLoadState(t))
+	finalArgv, outcome := plan(context.Background(), argv, env, panicFetcher{t}, mustNotLoadState(t), mustNotResolveConfig(t))
 	if !reflect.DeepEqual(finalArgv, argv) {
 		t.Errorf("metadata handshake must be byte-identical, got %v", finalArgv)
 	}
 	if outcome == outcomeEngaged {
 		t.Error("metadata handshake must never engage")
+	}
+}
+
+func TestPlan_CreateInjectsBuilderConfigWithoutCredsOrState(t *testing.T) {
+	argv := []string{"buildx", "create", "--name", "builder-xyz", "--driver", "docker-container", "--use"}
+	// Creds and builder state must never be touched on the create path: the
+	// injection depends only on the baked config file.
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, panicFetcher{t}, mustNotLoadState(t),
+		func() string { return "/opt/runs-fleet/buildkitd.toml" })
+	if outcome != "engaged:create" {
+		t.Fatalf("outcome = %q, want engaged:create", outcome)
+	}
+	if !reflect.DeepEqual(finalArgv[:len(argv)], argv) {
+		t.Errorf("original argv must be preserved as prefix, got %v", finalArgv)
+	}
+	want := append(append([]string{}, argv...), "--buildkitd-config", "/opt/runs-fleet/buildkitd.toml")
+	if !reflect.DeepEqual(finalArgv, want) {
+		t.Errorf("finalArgv = %v, want %v", finalArgv, want)
+	}
+}
+
+func TestPlan_CreateWithoutBakedConfigIsByteIdenticalPassthrough(t *testing.T) {
+	argv := []string{"buildx", "create", "--name", "builder-xyz"}
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, panicFetcher{t}, mustNotLoadState(t),
+		func() string { return "" })
+	if !reflect.DeepEqual(finalArgv, argv) {
+		t.Errorf("expected byte-identical argv, got %v", finalArgv)
+	}
+	if outcome != "skipped:no-builder-config" {
+		t.Errorf("outcome = %q", outcome)
+	}
+}
+
+func TestResolveBuilderConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "buildkitd.toml")
+
+	if got := resolveBuilderConfig(map[string]string{"RUNS_FLEET_BUILDKIT_BUILDER_CONFIG": cfg}); got != "" {
+		t.Errorf("missing file resolved to %q, want empty", got)
+	}
+	if err := os.WriteFile(cfg, []byte("[registry.\"docker.io\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveBuilderConfig(map[string]string{"RUNS_FLEET_BUILDKIT_BUILDER_CONFIG": cfg}); got != cfg {
+		t.Errorf("resolved %q, want %q", got, cfg)
 	}
 }
 
@@ -171,7 +223,7 @@ func TestPlan_WritesOutcomeToEnvFile(t *testing.T) {
 		"RUNS_FLEET_BUILDKIT_CACHE_PREFIX":  "buildkit/o/r/",
 		"RUNS_FLEET_BUILDKIT_CACHE_OUTCOME": outFile,
 	}
-	_, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()}, capableLoader())
+	_, outcome := plan(context.Background(), argv, env, fakeFetcher{creds: fullCreds()}, capableLoader(), mustNotResolveConfig(t))
 	recordOutcome(env, outcome)
 
 	b, err := os.ReadFile(outFile)

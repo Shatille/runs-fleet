@@ -93,6 +93,8 @@ jobs:
             image:
               - 'docker/runner/**'
               - 'cmd/agent/**'
+              - 'cmd/buildx-shim/**'
+              - 'cmd/mirror-proxy/**'
               # Mirror build-runner.yml's trigger set: any package the agent can
               # be built from. A push touching these also rebuilds the image, so
               # the runner-AMI job must defer to the cascade rather than bake the
@@ -217,10 +219,6 @@ jobs:
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
           PKR_VAR_runner_version: ${{ steps.runner.outputs.version }}
           PKR_VAR_runner_sha256: ${{ steps.runner.outputs.sha256 }}
-          # Set vars.ECR_PULL_THROUGH_PREFIX to the name of an ECR pull-through
-          # cache rule for Docker Hub (e.g. 'docker-hub') to bake images through
-          # it instead of pulling from Hub. Unset → pulls from Hub directly.
-          PKR_VAR_ecr_pull_through_prefix: ${{ vars.ECR_PULL_THROUGH_PREFIX }}
         run: |
           packer validate \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
@@ -233,7 +231,6 @@ jobs:
           PKR_VAR_extra_tags: ${{ vars.AMI_EXTRA_TAGS || '{}' }}
           PKR_VAR_runner_version: ${{ steps.runner.outputs.version }}
           PKR_VAR_runner_sha256: ${{ steps.runner.outputs.sha256 }}
-          PKR_VAR_ecr_pull_through_prefix: ${{ vars.ECR_PULL_THROUGH_PREFIX }}
         run: |
           packer build \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \
@@ -330,6 +327,12 @@ jobs:
           # Packer template's own default in runs-fleet-runner-*.pkr.hcl so
           # behavior is unchanged when the secret is unset.
           PKR_VAR_ecr_repository: ${{ secrets.ECR_REPOSITORY_RUNNER || 'runs-fleet-runner' }}
+          # ECR pull-through cache endpoint for Docker Hub; unset leaves the
+          # mirror inert (see packer/README.md). Secrets first for the same
+          # reason as ECR_REPOSITORY_RUNNER — the value names an
+          # account-specific registry — with a vars fallback so neither
+          # placement silently reads as empty.
+          PKR_VAR_ecr_pull_through_endpoint: ${{ secrets.ECR_PULL_THROUGH_ENDPOINT || vars.ECR_PULL_THROUGH_ENDPOINT }}
         run: |
           packer build \
             -var "vpc_id=${{ secrets.PACKER_VPC_ID }}" \

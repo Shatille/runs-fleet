@@ -12,79 +12,6 @@ else
 fi
 echo "==> Detected architecture: ${ARCH} (Docker: ${DOCKER_ARCH})"
 
-# Docker Hub rate-limits anonymous pulls per source IP, which ephemeral runners
-# hit hard. Setting ECR_PULL_THROUGH_PREFIX to the name of an ECR pull-through
-# cache rule for Docker Hub routes every image this script bakes through that
-# cache instead. Empty (upstream default) pulls from Docker Hub directly.
-#
-# Only the rule prefix is configurable: the registry host is derived from the
-# build instance's own account and region, the same way provision-runs-fleet.sh
-# resolves the runner image's registry.
-ECR_PULL_THROUGH_PREFIX="${ECR_PULL_THROUGH_PREFIX:-}"
-MIRROR_PREFIX=""
-if [ -n "$ECR_PULL_THROUGH_PREFIX" ]; then
-  MIRROR_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
-    || { echo "Failed to resolve AWS account for the pull-through cache"; exit 1; }
-  MIRROR_TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" \
-    -H "X-aws-ec2-metadata-token-ttl-seconds: 60") \
-    || { echo "Failed to fetch IMDSv2 token"; exit 1; }
-  MIRROR_REGION=$(curl -sS -H "X-aws-ec2-metadata-token: ${MIRROR_TOKEN}" \
-    "http://169.254.169.254/latest/meta-data/placement/region") \
-    || { echo "Failed to resolve region for the pull-through cache"; exit 1; }
-  MIRROR_REGISTRY="${MIRROR_ACCOUNT}.dkr.ecr.${MIRROR_REGION}.amazonaws.com"
-  MIRROR_PREFIX="${MIRROR_REGISTRY}/${ECR_PULL_THROUGH_PREFIX%/}/"
-  echo "==> Pre-baked images resolve through ${MIRROR_PREFIX}"
-  # The binfmt/buildx units below bake in a cache reference, and an ECR token
-  # lives ~12h — far less than an AMI. Record the registry so the per-boot script
-  # knows to re-authenticate before those units run.
-  sudo install -d -m 0755 /opt/runs-fleet
-  echo "$MIRROR_REGISTRY" | sudo tee /opt/runs-fleet/ecr-mirror-registry > /dev/null
-fi
-
-# Resolve IMAGE to its pull-through-cache reference, or echo it unchanged when
-# no cache is configured. References that already name a registry host
-# (mcr.microsoft.com/playwright, ghcr.io/..., localhost) are left alone: they
-# don't come from Docker Hub, so the cache has nothing to serve for them.
-mirrored_ref() {
-  local image="$1"
-  if [ -z "$MIRROR_PREFIX" ]; then
-    echo "$image"
-    return
-  fi
-  # A registry host is only possible in the first path segment, so test it only
-  # when the reference actually has one. Without the slash guard, a bare
-  # "mysql:8.0" would look host-like on its tag colon and skip the mirror.
-  case "$image" in
-    */*)
-      case "${image%%/*}" in
-        *.* | *:* | localhost) echo "$image"; return ;;
-      esac
-      echo "${MIRROR_PREFIX}${image}"
-      return
-      ;;
-  esac
-  # Single-segment names are Docker Hub official images, whose fully-qualified
-  # form is docker.io/library/<name>. Mirrors that key on the upstream repository
-  # path — an ECR pull-through cache is one — store them under library/, so the
-  # infix has to be reinstated here or "mysql:8.0" resolves to a path that does
-  # not exist on the mirror.
-  echo "${MIRROR_PREFIX}library/${image}"
-}
-
-pull_prebake_image() {
-  local image="$1"
-  local source_ref
-  source_ref="$(mirrored_ref "$image")"
-  sudo docker pull "$source_ref" || return 1
-  # Keep BOTH tags on the pulled image. The canonical one is what workflows ask
-  # for; the mirrored one is what the binfmt/buildx units name, and dropping it
-  # would make them re-pull over the network on every boot. Extra tags cost no
-  # additional layers.
-  if [ "$source_ref" != "$image" ]; then
-    sudo docker tag "$source_ref" "$image" || return 1
-  fi
-}
-
 echo "==> Replacing *-minimal packages with full variants"
 # Scoped to its own transaction so --allowerasing only affects the known
 # minimal-package swaps, not the broader package list below. AL2023 standard
@@ -173,17 +100,6 @@ sudo dnf install -y "https://s3.amazonaws.com/session-manager-downloads/plugin/l
 echo "==> Enabling Docker"
 sudo systemctl enable docker
 sudo usermod -aG docker ec2-user
-
-# ECR refuses anonymous pulls, so the cache needs a login before anything below
-# resolves through it. Done here, right after docker is installed, so it covers
-# the binfmt/buildx unit definitions and the pre-baked image pulls alike.
-if [ -n "$MIRROR_PREFIX" ]; then
-  echo "==> Authenticating to ${MIRROR_REGISTRY}"
-  sudo systemctl start docker || { echo "Failed to start docker"; exit 1; }
-  aws ecr get-login-password --region "$MIRROR_REGION" \
-    | sudo docker login --username AWS --password-stdin "$MIRROR_REGISTRY" \
-    || { echo "Failed to authenticate to ${MIRROR_REGISTRY}"; exit 1; }
-fi
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
 DOCKER_COMPOSE_VERSION="5.3.1"
@@ -293,7 +209,7 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/docker run --rm --privileged $(mirrored_ref "tonistiigi/binfmt:${BINFMT_VERSION}") --install all
+ExecStart=/usr/bin/docker run --rm --privileged tonistiigi/binfmt:${BINFMT_VERSION} --install all
 RemainAfterExit=yes
 
 [Install]
@@ -305,11 +221,10 @@ sudo systemctl enable binfmt-qemu.service || { echo "Failed to enable binfmt-qem
 
 echo "==> Configuring Docker buildx for multi-arch builds"
 # Create systemd service to set up buildx builder after binfmt is registered.
-# The buildkit image is named explicitly via --driver-opt so a downstream mirror
-# prefix reaches --bootstrap's pull; buildx would otherwise default to
-# moby/buildkit on Docker Hub.
-BUILDKIT_IMAGE="$(mirrored_ref "moby/buildkit:buildx-stable-1")"
-sudo tee /etc/systemd/system/buildx-setup.service > /dev/null <<BUILDX
+# The builder attaches /opt/runs-fleet/buildkitd.toml when the runner layer
+# baked one (the ECR pull-through opt-in), resolved at boot via backticks —
+# systemd $-expands ExecStart but leaves backticks for the shell.
+sudo tee /etc/systemd/system/buildx-setup.service > /dev/null <<'BUILDX'
 [Unit]
 Description=Configure Docker buildx multi-arch builder
 After=binfmt-qemu.service docker.service
@@ -320,7 +235,7 @@ Wants=binfmt-qemu.service
 Type=oneshot
 User=ec2-user
 Group=docker
-ExecStart=/bin/bash -c 'docker buildx create --name multiarch --driver docker-container --driver-opt image=${BUILDKIT_IMAGE} --bootstrap --use || true'
+ExecStart=/bin/bash -c 'docker buildx create --name multiarch --driver docker-container `[ -f /opt/runs-fleet/buildkitd.toml ] && echo "--buildkitd-config /opt/runs-fleet/buildkitd.toml"` --bootstrap --use || true'
 RemainAfterExit=yes
 
 [Install]
@@ -357,7 +272,7 @@ PREBAKE_IMAGES=(
 for image in "${PREBAKE_IMAGES[@]}"; do
   echo "==> Pulling ${image}"
   for attempt in 1 2 3; do
-    pull_prebake_image "${image}" && break
+    sudo docker pull "${image}" && break
     [ "$attempt" -lt 3 ] || { echo "Failed to pull ${image}"; exit 1; }
     echo "    pull attempt ${attempt} failed; retrying in 3s"
     sleep 3

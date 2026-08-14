@@ -29,10 +29,11 @@ aws ecr get-login-password --region ${REGION} | sudo docker login --username AWS
 # Pull the runner image for current architecture
 sudo docker pull --platform linux/${DOCKER_ARCH} ${RUNNER_IMAGE}
 
-# Extract agent binary and the buildx cache shim from the image
+# Extract agent binary, the buildx cache shim, and the mirror proxy from the image
 CONTAINER_ID=$(sudo docker create ${RUNNER_IMAGE})
 sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-agent /opt/runs-fleet/runs-fleet-agent
 sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-buildx-shim /tmp/runs-fleet-buildx-shim
+sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-mirror-proxy /tmp/runs-fleet-mirror-proxy
 sudo docker rm ${CONTAINER_ID}
 
 sudo chmod +x /opt/runs-fleet/runs-fleet-agent
@@ -88,6 +89,60 @@ echo "==> Installing scoped sudoers drop-in for cache-engage"
 sudo install -m 0440 -o root -g root /tmp/sudoers-cache-engage /etc/sudoers.d/10-runs-fleet-cache
 # Fail the build (before snapshot) on a malformed drop-in rather than at boot.
 sudo visudo -cf /etc/sudoers.d/10-runs-fleet-cache
+
+# Baked unconditionally, inert until ConditionPathExists passes. Root-run so
+# the port is bound before job code (ec2-user) could squat it; root-owned in
+# /usr/local/sbin like the cache-engage helper so workflow code can't swap it.
+echo "==> Installing Docker Hub mirror proxy"
+sudo install -m 0755 -o root -g root /tmp/runs-fleet-mirror-proxy /usr/local/sbin/runs-fleet-mirror-proxy
+sudo rm -f /tmp/runs-fleet-mirror-proxy
+sudo tee /etc/systemd/system/runs-fleet-mirror-proxy.service > /dev/null <<'MIRROR'
+[Unit]
+Description=Local Docker Hub mirror via ECR pull-through cache
+ConditionPathExists=/opt/runs-fleet/mirror-env
+Before=binfmt-qemu.service buildx-setup.service
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/runs-fleet/mirror-env
+ExecStart=/usr/local/sbin/runs-fleet-mirror-proxy
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+MIRROR
+sudo systemctl daemon-reload
+sudo systemctl enable runs-fleet-mirror-proxy.service
+
+# The three files that activate the mirror path (see packer/README.md):
+# the proxy's environment, the dockerd mirror config, and the BuildKit mirror
+# config attached by buildx-setup.service and the buildx shim.
+if [ -n "${ECR_PULL_THROUGH_ENDPOINT:-}" ]; then
+  echo "==> Enabling Docker Hub mirror via ${ECR_PULL_THROUGH_ENDPOINT}"
+  case "$ECR_PULL_THROUGH_ENDPOINT" in
+    https://*/*) ;;
+    *) echo "ECR_PULL_THROUGH_ENDPOINT must be https://<registry-host>/<rule-prefix>, got '${ECR_PULL_THROUGH_ENDPOINT}'"; exit 1 ;;
+  esac
+  sudo tee /opt/runs-fleet/mirror-env > /dev/null <<MIRRORENV
+ECR_PULL_THROUGH_ENDPOINT=${ECR_PULL_THROUGH_ENDPOINT}
+MIRRORENV
+  sudo chmod 0644 /opt/runs-fleet/mirror-env
+  sudo install -d -m 0755 /etc/docker
+  sudo tee /etc/docker/daemon.json > /dev/null <<'DAEMONJSON'
+{
+  "registry-mirrors": ["http://127.0.0.1:8989"],
+  "insecure-registries": ["127.0.0.1:8989"]
+}
+DAEMONJSON
+  sudo tee /opt/runs-fleet/buildkitd.toml > /dev/null <<'BUILDKITD'
+[registry."docker.io"]
+  mirrors = ["127.0.0.1:8989"]
+[registry."127.0.0.1:8989"]
+  http = true
+BUILDKITD
+  sudo chmod 0644 /opt/runs-fleet/buildkitd.toml
+fi
 
 # Cleanup Docker image to save space
 sudo docker rmi ${RUNNER_IMAGE} || true
