@@ -138,6 +138,27 @@ DAEMONJSON
   sudo tee /opt/runs-fleet/buildkitd.toml > /dev/null <<'BUILDKITD'
 [registry."docker.io"]
   mirrors = ["127.0.0.1:8989"]
+BUILDKITD
+  # Mirror every other pull-through rule too; the proxy routes by the ns query
+  # the containerd resolver sends. Dedup must match pkg/mirrorproxy/discover.go:
+  # shortest prefix first, then lexicographic, first rule per upstream.
+  MIRROR_RULES=$(aws ecr describe-pull-through-cache-rules --region ${REGION} \
+    --query 'pullThroughCacheRules[].[upstreamRegistryUrl,ecrRepositoryPrefix]' \
+    --output text 2>/dev/null) || MIRROR_RULES=""
+  if [ -n "$MIRROR_RULES" ]; then
+    echo "$MIRROR_RULES" | awk '{ print length($2), $2, $1 }' | sort -k1,1n -k2,2 \
+      | awk '!seen[$3]++ { print $3 }' \
+      | grep -v -E '^(registry-1\.docker\.io|docker\.io)$' \
+      | while read -r upstream; do
+          sudo tee -a /opt/runs-fleet/buildkitd.toml > /dev/null <<BLOCK
+[registry."${upstream}"]
+  mirrors = ["127.0.0.1:8989"]
+BLOCK
+        done
+  else
+    echo "    could not list pull-through cache rules; buildkitd.toml mirrors docker.io only"
+  fi
+  sudo tee -a /opt/runs-fleet/buildkitd.toml > /dev/null <<'BUILDKITD'
 [registry."127.0.0.1:8989"]
   http = true
 BUILDKITD

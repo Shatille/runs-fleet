@@ -26,13 +26,15 @@ type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 }
 
-// Handler is the mirror: GET/HEAD under /v2/, nothing else.
+// Handler is the mirror: GET/HEAD under /v2/, nothing else. namespaces maps
+// the containerd-style ns query value (absent → docker.io) to a pull-through
+// rule prefix.
 type Handler struct {
-	upstream  *url.URL
-	namespace string
-	tokens    TokenSource
-	client    *http.Client
-	log       *slog.Logger
+	upstream   *url.URL
+	namespaces map[string]string
+	tokens     TokenSource
+	client     *http.Client
+	log        *slog.Logger
 }
 
 // New builds a Handler for an endpoint of the form
@@ -46,14 +48,14 @@ func New(endpoint string, tokens TokenSource) (*Handler, error) {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("endpoint %q must be an http(s) URL", endpoint)
 	}
-	ns := strings.Trim(u.Path, "/")
-	if u.Host == "" || ns == "" {
+	prefix := strings.Trim(u.Path, "/")
+	if u.Host == "" || prefix == "" {
 		return nil, fmt.Errorf("endpoint %q must include a registry host and a pull-through rule prefix path", endpoint)
 	}
 	return &Handler{
-		upstream:  &url.URL{Scheme: u.Scheme, Host: u.Host},
-		namespace: ns,
-		tokens:    tokens,
+		upstream:   &url.URL{Scheme: u.Scheme, Host: u.Host},
+		namespaces: map[string]string{"docker.io": prefix},
+		tokens:     tokens,
 		client: &http.Client{
 			// Relay blob 307s to the caller instead of following them, so
 			// image bytes stream from object storage directly to dockerd.
@@ -109,10 +111,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// rewrite maps a mirror request onto the cache: the /v2/ ping stays at the
-// registry root, repository paths gain the namespace. Dot-segments are
-// refused — the port is reachable by any local process and the token is
-// registry-wide, so ".." surviving to ECR would escape the namespace.
+// AddRules merges discovered ns→prefix mappings; the endpoint's explicit
+// declaration wins on conflict.
+func (h *Handler) AddRules(rules map[string]string) {
+	for ns, prefix := range rules {
+		if _, exists := h.namespaces[ns]; !exists {
+			h.namespaces[ns] = prefix
+		}
+	}
+}
+
+// rewrite maps a mirror request onto the cache; refusals make the client
+// fall back to the real registry. Dot-segments are refused because the port
+// is reachable by any local process and the token is registry-wide, so ".."
+// surviving to ECR would escape the namespace; ns is stripped because ECR is
+// not itself a proxy.
 func (h *Handler) rewrite(reqURL *url.URL) (*url.URL, bool) {
 	path := reqURL.Path
 	for _, seg := range strings.Split(path, "/") {
@@ -120,14 +133,25 @@ func (h *Handler) rewrite(reqURL *url.URL) (*url.URL, bool) {
 			return nil, false
 		}
 	}
+	query := reqURL.Query()
+	ns := query.Get("ns")
+	if ns == "" {
+		ns = "docker.io"
+	}
+	prefix, known := h.namespaces[ns]
+	if !known {
+		return nil, false
+	}
+	query.Del("ns")
+
 	target := *h.upstream
-	target.RawQuery = reqURL.RawQuery
+	target.RawQuery = query.Encode()
 	const apiRoot = "/v2/"
 	switch {
 	case path == "/v2" || path == apiRoot:
 		target.Path = apiRoot
 	case strings.HasPrefix(path, apiRoot):
-		target.Path = apiRoot + h.namespace + strings.TrimPrefix(path, "/v2")
+		target.Path = apiRoot + prefix + strings.TrimPrefix(path, "/v2")
 	default:
 		return nil, false
 	}

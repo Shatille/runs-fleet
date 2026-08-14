@@ -37,10 +37,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler, err := mirrorproxy.New(endpoint, mirrorproxy.NewECRTokenSource(ecr.NewFromConfig(awsCfg)))
+	ecrClient := ecr.NewFromConfig(awsCfg)
+	handler, err := mirrorproxy.New(endpoint, mirrorproxy.NewECRTokenSource(ecrClient))
 	if err != nil {
 		logger.Error("invalid mirror configuration", "endpoint", endpoint, "error", err)
 		os.Exit(1)
+	}
+	if rules, err := mirrorproxy.DiscoverRules(context.Background(), ecrClient); err != nil {
+		logger.Warn("pull-through rule discovery failed; serving docker.io only", "error", err)
+	} else {
+		handler.AddRules(rules)
+		logger.Info("mirror routing discovered", "rules", rules)
 	}
 
 	server := &http.Server{

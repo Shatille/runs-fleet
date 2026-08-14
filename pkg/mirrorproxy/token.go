@@ -45,6 +45,7 @@ func (c *cachedTokenSource) Token(ctx context.Context) (string, error) {
 
 type ecrAPI interface {
 	GetAuthorizationToken(ctx context.Context, params *ecr.GetAuthorizationTokenInput, optFns ...func(*ecr.Options)) (*ecr.GetAuthorizationTokenOutput, error)
+	DescribePullThroughCacheRules(ctx context.Context, params *ecr.DescribePullThroughCacheRulesInput, optFns ...func(*ecr.Options)) (*ecr.DescribePullThroughCacheRulesOutput, error)
 }
 
 // NewECRTokenSource exchanges the ambient AWS credentials (the instance role,
