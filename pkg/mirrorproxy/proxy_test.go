@@ -90,8 +90,8 @@ func TestServeHTTP_RewritesManifestPathOntoNamespace(t *testing.T) {
 	if got.path != "/v2/docker-hub/library/mysql/manifests/8.0" {
 		t.Errorf("upstream path = %q", got.path)
 	}
-	if got.query != "ns=docker.io" {
-		t.Errorf("upstream query = %q", got.query)
+	if got.query != "" {
+		t.Errorf("upstream query = %q, want ns stripped (ECR is not a proxy)", got.query)
 	}
 	if got.header.Get("Accept") != "application/vnd.oci.image.manifest.v1+json" {
 		t.Errorf("Accept not forwarded, got %q", got.header.Get("Accept"))
@@ -164,6 +164,80 @@ func TestServeHTTP_RejectsNonPullMethods(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("non-pull methods reached upstream: %d calls", len(*calls))
+	}
+}
+
+func TestServeHTTP_NamespaceRoutesToItsOwnPrefix(t *testing.T) {
+	up, calls := newUpstream(t, http.StatusOK, "", nil)
+	h := newTestHandler(t, up.URL+"/docker-hub", staticTokens{token: "tok"})
+	h.AddRules(map[string]string{"quay.io": "quay", "registry.k8s.io": "k8s"})
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/coreos/etcd/manifests/v3.5?ns=quay.io", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := (*calls)[0].path; got != "/v2/quay/coreos/etcd/manifests/v3.5" {
+		t.Errorf("upstream path = %q", got)
+	}
+	if got := (*calls)[0].query; got != "" {
+		t.Errorf("ns must be stripped, got query %q", got)
+	}
+}
+
+func TestServeHTTP_UnknownNamespaceIs404WithoutUpstreamCall(t *testing.T) {
+	up, calls := newUpstream(t, http.StatusOK, "", nil)
+	h := newTestHandler(t, up.URL+"/docker-hub", staticTokens{token: "tok"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/foo/bar/manifests/1?ns=ghcr.io", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 so the client falls back to the real registry", rec.Code)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("unknown ns reached upstream")
+	}
+}
+
+func TestServeHTTP_PingWithUnknownNamespaceIs404(t *testing.T) {
+	// No real client sends this (containerd/BuildKit never ping bare, dockerd
+	// pings without ns), but the ordering — ns gate before the ping branch —
+	// is deliberate and locked in here.
+	up, calls := newUpstream(t, http.StatusOK, "", nil)
+	h := newTestHandler(t, up.URL+"/docker-hub", staticTokens{token: "tok"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/?ns=ghcr.io", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("unknown-ns ping reached upstream")
+	}
+}
+
+func TestServeHTTP_OtherQueryParamsSurviveNsStripping(t *testing.T) {
+	up, calls := newUpstream(t, http.StatusOK, "", nil)
+	h := newTestHandler(t, up.URL+"/docker-hub", staticTokens{token: "tok"})
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/library/mysql/blobs/sha256:abc?ns=docker.io&mount=x", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := (*calls)[0].query; got != "mount=x" {
+		t.Errorf("query = %q, want ns stripped and the rest kept", got)
+	}
+}
+
+func TestAddRules_EndpointSeedWins(t *testing.T) {
+	// The endpoint is the deployment's explicit declaration; discovery only
+	// fills registries the seed doesn't cover.
+	up, calls := newUpstream(t, http.StatusOK, "", nil)
+	h := newTestHandler(t, up.URL+"/declared-hub", staticTokens{token: "tok"})
+	h.AddRules(map[string]string{"docker.io": "discovered-hub", "quay.io": "quay"})
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v2/library/mysql/manifests/8.0", nil))
+
+	if got := (*calls)[0].path; got != "/v2/declared-hub/library/mysql/manifests/8.0" {
+		t.Errorf("upstream path = %q, want the declared prefix to win", got)
 	}
 }
 
