@@ -32,9 +32,8 @@ type JobResult struct {
 
 // Executor handles running the GitHub Actions runner process.
 type Executor struct {
-	logger           Logger
-	safetyMonitor    *SafetyMonitor
-	cloudWatchLogger *CloudWatchLogger
+	logger        Logger
+	safetyMonitor *SafetyMonitor
 }
 
 // NewExecutor creates a new job executor.
@@ -43,11 +42,6 @@ func NewExecutor(logger Logger, safety *SafetyMonitor) *Executor {
 		logger:        logger,
 		safetyMonitor: safety,
 	}
-}
-
-// SetCloudWatchLogger sets the CloudWatch logger for streaming output.
-func (e *Executor) SetCloudWatchLogger(cwLogger *CloudWatchLogger) {
-	e.cloudWatchLogger = cwLogger
 }
 
 // ExecuteJob runs the GitHub Actions runner and monitors it, for a runner already
@@ -242,11 +236,6 @@ func (e *Executor) streamOutput(r io.Reader, source string) {
 		line := scanner.Text()
 		msg := fmt.Sprintf("[%s] %s", source, line)
 		e.logger.Printf("%s", msg)
-
-		// Also send to CloudWatch if configured
-		if e.cloudWatchLogger != nil {
-			e.cloudWatchLogger.Log(msg)
-		}
 	}
 
 	if err := scanner.Err(); err != nil {

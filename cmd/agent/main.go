@@ -38,7 +38,6 @@ type agentConfig struct {
 	telemetry    agent.TelemetryClient
 	terminator   agent.InstanceTerminator
 	runnerConfig *secrets.RunnerConfig
-	cwLogger     *agent.CloudWatchLogger
 	awsCfg       aws.Config
 	secretsStore secrets.Store
 }
@@ -138,10 +137,6 @@ func main() {
 	executor := agent.NewExecutor(logger, safetyMonitor)
 	cleanup := agent.NewCleanup(logger)
 
-	if ac.cwLogger != nil {
-		executor.SetCloudWatchLogger(ac.cwLogger)
-	}
-
 	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger, &timings)
 }
 
@@ -228,28 +223,12 @@ func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runne
 	}
 
 	ac.terminator = agent.NewEC2Terminator(ac.awsCfg, ac.telemetry, logger)
-
-	logGroup := os.Getenv("RUNS_FLEET_LOG_GROUP")
-	if logGroup != "" {
-		logStream := fmt.Sprintf("%s/%s", instanceID, runnerConfig.RunID)
-		cwLogger := agent.NewCloudWatchLogger(ac.awsCfg, logGroup, logStream, logger)
-		if startErr := cwLogger.Start(ctx); startErr != nil {
-			logger.Printf("Warning: failed to start CloudWatch logger: %v", startErr)
-		} else {
-			ac.cwLogger = cwLogger
-			logger.Printf("CloudWatch logging enabled: %s/%s", logGroup, logStream)
-		}
-	}
 }
 
 // runAgent executes the agent phases.
 func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader,
 	executor *agent.Executor, cleanup *agent.Cleanup,
 	instanceID, jobID string, logger *stdLogger, timings *bootstrapTimings) {
-
-	if ac.cwLogger != nil {
-		defer ac.cwLogger.Stop()
-	}
 
 	logger.Println("Phase 1: Downloading GitHub Actions runner...")
 	runnerStart := time.Now()

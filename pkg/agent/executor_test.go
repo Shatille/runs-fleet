@@ -42,23 +42,6 @@ func TestNewExecutor_NoSafetyMonitor(t *testing.T) {
 	}
 }
 
-func TestExecutor_SetCloudWatchLogger(t *testing.T) {
-	logger := &mockLogger{}
-	executor := NewExecutor(logger, nil)
-
-	if executor.cloudWatchLogger != nil {
-		t.Error("cloudWatchLogger should be nil initially")
-	}
-
-	// Create a mock CloudWatch logger
-	cwLogger := &CloudWatchLogger{}
-	executor.SetCloudWatchLogger(cwLogger)
-
-	if executor.cloudWatchLogger != cwLogger {
-		t.Error("SetCloudWatchLogger() did not set cloudWatchLogger")
-	}
-}
-
 func TestExecutor_ExecuteJob_Success(t *testing.T) {
 	logger := &mockLogger{}
 	executor := NewExecutor(logger, nil)
@@ -228,23 +211,6 @@ func TestExecutor_streamOutput(t *testing.T) {
 
 		if len(testLogger.messages) != 0 {
 			t.Errorf("expected 0 log messages, got %d", len(testLogger.messages))
-		}
-	})
-
-	t.Run("with CloudWatch logger", func(t *testing.T) {
-		testLogger := &mockLogger{}
-		executor.logger = testLogger
-
-		// Create a mock CloudWatch logger that captures output
-		cwLogger := &CloudWatchLogger{}
-		executor.SetCloudWatchLogger(cwLogger)
-
-		reader := strings.NewReader("test output\n")
-		executor.streamOutput(reader, "stdout")
-
-		// The output should still go to the regular logger
-		if len(testLogger.messages) != 1 {
-			t.Errorf("expected 1 log message, got %d", len(testLogger.messages))
 		}
 	})
 

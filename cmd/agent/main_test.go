@@ -107,9 +107,6 @@ func TestAgentConfig_Structure(t *testing.T) {
 	if ac.runnerConfig != nil {
 		t.Error("agentConfig.runnerConfig should be nil by default")
 	}
-	if ac.cwLogger != nil {
-		t.Error("agentConfig.cwLogger should be nil by default")
-	}
 }
 
 func TestGetEnvInt_LargeNumbers(t *testing.T) {
