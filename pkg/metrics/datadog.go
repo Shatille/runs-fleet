@@ -340,3 +340,7 @@ func (p *DatadogPublisher) PublishRunnerCacheInterception(_ context.Context, sta
 func (p *DatadogPublisher) PublishRunnerBuildCacheInterception(_ context.Context, status string) error { //nolint:revive
 	return p.client.Incr("runner_build_cache_interception", ddTag(nil, "status", status), 1)
 }
+
+func (p *DatadogPublisher) PublishRunnerLogUpload(_ context.Context, status string) error { //nolint:revive
+	return p.client.Incr("runner_log_upload", ddTag(nil, "status", status), 1)
+}

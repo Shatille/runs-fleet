@@ -78,6 +78,7 @@ type PrometheusPublisher struct {
 	runnerToolCacheMiss          *prometheus.CounterVec
 	runnerCacheInterception      *prometheus.CounterVec
 	runnerBuildCacheInterception *prometheus.CounterVec
+	runnerLogUpload              *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -270,6 +271,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "runner_build_cache_interception_total",
 			Help: "Jobs by buildx layer-cache shim outcome (engaged, skipped, failed, disabled)",
 		}, []string{"status"}),
+		runnerLogUpload: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_log_upload_total",
+			Help: "Jobs by runner-log upload outcome (uploaded, partial, failed, skipped, disabled)",
+		}, []string{"status"}),
 	}
 
 	registry.MustRegister(
@@ -283,7 +288,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
 		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds, p.runnerToolCacheMiss,
-		p.runnerCacheInterception, p.runnerBuildCacheInterception,
+		p.runnerCacheInterception, p.runnerBuildCacheInterception, p.runnerLogUpload,
 	)
 
 	return p
@@ -519,6 +524,11 @@ func (p *PrometheusPublisher) PublishRunnerCacheInterception(_ context.Context, 
 
 func (p *PrometheusPublisher) PublishRunnerBuildCacheInterception(_ context.Context, status string) error { //nolint:revive
 	p.runnerBuildCacheInterception.WithLabelValues(status).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerLogUpload(_ context.Context, status string) error { //nolint:revive
+	p.runnerLogUpload.WithLabelValues(status).Inc()
 	return nil
 }
 
