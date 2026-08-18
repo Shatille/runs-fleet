@@ -96,7 +96,7 @@ sudo visudo -cf /etc/sudoers.d/10-runs-fleet-cache
 echo "==> Installing Docker Hub mirror proxy"
 sudo install -m 0755 -o root -g root /tmp/runs-fleet-mirror-proxy /usr/local/sbin/runs-fleet-mirror-proxy
 sudo rm -f /tmp/runs-fleet-mirror-proxy
-sudo tee /etc/systemd/system/runs-fleet-mirror-proxy.service > /dev/null <<'MIRROR'
+sudo tee /etc/systemd/system/runs-fleet-mirror-proxy.service > /dev/null <<MIRROR
 [Unit]
 Description=Local Docker Hub mirror via ECR pull-through cache
 ConditionPathExists=/opt/runs-fleet/mirror-env
@@ -104,6 +104,7 @@ Before=binfmt-qemu.service buildx-setup.service
 
 [Service]
 Type=simple
+Environment=AWS_REGION=${REGION}
 EnvironmentFile=/opt/runs-fleet/mirror-env
 ExecStart=/usr/local/sbin/runs-fleet-mirror-proxy
 Restart=always
