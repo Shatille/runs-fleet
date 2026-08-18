@@ -104,7 +104,7 @@ func main() {
 	timings.config = 0
 	timings.start = configFoundAt
 
-	completeInit(ctx, ac, instanceID, runnerConfig, logger)
+	completeInit(ac, runnerConfig, logger)
 
 	runID := ac.runnerConfig.RunID
 	if runID == "" {
@@ -183,9 +183,8 @@ func resolveJobID(ac *agentConfig) string {
 
 // initStore initializes the AWS config and secrets store — the components needed
 // to poll for job config during standby. The config-dependent components
-// (telemetry, terminator, CloudWatch logger) are built later by completeInit,
-// once a job config has actually been acquired, so an unassigned standby spare
-// never spins them up.
+// (telemetry, terminator) are built later by completeInit, once a job config has
+// actually been acquired, so an unassigned standby spare never spins them up.
 func initStore(ctx context.Context) (*agentConfig, error) {
 	ac := &agentConfig{}
 
@@ -211,10 +210,10 @@ func initStore(ctx context.Context) (*agentConfig, error) {
 }
 
 // completeInit builds the config-dependent agent components (telemetry,
-// terminator, CloudWatch logger) once a job config has been acquired. Split from
-// initStore so a standby spare that is never assigned a job does not create SQS/
-// CloudWatch clients it will never use.
-func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runnerConfig *secrets.RunnerConfig, logger *stdLogger) {
+// terminator) once a job config has been acquired. Split from initStore so a
+// standby spare that is never assigned a job does not create SQS clients it will
+// never use.
+func completeInit(ac *agentConfig, runnerConfig *secrets.RunnerConfig, logger *stdLogger) {
 	ac.runnerConfig = runnerConfig
 
 	terminationQueueURL := runnerConfig.TerminationQueueURL
