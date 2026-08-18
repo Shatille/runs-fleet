@@ -38,7 +38,6 @@ type agentConfig struct {
 	telemetry    agent.TelemetryClient
 	terminator   agent.InstanceTerminator
 	runnerConfig *secrets.RunnerConfig
-	cwLogger     *agent.CloudWatchLogger
 	awsCfg       aws.Config
 	secretsStore secrets.Store
 }
@@ -105,7 +104,7 @@ func main() {
 	timings.config = 0
 	timings.start = configFoundAt
 
-	completeInit(ctx, ac, instanceID, runnerConfig, logger)
+	completeInit(ac, runnerConfig, logger)
 
 	runID := ac.runnerConfig.RunID
 	if runID == "" {
@@ -137,10 +136,6 @@ func main() {
 	})
 	executor := agent.NewExecutor(logger, safetyMonitor)
 	cleanup := agent.NewCleanup(logger)
-
-	if ac.cwLogger != nil {
-		executor.SetCloudWatchLogger(ac.cwLogger)
-	}
 
 	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger, &timings)
 }
@@ -188,9 +183,8 @@ func resolveJobID(ac *agentConfig) string {
 
 // initStore initializes the AWS config and secrets store — the components needed
 // to poll for job config during standby. The config-dependent components
-// (telemetry, terminator, CloudWatch logger) are built later by completeInit,
-// once a job config has actually been acquired, so an unassigned standby spare
-// never spins them up.
+// (telemetry, terminator) are built later by completeInit, once a job config has
+// actually been acquired, so an unassigned standby spare never spins them up.
 func initStore(ctx context.Context) (*agentConfig, error) {
 	ac := &agentConfig{}
 
@@ -216,10 +210,10 @@ func initStore(ctx context.Context) (*agentConfig, error) {
 }
 
 // completeInit builds the config-dependent agent components (telemetry,
-// terminator, CloudWatch logger) once a job config has been acquired. Split from
-// initStore so a standby spare that is never assigned a job does not create SQS/
-// CloudWatch clients it will never use.
-func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runnerConfig *secrets.RunnerConfig, logger *stdLogger) {
+// terminator) once a job config has been acquired. Split from initStore so a
+// standby spare that is never assigned a job does not create SQS clients it will
+// never use.
+func completeInit(ac *agentConfig, runnerConfig *secrets.RunnerConfig, logger *stdLogger) {
 	ac.runnerConfig = runnerConfig
 
 	terminationQueueURL := runnerConfig.TerminationQueueURL
@@ -228,28 +222,12 @@ func completeInit(ctx context.Context, ac *agentConfig, instanceID string, runne
 	}
 
 	ac.terminator = agent.NewEC2Terminator(ac.awsCfg, ac.telemetry, logger)
-
-	logGroup := os.Getenv("RUNS_FLEET_LOG_GROUP")
-	if logGroup != "" {
-		logStream := fmt.Sprintf("%s/%s", instanceID, runnerConfig.RunID)
-		cwLogger := agent.NewCloudWatchLogger(ac.awsCfg, logGroup, logStream, logger)
-		if startErr := cwLogger.Start(ctx); startErr != nil {
-			logger.Printf("Warning: failed to start CloudWatch logger: %v", startErr)
-		} else {
-			ac.cwLogger = cwLogger
-			logger.Printf("CloudWatch logging enabled: %s/%s", logGroup, logStream)
-		}
-	}
 }
 
 // runAgent executes the agent phases.
 func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader,
 	executor *agent.Executor, cleanup *agent.Cleanup,
 	instanceID, jobID string, logger *stdLogger, timings *bootstrapTimings) {
-
-	if ac.cwLogger != nil {
-		defer ac.cwLogger.Stop()
-	}
 
 	logger.Println("Phase 1: Downloading GitHub Actions runner...")
 	runnerStart := time.Now()

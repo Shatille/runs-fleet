@@ -227,26 +227,6 @@ sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json > /de
     "metrics_collection_interval": 60,
     "run_as_user": "root"
   },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          {
-            "file_path": "/opt/actions-runner/_diag/*.log",
-            "log_group_name": "/runs-fleet/runner",
-            "log_stream_name": "{instance_id}/runner",
-            "retention_in_days": 3
-          },
-          {
-            "file_path": "/var/log/messages",
-            "log_group_name": "/runs-fleet/runner",
-            "log_stream_name": "{instance_id}/system",
-            "retention_in_days": 3
-          }
-        ]
-      }
-    }
-  },
   "metrics": {
     "namespace": "RunsFleet/Runner",
     "metrics_collected": {

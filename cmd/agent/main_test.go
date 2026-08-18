@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,9 +107,6 @@ func TestAgentConfig_Structure(t *testing.T) {
 	}
 	if ac.runnerConfig != nil {
 		t.Error("agentConfig.runnerConfig should be nil by default")
-	}
-	if ac.cwLogger != nil {
-		t.Error("agentConfig.cwLogger should be nil by default")
 	}
 }
 
@@ -824,9 +822,9 @@ func TestTerminateWithError_ReportsJobIDNotRunID(t *testing.T) {
 	}
 }
 
-// TestRunID_StaysSeparateFromJobID guards the legitimate uses of run_id: it is
-// still the CloudWatch log-stream component and the RUNS_FLEET_RUN_ID resolution
-// input, and must not collapse into the job_id key when the two differ.
+// TestRunID_StaysSeparateFromJobID guards the legitimate use of run_id: it is the
+// RUNS_FLEET_RUN_ID resolution input and the leading segment of the S3 runner-log
+// key, and must not collapse into the job_id key when the two differ.
 func TestRunID_StaysSeparateFromJobID(t *testing.T) {
 	_ = os.Unsetenv("RUNS_FLEET_JOB_ID")
 
@@ -844,10 +842,8 @@ func TestRunID_StaysSeparateFromJobID(t *testing.T) {
 		t.Errorf("run_id %q was mutated; want %q", rc.RunID, regressionRunID)
 	}
 
-	// The CloudWatch log stream is built from run_id, not job_id.
-	logStream := "i-instance" + "/" + rc.RunID
-	if logStream != "i-instance/"+regressionRunID {
-		t.Errorf("log stream = %q, want run_id-based stream", logStream)
+	if got := logship.BuildPrefix("", rc.RunID, rc.JobID); !strings.HasPrefix(got, logship.DefaultPrefix+regressionRunID+"/") {
+		t.Errorf("log prefix = %q, want it keyed by run_id %q", got, regressionRunID)
 	}
 }
 
