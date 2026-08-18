@@ -236,6 +236,12 @@ type Publisher interface {
 	// climbing, and any spike in failed surfaces a broken shim before it can
 	// silently disable caching fleet-wide.
 	PublishRunnerBuildCacheInterception(ctx context.Context, status string) error
+
+	// PublishRunnerLogUpload counts a job by the runner-log upload's outcome
+	// (status: uploaded | partial | failed | skipped | disabled). A fleet whose
+	// instance role never gained s3:PutObject reports failed on every job, which
+	// is the only signal that the logs are silently not being kept.
+	PublishRunnerLogUpload(ctx context.Context, status string) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -404,6 +410,11 @@ func (NoopPublisher) PublishRunnerCacheInterception(context.Context, string) err
 
 // PublishRunnerBuildCacheInterception is a no-op.
 func (NoopPublisher) PublishRunnerBuildCacheInterception(context.Context, string) error {
+	return nil
+}
+
+// PublishRunnerLogUpload is a no-op.
+func (NoopPublisher) PublishRunnerLogUpload(context.Context, string) error {
 	return nil
 }
 

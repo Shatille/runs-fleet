@@ -349,3 +349,9 @@ func (m *MultiPublisher) PublishRunnerBuildCacheInterception(ctx context.Context
 		return p.PublishRunnerBuildCacheInterception(ctx, status)
 	})
 }
+
+func (m *MultiPublisher) PublishRunnerLogUpload(ctx context.Context, status string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishRunnerLogUpload(ctx, status)
+	})
+}

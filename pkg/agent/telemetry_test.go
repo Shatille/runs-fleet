@@ -633,3 +633,33 @@ func TestJobStatus_BootstrapTimingsOmittedWhenZero(t *testing.T) {
 		}
 	}
 }
+
+// LogUpload must round-trip and be omitted when empty, so an agent predating
+// the runner-log upload produces no wire field and the orchestrator reads its
+// absence as "no measurement" rather than a failure.
+func TestJobStatus_LogUploadRoundTrip(t *testing.T) {
+	status := JobStatus{
+		InstanceID: "i-1",
+		JobID:      testJobID123,
+		LogUpload:  "uploaded",
+	}
+	jsonBytes, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded JobStatus
+	if err = json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.LogUpload != "uploaded" {
+		t.Errorf("LogUpload = %q, want uploaded", decoded.LogUpload)
+	}
+
+	zeroBytes, err := json.Marshal(JobStatus{InstanceID: "i-1", JobID: testJobID123})
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if contains(string(zeroBytes), "log_upload") {
+		t.Errorf("empty LogUpload must be omitted, got: %s", string(zeroBytes))
+	}
+}

@@ -305,3 +305,27 @@ func TestCleanup_CleanupLogs_NonLogFiles(t *testing.T) {
 		}
 	}
 }
+
+// CleanupRunner destroys _diag, which is why the runner-log upload has to run
+// before it. This pins that precondition: if cleanup ever stopped removing
+// _diag the ordering constraint would be worth revisiting, and if the upload
+// were ever moved after cleanup there would be nothing left to upload.
+func TestCleanup_CleanupRunner_RemovesDiagLogs(t *testing.T) {
+	tmpDir := t.TempDir()
+	diagDir := filepath.Join(tmpDir, "_diag")
+	if mkdirErr := os.MkdirAll(diagDir, 0755); mkdirErr != nil {
+		t.Fatalf("failed to create diag dir: %v", mkdirErr)
+	}
+	workerLog := filepath.Join(diagDir, "Worker_20260818-101112-utc.log")
+	if writeErr := os.WriteFile(workerLog, []byte("job output"), 0644); writeErr != nil {
+		t.Fatalf("failed to create worker log: %v", writeErr)
+	}
+
+	if err := NewCleanup(&mockLogger{}).CleanupRunner(context.Background(), tmpDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(workerLog); !os.IsNotExist(statErr) {
+		t.Error("expected _diag logs to be gone after cleanup; the upload must run before this")
+	}
+}

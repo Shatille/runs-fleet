@@ -227,6 +227,8 @@ type mockMetricsAPI struct {
 
 	buildCacheInterceptionCalls int
 	lastBuildCacheInterception  string
+	logUploadCalls              int
+	lastLogUpload               string
 
 	provisionCalls  int
 	lastProvSource  string
@@ -334,6 +336,12 @@ func (m *mockMetricsAPI) PublishRunnerCacheInterception(_ context.Context, statu
 func (m *mockMetricsAPI) PublishRunnerBuildCacheInterception(_ context.Context, status string) error {
 	m.buildCacheInterceptionCalls++
 	m.lastBuildCacheInterception = status
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishRunnerLogUpload(_ context.Context, status string) error {
+	m.logUploadCalls++
+	m.lastLogUpload = status
 	return nil
 }
 
@@ -2357,5 +2365,53 @@ func TestHandler_processTermination_SecretsDeleteError(t *testing.T) {
 	err := handler.processTermination(context.Background(), msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandler_processMessage_LogUpload(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          "success",
+		DurationSeconds: 120,
+		LogUpload:       "failed",
+	}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.logUploadCalls != 1 || metrics.lastLogUpload != "failed" {
+		t.Errorf("log upload metric = (%d, %q), want (1, failed)",
+			metrics.logUploadCalls, metrics.lastLogUpload)
+	}
+}
+
+func TestHandler_processMessage_LogUploadAbsentIsSilent(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{InstanceID: "i-12345", JobID: "12345678901", Status: "success", DurationSeconds: 5}
+	body, _ := json.Marshal(msg)
+
+	if err := handler.processMessage(context.Background(), queue.Message{
+		Body:   string(body),
+		Handle: testReceiptTermination,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if metrics.logUploadCalls != 0 {
+		t.Errorf("log upload metric fired for absent field: calls = %d, want 0", metrics.logUploadCalls)
 	}
 }

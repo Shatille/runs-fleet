@@ -82,6 +82,10 @@ type JobStatus struct {
 	// (omitempty) from a pre-rollout agent, which the orchestrator treats as no
 	// measurement.
 	BuildCacheInterception string `json:"build_cache_interception,omitempty"`
+	// LogUpload is the runner-log upload's outcome for this job: "uploaded",
+	// "partial", "failed", "skipped", or "disabled". Absent (omitempty) from a
+	// pre-rollout agent, which the orchestrator treats as no measurement.
+	LogUpload string `json:"log_upload,omitempty"`
 	// CacheBytesWritten is the blob bytes stored to the S3 cache through the v2
 	// interceptor this job (the blob PUT bypasses the orchestrator, so it can't be
 	// counted server-side). Zero when interception didn't engage.

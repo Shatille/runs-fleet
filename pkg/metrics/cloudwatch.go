@@ -318,6 +318,11 @@ func (p *CloudWatchPublisher) PublishRunnerBuildCacheInterception(ctx context.Co
 	return p.putCounter(ctx, "RunnerBuildCacheInterception", dims("Status", status))
 }
 
+// PublishRunnerLogUpload counts a job by runner-log upload outcome (status).
+func (p *CloudWatchPublisher) PublishRunnerLogUpload(ctx context.Context, status string) error {
+	return p.putCounter(ctx, "RunnerLogUpload", dims("Status", status))
+}
+
 // --- helpers ---
 
 // dims builds a CloudWatch dimension list from name/value pairs. Empty values are

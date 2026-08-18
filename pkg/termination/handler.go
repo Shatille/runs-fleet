@@ -71,6 +71,7 @@ type MetricsAPI interface {
 	PublishRunnerToolCacheMiss(ctx context.Context, tool, version, arch string) error
 	PublishRunnerCacheInterception(ctx context.Context, status string) error
 	PublishRunnerBuildCacheInterception(ctx context.Context, status string) error
+	PublishRunnerLogUpload(ctx context.Context, status string) error
 	PublishCacheBytesStored(ctx context.Context, bytes int64) error
 }
 
@@ -174,6 +175,9 @@ type Message struct {
 	// BuildCacheInterception is the buildx layer-cache shim's outcome
 	// (engaged|skipped|failed|disabled). Absent from a pre-rollout agent.
 	BuildCacheInterception string `json:"build_cache_interception,omitempty"`
+	// LogUpload is the runner-log upload's outcome, absent from a pre-rollout
+	// agent.
+	LogUpload string `json:"log_upload,omitempty"`
 	// CacheBytesWritten is v2 cache blob bytes stored to S3 through the interceptor
 	// this job (folded into the CacheBytesStored counter — the blob PUT bypasses the
 	// orchestrator, so it can't be counted server-side).
@@ -680,6 +684,13 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 		if msg.BuildCacheInterception != "" {
 			if err := h.metrics.PublishRunnerBuildCacheInterception(ctx, msg.BuildCacheInterception); err != nil {
 				termLog.Warn(ctx, "build cache interception metric publish failed", slog.String("error", err.Error()))
+			}
+		}
+		// Runner-log upload outcome: the only signal that a fleet missing
+		// s3:PutObject is discarding every job's logs.
+		if msg.LogUpload != "" {
+			if err := h.metrics.PublishRunnerLogUpload(ctx, msg.LogUpload); err != nil {
+				termLog.Warn(ctx, "runner log upload metric publish failed", slog.String("error", err.Error()))
 			}
 		}
 		// v2 cache write bytes (blob PUT bypasses the orchestrator; reported by the agent).

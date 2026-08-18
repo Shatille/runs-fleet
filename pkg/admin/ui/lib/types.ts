@@ -347,3 +347,15 @@ export interface AuditEntry {
   client_ip?: string;
   timestamp: string;
 }
+
+export interface JobLog {
+  name: string;
+  size: number;
+  last_modified: string;
+  url: string;
+}
+
+export interface JobLogsResponse {
+  logs: JobLog[];
+  expires_in_seconds: number;
+}

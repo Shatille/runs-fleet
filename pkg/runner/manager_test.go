@@ -851,3 +851,61 @@ func TestBuildRunnerNameUniquePerInstance(t *testing.T) {
 		t.Errorf("same job on different instances must produce different names: %q == %q", name1, name2)
 	}
 }
+
+func TestManager_PrepareRunner_RunnerLogsFieldsSetWhenBucketPresent(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{regToken: "tok"}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{
+		RunnerLogsBucket: "runs-fleet-cache",
+	})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-1",
+		JobID:      "job-1",
+		Repo:       "acme/widgets",
+		Labels:     []string{"self-hosted"},
+	}
+	if err := manager.PrepareRunner(context.Background(), req); err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+	cfg := mockStore.lastPutCfg
+	if cfg == nil {
+		t.Fatal("stored config is nil")
+	}
+	if cfg.RunnerLogsBucket != "runs-fleet-cache" {
+		t.Errorf("RunnerLogsBucket = %q, want runs-fleet-cache", cfg.RunnerLogsBucket)
+	}
+	if cfg.RunnerLogsPrefix != "runner-logs/" {
+		t.Errorf("RunnerLogsPrefix = %q, want runner-logs/ (run/job identity lives in the key, not the prefix)", cfg.RunnerLogsPrefix)
+	}
+}
+
+func TestManager_PrepareRunner_RunnerLogsFieldsEmptyWhenBucketAbsent(t *testing.T) {
+	t.Parallel()
+
+	mockStore := &mockSecretsStore{}
+	mockGH := &mockGitHubClient{regToken: "tok"}
+
+	manager := NewManager(mockGH, mockStore, ManagerConfig{})
+
+	req := PrepareRunnerRequest{
+		InstanceID: "i-1",
+		JobID:      "job-1",
+		Repo:       "acme/widgets",
+		Labels:     []string{"self-hosted"},
+	}
+	if err := manager.PrepareRunner(context.Background(), req); err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+	cfg := mockStore.lastPutCfg
+	if cfg == nil {
+		t.Fatal("stored config is nil")
+	}
+	if cfg.RunnerLogsBucket != "" || cfg.RunnerLogsPrefix != "" {
+		t.Errorf("RunnerLogs fields = %q/%q, want both empty so the feature stays inert",
+			cfg.RunnerLogsBucket, cfg.RunnerLogsPrefix)
+	}
+}
