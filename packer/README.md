@@ -32,7 +32,7 @@ If you're tempted to add anything else to `provision-runs-fleet.sh`, that's a si
 
 1. Edit `packer/provision-base.sh`. Add a new `echo "==> ..."` block, follow the existing pattern (explicit error handling for downloads + checksum verify for tarballs).
 2. If the package adds a binary that downstream consumers should be able to inspect, append a line to the trailing summary (`echo "    - your-tool: $(your-tool --version)"`).
-3. Open a PR. Merging to `main` triggers the unified `Build AMIs` workflow (`.github/workflows/build-amis.yml`); the `build-base` job runs, and `build-runner-ami` waits for it. The base build also runs on workflow_dispatch. There is no scheduled rebuild — nothing advances the baked OS packages, prebaked images, or `actions/runner` unless a build is triggered. The `Runner Staleness Check` workflow reports when the baked runner is nearing GitHub's 30-day expiry so you know a rebuild is due.
+3. Open a PR. Merging to `main` triggers the unified `Build AMIs` workflow (`.github/workflows/build-amis.yml`); the `build-base` job runs, and `build-runner-ami` waits for it. The base build also runs on workflow_dispatch. There is no scheduled rebuild — nothing advances the prebaked images or `actions/runner` unless a build is triggered. OS packages are the exception: both provisioners open with `dnf upgrade --releasever=latest`, so every build moves the OS to the newest AL2023 release snapshot (a plain `dnf upgrade` cannot — AL2023 pins dnf to the snapshot its source AMI shipped, and the CVE fixes live in a newer one). The `Runner Staleness Check` workflow reports when the baked runner is nearing GitHub's 30-day expiry so you know a rebuild is due.
 
 ## Pre-baked Docker images
 
