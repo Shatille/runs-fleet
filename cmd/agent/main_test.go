@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
+	"github.com/Shavakan/runs-fleet/pkg/agent/logship"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
 
@@ -942,5 +943,20 @@ func TestBootstrapTimings_ApplyTo_ZeroStart(t *testing.T) {
 	bt.applyTo(&js, time.Now())
 	if js.BootstrapTotalSeconds != 0 {
 		t.Errorf("BootstrapTotalSeconds = %v, want 0 when start is unset", js.BootstrapTotalSeconds)
+	}
+}
+
+// A runner config without a logs bucket must not build an S3 client or touch
+// the disk: the feature stays inert until the orchestrator supplies a bucket.
+func TestShipRunnerLogs_DisabledWithoutBucket(t *testing.T) {
+	logger := &stdLogger{}
+
+	if got := shipRunnerLogs(context.Background(), &agentConfig{}, "/nonexistent", "i-1", "99", logger); got != logship.OutcomeDisabled {
+		t.Errorf("shipRunnerLogs() with nil runnerConfig = %q, want %q", got, logship.OutcomeDisabled)
+	}
+
+	ac := &agentConfig{runnerConfig: &secrets.RunnerConfig{RunID: "42"}}
+	if got := shipRunnerLogs(context.Background(), ac, "/nonexistent", "i-1", "99", logger); got != logship.OutcomeDisabled {
+		t.Errorf("shipRunnerLogs() with empty bucket = %q, want %q", got, logship.OutcomeDisabled)
 	}
 }

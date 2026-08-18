@@ -17,6 +17,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/agent"
 	"github.com/Shavakan/runs-fleet/pkg/agent/cacheproxy"
+	"github.com/Shavakan/runs-fleet/pkg/agent/logship"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -142,6 +143,38 @@ func main() {
 	}
 
 	runAgent(ctx, ac, downloader, executor, cleanup, instanceID, jobID, logger, &timings)
+}
+
+const (
+	// logShipTimeout bounds the whole upload. It runs while the instance is still
+	// billable and self-termination is waiting, so a stalled S3 call must lose
+	// the logs rather than the shutdown.
+	logShipTimeout = 60 * time.Second
+
+	// logShipMaxFileBytes skips a pathological log rather than spending the whole
+	// timeout compressing it. Typical _diag logs are well under a megabyte.
+	logShipMaxFileBytes = 128 << 20
+)
+
+// shipRunnerLogs uploads the runner's _diag logs and returns the outcome. It
+// must be called before cleanup removes _diag.
+func shipRunnerLogs(ctx context.Context, ac *agentConfig, runnerPath, instanceID, jobID string, logger *stdLogger) string {
+	if ac.runnerConfig == nil || ac.runnerConfig.RunnerLogsBucket == "" {
+		return logship.OutcomeDisabled
+	}
+	shipper := logship.New(ac.awsCfg, logship.Config{
+		Bucket:       ac.runnerConfig.RunnerLogsBucket,
+		Prefix:       ac.runnerConfig.RunnerLogsPrefix,
+		RunID:        ac.runnerConfig.RunID,
+		JobID:        jobID,
+		InstanceID:   instanceID,
+		Repo:         ac.runnerConfig.Repo,
+		MaxFileBytes: logShipMaxFileBytes,
+		Timeout:      logShipTimeout,
+	}, logger)
+	outcome := shipper.Ship(ctx, runnerPath)
+	logger.Printf("Runner log upload: %s", outcome)
+	return outcome
 }
 
 // resolveJobID returns the GitHub job_id (used to key the job record) from the
@@ -311,6 +344,8 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		}
 	}
 
+	logUpload := shipRunnerLogs(ctx, ac, runnerPath, instanceID, jobID, logger)
+
 	logger.Println("Phase 4: Cleaning up and terminating...")
 
 	if cleanErr := cleanup.CleanupRunner(ctx, runnerPath); cleanErr != nil {
@@ -339,6 +374,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		ToolCacheMisses:        toolCacheMisses,
 		CacheInterception:      cacheInterception,
 		BuildCacheInterception: agent.ReadBuildCacheOutcome(buildCacheOutcomeFile),
+		LogUpload:              logUpload,
 	}
 	if cacheProxy != nil {
 		jobStatus.CacheBytesWritten = cacheProxy.BytesWritten()
