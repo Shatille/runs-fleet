@@ -41,6 +41,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/go-github/v57/github"
 	"github.com/google/uuid"
@@ -567,6 +568,11 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	adminHandler.RegisterRoutes(adminMux)
 
 	jobsHandler := admin.NewJobsHandler(ws.dbClient, adminAuth, ws.cfg.TraceUIURL)
+	jobsHandler.SetAuditDB(ws.dbClient)
+	if ws.cfg.CacheBucketName != "" {
+		logsS3 := s3.NewFromConfig(ws.awsCfg)
+		jobsHandler.SetLogSource(logsS3, s3.NewPresignClient(logsS3), ws.cfg.CacheBucketName, "")
+	}
 	jobsHandler.RegisterRoutes(adminMux)
 
 	// Same typed-nil guard as orphanSweeper below: a nil *gh.Client stored

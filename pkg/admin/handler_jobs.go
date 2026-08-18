@@ -79,6 +79,12 @@ type JobsHandler struct {
 	auth       *AuthMiddleware
 	log        *logging.Logger
 	traceUIURL string
+
+	auditDB       AuditDB
+	logsS3        LogsS3API
+	logsPresigner LogsPresignAPI
+	logsBucket    string
+	logsPrefix    string
 }
 
 // NewJobsHandler creates a new jobs handler.
@@ -96,6 +102,7 @@ func (h *JobsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/jobs", h.auth.WrapFunc(h.ListJobs))
 	mux.Handle("GET /api/jobs/stats", h.auth.WrapFunc(h.GetJobStats))
 	mux.Handle("GET /api/jobs/{id}", h.auth.WrapFunc(h.GetJob))
+	mux.Handle("GET /api/jobs/{id}/logs", h.auth.WrapFunc(h.GetJobLogs))
 	mux.Handle("GET /api/config/trace-url", h.auth.WrapFunc(h.GetTraceURL))
 }
 
