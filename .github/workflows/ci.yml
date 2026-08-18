@@ -40,6 +40,7 @@ jobs:
             pins:
               - 'packer/provision-base.sh'
               - 'docker/runner/Dockerfile'
+              - 'flake.nix'
               - '.github/scripts/check-pin-sync.sh'
               - '.github/workflows/ci.yml'
 

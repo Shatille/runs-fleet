@@ -18,6 +18,29 @@
 
         version = "0.1.0";
 
+        # Pinned to the version CI installs (.github/workflows/ci.yml), because a
+        # linter that disagrees with CI is worse than none: 2.12 reports ~1100
+        # goconst findings on this tree that 2.9 does not. Keep both in step when
+        # bumping. The builder is forced to Go 1.26 (nixpkgs pins an older line)
+        # since golangci-lint refuses to load a config whose go.mod targets a newer
+        # Go language version than the one it was built with.
+        golangciLintVersion = "2.9.0";
+        golangci-lint-pinned =
+          (pkgs.golangci-lint.override { buildGo125Module = pkgs.buildGo126Module; }).overrideAttrs
+            (old: rec {
+              version = golangciLintVersion;
+              src = pkgs.fetchFromGitHub {
+                owner = "golangci";
+                repo = "golangci-lint";
+                tag = "v${version}";
+                hash = "sha256-8LEtm1v0slKwdLBtS41OilKJLXytSxcI9fUlZbj5Gfw=";
+              };
+              vendorHash = "sha256-w8JfF6n1ylrU652HEv/cYdsOdDZz9J2uRQDqxObyhkY=";
+              ldflags = (old.ldflags or [ ]) ++ [
+                "-X main.version=${version}"
+              ];
+            });
+
         # Build admin UI (Next.js static export)
         admin-ui = pkgs.buildNpmPackage {
           pname = "runs-fleet-admin-ui";
@@ -142,16 +165,16 @@
           buildx-shim-arm64 = runs-fleet-buildx-shim "arm64";
           docker = runs-fleet-docker;
           admin-ui = admin-ui;
+          golangci-lint = golangci-lint-pinned;
           default = runs-fleet-server;
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
+          buildInputs = [ golangci-lint-pinned ] ++ (with pkgs; [
             go_1_26
             gopls
             gotools
             go-tools
-            golangci-lint
             delve
 
             docker
@@ -168,7 +191,7 @@
             jq
             yq
             actionlint
-          ];
+          ]);
 
           shellHook = ''
             echo "runs-fleet development environment"
@@ -177,7 +200,7 @@
             echo "Available commands:"
             echo "  make build        - Build all binaries"
             echo "  make test         - Run tests"
-            echo "  make lint         - Run linter"
+            echo "  make lint         - Run linter (golangci-lint ${golangciLintVersion}, matches CI)"
             echo "  make docker-build - Build Docker image"
             echo "  make run-server   - Run server locally"
             echo ""
