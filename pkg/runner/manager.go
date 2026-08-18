@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/agent/logship"
 	"github.com/Shavakan/runs-fleet/pkg/cache"
 	"github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
@@ -28,6 +29,9 @@ type ManagerConfig struct {
 	// region for the cache backend.
 	BuildkitCacheBucket string
 	BuildkitCacheRegion string
+	// RunnerLogsBucket enables uploading the runner's _diag logs to S3. Empty =
+	// disabled, leaving the runner config's RunnerLogs* fields empty.
+	RunnerLogsBucket string
 	// RunnerGroup is the GitHub runner group to place runners in. Empty = GitHub's
 	// Default group, resolved without an API call. Only consulted on the JIT path,
 	// which needs the group's numeric ID; token registration passes the name
@@ -125,6 +129,14 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		buildkitPrefix = fmt.Sprintf("buildkit/%s/%s/", org, repoName)
 	}
 
+	// Runner logs are keyed by run/job/instance, so the prefix stays flat — a
+	// repo segment would break deriving the key from a GitHub job URL alone.
+	runnerLogsBucket, runnerLogsPrefix := "", ""
+	if m.config.RunnerLogsBucket != "" {
+		runnerLogsBucket = m.config.RunnerLogsBucket
+		runnerLogsPrefix = logship.DefaultPrefix
+	}
+
 	// Prefer a job-bound JIT config; the token stays populated as the fallback so
 	// a mint failure costs a steal-able runner rather than the whole dispatch.
 	jitConfig := m.mintJITConfig(ctx, req, runnerName)
@@ -148,6 +160,8 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		BuildkitCacheBucket: buildkitBucket,
 		BuildkitCacheRegion: buildkitRegion,
 		BuildkitCachePrefix: buildkitPrefix,
+		RunnerLogsBucket:    runnerLogsBucket,
+		RunnerLogsPrefix:    runnerLogsPrefix,
 	}
 
 	runnerLog.Info(ctx, "storing runner config")

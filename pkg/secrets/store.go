@@ -57,6 +57,11 @@ type RunnerConfig struct {
 	BuildkitCacheBucket string `json:"buildkit_cache_bucket,omitempty"`
 	BuildkitCacheRegion string `json:"buildkit_cache_region,omitempty"`
 	BuildkitCachePrefix string `json:"buildkit_cache_prefix,omitempty"`
+	// RunnerLogs* carry the destination the agent uploads the runner's _diag
+	// logs to before cleanup wipes them. Same omitempty discipline as
+	// BuildkitCache*: absent is inert both directions.
+	RunnerLogsBucket string `json:"runner_logs_bucket,omitempty"`
+	RunnerLogsPrefix string `json:"runner_logs_prefix,omitempty"`
 }
 
 // Store defines operations for storing and retrieving runner configuration.

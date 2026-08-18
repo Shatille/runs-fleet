@@ -95,6 +95,8 @@ var envVarForField = map[string]string{
 	"BuildkitCacheBucket": "RUNS_FLEET_BUILDKIT_CACHE_BUCKET",
 	"BuildkitCacheRegion": "RUNS_FLEET_BUILDKIT_CACHE_REGION",
 	"BuildkitCachePrefix": "RUNS_FLEET_BUILDKIT_CACHE_PREFIX",
+	"RunnerLogsBucket":    "RUNS_FLEET_RUNNER_LOGS_BUCKET",
+	"RunnerLogsPrefix":    "RUNS_FLEET_RUNNER_LOGS_PREFIX",
 }
 
 // fieldsEnvStoreCannotCarry are RunnerConfig fields EnvStore intentionally does
