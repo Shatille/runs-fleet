@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
@@ -39,6 +40,16 @@ func resolveRegion(ctx context.Context, cfgRegion string, fromIMDS func(context.
 	return region, nil
 }
 
+func imdsRegion(awsCfg aws.Config) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		out, err := imds.NewFromConfig(awsCfg).GetRegion(ctx, &imds.GetRegionInput{})
+		if err != nil {
+			return "", err
+		}
+		return out.Region, nil
+	}
+}
+
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8989", "loopback address to serve the mirror on")
 	flag.Parse()
@@ -58,13 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	region, err := resolveRegion(context.Background(), awsCfg.Region, func(ctx context.Context) (string, error) {
-		out, err := imds.NewFromConfig(awsCfg).GetRegion(ctx, &imds.GetRegionInput{})
-		if err != nil {
-			return "", err
-		}
-		return out.Region, nil
-	})
+	region, err := resolveRegion(context.Background(), awsCfg.Region, imdsRegion(awsCfg))
 	if err != nil {
 		logger.Error("no AWS region available; every ECR call would fail and the mirror could only serve 502", "error", err)
 		os.Exit(1)
