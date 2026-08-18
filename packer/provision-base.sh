@@ -621,6 +621,158 @@ done
 
 sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
 
+# Pre-bake the tools most often fetched on demand, per the RunnerToolCacheMiss
+# metric. Same rationale as Node/Go/Java above: nothing survives between jobs on
+# an ephemeral runner, so an un-baked tool is re-downloaded every run.
+#
+# Every directory name below is the setup-* action's own cache key, read from its
+# tc.cacheDir/tc.find call — none of them can be derived from the tool's release
+# artifacts, and several actively contradict them. A misnamed entry still passes
+# the AMI build and simply never gets found, so these strings are load-bearing;
+# provision-validate-agent.sh asserts each one.
+toolcache_mark_complete() {
+  # toolcache_mark_complete <tool> <version>: the Actions tool cache only treats
+  # an entry as usable once this 0-byte marker exists beside the platform dir.
+  sudo touch "/opt/hostedtoolcache/$1/$2/${TOOLCACHE_PLATFORM}.complete"
+}
+
+if [ "$ARCH" = "x86_64" ]; then
+  GNU_ARCH="x86_64"
+  DEB_ARCH="amd64"
+  PROTOC_ARCH="x86_64"
+  GRAALVM_ARTIFACT_ARCH="x64"
+else
+  GNU_ARCH="aarch64"
+  DEB_ARCH="arm64"
+  PROTOC_ARCH="aarch_64"
+  GRAALVM_ARTIFACT_ARCH="aarch64"
+fi
+
+echo "==> Pre-baking Helm into the tool cache (4.2)"
+HELM_LINE="4.2"
+helm_full=$(dl "https://api.github.com/repos/helm/helm/releases?per_page=100" \
+  | jq -r --arg m "v${HELM_LINE}." '[.[] | select(.prerelease==false) | .tag_name]
+      | map(select(startswith($m))) | first // empty' | sed 's/^v//')
+[ -n "$helm_full" ] || { echo "no Helm ${HELM_LINE}.x release found"; exit 1; }
+dl "https://get.helm.sh/helm-v${helm_full}-linux-${DEB_ARCH}.tar.gz" -o /tmp/helm.tar.gz \
+  || { echo "Helm ${helm_full} download failed"; exit 1; }
+helm_sha=$(dl "https://get.helm.sh/helm-v${helm_full}-linux-${DEB_ARCH}.tar.gz.sha256sum" | awk '{print $1}')
+[ -n "$helm_sha" ] || { echo "Helm ${helm_full} checksum fetch failed"; exit 1; }
+echo "${helm_sha}  /tmp/helm.tar.gz" | sha256sum -c \
+  || { echo "Helm ${helm_full} checksum mismatch"; exit 1; }
+# The tarball nests everything under linux-<arch>/; strip it so the binary lands
+# at the entry root, where setup-helm's findHelm looks.
+helm_dest="/opt/hostedtoolcache/helm/${helm_full}/${TOOLCACHE_PLATFORM}"
+sudo rm -rf "$helm_dest"
+sudo mkdir -p "$helm_dest"
+sudo tar -xf /tmp/helm.tar.gz -C "$helm_dest" --strip-components=1 \
+  || { echo "Helm ${helm_full} extraction failed"; exit 1; }
+toolcache_mark_complete helm "$helm_full"
+rm -f /tmp/helm.tar.gz
+
+echo "==> Pre-baking kubectl into the tool cache (1.35)"
+KUBECTL_LINE="1.35"
+kubectl_full=$(dl "https://dl.k8s.io/release/stable-${KUBECTL_LINE}.txt" | tr -d '[:space:]')
+case "$kubectl_full" in
+  v[0-9]*) : ;;
+  *) echo "unexpected kubectl stable version: ${kubectl_full}"; exit 1 ;;
+esac
+dl "https://dl.k8s.io/release/${kubectl_full}/bin/linux/${DEB_ARCH}/kubectl" -o /tmp/kubectl \
+  || { echo "kubectl ${kubectl_full} download failed"; exit 1; }
+kubectl_sha=$(dl "https://dl.k8s.io/release/${kubectl_full}/bin/linux/${DEB_ARCH}/kubectl.sha256" | tr -d '[:space:]')
+[ -n "$kubectl_sha" ] || { echo "kubectl ${kubectl_full} checksum fetch failed"; exit 1; }
+echo "${kubectl_sha}  /tmp/kubectl" | sha256sum -c \
+  || { echo "kubectl ${kubectl_full} checksum mismatch"; exit 1; }
+# setup-kubectl keys on the version without its v prefix, and caches the bare
+# binary (tc.cacheFile) rather than a directory tree.
+kubectl_dest="/opt/hostedtoolcache/kubectl/${kubectl_full#v}/${TOOLCACHE_PLATFORM}"
+sudo rm -rf "$kubectl_dest"
+sudo mkdir -p "$kubectl_dest"
+sudo install -m 0755 /tmp/kubectl "${kubectl_dest}/kubectl" \
+  || { echo "kubectl ${kubectl_full} install failed"; exit 1; }
+toolcache_mark_complete kubectl "${kubectl_full#v}"
+rm -f /tmp/kubectl
+
+echo "==> Pre-baking protoc into the tool cache (25.6)"
+PROTOC_VERSION="25.6"
+dl "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" \
+  -o /tmp/protoc.zip || { echo "protoc ${PROTOC_VERSION} download failed"; exit 1; }
+# setup-protoc requests versions with the v prefix and stores that string as-is.
+protoc_dest="/opt/hostedtoolcache/protoc/v${PROTOC_VERSION}/${TOOLCACHE_PLATFORM}"
+sudo rm -rf "$protoc_dest"
+sudo mkdir -p "$protoc_dest"
+sudo unzip -q -o /tmp/protoc.zip -d "$protoc_dest" \
+  || { echo "protoc ${PROTOC_VERSION} extraction failed"; exit 1; }
+toolcache_mark_complete protoc "v${PROTOC_VERSION}"
+rm -f /tmp/protoc.zip
+
+echo "==> Pre-baking uv into the tool cache (0.8)"
+UV_LINE="0.8"
+uv_full=$(dl "https://api.github.com/repos/astral-sh/uv/tags?per_page=100" \
+  | jq -r --arg m "${UV_LINE}." '[.[].name] | map(select(startswith($m))) | first // empty')
+[ -n "$uv_full" ] || { echo "no uv ${UV_LINE}.x tag found"; exit 1; }
+uv_asset="uv-${GNU_ARCH}-unknown-linux-gnu.tar.gz"
+dl "https://github.com/astral-sh/uv/releases/download/${uv_full}/${uv_asset}" -o /tmp/uv.tar.gz \
+  || { echo "uv ${uv_full} download failed"; exit 1; }
+uv_sha=$(dl "https://github.com/astral-sh/uv/releases/download/${uv_full}/${uv_asset}.sha256" | awk '{print $1}')
+[ -n "$uv_sha" ] || { echo "uv ${uv_full} checksum fetch failed"; exit 1; }
+echo "${uv_sha}  /tmp/uv.tar.gz" | sha256sum -c \
+  || { echo "uv ${uv_full} checksum mismatch"; exit 1; }
+# setup-uv passes the platform to tc.cacheDir explicitly, so this is the one
+# entry keyed by the GNU arch rather than TOOLCACHE_PLATFORM.
+uv_dest="/opt/hostedtoolcache/uv/${uv_full}/${GNU_ARCH}"
+sudo rm -rf "$uv_dest"
+sudo mkdir -p "$uv_dest"
+sudo tar -xf /tmp/uv.tar.gz -C "$uv_dest" --strip-components=1 \
+  || { echo "uv ${uv_full} extraction failed"; exit 1; }
+sudo touch "/opt/hostedtoolcache/uv/${uv_full}/${GNU_ARCH}.complete"
+rm -f /tmp/uv.tar.gz
+
+echo "==> Pre-baking GraalVM CE for JDK 25 into the tool cache"
+# The consuming workflows pin distinct versions (25.0.2 on the 25.0 line, 25.1 on
+# the innovation line) and setup-graalvm keys the cache on the requested string,
+# so both are baked. Release tags are resolved at build time rather than pinned:
+# the innovation line's tag carries a patch number that moves independently of
+# the version a workflow asks for.
+GRAALVM_JDK25_REQUESTED=("25.0.2" "25.1")
+GRAALVM_RELEASES=$(dl "https://api.github.com/repos/graalvm/graalvm-ce-builds/releases?per_page=100") \
+  || { echo "GraalVM release index fetch failed"; exit 1; }
+for requested in "${GRAALVM_JDK25_REQUESTED[@]}"; do
+  # toSemVer coerces the requested version, so 25.1 becomes 25.1.0 while an
+  # already-complete 25.0.2 is unchanged. Anything else would not be found.
+  case "$requested" in
+    *.*.*) entry_version="$requested" ;;
+    *) entry_version="${requested}.0" ;;
+  esac
+  # The 25.0 line tags releases jdk-<x.y.z>; the 25.1 innovation line tags them
+  # graal-25.1.<n> and names its artifacts 25i1-<x.y.z>. Pick the newest release
+  # whose linux asset exists for this arch, so either shape resolves.
+  case "$requested" in
+    25.1|25.1.*) asset_glob="graalvm-community-jdk-25i1-*_linux-${GRAALVM_ARTIFACT_ARCH}_bin.tar.gz" ;;
+    *) asset_glob="graalvm-community-jdk-${requested}_linux-${GRAALVM_ARTIFACT_ARCH}_bin.tar.gz" ;;
+  esac
+  asset_url=$(printf '%s' "$GRAALVM_RELEASES" | jq -r --arg g "$asset_glob" \
+    '[.[] | select(.prerelease==false) | .assets[]
+       | select(.name | test("^" + ($g | gsub("\\*"; ".*")) + "$"))
+       | .browser_download_url] | first // empty')
+  [ -n "$asset_url" ] || { echo "no GraalVM asset matching ${asset_glob}"; exit 1; }
+  case "$asset_url" in
+    https://github.com/graalvm/graalvm-ce-builds/releases/download/*) : ;;
+    *) echo "GraalVM asset has unexpected host: $asset_url"; exit 1 ;;
+  esac
+  dl "$asset_url" -o /tmp/graalvm.tar.gz \
+    || { echo "GraalVM ${requested} download failed"; exit 1; }
+  graalvm_sha=$(dl "${asset_url}.sha256" | awk '{print $1}')
+  [ -n "$graalvm_sha" ] || { echo "GraalVM ${requested} checksum fetch failed"; exit 1; }
+  echo "${graalvm_sha}  /tmp/graalvm.tar.gz" | sha256sum -c \
+    || { echo "GraalVM ${requested} checksum mismatch"; exit 1; }
+  # The cache entry is named `ce` even though the artifact says `community`.
+  toolcache_extract "graalvm-ce-java25-linux" "$entry_version" /tmp/graalvm.tar.gz
+  rm -f /tmp/graalvm.tar.gz
+done
+
+sudo chown -R ec2-user:ec2-user /opt/hostedtoolcache
+
 echo "==> Downloading GitHub Actions runner"
 # RUNNER_VERSION and RUNNER_SHA256 are injected by the Packer template, resolved
 # from releases/latest by build-amis.yml. They are deliberately not defaulted

@@ -169,6 +169,39 @@ for m in 17 21; do check_toolcache Java_Temurin-Hotspot_jdk "$m" bin/java --vers
 command -v go >/dev/null || fail "go not on PATH"
 echo "  OK: tool cache node 20/22, go 1.24/1.25, Temurin 17/21 ($TOOLCACHE_PLATFORM)"
 
+echo "==> Validating pre-baked common-tool cache entries"
+# These entries only pay off if their directory name matches the key the setup-*
+# action looks up, and a wrong name is invisible at runtime (the action silently
+# re-downloads). So assert the exact platform segment and layout each action
+# expects, not just that something runnable exists.
+check_toolcache helm 4 helm version --short
+check_toolcache graalvm-ce-java25-linux 25 bin/java --version
+
+# setup-kubectl caches a bare binary (tc.cacheFile), so there is no bin/ subtree.
+check_toolcache kubectl 1.35 kubectl version --client
+
+# setup-protoc stores the requested version verbatim, including the leading v,
+# which newest_toolcache_dir's <minor>.* glob cannot express.
+protoc_entry="/opt/hostedtoolcache/protoc/v25.6/${TOOLCACHE_PLATFORM}"
+[ -d "$protoc_entry" ] || fail "no tool-cache entry for protoc v25.6 (${TOOLCACHE_PLATFORM})"
+[ -f "${protoc_entry}.complete" ] || fail "missing ${TOOLCACHE_PLATFORM}.complete for protoc v25.6"
+"${protoc_entry}/bin/protoc" --version >/dev/null 2>&1 || fail "protoc v25.6 not runnable"
+
+# setup-uv passes the platform explicitly, so its entries are keyed by the GNU
+# arch (x86_64/aarch64) rather than TOOLCACHE_PLATFORM. Baking this one under
+# arm64 would never be found.
+if [ "$ARCH" = "x86_64" ]; then uv_platform="x86_64"; else uv_platform="aarch64"; fi
+uv_entry=""
+for d in "/opt/hostedtoolcache/uv/0.8."*"/${uv_platform}"; do
+  [ -d "$d" ] || continue
+  uv_entry=$(printf '%s\n%s\n' "$uv_entry" "$d" | sort -V | tail -n1)
+done
+[ -n "$uv_entry" ] || fail "no tool-cache entry for uv 0.8 (${uv_platform})"
+[ -f "${uv_entry}.complete" ] || fail "missing ${uv_platform}.complete for uv 0.8"
+"${uv_entry}/uv" --version >/dev/null 2>&1 || fail "uv 0.8 not runnable"
+
+echo "  OK: tool cache helm 4.2, kubectl 1.35, protoc v25.6, uv 0.8, GraalVM CE 25 ($TOOLCACHE_PLATFORM)"
+
 echo "==> Validating cache-engage helper"
 HELPER=/usr/local/sbin/runs-fleet-cache-engage
 HOST=results-receiver.actions.githubusercontent.com
