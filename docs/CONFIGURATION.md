@@ -232,6 +232,21 @@ instance profile has S3 read/write on `buildkit/*` (until then, builds succeed
 with cache-miss warnings). Per-workflow opt-out: `RUNS_FLEET_BUILD_CACHE=off`.
 See "Build Cache" in [USAGE.md](USAGE.md).
 
+The same bucket also holds each job's runner logs under a `runner-logs/` prefix,
+so a failure stays diagnosable after GitHub expires its own logs (a superseded
+attempt's are gone within hours). This needs no configuration; it becomes
+effective once the instance profile has `s3:PutObject` on `runner-logs/*` and
+the orchestrator's role has `s3:GetObject`/`s3:ListBucket` there. Until then
+every job reports `log_upload=failed` and the `RunnerLogUpload` metric shows it
+fleet-wide. Objects are expected to expire on a 14-day lifecycle rule scoped to
+that prefix — set it, or they inherit whatever bucket-wide rule exists. Read
+them from the console (a job's detail page) or with the `fetch-runner-logs`
+skill.
+
+These logs are not secret-masked in every path, unlike the ones GitHub renders.
+Keep the bucket private, keep the runner's grant write-only, and note that
+console reads are recorded in the audit trail.
+
 ## Graceful Shutdown
 
 | Variable | Default | Description |
