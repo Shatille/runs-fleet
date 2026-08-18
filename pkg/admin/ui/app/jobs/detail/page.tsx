@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { DetailSkeleton } from '@/components/skeleton';
 import JobActions from '@/components/job-actions';
+import JobLogsCard from '@/components/job-logs-card';
 import { GitHubJobStatus, Job } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
 
@@ -189,6 +190,8 @@ function JobDetail() {
           <Field label="Started" value={formatTimestamp(job.started_at)} />
           <Field label="Completed" value={formatTimestamp(job.completed_at)} />
         </Section>
+
+        <JobLogsCard jobId={job.job_id} />
       </div>
     </div>
   );
