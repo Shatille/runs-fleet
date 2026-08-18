@@ -636,15 +636,20 @@ toolcache_mark_complete() {
   sudo touch "/opt/hostedtoolcache/$1/$2/${TOOLCACHE_PLATFORM}.complete"
 }
 
+# protoc is the one tool here whose upstream publishes neither a .sha256 sidecar
+# nor an API digest, so its hash is pinned beside the version it belongs to.
+PROTOC_VERSION="25.6"
 if [ "$ARCH" = "x86_64" ]; then
   GNU_ARCH="x86_64"
   DEB_ARCH="amd64"
   PROTOC_ARCH="x86_64"
+  PROTOC_SHA256="02475eb76a9f9cc9afffd40080677d46468a8a3c3f7f1a9ecb974b263a32a1d8"
   GRAALVM_ARTIFACT_ARCH="x64"
 else
   GNU_ARCH="aarch64"
   DEB_ARCH="arm64"
   PROTOC_ARCH="aarch_64"
+  PROTOC_SHA256="7425ba72aa619dac2589380d32275aa56e711fafb78274b0c5c30f9f98f645f5"
   GRAALVM_ARTIFACT_ARCH="aarch64"
 fi
 
@@ -693,10 +698,11 @@ sudo install -m 0755 /tmp/kubectl "${kubectl_dest}/kubectl" \
 toolcache_mark_complete kubectl "${kubectl_full#v}"
 rm -f /tmp/kubectl
 
-echo "==> Pre-baking protoc into the tool cache (25.6)"
-PROTOC_VERSION="25.6"
+echo "==> Pre-baking protoc into the tool cache (${PROTOC_VERSION})"
 dl "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" \
   -o /tmp/protoc.zip || { echo "protoc ${PROTOC_VERSION} download failed"; exit 1; }
+echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum -c \
+  || { echo "protoc ${PROTOC_VERSION} checksum mismatch"; exit 1; }
 # setup-protoc requests versions with the v prefix and stores that string as-is.
 protoc_dest="/opt/hostedtoolcache/protoc/v${PROTOC_VERSION}/${TOOLCACHE_PLATFORM}"
 sudo rm -rf "$protoc_dest"
