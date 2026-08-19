@@ -49,6 +49,15 @@ type PoolConfig struct {
 	LastReconcileAt     time.Time `dynamodbav:"last_reconcile_at,omitempty"`
 	LastReconcileResult string    `dynamodbav:"last_reconcile_result,omitempty"`
 
+	// The targets the last reconcile pass actually resolved, written with the
+	// current counts by UpdatePoolState. They differ from DesiredRunning/
+	// DesiredStopped whenever ephemeral auto-scaling or a hot-pool linger floor
+	// overrides the configured seed, so comparing current against the seed is
+	// meaningless for those pools. Also absent from SavePoolConfig's SET list.
+	// Nil (never reconciled) is distinct from a target that resolved to zero.
+	EffectiveDesiredRunning *int `dynamodbav:"effective_desired_running,omitempty"`
+	EffectiveDesiredStopped *int `dynamodbav:"effective_desired_stopped,omitempty"`
+
 	// Hot-pool override + auto-tune. The overrides are admin-written and three-state
 	// (nil = "use auto", &0 = "force cold", &N = fixed); they ARE part of
 	// SavePoolConfig's SET list so a nil pointer clears the override. AutoTune is
@@ -250,14 +259,16 @@ func (c *Client) ListPools(ctx context.Context) ([]string, error) {
 	}
 }
 
-// UpdatePoolState updates the current state of the pool (e.g., running/stopped counts).
+// UpdatePoolState records what the reconciler observed and what it was targeting,
+// in one write so the two can never disagree: comparing an observed count against
+// a target from a different pass is what makes a converged pool look stale.
 // Pool must exist in the table before calling this method.
-func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error {
+func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, stopped, effectiveDesiredRunning, effectiveDesiredStopped int) error {
 	if poolName == "" {
 		return fmt.Errorf("pool name cannot be empty")
 	}
-	if running < 0 || stopped < 0 {
-		return fmt.Errorf("running and stopped counts must be non-negative")
+	if running < 0 || stopped < 0 || effectiveDesiredRunning < 0 || effectiveDesiredStopped < 0 {
+		return fmt.Errorf("running, stopped, and effective desired counts must be non-negative")
 	}
 
 	key, err := attributevalue.MarshalMap(map[string]string{
@@ -267,10 +278,13 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 		return fmt.Errorf("failed to marshal key: %w", err)
 	}
 
-	update := "SET current_running = :r, current_stopped = :s"
+	update := "SET current_running = :r, current_stopped = :s, " +
+		"effective_desired_running = :edr, effective_desired_stopped = :eds"
 	exprValues, err := attributevalue.MarshalMap(map[string]int{
-		":r": running,
-		":s": stopped,
+		":r":   running,
+		":s":   stopped,
+		":edr": effectiveDesiredRunning,
+		":eds": effectiveDesiredStopped,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal values: %w", err)
@@ -286,7 +300,7 @@ func (c *Client) UpdatePoolState(ctx context.Context, poolName string, running, 
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return fmt.Errorf("pool %s does not exist", poolName)
+			return ErrPoolNotFound
 		}
 		return fmt.Errorf("failed to update item: %w", err)
 	}

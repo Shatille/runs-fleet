@@ -138,9 +138,6 @@ func TestReconcileStoppedTerminationSkipsConfigCheck(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {

@@ -50,9 +50,6 @@ func newHotPoolManager(t *testing.T, instances []ec2types.Instance, busyIDs []st
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
 			return busyIDs, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockEC2 := &MockEC2API{

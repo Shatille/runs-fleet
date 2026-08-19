@@ -69,7 +69,6 @@ func TestReconcilePoolLogCarriesPoolName(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{DesiredRunning: 2, DesiredStopped: 0, InstanceType: "t3.medium"}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 
 	mockFleet := &MockFleetAPI{

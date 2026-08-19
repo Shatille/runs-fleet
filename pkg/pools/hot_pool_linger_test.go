@@ -399,8 +399,8 @@ func runRecorded(scn noRegressionScenario, cfg *config.Config) []recordedCall {
 			return scn.busyIDs, nil
 		},
 		GetPoolP90ConcurrencyFunc: func(context.Context, string, int) (int, error) { return 0, nil },
-		UpdatePoolStateFunc: func(_ context.Context, _ string, running, stopped int) error {
-			rec.add("UpdatePoolState", nil, itoa2(running, stopped))
+		UpdatePoolStateFunc: func(_ context.Context, _ string, running, stopped, effRunning, effStopped int) error {
+			rec.add("UpdatePoolState", nil, itoa2(running, stopped)+"/"+itoa2(effRunning, effStopped))
 			return nil
 		},
 	}
@@ -577,5 +577,58 @@ func runningInst(id string, t ec2types.InstanceType, launch time.Time) ec2types.
 		InstanceType: t,
 		State:        &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
 		LaunchTime:   aws.Time(launch),
+	}
+}
+
+// The linger floor is the second of the two overrides that displace a pool's
+// configured target, so it must reach the persisted effective value too —
+// otherwise a lingering pool reads as permanently adrift from its own target.
+func TestReconcilePool_PersistsLingerRaisedEffectiveDesired(t *testing.T) {
+	t.Parallel()
+
+	var gotEffRunning int
+	var updates int
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) { return []string{lingerPoolName}, nil },
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:     lingerPoolName,
+				Ephemeral:    true,
+				LastJobTime:  time.Now().Add(-2 * time.Minute),
+				InstanceType: "c7g.large",
+				AutoTune:     &db.AutoTuneRec{RecommendedLingerMinutes: 15, RecommendedMaxHot: 3, Reason: "tuned"},
+			}, nil
+		},
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) { return 0, nil },
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _, effRunning, _ int) error {
+			updates++
+			gotEffRunning = effRunning
+			return nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{}}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, &MockFleetAPI{
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return testInstanceNewID, nil
+		},
+	}, hotEnabledConfig())
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	if updates != 1 {
+		t.Fatalf("UpdatePoolState calls = %d, want 1", updates)
+	}
+	// Ephemeral auto-scaling resolves running to 0; the live linger window raises it
+	// to maxHot, and that is the target the pass acted on.
+	if gotEffRunning != 3 {
+		t.Errorf("effective desired running = %d, want the linger-raised 3", gotEffRunning)
 	}
 }

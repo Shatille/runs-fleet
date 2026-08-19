@@ -65,7 +65,6 @@ func TestReconcileStopLogCarriesReason(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, IdleTimeoutMinutes: 30, InstanceType: "t3.medium"}, nil
 		},
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return []string{}, nil },
 	}
 	mockEC2 := &MockEC2API{
@@ -106,7 +105,6 @@ func TestReconcileTerminateLogCarriesReason(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{DesiredRunning: 1, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -200,7 +198,6 @@ func TestReconcileStopIncorrectStateIsBenign(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
 		},
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
 	}
 	mockEC2 := &MockEC2API{

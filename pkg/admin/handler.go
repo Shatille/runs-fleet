@@ -78,24 +78,30 @@ var poolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 // PoolResponse represents a pool configuration in API responses.
 type PoolResponse struct {
-	PoolName            string             `json:"pool_name"`
-	InstanceType        string             `json:"instance_type,omitempty"`
-	DesiredRunning      int                `json:"desired_running"`
-	DesiredStopped      int                `json:"desired_stopped"`
-	CurrentRunning      int                `json:"current_running"`
-	CurrentStopped      int                `json:"current_stopped"`
-	BusyInstances       int                `json:"busy_instances"`
-	IdleTimeoutMinutes  int                `json:"idle_timeout_minutes,omitempty"`
-	Ephemeral           bool               `json:"ephemeral"`
-	Arch                string             `json:"arch,omitempty"`
-	CPUMin              int                `json:"cpu_min,omitempty"`
-	CPUMax              int                `json:"cpu_max,omitempty"`
-	RAMMin              float64            `json:"ram_min,omitempty"`
-	RAMMax              float64            `json:"ram_max,omitempty"`
-	Families            []string           `json:"families,omitempty"`
-	Schedules           []ScheduleResponse `json:"schedules,omitempty"`
-	LastReconcileAt     *time.Time         `json:"last_reconcile_at,omitempty"`
-	LastReconcileResult string             `json:"last_reconcile_result,omitempty"`
+	PoolName       string `json:"pool_name"`
+	InstanceType   string `json:"instance_type,omitempty"`
+	DesiredRunning int    `json:"desired_running"`
+	DesiredStopped int    `json:"desired_stopped"`
+	CurrentRunning int    `json:"current_running"`
+	CurrentStopped int    `json:"current_stopped"`
+	// The targets the last reconcile resolved. Absent until a pool has reconciled
+	// once, which is why they are pointers: a client must be able to tell "not yet
+	// known" from "the target is zero" to know whether to fall back to the
+	// configured values above.
+	EffectiveDesiredRunning *int               `json:"effective_desired_running,omitempty"`
+	EffectiveDesiredStopped *int               `json:"effective_desired_stopped,omitempty"`
+	BusyInstances           int                `json:"busy_instances"`
+	IdleTimeoutMinutes      int                `json:"idle_timeout_minutes,omitempty"`
+	Ephemeral               bool               `json:"ephemeral"`
+	Arch                    string             `json:"arch,omitempty"`
+	CPUMin                  int                `json:"cpu_min,omitempty"`
+	CPUMax                  int                `json:"cpu_max,omitempty"`
+	RAMMin                  float64            `json:"ram_min,omitempty"`
+	RAMMax                  float64            `json:"ram_max,omitempty"`
+	Families                []string           `json:"families,omitempty"`
+	Schedules               []ScheduleResponse `json:"schedules,omitempty"`
+	LastReconcileAt         *time.Time         `json:"last_reconcile_at,omitempty"`
+	LastReconcileResult     string             `json:"last_reconcile_result,omitempty"`
 	// Hot-pool override (admin-settable) and the read-only tuner recommendation.
 	OverrideLingerMinutes *int            `json:"override_linger_minutes,omitempty"`
 	OverrideMaxHot        *int            `json:"override_max_hot,omitempty"`
@@ -467,25 +473,31 @@ func (h *Handler) configToResponse(config *db.PoolConfig) PoolResponse {
 
 func (h *Handler) configToResponseWithBusy(config *db.PoolConfig, busyCount int) PoolResponse {
 	resp := PoolResponse{
-		PoolName:              config.PoolName,
-		InstanceType:          config.InstanceType,
-		DesiredRunning:        config.DesiredRunning,
-		DesiredStopped:        config.DesiredStopped,
-		CurrentRunning:        config.CurrentRunning,
-		CurrentStopped:        config.CurrentStopped,
-		BusyInstances:         busyCount,
-		IdleTimeoutMinutes:    config.IdleTimeoutMinutes,
-		Ephemeral:             config.Ephemeral,
-		Arch:                  config.Arch,
-		CPUMin:                config.CPUMin,
-		CPUMax:                config.CPUMax,
-		RAMMin:                config.RAMMin,
-		RAMMax:                config.RAMMax,
-		Families:              config.Families,
-		LastReconcileResult:   config.LastReconcileResult,
-		OverrideLingerMinutes: config.OverrideLingerMinutes,
-		OverrideMaxHot:        config.OverrideMaxHot,
-		AutoTune:              config.AutoTune,
+		PoolName:       config.PoolName,
+		InstanceType:   config.InstanceType,
+		DesiredRunning: config.DesiredRunning,
+		DesiredStopped: config.DesiredStopped,
+		CurrentRunning: config.CurrentRunning,
+		CurrentStopped: config.CurrentStopped,
+		// Deliberately separate from DesiredRunning/DesiredStopped, which keep
+		// serving the configured values: pool-form.tsx prefills its edit inputs from
+		// those, so folding the resolved target into them would let a save write the
+		// reconciler's output back as the pool's configuration.
+		EffectiveDesiredRunning: config.EffectiveDesiredRunning,
+		EffectiveDesiredStopped: config.EffectiveDesiredStopped,
+		BusyInstances:           busyCount,
+		IdleTimeoutMinutes:      config.IdleTimeoutMinutes,
+		Ephemeral:               config.Ephemeral,
+		Arch:                    config.Arch,
+		CPUMin:                  config.CPUMin,
+		CPUMax:                  config.CPUMax,
+		RAMMin:                  config.RAMMin,
+		RAMMax:                  config.RAMMax,
+		Families:                config.Families,
+		LastReconcileResult:     config.LastReconcileResult,
+		OverrideLingerMinutes:   config.OverrideLingerMinutes,
+		OverrideMaxHot:          config.OverrideMaxHot,
+		AutoTune:                config.AutoTune,
 	}
 	if !config.LastReconcileAt.IsZero() {
 		t := config.LastReconcileAt

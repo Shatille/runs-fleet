@@ -77,7 +77,7 @@ const maxReconcileResultLen = 300
 //nolint:dupl // Mock struct in test file mirrors this interface - intentional pattern
 type DBClient interface {
 	GetPoolConfig(ctx context.Context, poolName string) (*db.PoolConfig, error)
-	UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error
+	UpdatePoolState(ctx context.Context, poolName string, running, stopped, effectiveDesiredRunning, effectiveDesiredStopped int) error
 	ListPools(ctx context.Context) ([]string, error)
 	GetPoolP90Concurrency(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
@@ -752,8 +752,12 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		_ = m.metrics.PublishInstances(ctx, stateStopped, capacityOnDemand, poolName, stopped)
 	}
 
-	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped); err != nil {
-		poolLog.Error(ctx, "pool state update failed", slog.String("error", err.Error()))
+	// desiredRunning/desiredStopped here are the resolved targets this pass acted
+	// on (ephemeral auto-scaling, then any linger floor), not the configured seed.
+	if err := m.dbClient.UpdatePoolState(ctx, poolName, running, stopped, desiredRunning, desiredStopped); err != nil {
+		if !errors.Is(err, db.ErrPoolNotFound) && !isShutdownErr(err) {
+			poolLog.Error(ctx, "pool state update failed", slog.String("error", err.Error()))
+		}
 	}
 
 	return nil

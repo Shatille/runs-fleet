@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -852,5 +853,68 @@ func TestConfigToResponse_OmitsZeroReconcileTime(t *testing.T) {
 	resp := h.configToResponse(&db.PoolConfig{PoolName: "p"})
 	if resp.LastReconcileAt != nil {
 		t.Errorf("last_reconcile_at = %v, want nil for zero time", resp.LastReconcileAt)
+	}
+}
+
+// The resolved targets ride alongside the configured ones rather than replacing
+// them, so the edit form keeps prefilling from configuration.
+func TestListPools_ServesEffectiveDesiredWhenReconciled(t *testing.T) {
+	t.Parallel()
+
+	effRunning, effStopped := 2, 3
+	mockDB := newMockDB()
+	mockDB.pools = map[string]*db.PoolConfig{
+		"ephemeral-pool": {
+			PoolName:                "ephemeral-pool",
+			DesiredRunning:          0,
+			DesiredStopped:          1,
+			EffectiveDesiredRunning: &effRunning,
+			EffectiveDesiredStopped: &effStopped,
+		},
+	}
+
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
+	rec := httptest.NewRecorder()
+	h.ListPools(rec, httptest.NewRequest(http.MethodGet, "/api/pools", nil))
+
+	var resp struct {
+		Pools []PoolResponse `json:"pools"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Pools) != 1 {
+		t.Fatalf("pool count = %d, want 1", len(resp.Pools))
+	}
+
+	got := resp.Pools[0]
+	if got.EffectiveDesiredRunning == nil || *got.EffectiveDesiredRunning != 2 {
+		t.Errorf("effective_desired_running = %v, want 2", got.EffectiveDesiredRunning)
+	}
+	if got.EffectiveDesiredStopped == nil || *got.EffectiveDesiredStopped != 3 {
+		t.Errorf("effective_desired_stopped = %v, want 3", got.EffectiveDesiredStopped)
+	}
+	if got.DesiredRunning != 0 || got.DesiredStopped != 1 {
+		t.Errorf("configured desired = %d/%d, want the untouched seed 0/1", got.DesiredRunning, got.DesiredStopped)
+	}
+}
+
+// A pool that has never reconciled must omit the keys entirely, so a client can
+// tell "not yet known" from "the target is zero" and fall back to configuration.
+func TestListPools_OmitsEffectiveDesiredForNeverReconciledPool(t *testing.T) {
+	t.Parallel()
+
+	mockDB := newMockDB()
+	mockDB.pools = map[string]*db.PoolConfig{
+		"fresh-pool": {PoolName: "fresh-pool", DesiredRunning: 0, DesiredStopped: 1},
+	}
+
+	h := NewHandler(mockDB, nil, NewAuthMiddleware(""), config.DefaultHotPoolCaps())
+	rec := httptest.NewRecorder()
+	h.ListPools(rec, httptest.NewRequest(http.MethodGet, "/api/pools", nil))
+
+	body := rec.Body.String()
+	if strings.Contains(body, "effective_desired_running") || strings.Contains(body, "effective_desired_stopped") {
+		t.Errorf("body = %s, want the effective_desired_* keys omitted", body)
 	}
 }

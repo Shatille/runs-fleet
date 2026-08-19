@@ -146,7 +146,7 @@ func (m *mockDBClient) GetPoolConfig(_ context.Context, _ string) (*db.PoolConfi
 	return nil, nil
 }
 
-func (m *mockDBClient) UpdatePoolState(_ context.Context, _ string, _, _ int) error {
+func (m *mockDBClient) UpdatePoolState(_ context.Context, _ string, _, _, _, _ int) error {
 	return nil
 }
 

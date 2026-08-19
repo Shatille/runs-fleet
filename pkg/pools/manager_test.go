@@ -32,7 +32,7 @@ const (
 //nolint:dupl // Mock struct mirrors DBClient interface - intentional pattern
 type MockDBClient struct {
 	GetPoolConfigFunc             func(ctx context.Context, poolName string) (*db.PoolConfig, error)
-	UpdatePoolStateFunc           func(ctx context.Context, poolName string, running, stopped int) error
+	UpdatePoolStateFunc           func(ctx context.Context, poolName string, running, stopped, effRunning, effStopped int) error
 	ListPoolsFunc                 func(ctx context.Context) ([]string, error)
 	GetPoolP90ConcurrencyFunc     func(ctx context.Context, poolName string, windowHours int) (int, error)
 	GetPoolBusyInstanceIDsFunc    func(ctx context.Context, poolName string) ([]string, error)
@@ -50,9 +50,9 @@ func (m *MockDBClient) GetPoolConfig(ctx context.Context, poolName string) (*db.
 	return nil, nil
 }
 
-func (m *MockDBClient) UpdatePoolState(ctx context.Context, poolName string, running, stopped int) error {
+func (m *MockDBClient) UpdatePoolState(ctx context.Context, poolName string, running, stopped, effRunning, effStopped int) error {
 	if m.UpdatePoolStateFunc != nil {
-		return m.UpdatePoolStateFunc(ctx, poolName, running, stopped)
+		return m.UpdatePoolStateFunc(ctx, poolName, running, stopped, effRunning, effStopped)
 	}
 	return nil
 }
@@ -902,9 +902,6 @@ func TestReconcilePoolScaleUp(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockFleet := &MockFleetAPI{
@@ -986,9 +983,6 @@ func TestReconcilePoolScaleUpWithBusyInstances(t *testing.T) {
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
 			return []string{"i-busy1", "i-busy2"}, nil // Both instances are busy
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockFleet := &MockFleetAPI{
@@ -1062,9 +1056,6 @@ func TestReconcilePoolStaleJobRecordsIgnored(t *testing.T) {
 				"i-dead6", "i-dead7", "i-dead8", "i-dead9", "i-dead10",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockFleet := &MockFleetAPI{
@@ -1133,9 +1124,6 @@ func TestReconcilePoolNoScaleDownBusyInstances(t *testing.T) {
 		},
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
 			return []string{"i-busy1", "i-busy2"}, nil // 2 instances are busy
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -1208,7 +1196,6 @@ func TestReconcileWarmPoolSkipsStoppingSpotInstances(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 
 	launchTime := time.Now().Add(-2 * time.Hour)
@@ -1275,7 +1262,6 @@ func TestReconcileWarmPoolDefersStoppingFreshSpares(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 
 	launchTime := time.Now() // well within the 10m grace
@@ -1339,7 +1325,6 @@ func TestReconcileWarmPoolStopsAgedSpareNotFresh(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 2, InstanceType: "t3.medium"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 
 	agedLaunch := time.Now().Add(-1 * time.Hour) // past the 10m grace
@@ -1404,7 +1389,6 @@ func TestReconcileWarmPoolDefersRecentlyNotBusyInstance(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 	aged := time.Now().Add(-1 * time.Hour) // past the bootstrap grace
 	mockEC2 := &MockEC2API{
@@ -1448,7 +1432,6 @@ func TestReconcileWarmPoolStopsInstancePastDwell(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 0, DesiredStopped: 1, InstanceType: "t3.medium"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 	aged := time.Now().Add(-1 * time.Hour)
 	mockEC2 := &MockEC2API{
@@ -1549,9 +1532,6 @@ func TestReconcilePoolBusyInstanceIDsError(t *testing.T) {
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
 			return nil, errors.New("DynamoDB error")
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockFleet := &MockFleetAPI{
@@ -1620,9 +1600,6 @@ func TestReconcilePoolStartStoppedInstances(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockEC2 := &MockEC2API{
@@ -1683,9 +1660,6 @@ func TestReconcilePoolScaleDown(t *testing.T) {
 				InstanceType:       "t3.medium",
 				IdleTimeoutMinutes: 1,
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -1761,9 +1735,6 @@ func TestReconcilePoolTerminateExcessStopped(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockEC2 := &MockEC2API{
@@ -1837,9 +1808,6 @@ func TestReconcilePoolCreateForWarmPool(t *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockFleet := &MockFleetAPI{
@@ -1893,9 +1861,6 @@ func TestReconcilePoolWarmPoolImmediateStop(t *testing.T) {
 				IdleTimeoutMinutes: 30, // 30 min idle timeout (should be bypassed for warm pools)
 				InstanceType:       "t3.medium",
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 		// Return no busy instances - the running instance is ready to be stopped
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
@@ -1982,9 +1947,6 @@ func TestReconcilePoolWithSchedule(t *testing.T) {
 				},
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	fleetCreateCount := 0
@@ -2029,7 +1991,7 @@ func TestReconcilePoolUpdateStateError(_ *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
+		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _, _, _ int) error {
 			return errors.New("update error")
 		},
 	}
@@ -2072,9 +2034,6 @@ func TestReconcilePoolStartInstancesError(t *testing.T) {
 				DesiredStopped: 0,
 				InstanceType:   "t3.medium",
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -2132,9 +2091,6 @@ func TestReconcilePoolCreateFleetError(_ *testing.T) {
 				InstanceType:   "t3.medium",
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockFleet := &MockFleetAPI{
@@ -2172,9 +2128,6 @@ func TestReconcilePoolStopInstancesError(_ *testing.T) {
 				InstanceType:       "t3.medium",
 				IdleTimeoutMinutes: 1,
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -2224,9 +2177,6 @@ func TestReconcilePoolTerminateInstancesError(_ *testing.T) {
 				InstanceType:       "t3.medium",
 				IdleTimeoutMinutes: 1,
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -2362,9 +2312,6 @@ func TestReconcileEphemeralPoolAutoScaling(t *testing.T) {
 				Ephemeral:      true,
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 3, nil // Peak of 3 concurrent jobs
 		},
@@ -2416,9 +2363,6 @@ func TestReconcileEphemeralPoolPeakError(t *testing.T) {
 				InstanceType:   "c7g.xlarge",
 				Ephemeral:      true,
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, errors.New("database error")
@@ -2473,9 +2417,6 @@ func TestReconcileEphemeralPoolLastJobTimeKeepsMinimum(t *testing.T) {
 				LastJobTime:    time.Now().Add(-2 * time.Hour), // Last job 2 hours ago (within 4h window)
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, nil // No jobs in 1-hour peak window
 		},
@@ -2529,9 +2470,6 @@ func TestReconcileEphemeralPoolLastJobTimeExpired(t *testing.T) {
 				LastJobTime:    time.Now().Add(-5 * time.Hour), // Last job 5 hours ago (outside 4h window)
 			}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, nil // No jobs in 1-hour peak window
 		},
@@ -2584,9 +2522,6 @@ func TestReconcileEphemeralPoolPeakErrorWithRecentActivity(t *testing.T) {
 				Ephemeral:      true,
 				LastJobTime:    time.Now().Add(-2 * time.Hour), // Last job 2 hours ago (within 4h window)
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
 			return 0, errors.New("database error") // Peak query fails
@@ -3360,9 +3295,6 @@ func TestReconcilePoolOrphanedJobsDontBlockScaleDown(t *testing.T) {
 			// prevent scale-down of the 3 idle running instances
 			return []string{"i-dead1", "i-dead2", "i-dead3", "i-dead4", "i-dead5"}, nil
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
-		},
 	}
 
 	mockEC2 := &MockEC2API{
@@ -3417,7 +3349,6 @@ func TestReconcilePoolIdleRunningInstancesGetStopped(t *testing.T) {
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) {
 			return []string{"i-busy"}, nil // 1 instance is busy
 		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error { return nil },
 	}
 
 	mockEC2 := &MockEC2API{
@@ -3488,9 +3419,6 @@ func TestReconcilePoolBusyCountUsesInstanceIntersection(t *testing.T) {
 				"i-orphan1", "i-orphan2", "i-orphan3", "i-orphan4", "i-orphan5",
 				"i-orphan6", "i-orphan7", "i-orphan8", "i-orphan9", "i-orphan10",
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -3571,9 +3499,6 @@ func TestReconcilePoolMixedOrphanedAndRealJobs(t *testing.T) {
 				"i-busy1", "i-busy2", // real - match running instances
 				"i-orphan1", "i-orphan2", "i-orphan3", // orphaned - instances don't exist
 			}, nil
-		},
-		UpdatePoolStateFunc: func(_ context.Context, _ string, _, _ int) error {
-			return nil
 		},
 	}
 
@@ -4307,7 +4232,6 @@ func TestNotifyPoolDemand_TriggersReconciliation(t *testing.T) {
 				return nil
 			},
 			ReleasePoolReconcileLockFunc: func(_ context.Context, _, _ string) error { return nil },
-			UpdatePoolStateFunc:          func(_ context.Context, _ string, _, _ int) error { return nil },
 			GetPoolBusyInstanceIDsFunc:   func(_ context.Context, _ string) ([]string, error) { return nil, nil },
 		}
 
@@ -4371,7 +4295,6 @@ func TestNotifyPoolDemand_Deduplication(t *testing.T) {
 				return nil
 			},
 			ReleasePoolReconcileLockFunc: func(_ context.Context, _, _ string) error { return nil },
-			UpdatePoolStateFunc:          func(_ context.Context, _ string, _, _ int) error { return nil },
 			GetPoolBusyInstanceIDsFunc:   func(_ context.Context, _ string) ([]string, error) { return nil, nil },
 		}
 
@@ -4625,5 +4548,70 @@ func TestReconcilePoolStoppedReplenishCreditsSameCycleStops(t *testing.T) {
 				t.Errorf("created = %d, want %d", created, tt.wantCreated)
 			}
 		})
+	}
+}
+
+// The reconciler must persist the target it actually acted on. An ephemeral pool
+// carries the webhook's seed (0/1) but is auto-scaled from recent concurrency, so
+// persisting the seed would make a converged pool read as permanently adrift.
+func TestReconcilePool_PersistsEffectiveDesired(t *testing.T) {
+	t.Parallel()
+
+	var gotRunning, gotStopped, gotEffRunning, gotEffStopped int
+	var updates int
+
+	mockDB := &MockDBClient{
+		ListPoolsFunc: func(_ context.Context) ([]string, error) {
+			return []string{"ephemeral-pool"}, nil
+		},
+		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
+			return &db.PoolConfig{
+				PoolName:       "ephemeral-pool",
+				DesiredRunning: 0,
+				DesiredStopped: 1,
+				InstanceType:   "c7g.xlarge",
+				Ephemeral:      true,
+			}, nil
+		},
+		GetPoolP90ConcurrencyFunc: func(_ context.Context, _ string, _ int) (int, error) {
+			return 3, nil
+		},
+		UpdatePoolStateFunc: func(_ context.Context, _ string, running, stopped, effRunning, effStopped int) error {
+			updates++
+			gotRunning, gotStopped, gotEffRunning, gotEffStopped = running, stopped, effRunning, effStopped
+			return nil
+		},
+	}
+
+	mockFleet := &MockFleetAPI{
+		CreateOnDemandInstanceFunc: func(_ context.Context, _ *fleet.LaunchSpec) (string, error) {
+			return testInstanceNewID, nil
+		},
+	}
+
+	mockEC2 := &MockEC2API{
+		DescribeInstancesFunc: func(_ context.Context, _ *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{}}, nil
+		},
+	}
+
+	manager := NewManager(mockDB, mockFleet, &config.Config{
+		SubnetIDs: []string{"subnet-priv1", "subnet-priv2"},
+	})
+	manager.SetEC2Client(mockEC2)
+
+	manager.reconcile(context.Background())
+
+	if updates != 1 {
+		t.Fatalf("UpdatePoolState calls = %d, want 1", updates)
+	}
+	if gotEffStopped != 3 {
+		t.Errorf("effective desired stopped = %d, want the auto-scaled 3 (not the seed 1)", gotEffStopped)
+	}
+	if gotEffRunning != 0 {
+		t.Errorf("effective desired running = %d, want 0", gotEffRunning)
+	}
+	if gotRunning != 0 || gotStopped != 0 {
+		t.Errorf("observed counts = %d/%d, want 0/0", gotRunning, gotStopped)
 	}
 }

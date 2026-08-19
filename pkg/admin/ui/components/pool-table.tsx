@@ -24,6 +24,35 @@ function HotCell({ pool }: { pool: Pool }) {
   );
 }
 
+// CountCell compares an observed count against the target the last reconcile
+// resolved, falling back to the configured value (marked "*") for a pool that has
+// never reconciled.
+function CountCell({
+  current,
+  effective,
+  configured,
+}: {
+  current?: number;
+  effective?: number | null;
+  configured: number;
+}) {
+  const unreconciled = effective == null;
+  const target = unreconciled ? configured : effective;
+  return (
+    <span
+      className={current !== target ? 'text-yellow-600 dark:text-yellow-400' : ''}
+      title={
+        unreconciled
+          ? 'no reconcile pass recorded yet — comparing against the configured value'
+          : undefined
+      }
+    >
+      {current ?? '-'}/{target}
+      {unreconciled && '*'}
+    </span>
+  );
+}
+
 function ReconcileCell({ pool }: { pool: Pool }) {
   if (!pool.last_reconcile_at) {
     return <span className="text-gray-400 dark:text-gray-500">-</span>;
@@ -55,15 +84,15 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Running
-              <HelpTip text="current / desired. Left: instances running right now. Right: the configured warm floor (desired_running) the reconciler maintains while idle. Busy instances and hot-pool linger sit on top of that floor, so current above desired is normal under load — that is why a pool with desired 0 can show 4 running. Yellow just marks current differing from desired, not an error." />
+              <HelpTip text="current / target. Left: instances running right now, busy ones included. Right: the target the last reconcile actually resolved — for an ephemeral pool that is the value auto-scaled from recent concurrency plus any hot-pool linger floor, not the configured seed. The target counts only idle instances, so busy instances sit on top of it and current above target is normal under load, not a failure to converge. A '*' means no reconcile has been recorded, so the configured value is shown instead." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Stopped
-              <HelpTip text="current / desired stopped instances. Stopped instances cost only EBS and can be started faster than a cold boot. Yellow marks current differing from desired." />
+              <HelpTip text="current / target stopped instances. Stopped instances cost only EBS and start faster than a cold boot. The target is the one the last reconcile resolved, not the configured seed. Yellow means it has not converged yet; a '*' means no reconcile has been recorded." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Busy
-              <HelpTip text="Instances in this pool currently executing a job. Always a subset of Running." />
+              <HelpTip text="Instances in this pool currently executing a job. Read live on each request, while Running and Stopped come from the last reconcile snapshot — so during a burst this can briefly exceed the Running count rather than being a subset of it." />
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Arch
@@ -78,7 +107,7 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Last Reconcile
-              <HelpTip text="When the reconciler last ran for this pool. Green = success, red = failure. Running and Stopped are snapshots written by that run, so they can lag real EC2 state by up to one reconcile interval (60s)." />
+              <HelpTip text="When the reconciler last ran for this pool. Green = success, red = failure. Running, Stopped, and their targets are all written by that run, so they can lag real EC2 state by up to one reconcile interval (60s)." />
             </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Actions
@@ -100,14 +129,18 @@ export default function PoolTable({ pools, onDelete }: PoolTableProps) {
                 {pool.instance_type || '-'}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500 dark:text-gray-400">
-                <span className={pool.current_running !== pool.desired_running ? 'text-yellow-600 dark:text-yellow-400' : ''}>
-                  {pool.current_running ?? '-'}/{pool.desired_running}
-                </span>
+                <CountCell
+                  current={pool.current_running}
+                  effective={pool.effective_desired_running}
+                  configured={pool.desired_running}
+                />
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500 dark:text-gray-400">
-                <span className={pool.current_stopped !== pool.desired_stopped ? 'text-yellow-600 dark:text-yellow-400' : ''}>
-                  {pool.current_stopped ?? '-'}/{pool.desired_stopped}
-                </span>
+                <CountCell
+                  current={pool.current_stopped}
+                  effective={pool.effective_desired_stopped}
+                  configured={pool.desired_stopped}
+                />
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-gray-500 dark:text-gray-400">
                 {pool.busy_instances > 0 ? (

@@ -5,6 +5,8 @@ export interface Pool {
   desired_stopped: number;
   current_running: number;
   current_stopped: number;
+  effective_desired_running?: number | null;
+  effective_desired_stopped?: number | null;
   busy_instances: number;
   idle_timeout_minutes?: number;
   ephemeral: boolean;
