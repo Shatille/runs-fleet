@@ -151,6 +151,7 @@ export interface CurrentAMI {
 export interface ReplaceStaleResult {
   terminated?: string[];
   busy?: string[];
+  running?: string[];
   skipped?: string[];
   stale: number;
   dry_run: boolean;
