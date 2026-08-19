@@ -56,6 +56,7 @@ export default function InstancesPage() {
       }
       const data = await res.json();
       setInstances(data.instances || []);
+      setError(null);
       setAmiUnknown(Boolean(data.ami_current_unknown));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load instances');
@@ -169,11 +170,7 @@ export default function InstancesPage() {
     fetchInstances();
   }, [fetchInstances]);
 
-  const { enabled: autoRefreshEnabled, toggle: toggleAutoRefresh, isRefreshing } = useAutoRefresh(
-    handleRefresh,
-    15000,
-    'runs-fleet-instances-auto-refresh',
-  );
+  useAutoRefresh(handleRefresh, 15000);
 
   const stats = {
     total: instances.length,
@@ -183,7 +180,7 @@ export default function InstancesPage() {
     spot: instances.filter((i) => i.spot).length,
   };
 
-  if (error) {
+  if (error && instances.length === 0) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
         <p className="text-red-800 dark:text-red-300">{error}</p>
@@ -203,21 +200,6 @@ export default function InstancesPage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Instances</h1>
         <div className="flex items-center gap-2">
           <button
-            onClick={toggleAutoRefresh}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-sm transition-colors ${
-              autoRefreshEnabled
-                ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/60'
-                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
-            }`}
-          >
-            <span className={`inline-block h-2 w-2 rounded-full ${
-              autoRefreshEnabled
-                ? isRefreshing ? 'bg-green-400 animate-pulse' : 'bg-green-500'
-                : 'bg-gray-400'
-            }`} />
-            Auto-refresh
-          </button>
-          <button
             onClick={handleRefresh}
             disabled={loading}
             className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
@@ -226,6 +208,12 @@ export default function InstancesPage() {
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3 text-sm text-red-800 dark:text-red-300">
+          Refresh failed: {error}
+        </div>
+      )}
 
       {loading && instances.length === 0 ? (
         <StatsCardSkeleton count={5} />
