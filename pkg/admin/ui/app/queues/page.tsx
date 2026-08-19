@@ -20,6 +20,7 @@ export default function QueuesPage() {
       }
       const data = await res.json();
       setQueues(data.queues || []);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load queues');
     } finally {
@@ -27,13 +28,13 @@ export default function QueuesPage() {
     }
   }, []);
 
-  const { isRefreshing } = useAutoRefresh(fetchQueues, 10000, 'runs-fleet-queues-auto-refresh', true);
+  useAutoRefresh(fetchQueues, 10000);
 
   useEffect(() => {
     fetchQueues();
   }, [fetchQueues]);
 
-  if (error) {
+  if (error && queues.length === 0) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
         <p className="text-red-800 dark:text-red-300">{error}</p>
@@ -59,6 +60,12 @@ export default function QueuesPage() {
           {loading ? 'Loading...' : 'Refresh'}
         </button>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3 text-sm text-red-800 dark:text-red-300">
+          Refresh failed: {error}
+        </div>
+      )}
 
       {loading && queues.length === 0 ? (
         <CardSkeleton count={5} />

@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import PoolTable from '@/components/pool-table';
 import { TableSkeleton } from '@/components/skeleton';
 import ConfirmDialog from '@/components/confirm-dialog';
 import { useToast } from '@/components/toast';
 import { Pool } from '@/lib/types';
 import { apiFetch } from '@/lib/api';
+import { useAutoRefresh } from '@/hooks/use-auto-refresh';
 
 export default function HomePage() {
   const [pools, setPools] = useState<Pool[]>([]);
@@ -15,11 +16,7 @@ export default function HomePage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchPools();
-  }, []);
-
-  async function fetchPools() {
+  const fetchPools = useCallback(async () => {
     try {
       setLoading(true);
       const res = await apiFetch('/api/pools');
@@ -28,12 +25,19 @@ export default function HomePage() {
       }
       const data = await res.json();
       setPools(data.pools || []);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load pools');
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    fetchPools();
+  }, [fetchPools]);
+
+  useAutoRefresh(fetchPools, 15000);
 
   async function handleDelete(poolName: string) {
     setDeleteTarget(poolName);
@@ -57,45 +61,42 @@ export default function HomePage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div>
-        <div className="flex justify-between items-center mb-6">
-          <div className="h-8 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-          <div className="h-10 w-28 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-        </div>
-        <TableSkeleton rows={4} cols={10} />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
-        <p className="text-red-800 dark:text-red-300">{error}</p>
-        <button
-          onClick={fetchPools}
-          className="mt-2 text-red-600 dark:text-red-400 underline hover:no-underline"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Pools</h1>
-        <a
-          href="/admin/pools/new/"
-          className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
-        >
-          Create Pool
-        </a>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchPools}
+            disabled={loading}
+            className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+          <a
+            href="/admin/pools/new/"
+            className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
+          >
+            Create Pool
+          </a>
+        </div>
       </div>
 
-      {pools.length === 0 ? (
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
+          <p className="text-red-800 dark:text-red-300">{error}</p>
+          <button
+            onClick={fetchPools}
+            className="mt-2 text-red-600 dark:text-red-400 underline hover:no-underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {loading && pools.length === 0 ? (
+        <TableSkeleton rows={4} cols={10} />
+      ) : error && pools.length === 0 ? null : pools.length === 0 ? (
         <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
           <p className="text-gray-500 dark:text-gray-400">No pools configured yet.</p>
           <a

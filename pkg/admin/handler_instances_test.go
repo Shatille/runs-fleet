@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	testJobsTable = "runs-fleet-jobs"
-	testPool      = "default"
+	testJobsTable    = "runs-fleet-jobs"
+	testPool         = "default"
+	auditResultError = "error"
 )
 
 type mockEC2API struct {
@@ -30,6 +31,9 @@ type mockEC2API struct {
 	describeSpotErr error
 	cancelSpotErr   error
 	terminateErr    error
+	// terminateErrByID fails only the named instances, so a sweep that terminates
+	// one at a time can be tested partway through.
+	terminateErrByID map[string]error
 
 	calls            []string
 	terminatedIDs    []string
@@ -43,6 +47,11 @@ func (m *mockEC2API) DescribeInstances(_ context.Context, _ *ec2.DescribeInstanc
 
 func (m *mockEC2API) TerminateInstances(_ context.Context, params *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
 	m.calls = append(m.calls, "terminate")
+	for _, id := range params.InstanceIds {
+		if err, ok := m.terminateErrByID[id]; ok {
+			return nil, err
+		}
+	}
 	if m.terminateErr != nil {
 		return nil, m.terminateErr
 	}
@@ -72,6 +81,8 @@ type mockInstancesDB struct {
 
 	job       *events.JobInfo
 	jobErr    error
+	claims    map[string]bool
+	claimErr  error
 	markErr   error
 	markCalls []string
 }
@@ -85,6 +96,13 @@ func (m *mockInstancesDB) GetJobByInstance(_ context.Context, _ string) (*events
 		return nil, m.jobErr
 	}
 	return m.job, nil
+}
+
+func (m *mockInstancesDB) HasLiveInstanceClaim(_ context.Context, instanceID string) (bool, error) {
+	if m.claimErr != nil {
+		return false, m.claimErr
+	}
+	return m.claims[instanceID], nil
 }
 
 func (m *mockInstancesDB) MarkInstanceTerminating(_ context.Context, instanceID string) error {
@@ -504,7 +522,7 @@ func TestInstancesHandler_TerminateInstance(t *testing.T) {
 			id:              id,
 			ec2Err:          errors.New("throttled"),
 			wantStatus:      http.StatusInternalServerError,
-			wantAuditResult: "error",
+			wantAuditResult: auditResultError,
 		},
 		{
 			name:            "job lookup failure fails closed",
@@ -512,7 +530,7 @@ func TestInstancesHandler_TerminateInstance(t *testing.T) {
 			output:          managedInstanceOutput(id, testPool, types.InstanceStateNameRunning),
 			jobErr:          errors.New("dynamodb unavailable"),
 			wantStatus:      http.StatusInternalServerError,
-			wantAuditResult: "error",
+			wantAuditResult: auditResultError,
 		},
 		{
 			// The instance is gone either way; a stale job record is left for the
@@ -536,7 +554,7 @@ func TestInstancesHandler_TerminateInstance(t *testing.T) {
 			job:             activeJob,
 			terminateErr:    errors.New("UnauthorizedOperation"),
 			wantStatus:      http.StatusInternalServerError,
-			wantAuditResult: "error",
+			wantAuditResult: auditResultError,
 		},
 		{
 			name:            "terminate failure",
@@ -544,7 +562,7 @@ func TestInstancesHandler_TerminateInstance(t *testing.T) {
 			output:          managedInstanceOutput(id, testPool, types.InstanceStateNameRunning),
 			terminateErr:    errors.New("UnauthorizedOperation"),
 			wantStatus:      http.StatusInternalServerError,
-			wantAuditResult: "error",
+			wantAuditResult: auditResultError,
 		},
 		{
 			name:       "jobs table unconfigured",
@@ -729,7 +747,7 @@ func TestTerminateInstance_Audit(t *testing.T) {
 		{name: "success", wantResult: "success"},
 		{name: "denied by active job", job: activeJob, wantResult: "denied"},
 		{name: "forced success", query: "?force=true", job: activeJob, wantResult: "success", wantForced: true},
-		{name: "terminate error", terminateErr: errors.New("boom"), wantResult: "error"},
+		{name: "terminate error", terminateErr: errors.New("boom"), wantResult: auditResultError},
 	}
 
 	for _, tt := range tests {

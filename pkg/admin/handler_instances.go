@@ -40,6 +40,10 @@ type EC2API interface {
 type InstancesDB interface {
 	GetPoolBusyInstanceIDs(ctx context.Context, poolName string) ([]string, error)
 	GetJobByInstance(ctx context.Context, instanceID string) (*events.JobInfo, error)
+	// HasLiveInstanceClaim reports whether an instance is promised to a job. A
+	// pool member is claimed before it is started, so for that window it reads
+	// stopped while a job already waits on it; the jobs table cannot see that.
+	HasLiveInstanceClaim(ctx context.Context, instanceID string) (bool, error)
 	MarkInstanceTerminating(ctx context.Context, instanceID string) error
 }
 

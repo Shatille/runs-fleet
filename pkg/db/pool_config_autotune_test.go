@@ -173,3 +173,96 @@ func TestUpdatePoolAutoTune_Validation(t *testing.T) {
 		t.Error("no table: want error")
 	}
 }
+
+// SavePoolConfig must never write the effective desired counts: they are
+// reconciler-owned, so an admin save cannot clobber the resolved targets.
+func TestSavePoolConfig_ExcludesEffectiveDesired(t *testing.T) {
+	t.Parallel()
+
+	var captured *dynamodb.UpdateItemInput
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			captured = params
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+	}
+	client := &Client{dynamoClient: mockDB, poolsTable: testPoolsTable}
+
+	running, stopped := 4, 2
+	cfg := &PoolConfig{
+		PoolName:                "p",
+		EffectiveDesiredRunning: &running,
+		EffectiveDesiredStopped: &stopped,
+	}
+	if err := client.SavePoolConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("SavePoolConfig() error = %v", err)
+	}
+
+	if strings.Contains(*captured.UpdateExpression, "effective_desired") {
+		t.Errorf("UpdateExpression = %q, must NOT contain effective_desired_*", *captured.UpdateExpression)
+	}
+}
+
+// The nil/zero distinction must survive DynamoDB: a pool that never reconciled
+// reads back nil, while a target that genuinely resolved to zero reads back &0.
+// The UI picks its fallback on exactly that difference.
+func TestGetPoolConfig_EffectiveDesiredNilVersusZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		item map[string]types.AttributeValue
+		want *int
+	}{
+		{
+			name: "attribute absent reads back nil",
+			item: map[string]types.AttributeValue{
+				"pool_name": &types.AttributeValueMemberS{Value: "p"},
+			},
+			want: nil,
+		},
+		{
+			name: "zero reads back a pointer to zero",
+			item: map[string]types.AttributeValue{
+				"pool_name":                 &types.AttributeValueMemberS{Value: "p"},
+				"effective_desired_running": &types.AttributeValueMemberN{Value: "0"},
+			},
+			want: intPtr(0),
+		},
+		{
+			name: "nonzero reads back its value",
+			item: map[string]types.AttributeValue{
+				"pool_name":                 &types.AttributeValueMemberS{Value: "p"},
+				"effective_desired_running": &types.AttributeValueMemberN{Value: "4"},
+			},
+			want: intPtr(4),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockDB := &MockDynamoDBAPI{
+				GetItemFunc: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: tt.item}, nil
+				},
+			}
+			client := &Client{dynamoClient: mockDB, poolsTable: testPoolsTable}
+
+			cfg, err := client.GetPoolConfig(context.Background(), "p")
+			if err != nil {
+				t.Fatalf("GetPoolConfig() error = %v", err)
+			}
+			got := cfg.EffectiveDesiredRunning
+			switch {
+			case tt.want == nil && got != nil:
+				t.Errorf("EffectiveDesiredRunning = %d, want nil", *got)
+			case tt.want != nil && got == nil:
+				t.Errorf("EffectiveDesiredRunning = nil, want %d", *tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Errorf("EffectiveDesiredRunning = %d, want %d", *got, *tt.want)
+			}
+		})
+	}
+}

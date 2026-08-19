@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useAutoRefresh } from '@/hooks/use-auto-refresh';
 import { CostSkeleton } from '@/components/skeleton';
 import { HelpTip } from '@/components/help-tip';
 import { CostByRepositoryTable } from '@/components/cost-by-repository-table';
@@ -32,6 +33,7 @@ export default function CostPage() {
       if (dailyRes.ok) setDaily(await dailyRes.json());
       if (byPoolRes.ok) setByPool(await byPoolRes.json());
       if (byRepoRes.ok) setByRepo(await byRepoRes.json());
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load cost data');
     } finally {
@@ -43,12 +45,16 @@ export default function CostPage() {
     fetchCost();
   }, [fetchCost]);
 
+  // Slower than the other pages: cost data moves by the day, and this is the
+  // heaviest query in the console.
+  useAutoRefresh(fetchCost, 60000);
+
   const handleRefresh = () => {
     setError(null);
     fetchCost();
   };
 
-  if (error) {
+  if (error && !summary) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
         <p className="text-red-800 dark:text-red-300">{error}</p>
@@ -74,6 +80,12 @@ export default function CostPage() {
           {loading ? 'Loading...' : 'Refresh'}
         </button>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3 text-sm text-red-800 dark:text-red-300">
+          Refresh failed: {error}
+        </div>
+      )}
 
       {loading && !summary ? (
         <CostSkeleton />

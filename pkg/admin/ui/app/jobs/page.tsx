@@ -90,6 +90,7 @@ export default function JobsPage() {
       const data = await res.json();
       setJobs(data.jobs || []);
       setTotal(data.total || 0);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load jobs');
     } finally {
@@ -153,11 +154,7 @@ export default function JobsPage() {
     if (!isSearchActive) handleRefresh();
   }, [handleRefresh, isSearchActive]);
 
-  const { enabled: autoRefreshEnabled, toggle: toggleAutoRefresh, isRefreshing } = useAutoRefresh(
-    autoRefreshCallback,
-    15000,
-    'runs-fleet-jobs-auto-refresh',
-  );
+  useAutoRefresh(autoRefreshCallback, 15000);
 
   const handleCleanupOrphanedJobs = async (dryRun: boolean = false) => {
     if (cleanupInFlight.current) return;
@@ -307,7 +304,7 @@ export default function JobsPage() {
     }
   };
 
-  if (error) {
+  if (error && jobs.length === 0) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
         <p className="text-red-800 dark:text-red-300">{error}</p>
@@ -327,21 +324,6 @@ export default function JobsPage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Jobs</h1>
         <div className="flex items-center gap-2">
           <button
-            onClick={toggleAutoRefresh}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-sm transition-colors ${
-              autoRefreshEnabled
-                ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/60'
-                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
-            }`}
-          >
-            <span className={`inline-block h-2 w-2 rounded-full ${
-              autoRefreshEnabled
-                ? isRefreshing ? 'bg-green-400 animate-pulse' : 'bg-green-500'
-                : 'bg-gray-400'
-            }`} />
-            Auto-refresh
-          </button>
-          <button
             onClick={handleRefresh}
             disabled={loading}
             className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
@@ -350,6 +332,12 @@ export default function JobsPage() {
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3 text-sm text-red-800 dark:text-red-300">
+          Refresh failed: {error}
+        </div>
+      )}
 
       {stats ? <JobStatsCard stats={stats} /> : loading && <StatsCardSkeleton count={7} />}
 

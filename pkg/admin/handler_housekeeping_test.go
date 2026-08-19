@@ -1166,7 +1166,7 @@ func TestHousekeepingHandler_OrphanedInstances_SweepError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d (body %s)", rec.Code, rec.Body.String())
 	}
-	if len(auditDB.entries) != 1 || auditDB.entries[0].Result != "error" {
+	if len(auditDB.entries) != 1 || auditDB.entries[0].Result != auditResultError {
 		t.Errorf("audit entries = %+v, want one error entry", auditDB.entries)
 	}
 }

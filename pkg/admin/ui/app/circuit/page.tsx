@@ -20,6 +20,7 @@ export default function CircuitPage() {
       }
       const data = await res.json();
       setCircuits(data.circuits || []);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load circuit states');
     } finally {
@@ -27,7 +28,7 @@ export default function CircuitPage() {
     }
   }, []);
 
-  const { isRefreshing } = useAutoRefresh(fetchCircuits, 15000, 'runs-fleet-circuit-auto-refresh', true);
+  useAutoRefresh(fetchCircuits, 15000);
 
   useEffect(() => {
     fetchCircuits();
@@ -37,7 +38,7 @@ export default function CircuitPage() {
   const halfOpenCircuits = circuits.filter((c) => c.state === 'half-open');
   const closedCircuits = circuits.filter((c) => c.state === 'closed');
 
-  if (error) {
+  if (error && circuits.length === 0) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
         <p className="text-red-800 dark:text-red-300">{error}</p>
@@ -63,6 +64,12 @@ export default function CircuitPage() {
           {loading ? 'Loading...' : 'Refresh'}
         </button>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3 text-sm text-red-800 dark:text-red-300">
+          Refresh failed: {error}
+        </div>
+      )}
 
       {loading && circuits.length === 0 ? (
         <>

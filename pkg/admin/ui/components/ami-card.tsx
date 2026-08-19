@@ -67,7 +67,11 @@ export default function AMICard({ instances, amiUnknown, onReplaced }: AMICardPr
     }
   }, [toast, onReplaced]);
 
-  const stale = instances.filter((i) => i.ami_stale).length;
+  const staleInstances = instances.filter((i) => i.ami_stale);
+  const stale = staleInstances.length;
+  // An upper bound: pool claims are not exposed to the client, so the server may
+  // still report some of these busy.
+  const replaceable = staleInstances.filter((i) => i.state === 'stopped' && !i.busy).length;
   const total = instances.length;
 
   return (
@@ -83,7 +87,9 @@ export default function AMICard({ instances, amiUnknown, onReplaced }: AMICardPr
           ) : (
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {total - stale} of {total} on the current AMI
-              {stale > 0 && ' — the rest are stopped or stuck, and will not pick it up on their own.'}
+              {stale > 0 && ` — ${replaceable} of the rest can be replaced now.`}
+              {stale > replaceable &&
+                ' The others are running or busy: they pick up the new AMI when they cycle after their next job.'}
             </p>
           )}
         </div>
@@ -92,20 +98,24 @@ export default function AMICard({ instances, amiUnknown, onReplaced }: AMICardPr
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300">
               {stale} stale
             </span>
-            <button
-              onClick={() => replace(true)}
-              disabled={replacing}
-              className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-1.5 text-sm rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
-            >
-              {replacing ? 'Checking...' : 'Dry Run'}
-            </button>
-            <button
-              onClick={() => setConfirming(true)}
-              disabled={replacing}
-              className="bg-red-600 text-white px-3 py-1.5 text-sm rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
-            >
-              {replacing ? 'Replacing...' : 'Replace stale'}
-            </button>
+            {replaceable > 0 && (
+              <>
+                <button
+                  onClick={() => replace(true)}
+                  disabled={replacing}
+                  className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-1.5 text-sm rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                >
+                  {replacing ? 'Checking...' : 'Dry Run'}
+                </button>
+                <button
+                  onClick={() => setConfirming(true)}
+                  disabled={replacing}
+                  className="bg-red-600 text-white px-3 py-1.5 text-sm rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
+                >
+                  {replacing ? 'Replacing...' : 'Replace stale'}
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -133,7 +143,14 @@ export default function AMICard({ instances, amiUnknown, onReplaced }: AMICardPr
           )}
           {result.busy && result.busy.length > 0 && (
             <p className="mt-1 text-xs">
-              Left alone because a job is running on them: <span className="font-mono">{result.busy.join(', ')}</span>
+              Left alone because a job is running on them, or one is already claimed:{' '}
+              <span className="font-mono">{result.busy.join(', ')}</span>
+            </p>
+          )}
+          {result.running && result.running.length > 0 && (
+            <p className="mt-1 text-xs">
+              Running, so they will pick up the new AMI when they next cycle:{' '}
+              <span className="font-mono">{result.running.join(', ')}</span>
             </p>
           )}
           {result.skipped && result.skipped.length > 0 && (
@@ -148,8 +165,9 @@ export default function AMICard({ instances, amiUnknown, onReplaced }: AMICardPr
         open={confirming}
         title="Replace stale instances"
         message={[
-          `Terminate up to 5 instances that are not on the current AMI, so their pools relaunch them on it.`,
-          'Instances with a job running are skipped, not killed.',
+          'Terminate up to 5 stopped instances that are not on the current AMI, so their pools relaunch them on it.',
+          'Running instances are never touched here — they pick up the new AMI when they cycle after their next job.',
+          'Instances already claimed for a job, or with a job running, are skipped.',
           'Each replacement is a fresh on-demand instance; this cannot be undone.',
         ]}
         confirmLabel="Replace"

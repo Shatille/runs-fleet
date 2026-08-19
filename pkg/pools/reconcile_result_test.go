@@ -26,7 +26,6 @@ func TestReconcilePoolRecordsSuccess(t *testing.T) {
 		GetPoolConfigFunc: func(_ context.Context, _ string) (*db.PoolConfig, error) {
 			return &db.PoolConfig{PoolName: "warm-pool", DesiredRunning: 1, InstanceType: "t3.medium"}, nil
 		},
-		UpdatePoolStateFunc:        func(_ context.Context, _ string, _, _ int) error { return nil },
 		GetPoolBusyInstanceIDsFunc: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
 		UpdatePoolReconcileResultFunc: func(_ context.Context, poolName, result string, _ time.Time) error {
 			called, gotPool, gotResult = true, poolName, result

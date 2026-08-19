@@ -1,39 +1,14 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 
-export function useAutoRefresh(
-  callback: () => void,
-  intervalMs: number,
-  storageKey: string,
-  defaultEnabled: boolean = false,
-) {
-  const [enabled, setEnabled] = useState(() => {
-    if (typeof window === 'undefined') return defaultEnabled;
-    const stored = localStorage.getItem(storageKey);
-    return stored !== null ? stored === 'true' : defaultEnabled;
-  });
+export function useAutoRefresh(callback: () => void, intervalMs: number) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const callbackRef = useRef(callback);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Held in a ref so a caller passing a fresh closure each render does not tear
+  // down and restart the interval.
   callbackRef.current = callback;
 
-  const toggle = useCallback(() => {
-    setEnabled((prev) => {
-      const next = !prev;
-      localStorage.setItem(storageKey, String(next));
-      return next;
-    });
-  }, [storageKey]);
-
   useEffect(() => {
-    if (!enabled) {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      return;
-    }
-
     const tick = () => {
       if (document.hidden) return;
       setIsRefreshing(true);
@@ -41,20 +16,20 @@ export function useAutoRefresh(
       setTimeout(() => setIsRefreshing(false), 500);
     };
 
-    intervalRef.current = setInterval(tick, intervalMs);
+    const interval = setInterval(tick, intervalMs);
 
     const handleVisibility = () => {
-      if (!document.hidden && enabled) {
+      if (!document.hidden) {
         callbackRef.current();
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [enabled, intervalMs]);
+  }, [intervalMs]);
 
-  return { enabled, toggle, isRefreshing };
+  return { isRefreshing };
 }

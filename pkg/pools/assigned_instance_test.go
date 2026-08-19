@@ -234,7 +234,6 @@ func TestReconcile_AssignedSpareDoesNotSatisfyDesiredRunning(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 1, DesiredStopped: 1, InstanceType: "c7g.xlarge"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(context.Context, string, int, int) error { return nil },
 	}
 	mockFleet := &MockFleetAPI{
 		CreateOnDemandInstanceFunc: func(context.Context, *fleet.LaunchSpec) (string, error) {
@@ -313,7 +312,6 @@ func TestReconcile_PublishesAssignedIdleGauge(t *testing.T) {
 			return &db.PoolConfig{DesiredRunning: 1, InstanceType: "c7g.xlarge"}, nil
 		},
 		GetPoolBusyInstanceIDsFunc: func(context.Context, string) ([]string, error) { return nil, nil },
-		UpdatePoolStateFunc:        func(context.Context, string, int, int) error { return nil },
 	}
 	mockEC2 := &MockEC2API{
 		DescribeInstancesFunc: func(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {

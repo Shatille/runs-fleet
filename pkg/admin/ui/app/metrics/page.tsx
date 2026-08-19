@@ -20,6 +20,7 @@ export default function MetricsPage() {
         throw new Error(`Failed to fetch metrics: ${res.statusText}`);
       }
       setMetrics(await res.json());
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load metrics');
     } finally {
@@ -27,13 +28,13 @@ export default function MetricsPage() {
     }
   }, []);
 
-  const { enabled, toggle, isRefreshing } = useAutoRefresh(fetchMetrics, 15000, 'runs-fleet-metrics-auto-refresh');
+  useAutoRefresh(fetchMetrics, 15000);
 
   useEffect(() => {
     fetchMetrics();
   }, [fetchMetrics]);
 
-  if (error) {
+  if (error && !metrics) {
     return (
       <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-4">
         <p className="text-red-800 dark:text-red-300">{error}</p>
@@ -48,11 +49,20 @@ export default function MetricsPage() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Metrics</h1>
-        <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-          <input type="checkbox" checked={enabled} onChange={toggle} className="rounded" />
-          Auto-refresh{isRefreshing ? ' …' : ''}
-        </label>
+        <button
+          onClick={fetchMetrics}
+          disabled={loading}
+          className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+        >
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
       </div>
+
+      {error && (
+        <div className="mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md p-3 text-sm text-red-800 dark:text-red-300">
+          Refresh failed: {error}
+        </div>
+      )}
 
       {loading && !metrics ? (
         <StatsCardSkeleton count={6} />

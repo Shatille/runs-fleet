@@ -185,18 +185,22 @@ func TestUpdatePoolState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		poolName string
-		running  int
-		stopped  int
-		mockDB   *MockDynamoDBAPI
-		wantErr  bool
+		name       string
+		poolName   string
+		running    int
+		stopped    int
+		effRunning int
+		effStopped int
+		mockDB     *MockDynamoDBAPI
+		wantErr    bool
 	}{
 		{
-			name:     "Success",
-			poolName: "test-pool",
-			running:  10,
-			stopped:  5,
+			name:       "Success",
+			poolName:   "test-pool",
+			running:    10,
+			stopped:    5,
+			effRunning: 8,
+			effStopped: 4,
 			mockDB: &MockDynamoDBAPI{
 				UpdateItemFunc: func(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 					return &dynamodb.UpdateItemOutput{}, nil
@@ -228,6 +232,24 @@ func TestUpdatePoolState(t *testing.T) {
 			mockDB:   &MockDynamoDBAPI{},
 			wantErr:  true,
 		},
+		{
+			name:       "Negative Effective Running Count",
+			poolName:   "test-pool",
+			running:    10,
+			stopped:    5,
+			effRunning: -1,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
+		{
+			name:       "Negative Effective Stopped Count",
+			poolName:   "test-pool",
+			running:    10,
+			stopped:    5,
+			effStopped: -1,
+			mockDB:     &MockDynamoDBAPI{},
+			wantErr:    true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -239,7 +261,7 @@ func TestUpdatePoolState(t *testing.T) {
 				poolsTable:   "pools-table",
 			}
 
-			err := client.UpdatePoolState(context.Background(), tt.poolName, tt.running, tt.stopped)
+			err := client.UpdatePoolState(context.Background(), tt.poolName, tt.running, tt.stopped, tt.effRunning, tt.effStopped)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("UpdatePoolState() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1008,7 +1030,7 @@ func TestUpdatePoolState_ConditionalCheckFailed(t *testing.T) {
 		poolsTable:   "pools-table",
 	}
 
-	err := client.UpdatePoolState(context.Background(), "nonexistent-pool", 5, 2)
+	err := client.UpdatePoolState(context.Background(), "nonexistent-pool", 5, 2, 5, 2)
 	if err == nil {
 		t.Error("UpdatePoolState() should return error when pool does not exist")
 	}
@@ -1209,7 +1231,7 @@ func TestUpdatePoolState_DynamoDBError(t *testing.T) {
 		poolsTable:   "pools-table",
 	}
 
-	err := client.UpdatePoolState(context.Background(), "test-pool", 5, 2)
+	err := client.UpdatePoolState(context.Background(), "test-pool", 5, 2, 5, 2)
 	if err == nil {
 		t.Error("UpdatePoolState() should return error when DynamoDB fails")
 	}
@@ -4958,7 +4980,7 @@ func TestDeletePoolConfig_NotEphemeral(t *testing.T) {
 	}
 }
 
-func TestUpdatePoolState_PoolNotFound_ErrorMessage(t *testing.T) {
+func TestUpdatePoolState_PoolNotFound_ReturnsSentinel(t *testing.T) {
 	t.Parallel()
 
 	mockDB := &MockDynamoDBAPI{
@@ -4972,15 +4994,41 @@ func TestUpdatePoolState_PoolNotFound_ErrorMessage(t *testing.T) {
 		poolsTable:   testPoolsTable,
 	}
 
-	err := client.UpdatePoolState(context.Background(), "missing-pool", 3, 1)
-	if err == nil {
-		t.Fatal("UpdatePoolState() should return error for non-existent pool")
+	err := client.UpdatePoolState(context.Background(), "missing-pool", 3, 1, 3, 1)
+	if !errors.Is(err, ErrPoolNotFound) {
+		t.Errorf("UpdatePoolState() error = %v, want ErrPoolNotFound", err)
 	}
-	if !strings.Contains(err.Error(), "missing-pool") {
-		t.Errorf("UpdatePoolState() error = %v, want pool name in message", err)
+}
+
+// UpdatePoolState writes the resolved targets alongside the observed counts, in
+// one write so the pair can never disagree.
+func TestUpdatePoolState_WritesEffectiveDesired(t *testing.T) {
+	t.Parallel()
+
+	var captured *dynamodb.UpdateItemInput
+	mockDB := &MockDynamoDBAPI{
+		UpdateItemFunc: func(_ context.Context, params *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+			captured = params
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
 	}
-	if !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("UpdatePoolState() error = %v, want 'does not exist' in message", err)
+	client := &Client{dynamoClient: mockDB, poolsTable: testPoolsTable}
+
+	if err := client.UpdatePoolState(context.Background(), "p", 5, 2, 3, 4); err != nil {
+		t.Fatalf("UpdatePoolState() error = %v", err)
+	}
+
+	expr := *captured.UpdateExpression
+	for _, attr := range []string{"current_running", "current_stopped", "effective_desired_running", "effective_desired_stopped"} {
+		if !strings.Contains(expr, attr) {
+			t.Errorf("UpdateExpression = %q, want it to set %s", expr, attr)
+		}
+	}
+	for placeholder, want := range map[string]string{":r": "5", ":s": "2", ":edr": "3", ":eds": "4"} {
+		v, ok := captured.ExpressionAttributeValues[placeholder].(*types.AttributeValueMemberN)
+		if !ok || v.Value != want {
+			t.Errorf("%s = %#v, want N=%s", placeholder, captured.ExpressionAttributeValues[placeholder], want)
+		}
 	}
 }
 
