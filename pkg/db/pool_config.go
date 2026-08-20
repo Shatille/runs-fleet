@@ -111,7 +111,8 @@ type AutoTuneRec struct {
 func IsReservedPoolKey(poolName string) bool {
 	return strings.HasPrefix(poolName, taskLockPrefix) ||
 		strings.HasPrefix(poolName, instanceClaimPrefix) ||
-		strings.HasPrefix(poolName, runnerSightingPrefix)
+		strings.HasPrefix(poolName, runnerSightingPrefix) ||
+		strings.HasPrefix(poolName, fleetDayPrefix)
 }
 
 // reapReservedRows deletes every pools-table row whose key carries prefix and

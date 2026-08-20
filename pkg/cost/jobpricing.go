@@ -2,10 +2,8 @@ package cost
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
-	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
 
 // SpotPricer supplies the current market spot hourly price by instance type
@@ -30,28 +28,14 @@ type JobPricing struct {
 // of the pricer, so a single run prices each type once. Not safe for concurrent
 // use; create one per run.
 type JobPricer struct {
-	onDemand PriceFetcherAPI
-	spot     SpotPricer
-	odMemo   map[string]float64
-	spotMemo map[string]spotResult
-}
-
-// spotResult caches a per-instance-type spot price lookup.
-type spotResult struct {
-	price float64
-	live  bool
+	rates rateMemo
 }
 
 // NewJobPricer creates a JobPricer. onDemand and spot supply live AWS prices;
 // both may be nil, in which case pricing falls back to the hard-coded on-demand
 // table and fixed spot discount.
 func NewJobPricer(onDemand PriceFetcherAPI, spot SpotPricer) *JobPricer {
-	return &JobPricer{
-		onDemand: onDemand,
-		spot:     spot,
-		odMemo:   make(map[string]float64),
-		spotMemo: make(map[string]spotResult),
-	}
+	return &JobPricer{rates: newRateMemo(onDemand, spot)}
 }
 
 // Price computes one job's EC2 cost. The result is split so callers can
@@ -67,35 +51,14 @@ func (p *JobPricer) Price(ctx context.Context, job db.AdminJobEntry) JobPricing 
 		durationHours = 0.5
 	}
 
-	onDemandHourly, ok := p.odMemo[instanceType]
-	if !ok {
-		onDemandHourly = GetInstancePrice(instanceType)
-		if p.onDemand != nil {
-			if live, err := p.onDemand.GetPrice(ctx, instanceType); err != nil {
-				pricingLog.Warn(ctx, "live on-demand price unavailable, using fallback",
-					slog.String(logging.KeyInstanceType, instanceType),
-					slog.String(logging.KeyError, err.Error()))
-			} else if live > 0 {
-				onDemandHourly = live
-			}
-		}
-		p.odMemo[instanceType] = onDemandHourly
-	}
+	onDemandHourly := p.rates.onDemandHourly(ctx, instanceType)
 
 	result := JobPricing{Hours: durationHours}
 	if job.Spot {
-		sr, seen := p.spotMemo[instanceType]
-		if !seen {
-			if p.spot != nil {
-				if sp, found := p.spot.SpotPrice(ctx, instanceType); found && sp > 0 {
-					sr = spotResult{price: sp, live: true}
-				}
-			}
-			p.spotMemo[instanceType] = sr
-		}
-		if sr.live {
-			result.Total = durationHours * sr.price
-			if saving := durationHours * (onDemandHourly - sr.price); saving > 0 {
+		spotHourly, live := p.rates.spotHourly(ctx, instanceType)
+		if live {
+			result.Total = durationHours * spotHourly
+			if saving := durationHours * (onDemandHourly - spotHourly); saving > 0 {
 				result.Savings = saving
 			}
 		} else {

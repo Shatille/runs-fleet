@@ -44,6 +44,7 @@ type mockTaskExecutor struct {
 	staleAMIErr        error
 
 	orphanedRunnersCall int
+	fleetCostSampleCall int
 	orphanedRunnersErr  error
 }
 
@@ -120,6 +121,11 @@ func (m *mockTaskExecutor) ExecuteStaleAMIInstances(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteOrphanedRunners(_ context.Context) error {
 	m.orphanedRunnersCall++
 	return m.orphanedRunnersErr
+}
+
+func (m *mockTaskExecutor) ExecuteFleetCostSample(_ context.Context) error {
+	m.fleetCostSampleCall++
+	return nil
 }
 
 // mockTaskLocker implements TaskLocker for testing.
@@ -262,6 +268,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
 		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances, TaskPoolHotTuner,
 		TaskExpiredInstanceClaims, TaskStaleAMIInstances, TaskOrphanedRunners,
+		TaskFleetCostSample,
 	}
 	r := NewRunner(&mockTaskExecutor{}, DefaultSchedulerConfig())
 	specs := r.taskSpecs()
@@ -306,6 +313,7 @@ func TestRunner_TryRunTask_DispatchesToExecutor(t *testing.T) {
 		{TaskEphemeralPoolCleanup, func(m *mockTaskExecutor) int { return m.ephemeralPoolCall }},
 		{TaskOrphanedPackerInstances, func(m *mockTaskExecutor) int { return m.packerCall }},
 		{TaskExpiredInstanceClaims, func(m *mockTaskExecutor) int { return m.expiredClaimsCall }},
+		{TaskFleetCostSample, func(m *mockTaskExecutor) int { return m.fleetCostSampleCall }},
 	}
 
 	for _, c := range cases {

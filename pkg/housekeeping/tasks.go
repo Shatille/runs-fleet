@@ -152,6 +152,7 @@ type Tasks struct {
 	runnerRegistry RunnerRegistry
 	activeRepos    ActiveReposFunc
 	sightings      RunnerSightingStore
+	fleetCost      FleetCostStore
 
 	metrics      MetricsAPI
 	costReporter CostReporter
