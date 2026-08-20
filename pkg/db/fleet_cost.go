@@ -121,7 +121,12 @@ func (c *Client) GetFleetCostDays(ctx context.Context, fromDay, toDay string) ([
 	}
 
 	input := &dynamodb.ScanInput{
-		TableName:        aws.String(c.poolsTable),
+		TableName: aws.String(c.poolsTable),
+		// The sampler reads last_sample_at from here and then writes the window
+		// since it, so a stale read would re-price a window the previous tick
+		// already counted. The housekeeping task lock serializes executions but
+		// does not make an eventually-consistent read fresh.
+		ConsistentRead:   aws.Bool(true),
 		FilterExpression: aws.String("begins_with(pool_name, :p) AND #day BETWEEN :from AND :to"),
 		ExpressionAttributeNames: map[string]string{
 			"#day": "day",

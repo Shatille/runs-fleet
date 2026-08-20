@@ -179,3 +179,28 @@ func TestComputeFleetMTDQueriesTheWholePeriodInclusiveOfToday(t *testing.T) {
 		t.Errorf("queried until %q, want today inclusive", store.gotUntil)
 	}
 }
+
+// A day can carry cost with no recorded instance-seconds only if a future
+// change accumulates one without the other. Coverage must degrade to zero
+// rather than dividing by it and rendering NaN in the UI.
+func TestComputeFleetMTDReportsZeroCoverageWhenSecondsAreMissing(t *testing.T) {
+	store := &fakeFleetStore{days: []db.FleetCostDay{
+		{Day: "2026-08-20", TotalCost: 5, InstanceSeconds: 0, AttributedSeconds: 0},
+	}}
+	start := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+
+	got, err := cost.ComputeFleetMTD(context.Background(), store, start, now)
+	if err != nil {
+		t.Fatalf("ComputeFleetMTD() error = %v", err)
+	}
+	if got.AttributedPercent != 0 || got.AttributedCost != 0 {
+		t.Errorf("AttributedPercent/Cost = %v/%v, want 0 when no seconds were recorded",
+			got.AttributedPercent, got.AttributedCost)
+	}
+	// The whole cost is unattributed when nothing is known to have run a job:
+	// claiming otherwise would overstate how much of the fleet did useful work.
+	if !approx(got.UnattributedCost, 0) {
+		t.Errorf("UnattributedCost = %v, want 0 rather than a guess", got.UnattributedCost)
+	}
+}

@@ -292,3 +292,27 @@ func TestListBusyInstanceIDsBoundsTheScanByAge(t *testing.T) {
 		t.Errorf(":since is %v old, want ~%v to match occupiesInstance", age, maxConcurrencyRuntime)
 	}
 }
+
+// The checkpoint drives a read-then-write: the next tick prices the window
+// since last_sample_at. An eventually-consistent read could miss the previous
+// tick's write, inflate the elapsed window, and double-count that window's
+// cost. The task lock serializes executions but does not make the read fresh.
+func TestGetFleetCostDaysReadsConsistently(t *testing.T) {
+	t.Parallel()
+
+	var consistent bool
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			consistent = aws.ToBool(params.ConsistentRead)
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+	c := &Client{dynamoClient: mock, poolsTable: "pools"}
+
+	if _, err := c.GetFleetCostDays(context.Background(), "2026-08-01", "2026-08-31"); err != nil {
+		t.Fatalf("GetFleetCostDays() error = %v", err)
+	}
+	if !consistent {
+		t.Error("ConsistentRead not set; a stale checkpoint would double-count a window")
+	}
+}
