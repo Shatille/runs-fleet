@@ -103,6 +103,7 @@ type Handler struct {
 	metrics        MetricsAPI
 	config         *config.Config
 	circuitBreaker CircuitBreakerAPI
+	gitHub         JobRerunner
 }
 
 // NewHandler creates a new event handler.
@@ -422,6 +423,15 @@ func (h *Handler) handleSpotInterruption(ctx context.Context, detailRaw json.Raw
 
 	eventsLog.Info(ctx, "job requeued after spot interruption",
 		slog.Int("retry_count", requeueMsg.RetryCount))
+
+	// The re-queue only rescues a job GitHub has not yet given up on: the
+	// replacement runner can be handed work that is still dispatchable. Once
+	// GitHub concludes the job failed, no runner can take it and only a re-run
+	// recovers the work — so watch for that outcome and re-run if it happens.
+	if err := h.recoverInterruptedJob(ctx, job); err != nil {
+		eventsLog.Warn(ctx, "could not re-run job after spot interruption",
+			slog.String("error", err.Error()))
+	}
 	return nil
 }
 

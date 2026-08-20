@@ -154,6 +154,9 @@ func main() {
 	if terminationHandler != nil && githubClient != nil {
 		terminationHandler.SetGitHubJobChecker(&terminationJobCheckerAdapter{client: githubClient})
 	}
+	if githubClient != nil {
+		eventHandler.SetGitHub(&eventsRerunAdapter{client: githubClient})
+	}
 	housekeepingRunner, housekeepingTasks := initHousekeeping(awsCfg, cfg, secretsStore, metricsPublisher, dbClient, fleetManager, jobQueue, githubClient)
 
 	// One resolver for the console and the sweep: two would cache independently
@@ -860,6 +863,24 @@ func (p *poolDBAdapter) HasLiveInstanceClaim(ctx context.Context, instanceID str
 // terminationJobCheckerAdapter adapts *gh.Client to
 // termination.GitHubJobStatusChecker, preserving the raw status string —
 // unlike the housekeeping adapter, which collapses it to a Completed bool.
+// eventsRerunAdapter adapts gh.Client to events.JobRerunner so a job whose
+// runner AWS reclaimed can be re-run once GitHub concludes it failed.
+type eventsRerunAdapter struct {
+	client *gh.Client
+}
+
+func (e *eventsRerunAdapter) GetWorkflowJobState(ctx context.Context, repo string, jobID int64) (events.WorkflowJobState, error) {
+	info, err := e.client.GetWorkflowJobByID(ctx, repo, jobID)
+	if err != nil {
+		return events.WorkflowJobState{}, err
+	}
+	return events.WorkflowJobState{Status: info.Status, Conclusion: info.Conclusion}, nil
+}
+
+func (e *eventsRerunAdapter) RerunJob(ctx context.Context, repo string, jobID int64) error {
+	return e.client.RerunJob(ctx, repo, jobID)
+}
+
 type terminationJobCheckerAdapter struct {
 	client *gh.Client
 }
