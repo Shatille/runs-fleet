@@ -163,11 +163,20 @@ check_toolcache() {
   [ -f "${entry}.complete" ] || fail "missing ${TOOLCACHE_PLATFORM}.complete for ${tool} ${prefix}"
   "${entry}/${relbin}" "$@" >/dev/null 2>&1 || fail "${tool} ${prefix} (${relbin}) not runnable"
 }
-for m in 20 22; do check_toolcache node "$m" bin/node --version; done
-for m in 1.24 1.25; do check_toolcache go "$m" bin/go version; done
+for m in 20 22 24 20.12 22.15 22.18; do check_toolcache node "$m" bin/node --version; done
+for m in 1.24 1.25 1.26; do check_toolcache go "$m" bin/go version; done
+# Consumer go.mod files pin exact patches, which setup-go passes through as explicit
+# specs that bypass range matching, so each pinned patch needs its own entry present
+# and runnable — a prefix match on the line would pass even if the patch were absent.
+for v in 1.25.0 1.25.1 1.25.2 1.25.4 1.25.5 1.25.7 1.25.8 1.25.12; do
+  [ -x "/opt/hostedtoolcache/go/${v}/${TOOLCACHE_PLATFORM}/bin/go" ] \
+    || fail "no runnable tool-cache entry for pinned go ${v} (${TOOLCACHE_PLATFORM})"
+  [ -f "/opt/hostedtoolcache/go/${v}/${TOOLCACHE_PLATFORM}.complete" ] \
+    || fail "missing ${TOOLCACHE_PLATFORM}.complete for pinned go ${v}"
+done
 for m in 17 21; do check_toolcache Java_Temurin-Hotspot_jdk "$m" bin/java --version; done
 command -v go >/dev/null || fail "go not on PATH"
-echo "  OK: tool cache node 20/22, go 1.24/1.25, Temurin 17/21 ($TOOLCACHE_PLATFORM)"
+echo "  OK: tool cache node 20/22/24 (+20.12, 22.15, 22.18), go 1.24/1.25/1.26 (+8 pinned patches), Temurin 17/21 ($TOOLCACHE_PLATFORM)"
 
 echo "==> Validating pre-baked common-tool cache entries"
 # These entries only pay off if their directory name matches the key the setup-*
