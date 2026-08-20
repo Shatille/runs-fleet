@@ -224,6 +224,31 @@ func reconcileBuildkitdConfig(path, mirrorAddr string, rules map[string]string, 
 	logger.Info("wrote BuildKit mirror config", "path", path, "mirror", mirrorAddr)
 }
 
+type bridgeParams struct {
+	iface      string
+	portSource string
+	configPath string
+	rules      map[string]string
+	addrsOf    func(string) ([]net.Addr, error)
+	listen     func(network, address string) (net.Listener, error)
+	logger     *slog.Logger
+}
+
+// addBridge appends the best-effort bridge listener to the required set and
+// reconciles the BuildKit config against whatever actually bound. The two
+// steps belong together: reconcileBuildkitdConfig must see the address
+// bindBridge really bound, so a bridge failure removes the config instead of
+// leaving BuildKit aimed at a port nothing serves.
+func addBridge(p bridgeParams, listeners []net.Listener, addrs []string) ([]net.Listener, []string) {
+	bridgeListener, boundBridge := bindBridge(p.iface, p.portSource, p.addrsOf, p.listen, p.logger)
+	if bridgeListener != nil {
+		listeners = append(listeners, bridgeListener)
+		addrs = append(addrs, boundBridge)
+	}
+	reconcileBuildkitdConfig(p.configPath, boundBridge, p.rules, p.logger)
+	return listeners, addrs
+}
+
 func main() {
 	listen := flag.String("listen", DefaultListen,
 		"comma-separated host-local addresses that must bind to serve the mirror")
@@ -282,13 +307,15 @@ func main() {
 
 	required := len(listeners)
 
-	bridgeListener, boundBridge := bindBridge(*bridge, addrs[0], interfaceAddrs, net.Listen, logger)
-	if bridgeListener != nil {
-		listeners = append(listeners, bridgeListener)
-		addrs = append(addrs, boundBridge)
-	}
-
-	reconcileBuildkitdConfig(*buildkitdConfigPath, boundBridge, rules, logger)
+	listeners, addrs = addBridge(bridgeParams{
+		iface:      *bridge,
+		portSource: addrs[0],
+		configPath: *buildkitdConfigPath,
+		rules:      rules,
+		addrsOf:    interfaceAddrs,
+		listen:     net.Listen,
+		logger:     logger,
+	}, listeners, addrs)
 
 	server := &http.Server{
 		Handler:           handler,
