@@ -22,8 +22,11 @@ import (
 )
 
 const (
-	maxRetries    = 3
-	maxRetryDelay = 10 * time.Second
+	maxRetries = 3
+	// defaultBaseURL is github.com's API root; a different baseURL means an
+	// Enterprise host or a test server, which needs the client re-pointed.
+	defaultBaseURL = "https://api.github.com"
+	maxRetryDelay  = 10 * time.Second
 
 	// tokenRefreshBuffer re-mints a cached installation token this long before
 	// it actually expires, to avoid using a token that expires mid-request.
@@ -200,7 +203,7 @@ func NewClient(appID string, privateKeyBase64 string, opts ...Option) (*Client, 
 		appID:      id,
 		privateKey: key,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
-		baseURL:    "https://api.github.com",
+		baseURL:    defaultBaseURL,
 		tokenCache: make(map[string]*installationInfo),
 	}
 	for _, opt := range opts {
@@ -491,7 +494,7 @@ func (c *Client) GetWorkflowJobByID(ctx context.Context, repo string, jobID int6
 		}
 
 		ghClient := github.NewClient(&http.Client{Timeout: c.httpClient.Timeout}).WithAuthToken(token)
-		if c.baseURL != "https://api.github.com" {
+		if c.baseURL != defaultBaseURL {
 			u, parseErr := url.Parse(c.baseURL + "/")
 			if parseErr != nil {
 				return nil, fmt.Errorf("invalid base URL %q: %w", c.baseURL, parseErr)
