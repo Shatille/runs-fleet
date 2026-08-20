@@ -429,6 +429,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 	tasksExecutor := housekeeping.NewTasks(awsCfg, cfg, secretsStore, metricsPublisher, costReporter)
 	tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
 	tasksExecutor.SetJobRequeuer(jobQueue)
+	tasksExecutor.SetFleetCostStore(dbClient)
 
 	if githubClient != nil {
 		tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})
@@ -626,6 +627,13 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 
 	costPriceFetcher := cost.NewPriceFetcher(ws.awsCfg, ws.awsCfg.Region)
 	costAdminHandler := admin.NewCostHandler(ws.dbClient, adminAuth, costPriceFetcher, ws.fleetManager)
+	// Guard the typed nil before it lands in the FleetCostStore interface: a nil
+	// *db.Client assigned directly would read as a non-nil interface, and the
+	// handler would query a client that cannot answer instead of omitting the
+	// fleet figure.
+	if ws.dbClient != nil {
+		costAdminHandler.SetFleetCostStore(ws.dbClient)
+	}
 	costAdminHandler.RegisterRoutes(adminMux)
 
 	metricsAdminHandler := admin.NewMetricsHandler(ws.dbClient, costAdminHandler, adminAuth)

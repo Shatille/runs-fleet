@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -55,6 +56,12 @@ type CostSummaryResponse struct {
 	SpotJobCount    int                    `json:"spot_job_count"`
 	OnDemandCount   int                    `json:"on_demand_count"`
 	FamilyBreakdown []FamilyBreakdownEntry `json:"family_breakdown"`
+
+	// Fleet is the sampled cost of every managed instance, whether or not it
+	// ever ran a job. Nil — and omitted — when nothing has been sampled, so the
+	// page degrades to its job-only figures rather than showing a false zero.
+	// TotalCost above is unchanged and stays the job-attributed headline.
+	Fleet *FleetCostBlock `json:"fleet,omitempty"`
 
 	// RunnerMinuteBreakdown carries the per-runner-shape unit price: the cost
 	// actually incurred for each (arch, vCPU) shape and its per-minute rate,
@@ -153,14 +160,58 @@ type CostRepositoryEntry struct {
 	SpotPercent   float64 `json:"spot_percent"`
 }
 
+// FleetCostBlock is the sampled cost of the whole managed fleet, and how much
+// of it the job-based attribution accounts for.
+//
+// It answers what TotalCost cannot: TotalCost prices job execution time from
+// job records, so it cannot see boot and teardown, idle pool capacity, stopped
+// instances still paying for storage, or any instance that never ran a job.
+type FleetCostBlock struct {
+	TotalCost   float64 `json:"total_cost"`
+	ComputeCost float64 `json:"compute_cost"`
+	EBSCost     float64 `json:"ebs_cost"`
+
+	// AttributedCost is the share incurred while an instance was running a job;
+	// UnattributedCost is the rest. AttributedPercent comes from the sampler's
+	// own busy-versus-total instance-seconds, not from dividing the job-priced
+	// total by this one — job records are deleted after 7 days, so that ratio
+	// would decay across a month for calendar reasons rather than real ones.
+	AttributedCost    float64 `json:"attributed_cost"`
+	UnattributedCost  float64 `json:"unattributed_cost"`
+	AttributedPercent float64 `json:"attributed_percent"`
+
+	DaysCovered  int `json:"days_covered"`
+	DaysInPeriod int `json:"days_in_period"`
+
+	// Partial marks a total known to understate; Warning says why in words the
+	// UI can show directly.
+	Partial bool   `json:"partial"`
+	Warning string `json:"warning,omitempty"`
+
+	// EBSEstimated is always true: storage is priced from an assumed volume
+	// size, because DescribeInstances reports volume IDs but not their sizes.
+	EBSEstimated bool `json:"ebs_estimated"`
+}
+
 // CostHandler provides HTTP endpoints for cost reporting.
 type CostHandler struct {
-	db       CostDB
-	auth     *AuthMiddleware
-	onDemand onDemandPricer
-	spot     spotPricer
-	rates    map[string]float64
-	log      *logging.Logger
+	db        CostDB
+	auth      *AuthMiddleware
+	onDemand  onDemandPricer
+	spot      spotPricer
+	fleetCost cost.FleetCostStore
+	rates     map[string]float64
+	log       *logging.Logger
+}
+
+// SetFleetCostStore wires the sampled fleet-cost reader.
+//
+// Optional by design: with no store the cost responses omit their fleet fields
+// entirely and the page renders exactly as it did before. Omission is the
+// honest signal — a zero would sit beside a non-zero attributed cost and read
+// as "the fleet has no overhead".
+func (h *CostHandler) SetFleetCostStore(s cost.FleetCostStore) {
+	h.fleetCost = s
 }
 
 // NewCostHandler creates a new cost handler. onDemand and spot supply live
@@ -198,7 +249,53 @@ func (h *CostHandler) GetCostSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	summary := h.computeCostSummary(ctx, jobs, periodStart, periodEnd)
+	summary.Fleet = h.fleetBlock(ctx, periodStart, periodEnd)
 	h.writeJSON(w, http.StatusOK, summary)
+}
+
+// fleetBlock reads the sampled fleet cost for the period, or nil when there is
+// none to report.
+//
+// A read failure degrades to nil and a log line rather than an error response:
+// the fleet figure is secondary, and losing it must never take down the
+// job-based numbers that already work.
+func (h *CostHandler) fleetBlock(ctx context.Context, start, end time.Time) *FleetCostBlock {
+	if h.fleetCost == nil {
+		return nil
+	}
+	mtd, err := cost.ComputeFleetMTD(ctx, h.fleetCost, start, end)
+	if err != nil {
+		h.log.Warn(ctx, "fleet cost unavailable",
+			slog.String(logging.KeyError, err.Error()))
+		return nil
+	}
+	if mtd == nil {
+		return nil
+	}
+	return &FleetCostBlock{
+		TotalCost:         mtd.TotalCost,
+		ComputeCost:       mtd.ComputeCost,
+		EBSCost:           mtd.EBSCost,
+		AttributedCost:    mtd.AttributedCost,
+		UnattributedCost:  mtd.UnattributedCost,
+		AttributedPercent: mtd.AttributedPercent,
+		DaysCovered:       mtd.DaysCovered,
+		DaysInPeriod:      mtd.DaysInPeriod,
+		Partial:           mtd.Partial,
+		Warning:           fleetWarning(mtd.Partial, mtd.DaysCovered, mtd.DaysInPeriod),
+		EBSEstimated:      true,
+	}
+}
+
+// fleetWarning explains, in words the UI can show as-is, why a fleet total
+// understates. Empty when the period is fully sampled.
+func fleetWarning(partial bool, daysCovered, daysInPeriod int) string {
+	if !partial {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Sampled %d of %d days in this period, so fleet cost understates actual spend.",
+		daysCovered, daysInPeriod)
 }
 
 // monthToDateJobs fetches every finished job since the start of the current UTC
