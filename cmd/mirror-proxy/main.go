@@ -163,6 +163,67 @@ func listenAll(addrs []string) ([]net.Listener, error) {
 	return listeners, nil
 }
 
+// bindBridge binds the docker bridge gateway best-effort, returning the
+// listener and the address it bound. Every failure path returns ("", nil):
+// losing the bridge costs buildx builds the mirror, but exiting would also
+// cost dockerd the loopback mirror it was already using. The empty address is
+// load-bearing — reconcileBuildkitdConfig removes the config on it, so a
+// failure here can never leave BuildKit pointed at an address nothing serves.
+func bindBridge(
+	iface, portSource string,
+	addrsOf func(string) ([]net.Addr, error),
+	listen func(network, address string) (net.Listener, error),
+	logger *slog.Logger,
+) (net.Listener, string) {
+	if iface == "" {
+		return nil, ""
+	}
+	port, err := portOf(portSource)
+	if err != nil {
+		logger.Error("cannot derive the bridge port from -listen; BuildKit will bypass the mirror and pull from Docker Hub",
+			"listen", portSource, "error", err)
+		return nil, ""
+	}
+	bridgeAddr, err := discoverBridgeAddr(addrsOf, iface, port)
+	if err != nil {
+		logger.Error("no docker bridge address to bind; BuildKit will bypass the mirror and pull from Docker Hub",
+			"interface", iface, "error", err)
+		return nil, ""
+	}
+	l, err := listen("tcp", bridgeAddr)
+	if err != nil {
+		logger.Error("could not bind the docker bridge address; BuildKit will bypass the mirror and pull from Docker Hub",
+			"addr", bridgeAddr, "error", err)
+		return nil, ""
+	}
+	return l, bridgeAddr
+}
+
+// reconcileBuildkitdConfig points BuildKit at mirrorAddr, or removes the
+// config when mirrorAddr is empty. It is called from the address actually
+// bound and before serving starts, so the readiness probe on the listening
+// port also implies the config is in place for buildx-setup.service and the
+// buildx shim. A config naming an unbound address looks like a working mirror
+// and silently sheds builds to Docker Hub; absence makes the shim skip
+// cleanly instead.
+func reconcileBuildkitdConfig(path, mirrorAddr string, rules map[string]string, logger *slog.Logger) {
+	if path == "" {
+		return
+	}
+	if mirrorAddr == "" {
+		if err := removeBuildkitdConfig(path); err != nil {
+			logger.Error("could not remove the stale BuildKit mirror config", "path", path, "error", err)
+		}
+		return
+	}
+	if err := writeBuildkitdConfig(path, buildkitdConfig(mirrorAddr, rules)); err != nil {
+		logger.Error("could not write the BuildKit mirror config; BuildKit will bypass the mirror and pull from Docker Hub",
+			"path", path, "error", err)
+		return
+	}
+	logger.Info("wrote BuildKit mirror config", "path", path, "mirror", mirrorAddr)
+}
+
 func main() {
 	listen := flag.String("listen", DefaultListen,
 		"comma-separated host-local addresses that must bind to serve the mirror")
@@ -221,55 +282,13 @@ func main() {
 
 	required := len(listeners)
 
-	// The bridge gateway is added best-effort. Losing it costs buildx builds
-	// the mirror, but exiting would also cost dockerd the loopback mirror it
-	// was already using — so log loudly and serve what we have.
-	boundBridge := ""
-	if *bridge != "" {
-		// The port comes from the first -listen address; the deployed unit
-		// passes exactly one.
-		port, perr := portOf(addrs[0])
-		switch {
-		case perr != nil:
-			logger.Error("cannot derive the bridge port from -listen; BuildKit will bypass the mirror and pull from Docker Hub",
-				"listen", addrs[0], "error", perr)
-		default:
-			bridgeAddr, berr := discoverBridgeAddr(interfaceAddrs, *bridge, port)
-			if berr != nil {
-				logger.Error("no docker bridge address to bind; BuildKit will bypass the mirror and pull from Docker Hub",
-					"interface", *bridge, "error", berr)
-				break
-			}
-			l, lerr := net.Listen("tcp", bridgeAddr)
-			if lerr != nil {
-				logger.Error("could not bind the docker bridge address; BuildKit will bypass the mirror and pull from Docker Hub",
-					"addr", bridgeAddr, "error", lerr)
-				break
-			}
-			listeners = append(listeners, l)
-			addrs = append(addrs, bridgeAddr)
-			boundBridge = bridgeAddr
-		}
+	bridgeListener, boundBridge := bindBridge(*bridge, addrs[0], interfaceAddrs, net.Listen, logger)
+	if bridgeListener != nil {
+		listeners = append(listeners, bridgeListener)
+		addrs = append(addrs, boundBridge)
 	}
 
-	// Written from the address actually bound, before serving starts, so the
-	// readiness probe on the listening port also implies the config is in
-	// place for buildx-setup.service and the buildx shim.
-	if *buildkitdConfigPath != "" {
-		if boundBridge == "" {
-			// A config naming an unbound address looks like a working mirror
-			// and silently sheds builds to Docker Hub; absence makes the shim
-			// skip cleanly instead.
-			if rerr := removeBuildkitdConfig(*buildkitdConfigPath); rerr != nil {
-				logger.Error("could not remove the stale BuildKit mirror config", "path", *buildkitdConfigPath, "error", rerr)
-			}
-		} else if werr := writeBuildkitdConfig(*buildkitdConfigPath, buildkitdConfig(boundBridge, rules)); werr != nil {
-			logger.Error("could not write the BuildKit mirror config; BuildKit will bypass the mirror and pull from Docker Hub",
-				"path", *buildkitdConfigPath, "error", werr)
-		} else {
-			logger.Info("wrote BuildKit mirror config", "path", *buildkitdConfigPath, "mirror", boundBridge)
-		}
-	}
+	reconcileBuildkitdConfig(*buildkitdConfigPath, boundBridge, rules, logger)
 
 	server := &http.Server{
 		Handler:           handler,

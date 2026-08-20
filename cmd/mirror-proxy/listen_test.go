@@ -63,8 +63,8 @@ func TestDiscoverBridgeAddrUsesTheInterfacesIPv4(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discoverBridgeAddr() error = %v", err)
 	}
-	if got != "172.18.0.1:8989" {
-		t.Errorf("discoverBridgeAddr() = %q, want %q", got, "172.18.0.1:8989")
+	if got != testBridgeAddr {
+		t.Errorf("discoverBridgeAddr() = %q, want %q", got, testBridgeAddr)
 	}
 }
 
