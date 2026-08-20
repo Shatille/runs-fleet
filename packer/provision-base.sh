@@ -55,6 +55,7 @@ sudo dnf install -y \
   wget \
   zip \
   awscli \
+  postgresql17 \
   docker \
   amazon-ssm-agent \
   amazon-cloudwatch-agent
@@ -543,13 +544,22 @@ toolcache_extract() {
   sudo touch "/opt/hostedtoolcache/${tool}/${version}/${TOOLCACHE_PLATFORM}.complete"
 }
 
-echo "==> Pre-baking Node into the tool cache (20, 22)"
+NODE_TC_LINES=(20 22 24 20.12 22.15 22.18)
+echo "==> Pre-baking Node into the tool cache (${NODE_TC_LINES[*]})"
 NODE_TC_INDEX=$(dl https://nodejs.org/dist/index.json) \
   || { echo "Node index download failed"; exit 1; }
-for major in 20 22; do
+# tc.find range-matches a non-explicit spec against the baked patches, so the newest
+# patch of a line serves both `node-version: 22` and `22.15`. A spec naming a minor
+# line with no baked patch at all can never match, which is what the 22.15/22.18/20.12
+# tool-cache misses were: entries are per requested LINE, not just per major.
+for major in "${NODE_TC_LINES[@]}"; do
   ver=$(printf '%s' "$NODE_TC_INDEX" | jq -r --arg m "v${major}." \
     'map(.version) | map(select(startswith($m))) | first // empty')
   [ -n "$ver" ] || { echo "no Node ${major}.x in index"; exit 1; }
+  if [ -e "/opt/hostedtoolcache/node/${ver#v}/${TOOLCACHE_PLATFORM}.complete" ]; then
+    echo "    Node ${ver} already baked (line ${major} resolves to it); skipping"
+    continue
+  fi
   dist="node-${ver}-linux-${NODE_ARCH}"
   dl "https://nodejs.org/dist/${ver}/SHASUMS256.txt" -o /tmp/node-tc-sha.txt \
     || { echo "Node ${ver} checksums download failed"; exit 1; }
@@ -563,12 +573,18 @@ for major in 20 22; do
 done
 
 GO_PATCHES_PER_LINE=2
-echo "==> Pre-baking Go into the tool cache (1.24, 1.25; newest ${GO_PATCHES_PER_LINE} patches each)"
+# Explicit full-patch specs (a `toolchain go1.25.5` / `go 1.25.5` line in go.mod is
+# passed through verbatim by setup-go) bypass tc.find's range matching and require
+# that exact directory, so the newest-N-patches window never serves them. Consumer
+# go.mod files pin patches scattered across the whole line, which is what the
+# go/1.25 tool-cache misses were. Bake those exact patches alongside the window.
+GO_EXTRA_PATCHES=(1.25.0 1.25.1 1.25.2 1.25.4 1.25.5 1.25.7 1.25.8 1.25.12)
+echo "==> Pre-baking Go into the tool cache (1.24, 1.25, 1.26; newest ${GO_PATCHES_PER_LINE} patches each + ${#GO_EXTRA_PATCHES[@]} pinned)"
 if [ "$ARCH" = "x86_64" ]; then GO_ARCH="amd64"; else GO_ARCH="arm64"; fi
 GO_TC_INDEX=$(dl "https://go.dev/dl/?mode=json&include=all") \
   || { echo "Go index download failed"; exit 1; }
 go_default_dir=""
-for minor in 1.24 1.25; do
+for minor in 1.24 1.25 1.26; do
   # setup-go resolves a full `go 1.x.y` in go.mod as an exact-patch spec, so a cache
   # entry for a different patch of the same line does not match and the job re-downloads
   # the toolchain. Bake the newest few patches so a Go release landing between AMI
@@ -600,6 +616,24 @@ done
 # Fail closed: the symlinks must point at a Go we actually extracted, never an empty path.
 { [ -n "$go_default_dir" ] && [ -x "${go_default_dir}/bin/go" ]; } \
   || { echo "Go tool-cache default not populated"; exit 1; }
+for gfull in "${GO_EXTRA_PATCHES[@]}"; do
+  if [ -e "/opt/hostedtoolcache/go/${gfull}/${TOOLCACHE_PLATFORM}.complete" ]; then
+    continue
+  fi
+  gfile=$(printf '%s' "$GO_TC_INDEX" | jq -c --arg v "go${gfull}" --arg a "$GO_ARCH" \
+    '[ .[] | select(.version==$v) | .files[]
+       | select(.os=="linux" and .arch==$a and .kind=="archive") ] | first // empty')
+  [ -n "$gfile" ] || { echo "no Go ${gfull} linux/${GO_ARCH} archive found"; exit 1; }
+  gfn=$(printf '%s' "$gfile" | jq -r .filename)
+  gsha=$(printf '%s' "$gfile" | jq -r .sha256)
+  dl "https://go.dev/dl/${gfn}" -o "/tmp/${gfn}" \
+    || { echo "Go ${gfn} download failed"; exit 1; }
+  echo "${gsha}  /tmp/${gfn}" | sha256sum -c \
+    || { echo "Go ${gfn} checksum mismatch"; exit 1; }
+  toolcache_extract go "$gfull" "/tmp/${gfn}"
+  rm -f "/tmp/${gfn}"
+done
+
 sudo ln -sf "${go_default_dir}/bin/go" /usr/local/bin/go
 sudo ln -sf "${go_default_dir}/bin/gofmt" /usr/local/bin/gofmt
 
@@ -872,5 +906,5 @@ echo "    - Python: $(python --version 2>&1) (default); versions ${PYTHON_VERSIO
 echo "    - pipx: $(pipx --version 2>&1)"
 echo "    - Ruby: $(ruby --version 2>&1) (default); versions ${RUBY_VERSIONS[*]} in tool cache"
 echo "    - Go: $(go version 2>&1) (default)"
-echo "    - Tool cache: Node 20/22, Go 1.24/1.25, Temurin JDK 17/21 (${TOOLCACHE_PLATFORM})"
+echo "    - Tool cache: Node ${NODE_TC_LINES[*]}, Go 1.24/1.25/1.26 (+${#GO_EXTRA_PATCHES[@]} pinned patches), Temurin JDK 17/21 (${TOOLCACHE_PLATFORM})"
 echo "    - GitHub Actions runner: v${RUNNER_VERSION} (linux-${RUNNER_PLATFORM})"
