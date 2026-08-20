@@ -310,3 +310,26 @@ func TestFleetCostSampleCheckpointsAnEmptyFleet(t *testing.T) {
 		t.Error("checkpoint not set, want the next tick to measure from here")
 	}
 }
+
+// The first tick after UTC midnight must still measure from the previous day's
+// checkpoint. Reading only today's row would find nothing, fall back to the
+// nominal interval, and silently drop a real gap that spanned midnight.
+func TestFleetCostSampleMeasuresAcrossTheDayBoundary(t *testing.T) {
+	now := time.Now().UTC()
+	yesterday := now.AddDate(0, 0, -1).Format(db.FleetDayFormat)
+	store := &fakeFleetCostStore{lastDay: db.FleetCostDay{
+		Day:          yesterday,
+		LastSampleAt: now.Add(-5 * time.Minute),
+	}}
+	tasks := fleetCostTasks(t, store,
+		instance("i-1", "c7g.xlarge", "", "running", false),
+	)
+
+	if err := tasks.ExecuteFleetCostSample(context.Background()); err != nil {
+		t.Fatalf("ExecuteFleetCostSample() error = %v", err)
+	}
+	got := store.deltas[0].InstanceSeconds
+	if got < 4*60 {
+		t.Errorf("instance seconds = %v, want ~300 measured from yesterday's checkpoint", got)
+	}
+}

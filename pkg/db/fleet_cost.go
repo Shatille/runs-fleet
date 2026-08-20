@@ -196,9 +196,21 @@ func (c *Client) ListBusyInstanceIDs(ctx context.Context) ([]string, error) {
 		exprValues[ph] = &types.AttributeValueMemberS{Value: string(status)}
 	}
 
+	// Bound by age as well as status, matching occupiesInstance: an active record
+	// older than maxConcurrencyRuntime no longer occupies its instance, and a
+	// leaked stale row would otherwise mark an instance busy forever and inflate
+	// the attributed share.
+	//
+	// This is a correctness bound, not a cost one — DynamoDB applies a filter
+	// after the read, so it trims the response, not the RCU.
+	exprValues[":since"] = &types.AttributeValueMemberS{
+		Value: time.Now().UTC().Add(-maxConcurrencyRuntime).Format(time.RFC3339),
+	}
+
 	input := &dynamodb.ScanInput{
-		TableName:                 aws.String(c.jobsTable),
-		FilterExpression:          aws.String("#status IN (" + strings.Join(placeholders, ", ") + ")"),
+		TableName: aws.String(c.jobsTable),
+		FilterExpression: aws.String(
+			"#status IN (" + strings.Join(placeholders, ", ") + ") AND created_at >= :since"),
 		ExpressionAttributeNames:  map[string]string{"#status": "status"},
 		ExpressionAttributeValues: exprValues,
 		ProjectionExpression:      aws.String("instance_id"),

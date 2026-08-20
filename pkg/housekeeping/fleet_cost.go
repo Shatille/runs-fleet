@@ -123,11 +123,16 @@ func (t *Tasks) ExecuteFleetCostSample(ctx context.Context) error {
 
 // fleetCostElapsed returns how much time this tick should attribute, and
 // whether it had to be clamped. A tick measures from the previous checkpoint so
-// a missed tick is absorbed rather than lost; the first tick of a day, and any
+// a missed tick is absorbed rather than lost; the very first tick, and any
 // checkpoint in the future (a backwards clock), fall back to the nominal
 // interval.
+//
+// Yesterday is queried alongside today because the first tick after UTC
+// midnight would otherwise find no checkpoint and silently shrink a real gap
+// that spanned the boundary down to one nominal interval.
 func (t *Tasks) fleetCostElapsed(ctx context.Context, day string, now time.Time) (time.Duration, bool) {
-	days, err := t.fleetCost.GetFleetCostDays(ctx, day, day)
+	yesterday := now.AddDate(0, 0, -1).Format(db.FleetDayFormat)
+	days, err := t.fleetCost.GetFleetCostDays(ctx, yesterday, day)
 	if err != nil {
 		t.logger().Warn(ctx, "fleet cost checkpoint unavailable, using the nominal interval",
 			slog.String(logging.KeyError, err.Error()))
@@ -136,7 +141,7 @@ func (t *Tasks) fleetCostElapsed(ctx context.Context, day string, now time.Time)
 
 	var last time.Time
 	for _, d := range days {
-		if d.Day == day {
+		if d.LastSampleAt.After(last) {
 			last = d.LastSampleAt
 		}
 	}

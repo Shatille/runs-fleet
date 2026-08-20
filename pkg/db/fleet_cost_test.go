@@ -254,3 +254,41 @@ func TestListBusyInstanceIDsIsEmptyWithoutAJobsTable(t *testing.T) {
 		t.Errorf("got %d IDs, want none", len(ids))
 	}
 }
+
+// The sweep runs every minute, so it must not read the whole jobs table. An
+// active record older than maxConcurrencyRuntime no longer occupies its
+// instance (see occupiesInstance), so bounding on age narrows the read without
+// changing the answer — and stops a leaked backlog of stale rows from making a
+// per-minute scan expensive.
+func TestListBusyInstanceIDsBoundsTheScanByAge(t *testing.T) {
+	t.Parallel()
+
+	var filter string
+	var values map[string]types.AttributeValue
+	mock := &MockDynamoDBAPI{
+		ScanFunc: func(_ context.Context, params *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+			filter = aws.ToString(params.FilterExpression)
+			values = params.ExpressionAttributeValues
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+	c := &Client{dynamoClient: mock, jobsTable: "jobs"}
+
+	if _, err := c.ListBusyInstanceIDs(context.Background()); err != nil {
+		t.Fatalf("ListBusyInstanceIDs() error = %v", err)
+	}
+	if !strings.Contains(filter, "created_at >= :since") {
+		t.Errorf("filter = %q, want it bounded by created_at", filter)
+	}
+	since, ok := values[":since"].(*types.AttributeValueMemberS)
+	if !ok {
+		t.Fatalf(":since = %#v, want a timestamp", values[":since"])
+	}
+	cutoff, err := time.Parse(time.RFC3339, since.Value)
+	if err != nil {
+		t.Fatalf("parse :since: %v", err)
+	}
+	if age := time.Since(cutoff); age < maxConcurrencyRuntime-time.Minute || age > maxConcurrencyRuntime+time.Minute {
+		t.Errorf(":since is %v old, want ~%v to match occupiesInstance", age, maxConcurrencyRuntime)
+	}
+}
