@@ -234,3 +234,85 @@ func TestPlan_WritesOutcomeToEnvFile(t *testing.T) {
 		t.Errorf("outcome file = %q, want engaged", string(b))
 	}
 }
+
+// A workflow that brings its own buildkitd config is skipped by DecideCreate,
+// so the address it guessed is whatever it guessed. On this host that address
+// is unreachable from a bridge-network buildkitd, and BuildKit answers an
+// unreachable mirror with an unauthenticated Docker Hub pull rather than an
+// error — so the config has to be redirected onto the address the proxy bound.
+func TestPlan_CreateRedirectsUserConfigOntoTheBoundMirror(t *testing.T) {
+	dir := t.TempDir()
+	ours := filepath.Join(dir, "buildkitd.toml")
+	if err := os.WriteFile(ours, []byte("[registry.\"docker.io\"]\n  mirrors = [\"172.17.0.1:8989\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	userCfg := filepath.Join(dir, "user.toml")
+	if err := os.WriteFile(userCfg, []byte("debug = true\n[registry.\"docker.io\"]\n  mirrors = [\"127.0.0.1:8989\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	argv := []string{"buildx", "create", "--driver", "docker-container", "--buildkitd-config", userCfg}
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, panicFetcher{t}, mustNotLoadState(t),
+		func() string { return ours })
+
+	if outcome != buildxshim.OutcomeEngagedUserConfig {
+		t.Fatalf("outcome = %q, want %q", outcome, buildxshim.OutcomeEngagedUserConfig)
+	}
+	redirected := finalArgv[len(finalArgv)-1]
+	if redirected == userCfg {
+		t.Fatal("argv still points at the user's original config")
+	}
+	got, err := os.ReadFile(redirected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "debug = true\n[registry.\"docker.io\"]\n  mirrors = [\"172.17.0.1:8989\"]\n"
+	if string(got) != want {
+		t.Errorf("redirected config =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Nothing to redirect must stay byte-identical: the shim never rewrites a
+// config it has no reason to touch.
+func TestPlan_CreateLeavesAnUnrelatedUserConfigAlone(t *testing.T) {
+	dir := t.TempDir()
+	ours := filepath.Join(dir, "buildkitd.toml")
+	if err := os.WriteFile(ours, []byte("[registry.\"docker.io\"]\n  mirrors = [\"172.17.0.1:8989\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	userCfg := filepath.Join(dir, "user.toml")
+	if err := os.WriteFile(userCfg, []byte("debug = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	argv := []string{"buildx", "create", "--buildkitd-config", userCfg}
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, panicFetcher{t}, mustNotLoadState(t),
+		func() string { return ours })
+
+	if !reflect.DeepEqual(finalArgv, argv) {
+		t.Errorf("expected byte-identical argv, got %v", finalArgv)
+	}
+	if outcome != buildxshim.OutcomeSkippedUserConfig {
+		t.Errorf("outcome = %q, want %q", outcome, buildxshim.OutcomeSkippedUserConfig)
+	}
+}
+
+// An unreadable user config must degrade to passthrough, never fail the build.
+func TestPlan_CreateWithUnreadableUserConfigPassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	ours := filepath.Join(dir, "buildkitd.toml")
+	if err := os.WriteFile(ours, []byte("mirrors = [\"172.17.0.1:8989\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	argv := []string{"buildx", "create", "--buildkitd-config", filepath.Join(dir, "nope.toml")}
+	finalArgv, outcome := plan(context.Background(), argv, map[string]string{}, panicFetcher{t}, mustNotLoadState(t),
+		func() string { return ours })
+
+	if !reflect.DeepEqual(finalArgv, argv) {
+		t.Errorf("expected byte-identical argv, got %v", finalArgv)
+	}
+	if outcome != buildxshim.OutcomeSkippedUserConfig {
+		t.Errorf("outcome = %q", outcome)
+	}
+}

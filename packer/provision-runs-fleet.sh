@@ -101,23 +101,62 @@ sudo install -m 0440 -o root -g root /tmp/sudoers-cache-engage /etc/sudoers.d/10
 # Fail the build (before snapshot) on a malformed drop-in rather than at boot.
 sudo visudo -cf /etc/sudoers.d/10-runs-fleet-cache
 
+echo "==> Installing Docker Hub mirror proxy"
+# The port is defined once here: the unit passes it to the proxy, the
+# readiness poll and dockerd's mirror config, so nothing re-states it.
+MIRROR_PORT=8989
+sudo install -m 0755 -o root -g root /tmp/runs-fleet-mirror-proxy /usr/local/sbin/runs-fleet-mirror-proxy
+sudo rm -f /tmp/runs-fleet-mirror-proxy
+
+# Type=simple marks the unit started the instant the process forks, but the
+# proxy resolves a region and calls ECR before it binds. Without this poll the
+# Before= ordering below would not actually protect the units that pull images
+# at boot, whose pulls would race the listener and fall through to Docker Hub.
+sudo tee /usr/local/sbin/runs-fleet-mirror-ready > /dev/null <<'READY'
+#!/bin/bash
+# usage: runs-fleet-mirror-ready <port> [timeout-seconds]
+set -uo pipefail
+PORT="${1:?port required}"
+DEADLINE=$(( $(date +%s) + ${2:-30} ))
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "mirror proxy is not listening on 127.0.0.1:${PORT}" >&2
+exit 1
+READY
+sudo chmod 0755 /usr/local/sbin/runs-fleet-mirror-ready
+sudo chown root:root /usr/local/sbin/runs-fleet-mirror-ready
+
 # Baked unconditionally, inert until ConditionPathExists passes. Root-run so
 # the port is bound before job code (ec2-user) could squat it; root-owned in
 # /usr/local/sbin like the cache-engage helper so workflow code can't swap it.
-echo "==> Installing Docker Hub mirror proxy"
-sudo install -m 0755 -o root -g root /tmp/runs-fleet-mirror-proxy /usr/local/sbin/runs-fleet-mirror-proxy
-sudo rm -f /tmp/runs-fleet-mirror-proxy
 sudo tee /etc/systemd/system/runs-fleet-mirror-proxy.service > /dev/null <<MIRROR
 [Unit]
 Description=Local Docker Hub mirror via ECR pull-through cache
 ConditionPathExists=/opt/runs-fleet/mirror-env
-Before=binfmt-qemu.service buildx-setup.service
+# dockerd owns the bridge the proxy binds for BuildKit, so it must exist first.
+After=docker.service
+Requires=docker.service
+Before=binfmt-qemu.service buildx-setup.service runs-fleet-agent.service
+# The proxy exits rather than serve without its required address, so a slow
+# start can cost several restarts. Without this, the default burst of 5 in 10s
+# latches the unit failed and the runner silently loses the mirror for its
+# whole life — the exact silent fallback this unit exists to prevent.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 Environment=AWS_REGION=${REGION}
 EnvironmentFile=/opt/runs-fleet/mirror-env
-ExecStart=/usr/local/sbin/runs-fleet-mirror-proxy
+ExecStart=/usr/local/sbin/runs-fleet-mirror-proxy -listen 127.0.0.1:${MIRROR_PORT}
+# Leading "-": this is an ordering barrier, not a health check. Systemd still
+# waits for it, so Before= means "listening" on the happy path, but a proxy
+# that is merely slow (throttled ECR discovery on a fleet-wide boot) must not
+# be killed and restarted forever — binding late beats never binding.
+ExecStartPost=-/usr/local/sbin/runs-fleet-mirror-ready ${MIRROR_PORT}
 Restart=always
 RestartSec=2
 
@@ -127,9 +166,9 @@ MIRROR
 sudo systemctl daemon-reload
 sudo systemctl enable runs-fleet-mirror-proxy.service
 
-# The three files that activate the mirror path (see packer/README.md):
-# the proxy's environment, the dockerd mirror config, and the BuildKit mirror
-# config attached by buildx-setup.service and the buildx shim.
+# The two files that activate the mirror path (see packer/README.md): the
+# proxy's environment and the dockerd mirror config. The BuildKit mirror config
+# is written at boot by the proxy itself.
 if [ -n "${ECR_PULL_THROUGH_ENDPOINT:-}" ]; then
   echo "==> Enabling Docker Hub mirror via ${ECR_PULL_THROUGH_ENDPOINT}"
   case "$ECR_PULL_THROUGH_ENDPOINT" in
@@ -141,40 +180,20 @@ ECR_PULL_THROUGH_ENDPOINT=${ECR_PULL_THROUGH_ENDPOINT}
 MIRRORENV
   sudo chmod 0644 /opt/runs-fleet/mirror-env
   sudo install -d -m 0755 /etc/docker
-  sudo tee /etc/docker/daemon.json > /dev/null <<'DAEMONJSON'
+  # dockerd shares the host's netns, so loopback reaches the mirror. BuildKit
+  # does not — see the template below.
+  sudo tee /etc/docker/daemon.json > /dev/null <<DAEMONJSON
 {
-  "registry-mirrors": ["http://127.0.0.1:8989"],
-  "insecure-registries": ["127.0.0.1:8989"]
+  "registry-mirrors": ["http://127.0.0.1:${MIRROR_PORT}"],
+  "insecure-registries": ["127.0.0.1:${MIRROR_PORT}"]
 }
 DAEMONJSON
-  sudo tee /opt/runs-fleet/buildkitd.toml > /dev/null <<'BUILDKITD'
-[registry."docker.io"]
-  mirrors = ["127.0.0.1:8989"]
-BUILDKITD
-  # Mirror every other pull-through rule too; the proxy routes by the ns query
-  # the containerd resolver sends. Dedup must match pkg/mirrorproxy/discover.go:
-  # shortest prefix first, then lexicographic, first rule per upstream.
-  MIRROR_RULES=$(aws ecr describe-pull-through-cache-rules --region ${REGION} \
-    --query 'pullThroughCacheRules[].[upstreamRegistryUrl,ecrRepositoryPrefix]' \
-    --output text 2>/dev/null) || MIRROR_RULES=""
-  if [ -n "$MIRROR_RULES" ]; then
-    echo "$MIRROR_RULES" | awk '{ print length($2), $2, $1 }' | sort -k1,1n -k2,2 \
-      | awk '!seen[$3]++ { print $3 }' \
-      | grep -v -E '^(registry-1\.docker\.io|docker\.io)$' \
-      | while read -r upstream; do
-          sudo tee -a /opt/runs-fleet/buildkitd.toml > /dev/null <<BLOCK
-[registry."${upstream}"]
-  mirrors = ["127.0.0.1:8989"]
-BLOCK
-        done
-  else
-    echo "    could not list pull-through cache rules; buildkitd.toml mirrors docker.io only"
-  fi
-  sudo tee -a /opt/runs-fleet/buildkitd.toml > /dev/null <<'BUILDKITD'
-[registry."127.0.0.1:8989"]
-  http = true
-BUILDKITD
-  sudo chmod 0644 /opt/runs-fleet/buildkitd.toml
+  # /opt/runs-fleet/buildkitd.toml is NOT baked. buildx's docker-container
+  # driver runs buildkitd in a bridge container where 127.0.0.1 is its own, so
+  # the config has to name the bridge gateway — an address dockerd only picks
+  # at runtime. The proxy writes the file from the address it actually bound,
+  # covering every pull-through rule it discovered, so the config and the
+  # listener can never name different addresses.
 fi
 
 # Cleanup Docker image to save space

@@ -46,7 +46,7 @@ func DecideCreate(argv []string, builderConfigPath string) (extraArgs []string, 
 	}
 	rest := afterSubcommand(argv)
 	if hasCreateConfigFlag(rest) {
-		return nil, outcomeSkipped + ":user-config"
+		return nil, OutcomeSkippedUserConfig
 	}
 	if driver, ok := driverFromArgs(rest); ok && driver != driverDockerContainer {
 		return nil, outcomeSkipped + ":driver"

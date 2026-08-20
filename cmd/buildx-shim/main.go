@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"os"
 	"syscall"
 
@@ -64,10 +65,13 @@ func safePlan(ctx context.Context, argv []string, fetcher buildxshim.CredsFetche
 // non-build invocations (and the metadata handshake) never touch IMDS; Decide
 // likewise consults loadState only past its cheap gates.
 func plan(ctx context.Context, argv []string, env map[string]string, fetcher buildxshim.CredsFetcher, loadState func() buildxshim.BuildxState, builderConfig func() string) (finalArgv []string, outcome string) {
-	// `create` gets the baked BuildKit mirror config attached; the decision
-	// needs no credentials and no builder state, only the file's presence.
+	// `create` gets the BuildKit mirror config attached; the decision needs no
+	// credentials and no builder state, only the file's presence.
 	if buildxshim.IsCreate(argv) {
 		extra, createOutcome := buildxshim.DecideCreate(argv, builderConfig())
+		if createOutcome == buildxshim.OutcomeSkippedUserConfig {
+			return redirectUserConfig(argv, builderConfig())
+		}
 		if len(extra) == 0 {
 			return argv, createOutcome
 		}
@@ -93,6 +97,86 @@ func plan(ctx context.Context, argv []string, env map[string]string, fetcher bui
 		return argv, outcome
 	}
 	return append(append([]string{}, argv...), extra...), outcome
+}
+
+// redirectUserConfig points a workflow-supplied buildkitd config at the mirror
+// address the proxy actually bound. Such a config makes DecideCreate skip, so
+// without this the workflow keeps whatever address it guessed — and a mirror
+// address nothing listens on is not an error to BuildKit, it is an
+// unauthenticated Docker Hub pull. Any failure is a pure passthrough of the
+// original argv, preserving the never-break-a-build invariant.
+func redirectUserConfig(argv []string, ourConfigPath string) (finalArgv []string, outcome string) {
+	const skipped = buildxshim.OutcomeSkippedUserConfig
+	if ourConfigPath == "" {
+		return argv, skipped
+	}
+	ourConfig, err := os.ReadFile(ourConfigPath)
+	if err != nil {
+		return argv, skipped
+	}
+	mirrorAddr := buildxshim.MirrorAddrFromConfig(string(ourConfig))
+	if mirrorAddr == "" {
+		return argv, skipped
+	}
+
+	flag, value, inline, ok := buildxshim.UserConfigFlag(argv)
+	if !ok {
+		return argv, skipped
+	}
+
+	userConfig := value
+	if !inline {
+		raw, rerr := os.ReadFile(value)
+		if rerr != nil {
+			return argv, skipped
+		}
+		userConfig = string(raw)
+	}
+
+	redirected, changed := buildxshim.RewriteMirrorHosts(userConfig, mirrorAddr, localHosts())
+	if changed == 0 {
+		return argv, skipped
+	}
+	if inline {
+		return buildxshim.ReplaceFlagValue(argv, flag, redirected), buildxshim.OutcomeEngagedUserConfig
+	}
+
+	merged, werr := writeTempConfig(redirected)
+	if werr != nil {
+		return argv, skipped
+	}
+	return buildxshim.ReplaceFlagValue(argv, flag, merged), buildxshim.OutcomeEngagedUserConfig
+}
+
+// writeTempConfig persists a redirected config for buildx to read. It is
+// deliberately not cleaned up: buildx reads it after this process execs away,
+// and it lands in the ephemeral runner's temp dir.
+func writeTempConfig(contents string) (string, error) {
+	f, err := os.CreateTemp("", "runs-fleet-buildkitd-*.toml")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(contents); err != nil {
+		return "", err
+	}
+	return f.Name(), f.Close()
+}
+
+// localHosts returns this machine's IP addresses, so only a mirror address
+// that names this host is ever redirected.
+func localHosts() map[string]bool {
+	hosts := map[string]bool{}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return hosts
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok {
+			hosts[ipnet.IP.String()] = true
+		}
+	}
+	return hosts
 }
 
 // recordOutcome appends the outcome to the file named by the agent-injected env
