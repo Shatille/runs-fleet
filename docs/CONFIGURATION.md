@@ -41,6 +41,12 @@ All configuration is via environment variables, set on the orchestrator's runtim
 | `RUNS_FLEET_COST_REPORT_BUCKET` | Cost report storage |
 | `RUNS_FLEET_COST_REPORT_SNS_TOPIC` | Cost report notifications |
 
+## Cost reporting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNS_FLEET_REPORT_TIMEZONE` | `Asia/Seoul` | IANA zone that cost days and months are bucketed in — the fleet-cost sampler's day keys, the daily chart, and the month-to-date window. UTC would split a local working day at 09:00 and roll the monthly total over mid-morning on the 1st. An unparseable zone fails startup rather than silently bucketing into the wrong days. Changing it re-buckets future samples only; existing `__fleet_day:` rows keep the keys they were written with |
+
 ## EC2 Fleet
 
 | Variable | Default | Description |

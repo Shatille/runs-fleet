@@ -253,6 +253,25 @@ export interface CostSummary {
   runner_minute_cost: number;
   runner_minute_rates: Record<string, number>;
   runner_minute_breakdown: RunnerMinuteEntry[];
+  fleet?: FleetCost;
+}
+
+// FleetCost is the sampled cost of every managed instance, whether or not it
+// ran a job. Absent until the fleet sampler has recorded something — a missing
+// block means "not measured", which is why the UI hides the card rather than
+// rendering a zero.
+export interface FleetCost {
+  total_cost: number;
+  compute_cost: number;
+  ebs_cost: number;
+  attributed_cost: number;
+  unattributed_cost: number;
+  attributed_percent: number;
+  days_covered: number;
+  days_in_period: number;
+  partial: boolean;
+  warning?: string;
+  ebs_estimated: boolean;
 }
 
 export interface RunnerMinuteEntry {

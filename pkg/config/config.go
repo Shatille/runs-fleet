@@ -145,6 +145,11 @@ type Config struct {
 	VaultK8sAuthMount string // Vault Kubernetes auth mount path (default: "kubernetes")
 	VaultK8sRole      string // Vault Kubernetes auth role
 	VaultK8sJWTPath   string // Path to Kubernetes service account token (default: "/var/run/secrets/kubernetes.io/serviceaccount/token")
+
+	// reportLocation is the zone cost reporting buckets days and months in.
+	// Unexported so it is always read through ReportLocation(), which supplies
+	// a safe fallback rather than a nil *time.Location.
+	reportLocation *time.Location
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -183,7 +188,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config error: VAULT_KV_VERSION must be 0 (auto), 1, or 2, got %d", vaultKVVersion)
 	}
 
+	reportLocation, err := LoadReportLocation()
+	if err != nil {
+		return nil, fmt.Errorf("config error: %w", err)
+	}
+
 	cfg := &Config{
+		reportLocation: reportLocation,
+
 		AWSRegion: getEnv("AWS_REGION", "ap-northeast-1"),
 
 		GitHubWebhookSecret:  getEnv("RUNS_FLEET_GITHUB_WEBHOOK_SECRET", ""),

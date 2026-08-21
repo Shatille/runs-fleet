@@ -52,6 +52,9 @@ const (
 	// runners that never ran a job, which GitHub's ephemeral cleanup never
 	// collects.
 	TaskOrphanedRunners TaskType = "orphaned_runners"
+	// TaskFleetCostSample records what the whole managed fleet costs, including
+	// the idle pool capacity and boot/teardown time no job record covers.
+	TaskFleetCostSample TaskType = "fleet_cost_sample"
 )
 
 // TaskLocker provides distributed locking for housekeeping tasks.
@@ -77,6 +80,7 @@ type TaskExecutor interface {
 	ExecuteExpiredInstanceClaims(ctx context.Context) error
 	ExecuteStaleAMIInstances(ctx context.Context) error
 	ExecuteOrphanedRunners(ctx context.Context) error
+	ExecuteFleetCostSample(ctx context.Context) error
 }
 
 // RunnerMetricsAPI publishes the housekeeping runner's per-task execution
@@ -154,6 +158,11 @@ type SchedulerConfig struct {
 	// OrphanedRunnersInterval is how often to remove GitHub runner registrations
 	// left behind by runners that never ran a job. Default: 1 hour
 	OrphanedRunnersInterval time.Duration
+	// FleetCostSampleInterval is how often to sample fleet-wide EC2 cost.
+	// Default: 1 minute. See fleetCostSampleInterval for why: the estimator is
+	// unbiased at any interval, and this one trades ~3% daily aggregate error
+	// for 1440 DescribeInstances calls a day.
+	FleetCostSampleInterval time.Duration
 }
 
 // DefaultSchedulerConfig returns the default per-task run intervals.
@@ -174,6 +183,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		ExpiredInstanceClaimsInterval:   15 * time.Minute,
 		StaleAMIInstancesInterval:       1 * time.Hour,
 		OrphanedRunnersInterval:         1 * time.Hour,
+		FleetCostSampleInterval:         fleetCostSampleInterval,
 	}
 }
 
@@ -251,6 +261,7 @@ func (r *Runner) taskSpecs() []taskSpec {
 		{taskType: TaskExpiredInstanceClaims, interval: c.ExpiredInstanceClaimsInterval, execute: e.ExecuteExpiredInstanceClaims},
 		{taskType: TaskOrphanedRunners, interval: c.OrphanedRunnersInterval, execute: e.ExecuteOrphanedRunners},
 		{taskType: TaskStaleAMIInstances, interval: c.StaleAMIInstancesInterval, execute: e.ExecuteStaleAMIInstances},
+		{taskType: TaskFleetCostSample, interval: c.FleetCostSampleInterval, execute: e.ExecuteFleetCostSample},
 	}
 
 	specs := make([]taskSpec, 0, len(all))

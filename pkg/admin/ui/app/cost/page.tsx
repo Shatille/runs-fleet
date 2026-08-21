@@ -91,7 +91,11 @@ export default function CostPage() {
         <CostSkeleton />
       ) : summary ? (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
+          <div
+            className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 ${
+              summary.fleet ? 'xl:grid-cols-6' : 'xl:grid-cols-5'
+            } gap-4 mb-6`}
+          >
             <SummaryCard
               title="Cost / Runner-Minute"
               value={formatPerMinute(summary.cost_per_minute)}
@@ -102,8 +106,24 @@ export default function CostPage() {
               title="Total Cost"
               value={`$${summary.total_cost.toFixed(2)}`}
               subtitle="Current month estimate"
-              help="Estimate only, not billing. Each finished job is priced as its own duration times its instance type's hourly rate, then summed; Spot + On-Demand below add up to this. Because it prices job time rather than instance uptime, it excludes boot time, hot-pool linger, stopped-instance EBS, and any instance still running without a job record — so real EC2 spend is higher."
+              help={`Estimate only, not billing. Each finished job is priced as its own duration times its instance type's hourly rate, then summed; Spot + On-Demand below add up to this. Because it prices job time rather than instance uptime, it excludes boot time, hot-pool linger, stopped-instance EBS, and any instance still running without a job record — so real EC2 spend is higher.${
+                summary.fleet ? ' See Fleet Cost for the measured total.' : ''
+              }`}
             />
+            {summary.fleet && (
+              <SummaryCard
+                title="Fleet Cost"
+                value={`$${summary.fleet.total_cost.toFixed(2)}`}
+                subtitle={
+                  summary.fleet.days_covered < summary.fleet.days_in_period
+                    ? `${summary.fleet.attributed_percent.toFixed(0)}% ran jobs · ${summary.fleet.days_covered}d sampled`
+                    : `${summary.fleet.attributed_percent.toFixed(0)}% of it ran jobs`
+                }
+                help={`What the whole managed fleet cost, measured by sampling every instance once a minute rather than by pricing job records — so unlike Total Cost it includes boot and teardown, idle pool capacity, stopped instances still paying for EBS, and instances that never ran a job. $${summary.fleet.unattributed_cost.toFixed(2)} of it was incurred while no job was running. Compute uses live on-demand/spot rates; EBS is an estimate from an assumed volume size. Sampling makes this accurate in aggregate, not per instance.${
+                  summary.fleet.warning ? ` ${summary.fleet.warning}` : ''
+                }`}
+              />
+            )}
             <SummaryCard
               title="Avg Cost / Job"
               value={summary.job_count > 0 ? `$${summary.avg_cost_per_job.toFixed(4)}` : '-'}
