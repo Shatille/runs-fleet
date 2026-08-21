@@ -46,8 +46,6 @@ type DynamoDBAPI interface {
 // MetricsAPI defines CloudWatch metrics publishing.
 type MetricsAPI interface {
 	PublishHousekeepingAction(ctx context.Context, action string, count int) error
-	PublishPoolInstances(ctx context.Context, pool, state string, n int) error
-	PublishPoolDesired(ctx context.Context, pool, kind string, n int) error
 	PublishJobRequeued(ctx context.Context, reason string) error
 	PublishSchedulingFailure(ctx context.Context, taskType string) error
 	PublishQueueDepth(ctx context.Context, queue string, depth float64) error
@@ -1100,52 +1098,6 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 	if orphanedCount > 0 {
 		t.logger().Info(ctx, "orphaned jobs cleaned up", slog.Int(logging.KeyCount, orphanedCount))
 	}
-	return nil
-}
-
-// ExecutePoolAudit generates pool utilization reports.
-func (t *Tasks) ExecutePoolAudit(ctx context.Context) error {
-	if t.config.PoolsTableName == "" {
-		return nil
-	}
-
-	output, err := t.dynamoClient.Scan(ctx, &dynamodb.ScanInput{
-		TableName: aws.String(t.config.PoolsTableName),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to scan pools: %w", err)
-	}
-
-	for _, item := range output.Items {
-		poolName := ""
-		desiredRunning := 0
-		currentRunning := 0
-
-		if v, ok := item["pool_name"].(*types.AttributeValueMemberS); ok {
-			poolName = v.Value
-		}
-		if db.IsReservedPoolKey(poolName) {
-			continue
-		}
-		if v, ok := item["desired_running"].(*types.AttributeValueMemberN); ok {
-			_, _ = fmt.Sscanf(v.Value, "%d", &desiredRunning)
-		}
-		if v, ok := item["current_running"].(*types.AttributeValueMemberN); ok {
-			_, _ = fmt.Sscanf(v.Value, "%d", &currentRunning)
-		}
-
-		if poolName == "" || desiredRunning == 0 {
-			continue
-		}
-
-		// Utilization is derivable from the running and desired-running gauges,
-		// so emit those states rather than a precomputed percentage.
-		if t.metrics != nil {
-			_ = t.metrics.PublishPoolInstances(ctx, poolName, "running", currentRunning)
-			_ = t.metrics.PublishPoolDesired(ctx, poolName, "running", desiredRunning)
-		}
-	}
-
 	return nil
 }
 
