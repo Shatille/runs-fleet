@@ -90,7 +90,7 @@ func (t *Tasks) ExecuteFleetCostSample(ctx context.Context) error {
 	}
 
 	busy := t.busyInstanceSet(ctx)
-	pricer := cost.NewFleetPricer(nil, nil, fleetCostEBSGiB)
+	pricer := cost.NewFleetPricer(t.fleetOnDemand, t.fleetSpot, fleetCostEBSGiB)
 	delta := db.FleetCostDelta{SampledAt: now, Partial: partial}
 
 	for _, inst := range instances {

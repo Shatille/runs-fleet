@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/config"
+	"github.com/Shavakan/runs-fleet/pkg/cost"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -152,10 +153,24 @@ type Tasks struct {
 	sightings      RunnerSightingStore
 	fleetCost      FleetCostStore
 
+	fleetOnDemand cost.PriceFetcherAPI
+	fleetSpot     cost.SpotPricer
+
 	metrics      MetricsAPI
 	costReporter CostReporter
 	config       *config.Config
 	log          *logging.Logger
+}
+
+// SetFleetPricers wires live price sources into the fleet-cost sampler. Without
+// them the sampler prices every instance off the hard-coded table, which covers
+// only t4g/c7g/m7g — so the families the fleet actually runs all collapse to the
+// t4g.medium default and the fleet total lands an order of magnitude low.
+//
+// Either may be nil; each independently degrades to the fallback ladder.
+func (t *Tasks) SetFleetPricers(onDemand cost.PriceFetcherAPI, spot cost.SpotPricer) {
+	t.fleetOnDemand = onDemand
+	t.fleetSpot = spot
 }
 
 // SetJobRequeuer wires the main-queue requeuer used by the unconfirmed-runner
