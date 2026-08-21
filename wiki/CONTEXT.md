@@ -34,4 +34,4 @@ The first compile surfaced several details worth knowing:
 
 ## Stats
 
-Compiled: 2026-07-21 | Topics: 19 | Concepts: 4 | Sources: 96 | Mode: codebase
+Compiled: 2026-08-21 | Topics: 21 | Concepts: 5 | Sources: 185 | Mode: codebase

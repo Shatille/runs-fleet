@@ -59,3 +59,13 @@
 **Sources scanned:** changed files from PRs #389 + #390, full re-reads for the 8 topics
 **Sources changed:** 12 files since 2026-07-09
 **Notes:** Compiled on the fix/cost-report-job-records branch so the wiki correction merges with the fix it documents (PR #390). CONTEXT.md gotcha and stats updated.
+
+## 2026-08-21
+
+**Topics updated:** observability, admin-ui, housekeeping, infrastructure, state-storage, job-state-machine, github-integration, fleet-orchestration, warm-pools, agent-runtime, cmd-agent, project-overview, events-and-termination, cmd-server, config-bootstrap, internal-services (16 rewritten)
+**New topics:** registry-mirroring, build-caching (2)
+**Untouched:** cache-service, queue-processing (no source churn in window), compute-providers (still a merge candidate awaiting human decision)
+**Concepts:** absent-is-not-zero (NEW), per-resource-locking (new instance: atomic-ADD fleet rollups; corrected the reconcile-lock-as-rate-limit misreading)
+**Sources scanned:** ~185 (54 of 96 tracked sources changed, plus 89 new files, plus full source re-reads for the 18 recompiled topics)
+**Sources changed:** 262 files since 2026-07-21 (~100 commits, PRs #418-#456)
+**Notes:** Compiled on the fix/cloudwatch-metrics-default-off branch so the wiki lands with PR #456. Three schema corrections: (1) JIT configs ARE minted (`pkg/github/jitconfig.go`, #424) — the prior "no JIT tokens anywhere" claim was wrong — but a JIT config makes a runner ephemeral, NOT job-bound; (2) housekeeping schedules on in-process timers + a distributed task lock, not SQS dispatch; (3) the Packer pipeline is dual-arch, not ARM-only. Two live defects surfaced and left unfixed in code: the JIT job-bound claim still stands in `pkg/runner/manager.go`, `pkg/secrets/store.go`, and `pkg/agent/executor.go` (only `jitconfig.go` was corrected, by #430); and `packer/README.md` still documents a `runs-fleet-mirror-buildkitd-config` systemd unit that #453 removed. One drift fixed in-repo during the compile: `AGENTS.md` still documented `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` as `default: true`.

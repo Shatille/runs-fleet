@@ -1,7 +1,7 @@
 ---
 concept: Per-Resource DynamoDB Locking
-last_compiled: 2026-07-03
-topics_connected: [warm-pools, state-storage, housekeeping]
+last_compiled: 2026-08-21
+topics_connected: [warm-pools, state-storage, housekeeping, observability]
 status: active
 ---
 
@@ -20,10 +20,20 @@ This is "fan-out coordination via DynamoDB" — not a single global mutex. Two r
 - **Job claims** in [state-storage](../topics/state-storage.md): `ClaimJob` on the jobs table prevents two workers from picking the same SQS message twice (defense in depth on top of FIFO).
 - **Task locks** in [housekeeping](../topics/housekeeping.md): `taskLockTTL = 6m` per task type prevents two replicas from running the same orphan sweep concurrently.
 - **Circuit breaker writes** in [state-storage](../topics/state-storage.md): per-instance-type rows use conditional writes with TTL-based auto-reset; not a "lock" but the same conditional-write pattern.
+- **Fleet-cost rollups** (2026-08, PR #455) in [observability](../topics/observability.md): `__fleet_day:` rows take the pattern to its limit — instead of locking, they use DynamoDB's atomic `ADD` so concurrent replicas cannot lose an increment, with no lock at all. The lesson is that a lock is only needed when the write is not itself commutative; an accumulator is. The one place a read still precedes a write (the last-sample checkpoint) needs `ConsistentRead: true`, because an eventually-consistent read let a replica re-price a window already counted.
 
 ## What This Means
 
 The architectural payoff is operational simplicity: there is no leader election, no consensus protocol, no failover dance. Replicas are stateless and identical. A Fargate task can die mid-reconcile and the lock expires within 65s, after which any other replica picks up the work. This pushes "what happens during a deploy" from a hard problem to a non-event — rolling deploys just work.
+
+A subtlety worth stating explicitly, because it was mistaken for a rate limit
+during the 2026-08 CloudWatch cost investigation: **the pool reconcile lock is
+released in a defer at the end of each pass, not held for its full TTL.** The TTL
+bounds a *crashed* owner, nothing more. A demand notification arriving one second
+after a pass completes re-acquires cleanly and runs another full reconcile — so
+the lock prevents concurrency, never frequency. Anything whose cost scales per
+reconcile pass (metric emission, `DescribeInstances` calls) is therefore bounded
+by webhook volume, not by the 60s ticker.
 
 The cost is that **every TTL is a tunable**. Set the lock TTL too short and a slow reconcile runs concurrently with itself (thrash). Set it too long and a crashed owner blocks recovery. The current TTL inventory worth knowing:
 
