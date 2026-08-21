@@ -237,6 +237,16 @@ resource "aws_iam_role_policy" "orchestrator" {
         Resource = "*"
       },
       {
+        # Live instance prices for the admin cost page and the daily cost
+        # report. Without this the cost code silently falls back to a
+        # hard-coded us-east-1 price table, which skews every figure in any
+        # other region. The Pricing API is global and does not support
+        # resource-level permissions.
+        Effect   = "Allow"
+        Action   = ["pricing:GetProducts"]
+        Resource = "*"
+      },
+      {
         # Fleet creation + lifecycle.
         Effect = "Allow"
         Action = [
