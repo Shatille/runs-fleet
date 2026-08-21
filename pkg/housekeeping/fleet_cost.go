@@ -77,7 +77,10 @@ func (t *Tasks) ExecuteFleetCostSample(ctx context.Context) error {
 		return nil
 	}
 
-	now := time.Now().UTC()
+	// Bucket by the configured reporting zone, not UTC: a UTC boundary would
+	// split a local working day mid-morning, so "cost per day" would cut each
+	// day in half. Elapsed time is zone-independent — only the bucket moves.
+	now := time.Now().In(t.config.ReportLocation())
 	day := now.Format(db.FleetDayFormat)
 	elapsed, partial := t.fleetCostElapsed(ctx, day, now)
 
@@ -127,7 +130,7 @@ func (t *Tasks) ExecuteFleetCostSample(ctx context.Context) error {
 // checkpoint in the future (a backwards clock), fall back to the nominal
 // interval.
 //
-// Yesterday is queried alongside today because the first tick after UTC
+// Yesterday is queried alongside today because the first tick after local
 // midnight would otherwise find no checkpoint and silently shrink a real gap
 // that spanned the boundary down to one nominal interval.
 func (t *Tasks) fleetCostElapsed(ctx context.Context, day string, now time.Time) (time.Duration, bool) {

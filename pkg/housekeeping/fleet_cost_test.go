@@ -333,3 +333,26 @@ func TestFleetCostSampleMeasuresAcrossTheDayBoundary(t *testing.T) {
 		t.Errorf("instance seconds = %v, want ~300 measured from yesterday's checkpoint", got)
 	}
 }
+
+// Days are bucketed in the configured reporting zone, not UTC. At 00:30 KST the
+// UTC date is still the previous day, so a UTC-bucketed sampler would file the
+// cost under yesterday and the daily chart would cut each day at 09:00 local.
+func TestFleetCostSampleBucketsDaysInTheConfiguredZone(t *testing.T) {
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatalf("load zone: %v", err)
+	}
+	store := &fakeFleetCostStore{}
+	tasks := fleetCostTasks(t, store,
+		instance("i-1", "c7g.xlarge", "", "running", false),
+	)
+	tasks.config.SetReportLocationForTest(seoul)
+
+	if err := tasks.ExecuteFleetCostSample(context.Background()); err != nil {
+		t.Fatalf("ExecuteFleetCostSample() error = %v", err)
+	}
+	want := time.Now().In(seoul).Format(db.FleetDayFormat)
+	if store.days[0] != want {
+		t.Errorf("bucketed into day %q, want %q (the configured zone's date)", store.days[0], want)
+	}
+}

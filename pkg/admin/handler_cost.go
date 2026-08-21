@@ -195,13 +195,29 @@ type FleetCostBlock struct {
 
 // CostHandler provides HTTP endpoints for cost reporting.
 type CostHandler struct {
-	db        CostDB
-	auth      *AuthMiddleware
-	onDemand  onDemandPricer
-	spot      spotPricer
-	fleetCost cost.FleetCostStore
-	rates     map[string]float64
-	log       *logging.Logger
+	db             CostDB
+	auth           *AuthMiddleware
+	onDemand       onDemandPricer
+	spot           spotPricer
+	fleetCost      cost.FleetCostStore
+	reportLocation *time.Location
+	rates          map[string]float64
+	log            *logging.Logger
+}
+
+// SetReportLocation sets the zone cost days and months are bucketed in. It must
+// match the zone the fleet sampler writes its day keys in, or the two disagree
+// about which day a cost belongs to. Defaults to UTC when unset.
+func (h *CostHandler) SetReportLocation(loc *time.Location) {
+	h.reportLocation = loc
+}
+
+// location returns the configured reporting zone, or UTC.
+func (h *CostHandler) location() *time.Location {
+	if h.reportLocation == nil {
+		return time.UTC
+	}
+	return h.reportLocation
 }
 
 // SetFleetCostStore wires the sampled fleet-cost reader.
@@ -263,7 +279,7 @@ func (h *CostHandler) fleetBlock(ctx context.Context, start, end time.Time) *Fle
 	if h.fleetCost == nil {
 		return nil
 	}
-	mtd, err := cost.ComputeFleetMTD(ctx, h.fleetCost, start, end)
+	mtd, err := cost.ComputeFleetMTDIn(ctx, h.fleetCost, start, end, h.location())
 	if err != nil {
 		h.log.Warn(ctx, "fleet cost unavailable",
 			slog.String(logging.KeyError, err.Error()))
@@ -306,8 +322,12 @@ func fleetWarning(partial bool, daysCovered, daysInPeriod int) string {
 // pricer's 0.5h fallback. The query is unlimited on purpose -- aggregation must
 // see every row in the month, and Since already bounds the window.
 func (h *CostHandler) monthToDateJobs(ctx context.Context) ([]db.AdminJobEntry, time.Time, time.Time, error) {
-	now := time.Now().UTC()
-	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	// "This month" is the operator's month, not UTC's: a UTC boundary rolls the
+	// total over mid-morning on the 1st and buckets the daily chart against a
+	// day that starts at 09:00 local.
+	loc := h.location()
+	now := time.Now().In(loc)
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 	jobs, _, err := h.db.ListJobsForAdmin(ctx, db.AdminJobFilter{
 		CompletedOnly: true,
 		Since:         start,
@@ -552,7 +572,10 @@ func (h *CostHandler) computeDaily(ctx context.Context, jobs []db.AdminJobEntry,
 
 	pricer := cost.NewJobPricer(h.onDemand, h.spot)
 	for _, job := range jobs {
-		key := job.CreatedAt.UTC().Format("2006-01-02")
+		// Same zone as the zero-filled buckets below, which are generated from
+		// start: bucketing in UTC while filling in local would file a job under
+		// a key no bucket has.
+		key := job.CreatedAt.In(h.location()).Format("2006-01-02")
 		p := pricer.Price(ctx, job)
 		acc, ok := days[key]
 		if !ok {

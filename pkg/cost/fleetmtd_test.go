@@ -204,3 +204,25 @@ func TestComputeFleetMTDReportsZeroCoverageWhenSecondsAreMissing(t *testing.T) {
 		t.Errorf("UnattributedCost = %v, want 0 rather than a guess", got.UnattributedCost)
 	}
 }
+
+// Day keys are written by the sampler in the reporting zone, so the reader must
+// format its range in the same zone or an off-by-one day drops the current
+// day's accumulating rollup out of the queried window.
+func TestComputeFleetMTDQueriesInTheReportingZone(t *testing.T) {
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatalf("load zone: %v", err)
+	}
+	store := &fakeFleetStore{days: []db.FleetCostDay{day("2026-08-21", 1, 60, 60)}}
+
+	// 23:30 UTC on the 20th is already 08:30 on the 21st in Seoul.
+	now := time.Date(2026, 8, 20, 23, 30, 0, 0, time.UTC)
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	if _, err := cost.ComputeFleetMTDIn(context.Background(), store, start, now, seoul); err != nil {
+		t.Fatalf("ComputeFleetMTDIn() error = %v", err)
+	}
+	if store.gotUntil != "2026-08-21" {
+		t.Errorf("queried until %q, want 2026-08-21 (the local date)", store.gotUntil)
+	}
+}

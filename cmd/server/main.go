@@ -634,6 +634,9 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	if ws.dbClient != nil {
 		costAdminHandler.SetFleetCostStore(ws.dbClient)
 	}
+	// Must match the zone the fleet sampler writes its day keys in, or the two
+	// disagree about which day a cost belongs to.
+	costAdminHandler.SetReportLocation(ws.cfg.ReportLocation())
 	costAdminHandler.RegisterRoutes(adminMux)
 
 	metricsAdminHandler := admin.NewMetricsHandler(ws.dbClient, costAdminHandler, adminAuth)

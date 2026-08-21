@@ -225,3 +225,30 @@ func TestFleetWarningNamesTheCause(t *testing.T) {
 		t.Errorf("warning = %q, want empty when the period is fully sampled", w)
 	}
 }
+
+// The reader must format its day range in the same zone the sampler wrote its
+// keys in. Reading in UTC while the sampler wrote local drops the current day's
+// accumulating rollup for the nine hours the two dates disagree.
+func TestCostSummaryReadsFleetDaysInTheConfiguredZone(t *testing.T) {
+	t.Parallel()
+
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatalf("load zone: %v", err)
+	}
+	today := time.Now().In(seoul).Format(db.FleetDayFormat)
+
+	h := NewCostHandler(fleetCostJobs(), NewAuthMiddleware(""), nil, nil)
+	h.SetReportLocation(seoul)
+	h.SetFleetCostStore(&fakeFleetCostStore{days: []db.FleetCostDay{{
+		Day: today, TotalCost: 3, InstanceSeconds: 100, AttributedSeconds: 50,
+	}}})
+
+	fleet, ok := fleetSummary(t, h)["fleet"].(map[string]any)
+	if !ok {
+		t.Fatal("fleet block missing; the local day fell outside the queried window")
+	}
+	if got := fleet["total_cost"].(float64); !approx(got, 3) {
+		t.Errorf("fleet total_cost = %v, want 3", got)
+	}
+}
