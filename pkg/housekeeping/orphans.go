@@ -332,6 +332,14 @@ func ReconcileJob(ctx context.Context, scanAPI OrphanScanAPI, ec2Client OrphanEC
 // candidate can go live in between; pinning the write to what was observed is what stops
 // the sweep from retiring a job that has since been claimed.
 //
+// The write also REMOVEs pool. A cold-start job records no pool, and records
+// written before #227 stored that as an empty string rather than omitting the
+// attribute — which is unrepresentable in the pool-status GSI (pool is its hash
+// key), so DynamoDB rejects any update touching status, the index's range key.
+// The sweep could therefore never retire those records, and because it is
+// completed_at that makes a record collectable, the 7-day GC could not either.
+// REMOVE on an absent attribute is a no-op, so this is safe for healthy records.
+//
 // It reports whether THIS call performed the write. False means the record moved on
 // first, which a caller counting retirements must not present as its own success. An
 // observedStatus outside reconcilableStatuses is refused outright: the caller read a
@@ -348,9 +356,10 @@ func MarkJobOrphaned(ctx context.Context, dynamoClient OrphanScanAPI, jobsTableN
 		Key: map[string]types.AttributeValue{
 			"job_id": &types.AttributeValueMemberN{Value: strconv.FormatInt(jobID, 10)},
 		},
-		UpdateExpression: aws.String("SET #status = :orphaned, completed_at = :now"),
+		UpdateExpression: aws.String("SET #status = :orphaned, completed_at = :now REMOVE #pool"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
+			"#pool":   "pool",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":orphaned": &types.AttributeValueMemberS{Value: string(db.JobStatusOrphaned)},

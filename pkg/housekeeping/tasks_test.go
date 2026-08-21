@@ -4302,3 +4302,62 @@ func TestSweepOrphanedInstances_NoOrphans(t *testing.T) {
 		t.Errorf("sweep = %+v, want an empty result", sweep)
 	}
 }
+
+func TestExecuteOrphanedJobs_ReportsFailureWhenEveryWriteFails(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-orphaned1"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12346"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-orphaned2"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+		updateErr: errors.New("ValidationException: empty index key"),
+	}
+	tasks := &Tasks{
+		ec2Client:    &mockEC2API{describeErr: errors.New("InvalidInstanceID.NotFound")},
+		dynamoClient: dynamoClient,
+		config:       &config.Config{JobsTableName: "jobs-table"},
+	}
+
+	// A sweep that fails every candidate must not report success: returning nil
+	// is what let a wholly broken sweep run unnoticed for months.
+	err := tasks.ExecuteOrphanedJobs(context.Background())
+	if err == nil {
+		t.Fatal("sweep returned nil after failing every candidate")
+	}
+	if !strings.Contains(err.Error(), "2") {
+		t.Errorf("error should report how many records failed, got: %v", err)
+	}
+}
+
+func TestExecuteOrphanedJobs_PartialFailureStillReports(t *testing.T) {
+	t.Parallel()
+
+	dynamoClient := &mockTaskDynamoDBAPI{
+		items: []map[string]types.AttributeValue{
+			{
+				"job_id":      &types.AttributeValueMemberN{Value: "12345"},
+				"instance_id": &types.AttributeValueMemberS{Value: "i-orphaned1"},
+				"status":      &types.AttributeValueMemberS{Value: string(db.JobStatusRunning)},
+			},
+		},
+		updateErr: errors.New("ValidationException: empty index key"),
+	}
+	tasks := &Tasks{
+		ec2Client:    &mockEC2API{describeErr: errors.New("InvalidInstanceID.NotFound")},
+		dynamoClient: dynamoClient,
+		config:       &config.Config{JobsTableName: "jobs-table"},
+	}
+
+	if err := tasks.ExecuteOrphanedJobs(context.Background()); err == nil {
+		t.Fatal("a failed retirement must surface, not be swallowed by continue")
+	}
+}
