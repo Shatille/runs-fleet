@@ -175,7 +175,7 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 - `VAULT_AUTH_METHOD` - `aws`, `kubernetes`, `approle`, `token` (default: aws)
 
 ### Metrics
-- `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` - CloudWatch metrics (default: true)
+- `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` - CloudWatch metrics (default: false)
 - `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` - Prometheus /metrics endpoint
 - `RUNS_FLEET_METRICS_DATADOG_ENABLED` - Datadog DogStatsD metrics
 

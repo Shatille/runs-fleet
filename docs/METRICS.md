@@ -9,7 +9,7 @@ how it is produced.
 
 | Backend | Enable | Namespace / prefix | Name style | Notes |
 |---------|--------|--------------------|------------|-------|
-| CloudWatch | `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` (default **true**) | `RunsFleet` namespace | `PascalCase` metric, `PascalCase` dimensions | Fixed namespace (not configurable). Some high-frequency histograms are no-oped here (see below). |
+| CloudWatch | `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` (default **false**) | `RunsFleet` namespace | `PascalCase` metric, `PascalCase` dimensions | Fixed namespace (not configurable). Some high-frequency histograms are no-oped here (see below). **Off by default — see "CloudWatch cost" below before enabling.** |
 | Prometheus | `RUNS_FLEET_METRICS_PROMETHEUS_ENABLED` | `runs_fleet_` name prefix | `snake_case`, counters end `_total` | Scraped from the `/metrics` endpoint. |
 | Datadog | `RUNS_FLEET_METRICS_DATADOG_ENABLED` | `runs_fleet.` name prefix | `snake_case` (DogStatsD) | Also carries `ServiceCheck` / `Event`, which the other backends drop. For exact metric strings see `pkg/metrics/datadog.go`. |
 
@@ -27,6 +27,29 @@ Every other metric uses only small, enumerated label sets. **Do not add `repo`
 (or any other unbounded value) to a histogram or to any additional metric.**
 Empty dimension values are dropped on the CloudWatch backend so an absent
 optional label (e.g. no pool) does not fan out into a distinct series.
+
+### CloudWatch cost
+
+The CloudWatch backend ships **disabled**. Nothing queries the `RunsFleet`
+namespace — there are no alarms or dashboards, and the admin console reads
+DynamoDB — so the default was flipped rather than keep paying for series with no
+consumer.
+
+Two things to know before enabling it:
+
+- **Every metric is one `PutMetricData` request.** `putGauge` and
+  `putCounterValueUnit` (`pkg/metrics/cloudwatch.go`) each send a single-datum
+  `MetricData` slice; the API accepts up to 1,000. Pool reconciliation alone emits
+  9 gauges per pool per pass on a 60s ticker, plus one pass per queued-job webhook
+  via `NotifyPoolDemand`. Batching is not implemented.
+- **Each unique dimension combination is a separately billed custom metric.** The
+  `Repo`-dimensioned counters therefore scale with repository count. See the
+  cardinality policy above.
+
+Consequences elsewhere: the daily cost report reads two metrics back out of
+CloudWatch (`SpotInterruptions`, `RunnerExecutionSeconds`). With the backend off,
+the runner-minute section is omitted and spot interruptions render as
+`unavailable` rather than `0`, since an unmeasured count is not a measured zero.
 
 ## Metric reference
 

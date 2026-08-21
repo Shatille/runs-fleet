@@ -786,8 +786,6 @@ type mockTaskMetricsAPI struct {
 	dlqRedriveCount    int
 	requeuedReasons    []string
 	schedulingFailures []string
-	poolRunning        map[string]int
-	poolDesired        map[string]int
 	queueDepths        map[string]float64
 	err                error
 }
@@ -819,22 +817,6 @@ func (m *mockTaskMetricsAPI) PublishJobRequeued(_ context.Context, reason string
 
 func (m *mockTaskMetricsAPI) PublishSchedulingFailure(_ context.Context, taskType string) error {
 	m.schedulingFailures = append(m.schedulingFailures, taskType)
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishPoolInstances(_ context.Context, pool, _ string, n int) error {
-	if m.poolRunning == nil {
-		m.poolRunning = make(map[string]int)
-	}
-	m.poolRunning[pool] = n
-	return m.err
-}
-
-func (m *mockTaskMetricsAPI) PublishPoolDesired(_ context.Context, pool, _ string, n int) error {
-	if m.poolDesired == nil {
-		m.poolDesired = make(map[string]int)
-	}
-	m.poolDesired[pool] = n
 	return m.err
 }
 
@@ -1781,78 +1763,6 @@ func TestExecuteOrphanedJobs_ScanError(t *testing.T) {
 	}
 
 	err := tasks.ExecuteOrphanedJobs(context.Background())
-	if err == nil {
-		t.Fatal("expected error from scan")
-	}
-}
-
-func TestExecutePoolAudit_NoPoolsTable(t *testing.T) {
-	t.Parallel()
-
-	tasks := &Tasks{
-		config: &config.Config{
-			PoolsTableName: "",
-		},
-	}
-
-	err := tasks.ExecutePoolAudit(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestExecutePoolAudit_Success(t *testing.T) {
-	t.Parallel()
-
-	dynamoClient := &mockTaskDynamoDBAPI{
-		items: []map[string]types.AttributeValue{
-			{
-				"pool_name":       &types.AttributeValueMemberS{Value: "default-pool"},
-				"desired_running": &types.AttributeValueMemberN{Value: "10"},
-				"current_running": &types.AttributeValueMemberN{Value: "8"},
-			},
-		},
-	}
-	metrics := &mockTaskMetricsAPI{}
-
-	tasks := &Tasks{
-		dynamoClient: dynamoClient,
-		metrics:      metrics,
-		config: &config.Config{
-			PoolsTableName: "pools-table",
-		},
-	}
-
-	err := tasks.ExecutePoolAudit(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Utilization is derivable from the running and desired gauges (8 running of
-	// 10 desired = 80%).
-	if metrics.poolRunning["default-pool"] != 8 {
-		t.Errorf("expected pool running 8, got %v", metrics.poolRunning["default-pool"])
-	}
-	if metrics.poolDesired["default-pool"] != 10 {
-		t.Errorf("expected pool desired 10, got %v", metrics.poolDesired["default-pool"])
-	}
-}
-
-func TestExecutePoolAudit_ScanError(t *testing.T) {
-	t.Parallel()
-
-	dynamoClient := &mockTaskDynamoDBAPI{
-		scanErr: errors.New("scan error"),
-	}
-
-	tasks := &Tasks{
-		dynamoClient: dynamoClient,
-		config: &config.Config{
-			PoolsTableName: "pools-table",
-		},
-	}
-
-	err := tasks.ExecutePoolAudit(context.Background())
 	if err == nil {
 		t.Fatal("expected error from scan")
 	}

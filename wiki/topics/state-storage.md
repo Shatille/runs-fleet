@@ -1,529 +1,660 @@
 ---
 topic: State Storage (DynamoDB + Circuit + Secrets)
-last_compiled: 2026-07-21
-sources_count: 12
+last_compiled: 2026-08-21
+sources_count: 22
 ---
 
 # State Storage (DynamoDB + Circuit + Secrets)
 
-## Purpose [coverage: high -- 12 sources]
+## Purpose [coverage: high -- 22 sources]
 
-runs-fleet persists four kinds of state across orchestrator restarts and concurrent
-Fargate tasks:
+runs-fleet persists five kinds of state across orchestrator restarts and
+concurrent Fargate tasks:
 
-1. **Job and pool state** in DynamoDB (`runs-fleet-jobs`, `runs-fleet-pools`) — job
-   lifecycle, pool configuration, and three flavors of distributed lock
-   (reconcile locks, housekeeping task locks, instance claims) for
-   multi-instance Fargate.
-2. **Circuit breaker state** in DynamoDB (`runs-fleet-circuit-state`) — per
+1. **Job state** in DynamoDB (`runs-fleet-jobs`) — the lifecycle record, plus
+   derived read models for the pool autoscaler, the admin console, and the cost
+   reports.
+2. **Pool state and every non-job durable row** in DynamoDB
+   (`runs-fleet-pools`) — pool configuration plus *four* distinct sentinel-keyed
+   row kinds sharing the same physical table: reconcile/task locks, instance
+   claims, runner offline sightings, and per-day fleet cost rollups.
+3. **Circuit breaker state** in DynamoDB (`runs-fleet-circuit-state`) — per
    instance type spot interruption tracking, used to flip new launches to
    on-demand when a type is unstable.
-3. **Per-runner secrets** (registration tokens, cache tokens, full
-   `RunnerConfig` JSON) in either AWS SSM Parameter Store (default) or HashiCorp
-   Vault, fronted by a single `Store` interface so callers don't care which
-   backend is wired up.
-4. **Admin audit log** in DynamoDB (`runs-fleet-audit`, added 2026-07, PR #383) —
-   append-only record of admin API actions with a 90-day TTL, read back by the
-   admin UI's audit viewer.
+4. **Per-runner secrets** (registration credential, cache token, the full
+   `RunnerConfig`) in AWS SSM Parameter Store (default), HashiCorp Vault, or a
+   read-only env backend, all behind one `Store` interface.
+5. **Admin audit log** in DynamoDB (`runs-fleet-audit`, PR #383) — append-only
+   record of admin API actions with a 90-day TTL, read back by the admin UI's
+   audit viewer.
 
 State is intentionally split: hot operational state (jobs, claims, circuit
 counts) lives in DynamoDB where conditional writes give us atomicity; sensitive
-ephemeral material (registration tokens, cache HMAC) lives behind a secrets
+ephemeral material (registration credentials, cache HMAC) lives behind a secrets
 backend with encryption at rest; the audit trail is a separate append-only
 table so compliance data never contends with the job hot path.
 
-## Architecture [coverage: high -- 12 sources]
+**Durability asymmetry worth knowing up front:** the jobs table is *not* an
+archive. `Tasks.ExecuteOldJobs`
+([pkg/housekeeping/tasks.go:955](../../pkg/housekeeping/tasks.go)) scans for
+`completed_at < now-7d` and `BatchWriteItem`-deletes the rows outright — no S3
+archive, no cold copy, despite the doc comment saying "archives or deletes".
+Anything computing a month-to-date figure from the jobs table therefore
+silently truncates to about seven days. That is exactly why PR #455's fleet
+cost rollups needed their own durable rows in the pools table
+([pkg/db/fleet_cost.go:15-23](../../pkg/db/fleet_cost.go)).
 
-**DynamoDB (`pkg/db`):** A single `Client` (`pkg/db/dynamo.go`) wraps the AWS
-SDK v2 DynamoDB client and holds three table names — `poolsTable`, `jobsTable`,
-and `auditTable` — plus two optional GSI names for the jobs table
-(`jobsPoolStatusGSI`, `jobsInstanceIDGSI`). The client is constructed via
+## Architecture [coverage: high -- 22 sources]
+
+**DynamoDB (`pkg/db`):** A single `Client` ([pkg/db/dynamo.go](../../pkg/db/dynamo.go))
+wraps the AWS SDK v2 DynamoDB client and holds three table names — `poolsTable`,
+`jobsTable`, `auditTable` — plus two optional GSI names for the jobs table
+(`jobsPoolStatusGSI`, `jobsInstanceIDGSI`). Constructed via
 `NewClient(cfg, poolsTable, jobsTable)` (or `NewClientWithAPI` for tests); the
-audit table and GSIs are wired post-construction with setters
-(`SetAuditTable`, `SetJobsPoolStatusGSI`, `SetJobsInstanceIDGSI`). All DynamoDB
-calls go through a small `DynamoDBAPI` interface (`GetItem`, `UpdateItem`,
-`Scan`, `Query`, `PutItem`, `DeleteItem`) so tests can swap in a mock.
+audit table and GSIs are wired post-construction with setters. All calls go
+through a six-method `DynamoDBAPI` interface (`GetItem`, `UpdateItem`, `Scan`,
+`Query`, `PutItem`, `DeleteItem`) so tests can swap in a mock.
 
 File split within `pkg/db`:
 
-- `jobs.go` — job lifecycle transitions and queries (statuses typed in
-  `job_status.go`).
-- `pool_config.go` — pool configuration CRUD, ephemeral pool creation,
-  reconcile-result stamping, and the `IsReservedPoolKey` guard.
-- `locks.go` — per-pool reconcile locks and housekeeping task locks
-  (`__task_lock:` rows in the pools table).
-- `instance_claims.go` — instance claim locking (`__instance_claim:` rows in
-  the pools table).
-- `audit.go` — audit log writes and filtered reads.
+- [jobs.go](../../pkg/db/jobs.go) (1702 lines) — job lifecycle transitions,
+  concurrency/autoscaling queries, admin read models.
+- [job_status.go](../../pkg/db/job_status.go) — typed `JobStatus` constants,
+  the *agent-vocabulary* constants, and `IsTerminal()`.
+- [pool_config.go](../../pkg/db/pool_config.go) — pool CRUD, ephemeral pool
+  creation, auto-tune recommendations, `IsReservedPoolKey`, and the shared
+  `reapReservedRows` sweep.
+- [locks.go](../../pkg/db/locks.go) — per-pool reconcile locks and housekeeping
+  task locks (`__task_lock:` rows).
+- [instance_claims.go](../../pkg/db/instance_claims.go) — instance claim
+  locking (`__instance_claim:` rows) plus `HasLiveInstanceClaim` and the
+  expired-claim reaper.
+- [runner_sightings.go](../../pkg/db/runner_sightings.go) — first-offline
+  sighting stamps (`__runner_offline:` rows), PR #436.
+- [fleet_cost.go](../../pkg/db/fleet_cost.go) — per-UTC-day fleet cost rollups
+  (`__fleet_day:` rows) and `ListBusyInstanceIDs`, PR #455.
+- [active_repos.go](../../pkg/db/active_repos.go) — `ListActiveRepos`, the repo
+  set derived from recent job records, PR #436.
+- [audit.go](../../pkg/db/audit.go) — audit log writes and filtered reads.
 
-**Circuit breaker (`pkg/circuit`):** `Breaker` (`pkg/circuit/breaker.go`) owns
-its own DynamoDB client targeting `runs-fleet-circuit-state`. State is keyed by
-`instance_type`. The breaker also keeps an in-process cache (`map[string]*CachedState`)
-with a 1-minute TTL to absorb the read traffic from each fleet launch decision,
-plus a periodic cleanup goroutine started via `StartCacheCleanup`.
+**Circuit breaker (`pkg/circuit`):** `Breaker`
+([pkg/circuit/breaker.go](../../pkg/circuit/breaker.go)) owns its own DynamoDB
+client targeting `runs-fleet-circuit-state`, keyed by `instance_type`. It keeps
+an in-process cache (`map[string]*CachedState`) with a 1-minute TTL to absorb
+the read traffic from each fleet launch decision, plus a periodic cleanup
+goroutine started via `StartCacheCleanup`.
 
-**Secrets (`pkg/secrets`):** A `Store` interface (`pkg/secrets/store.go`) with
-four methods — `Put`, `Get`, `Delete`, `List` — operates over a canonical
-`RunnerConfig` struct. Two implementations:
+**Secrets (`pkg/secrets`):** A `Store` interface
+([pkg/secrets/store.go](../../pkg/secrets/store.go)) with four methods — `Put`,
+`Get`, `Delete`, `List` — over a canonical `RunnerConfig` struct, plus a shared
+`ErrConfigNotFound` sentinel. Three implementations:
 
-- `SSMStore` (`pkg/secrets/ssm.go`) — writes JSON-serialised configs into SSM
-  parameters as `SecureString`, tags every parameter with
-  `runs-fleet:managed=true` and `runs-fleet:job-id=<id>`.
-- `VaultStore` (`pkg/secrets/vault.go`) — uses HashiCorp Vault KV (auto-detects
-  v1 vs v2), supports AWS IAM / Kubernetes / AppRole / token auth, and runs a
-  background goroutine to renew its own Vault token.
+- `SSMStore` ([pkg/secrets/ssm.go](../../pkg/secrets/ssm.go)) — writes
+  `SecureString` parameters. Since PR #425 the config is written as **two**
+  parameters, with the credential-packing helpers factored into
+  [credential.go](../../pkg/secrets/credential.go).
+- `VaultStore` ([pkg/secrets/vault.go](../../pkg/secrets/vault.go)) — Vault KV
+  (auto-detects v1 vs v2), AWS IAM / Kubernetes / AppRole / token auth
+  ([vault_auth.go](../../pkg/secrets/vault_auth.go)), background token renewal.
+  Put/Get round-trip the whole struct through JSON rather than a hand-written
+  field map (the fix in PR #398), so new `RunnerConfig` fields cannot be
+  silently dropped.
+- `EnvStore` ([pkg/secrets/env.go](../../pkg/secrets/env.go)) — read-only,
+  reads `RUNS_FLEET_*` env vars for the case where bootstrap already fetched
+  the config. `Put`/`Delete`/`List` all return errors by design.
 
-Both stores satisfy `Store` via compile-time assertions (`var _ Store =
-(*SSMStore)(nil)`, same for Vault).
+PR #427 added [backend_parity_test.go](../../pkg/secrets/backend_parity_test.go),
+which runs one contract suite against SSM, Vault KV v1, and Vault KV v2, because
+the two backends deliberately store *different layouts* (SSM splits, Vault keeps
+flat) and one agent binary must read whichever it is pointed at.
 
-## Talks To [coverage: high -- 12 sources]
+## Talks To [coverage: high -- 22 sources]
 
 - **Amazon DynamoDB** — `runs-fleet-jobs`, `runs-fleet-pools`,
-  `runs-fleet-circuit-state`, `runs-fleet-audit` tables (reference Terraform in
-  [deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf)).
-  Conditional writes for atomicity; DynamoDB TTL attributes on circuit rows and
-  audit rows.
-- **`pkg/admin`** — the audit store's only producer/consumer: admin handlers
-  call `RecordAudit` after mutating actions and `ListAuditLogs` behind
-  `GET /api/audit-logs`. Enabled by `RUNS_FLEET_AUDIT_TABLE`
-  (`cmd/server/main.go` calls `SetAuditTable`); gated at call sites via
-  `HasAuditTable()`, not a nil check.
-- **AWS SSM Parameter Store** — `SecureString` parameters under a configurable
-  prefix (default `DefaultSSMPrefix`), one per runner. `GetParametersByPath`
-  used for `List`.
+  `runs-fleet-circuit-state`, `runs-fleet-audit` (illustrative Terraform in
+  [deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf); the real
+  IaC lives in a separate repository). Conditional writes for atomicity;
+  DynamoDB TTL on circuit rows, audit rows, and `claim_expiry` on the pools
+  table.
+- **`pkg/housekeeping`** — the biggest consumer. It drives every reaper in
+  `pkg/db`: `DeleteExpiredInstanceClaims`, `DeleteStaleRunnerSightings`,
+  `ExecuteOldJobs`, plus `ListActiveRepos` as the repo set for the
+  orphaned-runner sweep and `AddFleetCostSample` / `GetFleetCostDays` /
+  `ListBusyInstanceIDs` for the fleet cost sampler
+  ([pkg/housekeeping/fleet_cost.go](../../pkg/housekeeping/fleet_cost.go)).
+- **`pkg/pools`** — `ListPools`, `GetPoolConfig`, `UpdatePoolState`,
+  `UpdatePoolReconcileResult`, `GetPoolBusyInstanceIDs`,
+  `GetPoolP90Concurrency`, and the reconcile locks.
+- **`pkg/cost`** — [fleetmtd.go](../../pkg/cost/fleetmtd.go) reads
+  `GetFleetCostDays` for a fleet-wide MTD figure; the job-priced path reads
+  `ListJobsForAdmin` with `CompletedOnly`.
+- **`pkg/admin`** — job/pool read models, and the audit store's only
+  producer/consumer (`RecordAudit` after mutating actions, `ListAuditLogs`
+  behind `GET /api/audit-logs`). Gated via `HasAuditTable()`, not a nil check.
+- **AWS SSM Parameter Store** — two `SecureString` parameters per runner under
+  a configurable prefix (default `DefaultSSMPrefix`). `GetParametersByPath`
+  (recursive, paginated) backs `List`; `AddTagsToResource` is a separate call.
 - **HashiCorp Vault** — KV v1 or v2 mount (default `DefaultVaultKVMount`,
-  `DefaultVaultPath`). Talks via `github.com/hashicorp/vault/api` over HTTPS
-  with a 30s HTTP timeout; uses `Auth().Token().LookupSelfWithContext` and
-  `RenewSelfWithContext` for token lifecycle.
+  `DefaultVaultPath`) over `github.com/hashicorp/vault/api`, 30s HTTP timeout,
+  `LookupSelfWithContext` / `RenewSelfWithContext` for token lifecycle.
 
-## API Surface [coverage: high -- 12 sources]
+## API Surface [coverage: high -- 22 sources]
 
 ### `pkg/db` construction and feature gates
 
 - `NewClient(cfg aws.Config, poolsTable, jobsTable string) *Client` /
-  `NewClientWithAPI(api DynamoDBAPI, ...)` for tests.
+  `NewClientWithAPI(api DynamoDBAPI, ...)`.
 - `SetJobsPoolStatusGSI(name)` / `SetJobsInstanceIDGSI(name)` — flip the
   corresponding queries from Scan fallback to GSI Query.
-- `SetAuditTable(name)` / `HasAuditTable() bool` — audit methods return errors
-  when the table is unconfigured; `HasAuditTable` is the presence check.
-- `HasJobsTable() bool` — guard for callers when the jobs table is optional.
+- `SetAuditTable(name)` / `HasAuditTable() bool`, `HasJobsTable() bool`.
 
-### Job lifecycle (`pkg/db/jobs.go`, statuses in `pkg/db/job_status.go`)
+### Job lifecycle and reads ([pkg/db/jobs.go](../../pkg/db/jobs.go))
 
-Statuses are the typed `JobStatus` constants: `launched`, `running`,
-`claiming`, `terminating`, `requeued`, `completed`, `success`, `failed`,
-`error`, `orphaned`. Transition mechanics live in the
-[job-state-machine](job-state-machine.md) article; the storage-facing surface:
+Transition mechanics live in [job-state-machine](job-state-machine.md); the
+storage-facing surface:
 
 - `SaveJob(ctx, *JobRecord) error` — PutItem with status `launched`, stamping
-  `created_at` with the assignment time.
-- `ClaimJob(ctx, jobID, runID int64, repo string) error` — self-expiring
-  claim lease (compare-and-swap on observed `created_at`); returns
-  `ErrJobAlreadyClaimed` or `ErrJobClaimExhausted` (after `claimMaxAttempts`
-  = 3 stale re-claims).
-- `FailExhaustedClaim(ctx, jobID) error` — `claiming → error`, conditional;
-  treats a lost race as success.
-- `MarkJobStarted(ctx, jobID, startedAt) (*events.JobInfo, error)` —
-  `launched → running`, conditional; returns the post-update record via
-  `ReturnValueAllNew`, or `(nil, nil)` for a late message.
-- `MarkJobComplete(ctx, jobID, status, exitCode, duration) (*events.JobInfo, error)`
-  — terminal write, also `ReturnValueAllNew`.
-- `UpdateJobMetrics(ctx, jobID, startedAt, completedAt) error`
-- `MarkInstanceTerminating(ctx, instanceID) error`
-- `MarkJobRequeuedByJobID(ctx, jobID) (bool, error)` — conditional update from
-  `running`/`launched` → `requeued`. Returns false (not error) on conditional
-  check failure.
-- `DeleteJobClaim(ctx, jobID) error`
-- `GetJobByInstance(ctx, instanceID) (*events.JobInfo, error)` — Query on the
-  instance-id GSI when configured, Scan fallback otherwise (see Gotchas).
-- `GetJobByJobID(ctx, jobID) (*events.JobInfo, error)` — O(1) primary-key
-  GetItem.
-- `QueryPoolJobHistory(ctx, poolName, since) ([]JobHistoryEntry, error)` —
-  Query on the required `pool-created-at-index` GSI, paginated-Scan fallback.
-- `GetPoolP90Concurrency(ctx, poolName, windowHours) (int, error)` — samples
-  concurrency at 1-minute intervals, returns `samples[floor(0.9 * (N-1))]`;
-  active records older than `maxConcurrencyRuntime` (2h) are excluded as
-  abandoned.
-- `GetPoolBusyInstanceIDs(ctx, poolName) ([]string, error)` — pool-status GSI
-  when configured (one Query per status, `launched` and `running`, unioned),
-  Scan fallback.
-- Admin API helpers: `ListJobsForAdmin`, `GetJobForAdmin`,
-  `GetJobStatsForAdmin` returning `AdminJobEntry`, `AdminJobFilter`,
-  `AdminJobStats`. `AdminJobFilter` bounds `created_at` with `Since`
-  (inclusive lower, `created_at >= :since`) and — added in PR #390 — `Until`
-  (exclusive upper, `created_at < :until`); a zero value leaves that side
-  unbounded. `ListJobsForAdmin` returns `([]AdminJobEntry, int, error)` where
-  the int is the pre-limit/offset match total, so callers can detect
-  truncation against their `Limit`.
+  `created_at` with the assignment time; carries `OriginalLabel`.
+- `ClaimJob(ctx, jobID, runID, repo) error` — self-expiring claim lease
+  (compare-and-swap on observed `created_at`); `ErrJobAlreadyClaimed`,
+  `ErrJobClaimExhausted` (after `claimMaxAttempts` = 3).
+- `FailExhaustedClaim(ctx, jobID) error`
+- `MarkJobStarted(ctx, jobID, startedAt) (*events.JobInfo, error)`
+- `MarkJobComplete(ctx, jobID, instanceID, status string, exitCode, duration) (*events.JobInfo, error)`
+  — note the `instanceID` parameter: the write is now **conditioned on
+  `instance_id = :iid`** so a stale agent cannot clobber a re-dispatched record.
+- `MarkJobCancelled(ctx, jobID) (bool, error)` — `launched → cancelled`
+  (PR #417), for a job GitHub cancelled before its runner confirmed.
+- `MarkJobRequeuedByJobID(ctx, jobID) (bool, error)` — `running`/`launched` →
+  `requeued`; `(false, nil)` on conditional failure.
+- `MarkInstanceTerminating`, `UpdateJobMetrics`, `DeleteJobClaim`
+- `GetJobByJobID` (O(1) GetItem), `GetJobByInstance` (instance-id GSI or Scan),
+  `LastJobCompletionForInstance`
+- `QueryPoolJobHistory(ctx, poolName, since)`,
+  `GetPoolP90Concurrency(ctx, poolName, windowHours)`,
+  `GetPoolBusyInstanceIDs(ctx, poolName)`
+- Admin helpers: `ListJobsForAdmin` (returns `([]AdminJobEntry, int, error)`,
+  the int being the pre-limit/offset match total), `GetJobForAdmin`,
+  `GetJobStatsForAdmin`.
+- Errors: `ErrJobAlreadyClaimed`, `ErrJobClaimExhausted`,
+  `ErrInstanceAlreadyClaimed`, `ErrPoolAlreadyExists`, `ErrPoolNotFound`,
+  `ErrPoolReconcileLockHeld`, `ErrTaskLockHeld`.
 
-Removed since the 2026-04 compile: `GetPoolPeakConcurrency` and the deprecated
-instance-keyed `MarkJobRequeued`.
+`AdminJobFilter` now carries five bounds beyond `Limit`/`Offset`: `Status`,
+`Pool`, `Since` (inclusive lower on `created_at`), `Until` (exclusive upper),
+and two attribute-existence predicates added because status strings are
+unreliable (see Gotchas):
 
-Errors: `ErrJobAlreadyClaimed`, `ErrJobClaimExhausted`,
-`ErrInstanceAlreadyClaimed`.
+- `CompletedOnly bool` — selects on `attribute_exists(completed_at)` rather
+  than any status value.
+- `StaleBefore time.Time` — the inverse: records with no `completed_at`,
+  created before the cutoff. `AdminJobStats.Stalled` is derived from it and
+  deliberately overlaps `Running`/`Requeued`.
 
-### Pool configuration (`pkg/db/pool_config.go`)
+### Pool configuration ([pkg/db/pool_config.go](../../pkg/db/pool_config.go))
 
-- `GetPoolConfig(ctx, poolName) (*PoolConfig, error)` — reserved keys (task
-  locks, instance claims) resolve to `(nil, nil)` rather than phantom pools.
-- `ListPools(ctx) ([]string, error)` — Scan with `IsReservedPoolKey` filtering.
-- `UpdatePoolState(ctx, poolName, running, stopped) error` — conditional on
-  pool existence.
+- `GetPoolConfig(ctx, poolName) (*PoolConfig, error)` — reserved keys resolve
+  to `(nil, nil)` rather than phantom pools.
+- `ListPools(ctx) ([]string, error)` — **fully paginated** over
+  `LastEvaluatedKey` since PR #402, with `IsReservedPoolKey` filtering.
+- `UpdatePoolState(ctx, poolName, running, stopped, effectiveDesiredRunning, effectiveDesiredStopped) error`
+  — observed counts and resolved targets in one write, so the two can never
+  disagree across passes.
 - `SavePoolConfig(ctx, *PoolConfig) error` — targeted UpdateItem with an
-  explicit SET list, so pool CRUD never clobbers lock attributes or
-  reconcile-result attributes on the same row.
-- `CreateEphemeralPool(ctx, *PoolConfig) error` — conditional put
-  (`attribute_not_exists(pool_name)`); returns `ErrPoolAlreadyExists` so
-  concurrent jobs racing to create the same ephemeral pool are safe.
-- `TouchPoolActivity(ctx, poolName) error` — bumps `last_job_time`.
-- `UpdatePoolReconcileResult(ctx, poolName, result, at) error` — added 2026-07
-  (PR #384): stamps `last_reconcile_at`/`last_reconcile_result` for admin
-  observability; returns `ErrPoolNotFound` if the pool was deleted
-  mid-reconcile so callers can ignore the benign race.
-- `DeletePoolConfig(ctx, poolName) error` — conditioned on `ephemeral = true`
-  so persistent pools cannot be deleted by this path.
-- `IsReservedPoolKey(poolName) bool` — the shared guard for the sentinel
-  prefixes.
+  explicit SET list, so pool CRUD never clobbers lock attributes,
+  reconcile-result attributes, or the tuner's `auto_tune` recommendation.
+- `CreateEphemeralPool` (conditional put; `ErrPoolAlreadyExists`),
+  `TouchPoolActivity`, `UpdatePoolReconcileResult`,
+  `UpdatePoolAutoTune(ctx, poolName, AutoTuneRec)`, `DeletePoolConfig`
+  (conditioned on `ephemeral = true`).
+- `IsReservedPoolKey(poolName) bool` — the shared sentinel-prefix guard.
+- `reapReservedRows(ctx, prefix, attr, cutoff, what) (int, error)` —
+  unexported; the one scan-and-conditional-delete sweep both reserved-row
+  reapers are built on.
 
-### Locks and claims (`pkg/db/locks.go`, `pkg/db/instance_claims.go`)
+### Locks, claims, and sightings
 
-- `AcquirePoolReconcileLock(ctx, poolName, owner, ttl)` /
-  `ReleasePoolReconcileLock(ctx, poolName, owner)` — lock attributes on the
-  pool's own row; `ErrPoolReconcileLockHeld`, `ErrPoolNotFound`.
-- `AcquireTaskLock(ctx, taskType, owner, ttl)` / `ReleaseTaskLock(...)` —
-  housekeeping singletons via `__task_lock:<taskType>` rows;
-  `ErrTaskLockHeld`.
+- `AcquirePoolReconcileLock` / `ReleasePoolReconcileLock` — lock attributes on
+  the pool's own row.
+- `AcquireTaskLock(ctx, taskType, owner, ttl)` / `ReleaseTaskLock` —
+  housekeeping singletons via `__task_lock:<taskType>` rows.
 - `ClaimInstanceForJob(ctx, instanceID, jobID, ttl) error` — conditional
-  UpdateItem on the **pools** table using a synthetic key
-  `pool_name = "__instance_claim:<instanceID>"`. Acquires if no claim exists,
-  if the existing claim has expired (`claim_expiry < now`), or if this job
-  already owns it. Returns `ErrInstanceAlreadyClaimed` on conflict.
-- `ReleaseInstanceClaim(ctx, instanceID, jobID) error` — DeleteItem with
-  `attribute_exists(pool_name) AND job_id = :job_id`. Silently no-ops if the
-  claim is held by another job (treats conditional check failure as success).
+  UpdateItem on `pool_name = "__instance_claim:<instanceID>"`;
+  `ErrInstanceAlreadyClaimed`.
+- `ReleaseInstanceClaim(ctx, instanceID, jobID) error` — conditional DeleteItem,
+  no-ops when held by another job.
+- `HasLiveInstanceClaim(ctx, instanceID) (bool, error)` — `ConsistentRead`
+  GetItem. **An unreadable claim counts as held**: the caller uses it to decide
+  whether destroying the instance is safe, and an unanswered question is not a
+  yes ([instance_claims.go:144-183](../../pkg/db/instance_claims.go)).
+- `DeleteExpiredInstanceClaims(ctx, now) (int, error)` — PR #402's reaper.
+- `RecordRunnerOffline(ctx, repo, runnerID, now) (time.Duration, error)` —
+  `if_not_exists` stamp of `first_seen_offline`, returning the accumulated
+  offline age; `ForgetRunnerOffline`; `DeleteStaleRunnerSightings(ctx, now)`.
+- `ListActiveRepos(ctx) ([]string, error)` — distinct `repo` values with
+  `created_at` inside `activeRepoWindow` (7 days).
 
 See the [per-resource-locking](../concepts/per-resource-locking.md) concept for
-how these three lock flavors compose.
+how the lock flavors compose.
 
-### Audit log (`pkg/db/audit.go`)
+### Fleet cost rollups ([pkg/db/fleet_cost.go](../../pkg/db/fleet_cost.go), PR #455)
 
-- `RecordAudit(ctx, AuditEntry) error` — PutItem; the `id` (ULID) and
-  `timestamp` are generated internally so callers never fabricate them; an
-  empty `User` is stored as `"anonymous"`.
-- `ListAuditLogs(ctx, AuditFilter) ([]AuditEntry, error)` — Query on the
-  `user-index` GSI when `filter.User` is set (with Scan fallback on
-  ValidationException), full paginated Scan otherwise. `Offset`/`Limit` are
-  applied in memory.
-- Types: `AuditEntry { ID, User, Action, Target, Result, Details map[string]any,
-  ClientIP, Timestamp }`, `AuditFilter { User, Action, Since, Until, Limit,
-  Offset }`.
+- `AddFleetCostSample(ctx, day string, d FleetCostDelta) error` — folds one
+  sampling tick into its day's row using DynamoDB's atomic `ADD` for every
+  monetary and duration field, `SET` for the `last_sample_at` checkpoint, and a
+  latching `partial = true` when the tick's window had to be clamped.
+- `GetFleetCostDays(ctx, fromDay, toDay) ([]FleetCostDay, error)` — paginated
+  Scan with `begins_with(pool_name, "__fleet_day:")` and a `#day BETWEEN`
+  filter, **`ConsistentRead: true`**.
+- `ListBusyInstanceIDs(ctx) ([]string, error)` — fleet-wide (all pools *and*
+  cold-start instances), filtered on `busyJobStatuses` plus
+  `created_at >= now-maxConcurrencyRuntime`, deduplicated.
+- `FleetDayFormat = "2006-01-02"`; types `FleetCostDelta`, `FleetCostDay`.
+
+### Audit log ([pkg/db/audit.go](../../pkg/db/audit.go))
+
+- `RecordAudit(ctx, AuditEntry) error` — PutItem; ULID `id` and `timestamp`
+  minted internally; empty `User` stored as `"anonymous"`.
+- `ListAuditLogs(ctx, AuditFilter) ([]AuditEntry, error)` — `user-index` Query
+  when `filter.User` is set (Scan fallback on ValidationException), full
+  paginated Scan otherwise; `Offset`/`Limit` applied in memory.
 
 ### `pkg/circuit`
 
 - `NewBreaker(cfg aws.Config, tableName string) *Breaker`
-- `(*Breaker).RecordInterruption(ctx, instanceType) error` — increments the
-  counter, opens the circuit when it crosses `InterruptionThreshold` within
-  `TimeWindow`.
-- `(*Breaker).CheckCircuit(ctx, instanceType) (State, error)` — cache-first
-  read. Auto-resets state in DynamoDB if `auto_reset_at` is in the past.
-- `(*Breaker).ResetCircuit(ctx, instanceType) error` — manual reset.
-- `(*Breaker).StartCacheCleanup(ctx) <-chan struct{}` — kicks off a
-  5-minute-interval background cleanup of expired in-process cache entries.
-
-Types: `State` (`StateClosed`, `StateOpen`, `StateHalfOpen`), `Record`,
-`CachedState`. Constants: `InterruptionThreshold = 3`, `TimeWindow = 15 *
-time.Minute`, `CooldownPeriod = 30 * time.Minute`.
+- `RecordInterruption(ctx, instanceType) error`,
+  `CheckCircuit(ctx, instanceType) (State, error)` (cache-first, auto-resets
+  when `auto_reset_at` is past), `ResetCircuit(ctx, instanceType) error`,
+  `StartCacheCleanup(ctx) <-chan struct{}` (5-minute tick).
+- Types: `State` (`StateClosed`, `StateOpen`, `StateHalfOpen`), `Record`,
+  `CachedState`. Constants: `InterruptionThreshold = 3`,
+  `TimeWindow = 15 * time.Minute`, `CooldownPeriod = 30 * time.Minute`.
 
 ### `pkg/secrets`
 
-The `Store` interface:
-
 ```go
 type Store interface {
-    Put(ctx, runnerID, *RunnerConfig) error
-    Get(ctx, runnerID) (*RunnerConfig, error)
-    Delete(ctx, runnerID) error
+    Put(ctx, runnerID string, config *RunnerConfig) error
+    Get(ctx, runnerID string) (*RunnerConfig, error)
+    Delete(ctx, runnerID string) error
     List(ctx) ([]string, error)
 }
+var ErrConfigNotFound = errors.New("runner config not found")
 ```
 
-`RunnerConfig` carries `Org`, `Repo`, `RunID`, `JITToken`, `Labels`,
-`RunnerGroup`, `RunnerName`, `JobID`, `CacheToken`, `CacheURL`,
-`TerminationQueueURL`, `IsOrg`.
+`RunnerConfig` ([store.go:17-65](../../pkg/secrets/store.go)) now carries two
+mutually-exclusive credential fields plus several opt-in feature blocks:
 
-- `NewSSMStore(awsCfg, prefix) *SSMStore` /
-  `NewSSMStoreWithClient(client SSMAPI, prefix)` for tests. Empty prefix falls
-  back to `DefaultSSMPrefix`.
-- `NewVaultStore(ctx, VaultConfig) (*VaultStore, error)` —
-  authenticates, auto-detects KV version, starts token renewal.
-  `NewVaultStoreWithClient(client, kvMount, basePath, kvVersion)` is the test
-  hook.
-- `(*VaultStore).Close()` cancels the renewal goroutine and waits for it.
+- `RegistrationToken string \`json:"jit_token"\`` — a GitHub *registration*
+  token for `config.sh --token`. The field was renamed from `JITToken` because
+  it never was a JIT credential, **but the JSON tag stays `jit_token`
+  deliberately**: it is a frozen wire contract with agents already in flight.
+- `JITConfig string \`json:"jit_config,omitempty"\`` — GitHub's encoded
+  just-in-time config, handed to `run.sh` via
+  `ACTIONS_RUNNER_INPUT_JITCONFIG`. When set it supersedes `RegistrationToken`.
+- `CreatedAt string` (RFC3339) — bounds how long an agent could still be
+  acting on this config, which is how housekeeping tells a live assignment from
+  an abandoned one.
+- `BuildkitCache{Bucket,Region,Prefix}`, `RunnerLogs{Bucket,Prefix}` — all
+  `omitempty`, all inert when absent in either direction.
+- `Org`, `Repo`, `RunID`, `Labels`, `RunnerGroup`, `RunnerName`, `JobID`,
+  `CacheToken`, `CacheURL`, `TerminationQueueURL`, `IsOrg`.
 
-## Data [coverage: high -- 12 sources]
+Constructors: `NewSSMStore(awsCfg, prefix)` / `NewSSMStoreWithClient(SSMAPI, prefix)`;
+`NewVaultStore(ctx, VaultConfig)` / `NewVaultStoreWithClient(client, kvMount, basePath, kvVersion)`
+plus `(*VaultStore).Close()`; `NewEnvStore()`.
+
+Credential packing ([credential.go](../../pkg/secrets/credential.go)):
+`marshalConfigHalf`, `packCredential`, `compressJITConfig`, `unpackCredential`,
+`storedCredential`, `credentialMaxDecodedBytes = 1 << 20`.
+
+## Data [coverage: high -- 22 sources]
 
 ### `runs-fleet-jobs` table
 
-Partition key: `job_id` (Number). Three GSIs
-(`deploy/terraform/dynamodb.tf`):
+Partition key: `job_id` (Number). Three GSIs:
 
 - `pool-created-at-index` (`pool`, `created_at`) — **required**; backs
-  `QueryPoolJobHistory` for autoscaling. Missing it means a Scan fallback and
-  a WARN every reconcile loop.
-- `instance-id-index` (`instance_id`) — optional; wired via
+  `QueryPoolJobHistory`. Missing it means a Scan fallback and a WARN every
+  reconcile loop.
+- `instance-id-index` (`instance_id`) — optional, via
   `RUNS_FLEET_JOBS_INSTANCE_ID_GSI`. Backs `GetJobByInstance`.
-- `pool-status-index` (`pool`, `status`) — optional; wired via
+- `pool-status-index` (`pool`, `status`) — optional, via
   `RUNS_FLEET_JOBS_POOL_STATUS_GSI`. Backs `GetPoolBusyInstanceIDs`.
 
-Attributes (from `jobRecord` and admin parsing):
+Attributes: `job_id` (N), `run_id` (N), `repo` (S), `instance_id` (S,
+omitempty), `instance_type` (S), `pool` (S, omitempty), `spot` (BOOL),
+`retry_count` (N), `warm_pool_hit` (BOOL), `status` (S, omitempty — an empty
+status is dropped rather than written, guarding the status-keyed GSI),
+`created_at` (S, RFC3339), `spot_request_id` (S, omitempty), `persistent_spot`
+(BOOL, omitempty), `trace_id` (S, omitempty — extracted from the W3C
+traceparent), and **`original_label`** (S, omitempty — the runs-on label the
+workflow actually asked for; see [job-state-machine](job-state-machine.md)).
+Mutated by lifecycle methods: `started_at`, `completed_at`, `requeued_at`,
+`exit_code`, `duration_seconds`.
 
-- `instance_id` (S, omitempty), `job_id` (N), `run_id` (N), `repo` (S),
-  `instance_type` (S), `pool` (S, omitempty), `spot` (BOOL), `retry_count` (N),
-  `warm_pool_hit` (BOOL), `status` (S, omitempty — empty status is dropped
-  rather than written, guarding the status-keyed GSI), `created_at` (S,
-  RFC3339), `spot_request_id` (S, omitempty), `persistent_spot` (BOOL,
-  omitempty), `trace_id` (S, omitempty — extracted from the W3C traceparent).
-- Mutated by lifecycle methods: `started_at`, `completed_at`, `requeued_at`,
-  `exit_code`, `duration_seconds`.
+**`created_at` semantics:** during `claiming` it is the lease timestamp written
+by `ClaimJob` (staleness is judged against it, and it is the compare-and-swap
+pin for re-claims). `SaveJob`'s PutItem replaces the whole record at
+assignment, re-stamping `created_at` — so on any `launched`-or-later record it
+means *assignment time*.
 
-**`created_at` semantics:** during the `claiming` phase it is the lease
-timestamp written by `ClaimJob` (staleness is judged against it, and it is the
-compare-and-swap pin for re-claims). `SaveJob`'s PutItem then replaces the
-whole record at assignment, re-stamping `created_at` — so on any `launched`
--or-later record, `created_at` means *assignment time*, and that is what
-consumers read.
+**Status vocabulary.** `pkg/db/job_status.go` defines eleven `JobStatus`
+constants (`launched`, `running`, `claiming`, `terminating`, `requeued`,
+`completed`, `success`, `failed`, `error`, `orphaned`, `cancelled`) — and then
+three more for a *second, different vocabulary*:
 
-**Surfaced read model:** `unmarshalJobInfo` maps records into
-`events.JobInfo`; since PR #387 that includes `WarmPoolHit` and `CreatedAt`
-(RFC3339-parsed; a malformed `created_at` parses to the zero time rather than
-failing the unmarshal, and consumers self-guard on zero). No schema change was
-involved — both attributes were already written (`warm_pool_hit` at record
-creation, `created_at` as above); they simply weren't surfaced to readers
-before.
+```go
+// Agent-reported terminal statuses. The agent writes its own vocabulary
+// (pkg/agent/telemetry.go) straight through MarkJobComplete, so the table holds
+// "failure" rather than JobStatusFailed and carries "timeout"/"interrupted",
+// which have no JobStatus constant.
+JobStatusAgentFailure     JobStatus = "failure"
+JobStatusAgentTimeout     JobStatus = "timeout"
+JobStatusAgentInterrupted JobStatus = "interrupted"
+```
 
-Status values: `launched`, `claiming`, `running`, `requeued`, `terminating`,
-`completed`, `success`, `failed`, `error`, `orphaned` (typed constants in
-`pkg/db/job_status.go`).
+`IsTerminal()` spans both vocabularies and deliberately excludes `requeued`,
+`terminating`, and `orphaned` (the last because `ExecuteOrphanedJobs` stamps it
+on a swallowed EC2 lookup error, so a transient API fault must not get a live
+instance reaped).
 
 ### `runs-fleet-pools` table
 
-Partition key: `pool_name` (S). One physical table, three logical concerns:
+Partition key: `pool_name` (S). One physical table, **five** logical concerns:
 
-1. **Pool config rows** (`PoolConfig` in `pool_config.go`): `instance_type`,
-   `desired_running`, `desired_stopped`, `current_running`, `current_stopped`,
-   `idle_timeout_minutes`, `schedules` (list of `PoolSchedule`), `ephemeral`,
-   `last_job_time`, flexible spec fields (`arch`, `cpu_min`/`cpu_max`,
-   `ram_min`/`ram_max`, `families`, `multi_spec`), reconcile observability
-   (`last_reconcile_at`, `last_reconcile_result` — written only by
-   `UpdatePoolReconcileResult`, deliberately outside `SavePoolConfig`'s SET
-   list), and reconcile-lock attributes (`reconcile_lock_owner`,
-   `reconcile_lock_expires`) written only by the lock methods.
-2. **Task lock rows** — `pool_name = "__task_lock:<taskType>"`
-   (`taskLockPrefix`), one per housekeeping singleton.
-3. **Instance claim rows** — `pool_name = "__instance_claim:<instanceID>"`
-   (`instanceClaimPrefix`). Attributes: `job_id` (N),
-   `claimed_at` (N, unix), `claim_expiry` (N, unix). Conditional acquire is:
-   `attribute_not_exists(pool_name) OR attribute_not_exists(claim_expiry) OR
-   claim_expiry < :now OR job_id = :job_id`.
+1. **Pool config rows** (`PoolConfig`): `instance_type`, `desired_running`,
+   `desired_stopped`, `current_running`, `current_stopped`,
+   `effective_desired_running` / `effective_desired_stopped` (`*int` — nil
+   "never reconciled" is distinct from a target of zero),
+   `idle_timeout_minutes`, `schedules`, `ephemeral`, `last_job_time`, the
+   flexible spec fields (`arch`, `cpu_min`/`cpu_max`, `ram_min`/`ram_max`,
+   `families`, `multi_spec`), reconcile observability (`last_reconcile_at`,
+   `last_reconcile_result`), hot-pool admin overrides
+   (`override_linger_minutes`, `override_max_hot` — three-state `*int`: nil =
+   auto, `&0` = force cold, `&N` = fixed), the tuner's `auto_tune`
+   (`AutoTuneRec`), and reconcile-lock attributes (`reconcile_lock_owner`,
+   `reconcile_lock_expires`).
+2. **Task lock rows** — `__task_lock:<taskType>` (`taskLockPrefix`), one per
+   housekeeping singleton.
+3. **Instance claim rows** — `__instance_claim:<instanceID>`
+   (`instanceClaimPrefix`). Attributes `job_id` (N), `claimed_at` (N, unix),
+   `claim_expiry` (N, unix). Conditional acquire:
+   `attribute_not_exists(pool_name) OR attribute_not_exists(claim_expiry) OR claim_expiry < :now OR job_id = :job_id`.
+4. **Runner offline sighting rows** (PR #436) —
+   `__runner_offline:<repo>:<runnerID>` (`runnerSightingPrefix`). Attributes
+   `first_seen_offline` (N, unix, written with `if_not_exists` so the *original*
+   stamp survives every sweep) and an **inert** `ttl` (N). Keyed per repo
+   because runner IDs are allocated per repo.
+5. **Fleet cost rollup rows** (PR #455) — `__fleet_day:<YYYY-MM-DD>`
+   (`fleetDayPrefix`). Attributes `day` (S), `cost_usd`, `compute_usd`,
+   `ebs_usd`, `instance_seconds`, `attributed_seconds` (all N, accumulated with
+   atomic `ADD`), `partial` (BOOL, latching), `last_sample_at` (N, unix). The
+   `day` key's `2006-01-02` layout is lexicographically ordered, which is what
+   makes a string range filter a date range filter. **These rows carry no
+   expiry and no reaper** — one per day is ~365/year and they are the only
+   surviving record of what the fleet cost.
 
-Every path that enumerates pools must exclude the sentinel-prefixed rows via
-`IsReservedPoolKey` — otherwise they get reconciled as phantom pools and
-inflate per-pool metric cardinality.
+**The single-TTL constraint.** The pools table's one DynamoDB TTL attribute is
+spent on `claim_expiry`
+([deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf)). Any
+*second* row kind's own `ttl` attribute is therefore inert — stated explicitly
+in [runner_sightings.go:20-25](../../pkg/db/runner_sightings.go) — which is why
+sightings are reaped by `DeleteStaleRunnerSightings` instead, and why
+`__fleet_day:` rows do not even try.
 
 ### `runs-fleet-circuit-state` table
 
-Partition key: `instance_type` (S). Schema from `circuit.Record`:
+Partition key: `instance_type` (S). From `circuit.Record`: `state`
+(`closed | open | half-open`), `interruption_count` (N),
+`first_interruption_at`, `last_interruption_at`, `opened_at`, `auto_reset_at`
+(S, RFC3339), `ttl` (N, unix — `auto_reset_at + 1h`).
 
-- `instance_type` (S)
-- `state` (S) — `closed | open | half-open`
-- `interruption_count` (N)
-- `first_interruption_at`, `last_interruption_at`, `opened_at`,
-  `auto_reset_at` (S, RFC3339)
-- `ttl` (N, unix) — set to `auto_reset_at + 1h` for DynamoDB TTL cleanup of
-  resolved entries.
-
-### `runs-fleet-audit` table (added 2026-07, PR #383)
+### `runs-fleet-audit` table (PR #383)
 
 Partition key: `id` (S, ULID — time-sortable). GSI `user-index` on
-(`user`, `timestamp`), **required by schema** (no setter to configure the GSI
-name, unlike the jobs table's optional GSIs). Schema from `auditRecord`:
+(`user`, `timestamp`), **required by schema** (no setter, unlike the jobs
+table's optional GSIs). Attributes: `id`, `user` (`"anonymous"` when
+unauthenticated), `action`, `target` (omitempty), `result`, `details` (M,
+omitempty), `client_ip` (omitempty), `timestamp` (S, RFC3339), `ttl` (N —
+write time + `auditRetention`, 90 days).
 
-- `id` (S, ULID), `user` (S — `"anonymous"` when unauthenticated),
-  `action` (S), `target` (S, omitempty), `result` (S),
-  `details` (M, omitempty — free-form `map[string]any`),
-  `client_ip` (S, omitempty), `timestamp` (S, RFC3339)
-- `ttl` (N, unix) — write time + `auditRetention` (90 days); the first table
-  in this deployment to use DynamoDB TTL for whole-row retention, so entries
-  age out with no cleanup job.
-
-### SSM parameter naming (`SSMStore.parameterPath`)
+### SSM parameter naming — now two parameters per runner (PR #425)
 
 ```
-{prefix}/{runner-id}/config
+{prefix}/{runner-id}/config       # plaintext fields, SecureString, tagged
+{prefix}/{runner-id}/credential   # JIT config or registration token, SecureString, UNTAGGED
 ```
 
-Type is `SecureString`. Tags: `runs-fleet:managed=true`,
-`runs-fleet:job-id=<id>`. `List` uses `GetParametersByPath` recursive=true and
-extracts `runner-id` from the parsed path (`extractRunnerID`).
+A GitHub JIT config is base64 of a JSON document whose bulk is a 2048-bit RSA
+private key; at ~4100 characters it alone exceeds SSM's 4096-character Standard
+tier ceiling, and combining both halves would force the whole store onto the
+paid Advanced tier. The credential parameter therefore stores the JIT config
+**base64-decoded then gzipped then re-base64'd** — decoding GitHub's outer
+base64 layer before compressing saves ~29% versus ~8% for compressing the
+base64 text directly. `storedCredential.Compressed` records which form was
+written rather than inferring it, so a value where compression did not pay off
+reads back unambiguously.
 
-### Vault paths (`VaultStore.secretPath` / KV v2)
+Tags (`runs-fleet:managed=true`, `runs-fleet:job-id=<id>`) go on the **config**
+parameter only, in a separate `AddTagsToResource` call (PR #426), and never on
+the credential parameter — a tag value is readable by anyone with
+`DescribeTags`, and that parameter registers a runner.
+
+`extractRunnerID` matches **both** `config` and `credential` suffixes, so
+`List` reports a runner holding either half.
+
+### Vault paths
 
 - KV v1: `<kvMount>/<basePath>/<runnerID>` (logical write/read).
-- KV v2: `client.KVv2(kvMount).Put(ctx, basePath+"/"+runnerID, data)`. List
+- KV v2: `client.KVv2(kvMount).Put(ctx, basePath+"/"+runnerID, data)`. `List`
   uses `<kvMount>/metadata/<basePath>` for v2 vs `<kvMount>/<basePath>` for v1.
-- Stored fields mirror `RunnerConfig` but written as a flat `map[string]
-  interface{}` (lower-snake-case keys).
+- Payload is the whole `RunnerConfig` marshalled to JSON then unmarshalled into
+  `map[string]interface{}` — one flat secret, no split, because Vault has no
+  4096-character cap.
 
-## Key Decisions [coverage: high -- 12 sources]
+## Key Decisions [coverage: high -- 22 sources]
 
+- **One pools table, five row kinds, one sentinel-prefix guard.** Claims, task
+  locks, sightings, and fleet-day rollups all live in `runs-fleet-pools`,
+  disambiguated by `__`-prefixed partition keys. This avoids four extra tables
+  and lets a crashed orchestrator's locks expire on their own — at the cost of
+  a rule every enumerating path must obey (see Gotchas).
 - **DynamoDB conditional writes for distributed locks.** `ClaimJob` is a
   compare-and-swap lease; `ClaimInstanceForJob` uses a four-clause condition
-  that bakes in TTL-based stealing; reconcile and task locks use the same
-  conditional-write shape. There is no separate lock table — claims, task
-  locks, and pool config share `runs-fleet-pools`, disambiguated by sentinel
-  key prefixes (`__instance_claim:`, `__task_lock:`). This avoids extra tables
-  and lets a crashed orchestrator's locks expire on their own.
-- **DB record as cross-instance rendezvous.** The job record is the join point
-  between processes on different machines with no direct channel: the
-  orchestrator stamps `created_at` at assignment (`SaveJob`), the on-instance
-  agent reports its `StartedAt` via the termination queue, and the termination
-  handler joins the two — `MarkJobStarted`'s `ReturnValueAllNew` response
-  hands back `CreatedAt`/`WarmPoolHit` so `InstanceProvisionSeconds` is
-  computed without a second read (PR #387). Zero or negative spans are
-  dropped, so a malformed timestamp or cross-host clock skew can't emit bogus
-  latency. See [job-state-machine](job-state-machine.md) and
-  [events-and-termination](events-and-termination.md). Since PR #390 the
-  daily cost report (`pkg/cost.Reporter`) is another consumer of the same
-  records — it prices completed jobs via `ListJobsForAdmin` (a `Since`/`Until`
-  day window) rather than reading CloudWatch metrics; see the
-  [db-record-as-rendezvous](../concepts/db-record-as-rendezvous.md) concept.
-- **GSI-or-Scan fallback everywhere.** Every GSI-backed query
-  (`GetJobByInstance`, `QueryPoolJobHistory`, `GetPoolBusyInstanceIDs`,
-  `ListAuditLogs`) catches `ValidationException` and falls back to a paginated
-  Scan with a WARN. This decouples deploy ordering: code referencing a new GSI
-  can ship before the matching Terraform lands, degrading to correct-but-slow
-  instead of erroring.
-- **`MarkJobRequeuedByJobID` returns `(false, nil)` on conditional failure**,
-  not an error. Callers can treat "already requeued / terminating" as a
-  benign no-op rather than an alarm.
-- **Audit is config-gated, not nil-gated.** `SetAuditTable` +
-  `HasAuditTable()` is the feature flag; `pkg/admin` always receives a
-  concrete `*db.Client` and checks `HasAuditTable`, so a nil-interface bug
-  can't silently disable auditing. Unset table means audit methods error and
-  admin actions are logged via slog only.
-- **Audit IDs and timestamps are server-generated.** `RecordAudit` mints the
-  ULID and RFC3339 timestamp internally so callers can never fabricate or
-  reorder history; ULIDs make the primary key time-sortable.
-- **Audit retention via DynamoDB TTL, pagination in memory.** 90-day TTL
-  (`auditRetention`) bounds table growth with no cleanup job, which is also
-  what makes `ListAuditLogs`' in-memory `Offset`/`Limit` acceptable — DynamoDB
-  has no native offset and the table stays small by construction.
-- **Reconcile-result stamps bypass `SavePoolConfig`.**
-  `UpdatePoolReconcileResult` (like `TouchPoolActivity`) is a targeted
-  UpdateItem, and `SavePoolConfig`'s SET list deliberately omits those
-  attributes — pool CRUD, lock traffic, and reconcile observability never
-  clobber each other despite sharing a row.
-- **Circuit breaker keyed per instance type, not per pool.** Spot capacity is a
-  property of the EC2 instance type, so a c7g.large interruption shouldn't
-  block on-demand or m7g launches in the same pool. The breaker stores one row
-  per type in `runs-fleet-circuit-state`.
-- **Auto-reset baked into reads.** `CheckCircuit` rewrites the row to
-  `closed` when `auto_reset_at` is in the past, then writes back through
-  `putRecord`. No background reconciler is needed; the next
-  `CheckCircuit` at launch time does it.
-- **Two-tier caching for the breaker.** A 1-minute in-process cache absorbs
-  the per-launch read traffic; a periodic cleaner (`StartCacheCleanup`,
-  5-minute tick) prunes entries older than `2 * CacheTTL` to bound memory.
-- **TTL attribute for transient state.** Circuit rows set `ttl =
-  auto_reset_at + 1h` and audit rows set `ttl = write + 90d` so DynamoDB GC
-  reclaims them automatically. Instance claims rely on application-level
-  expiry rather than DynamoDB TTL because they need to be stealable
-  mid-flight.
-- **Secrets backend abstraction.** `Store` is the only thing called from the
-  rest of the codebase. SSM is the default (zero ops, IAM-native); Vault is
-  opt-in for orgs that already run it. Both implementations are asserted to
-  satisfy `Store` at compile time.
-- **Vault KV version auto-detection.** `NewVaultStore` probes the mount's
-  `config` endpoint, falls back to `LIST` probes against v1 and v2 path
-  styles when permission denied, and defaults to v1 only when truly
-  ambiguous. Operators don't have to set `KVVersion` explicitly.
-- **Vault token self-renewal.** `startTokenRenewal` runs a 5-minute ticker
-  that calls `LookupSelf` and renews when remaining TTL drops below 3600s.
-  Failures are logged-and-skip rather than hard failures so a transient
-  Vault blip doesn't crash the orchestrator.
+  that bakes in TTL-based stealing; reconcile and task locks use the same shape.
+- **Reapers, not TTL, for anything but the first row kind.** With the pools
+  table's single TTL attribute committed to `claim_expiry`, every other
+  sentinel row needs an application-level sweep.
+  `reapReservedRows` is the one implementation both use: paginated Scan on the
+  prefix, then a **conditional** `DeleteItem` re-checking the age attribute per
+  row. Unconditional or batch deletes were rejected because a row rewritten
+  between the scan and the delete is still live — dropping a renewed claim would
+  cause double-assignment, and dropping a re-stamped sighting would restart an
+  offline clock and delay a deregistration.
+- **Fleet cost accumulates with `ADD`, not read-modify-write** (PR #455).
+  Several orchestrator replicas may sample concurrently and a lost update would
+  undercount the fleet with no external signal. `last_sample_at` is `SET`
+  because it is a checkpoint, not an accumulator; `partial` latches true and is
+  never cleared, because one clamped tick means the day understates and a later
+  clean tick does not undo that.
+- **`GetFleetCostDays` uses `ConsistentRead: true`** — the only place in
+  `pkg/db` that reads consistently besides `HasLiveInstanceClaim`. The sampler
+  reads `last_sample_at` and then prices the window *since* it, so an
+  eventually-consistent read would let a replica re-price a window the previous
+  tick already counted. The housekeeping task lock serializes executions but
+  does not make a stale read fresh.
+- **Fleet rollups are durable because job records are not.** `ExecuteOldJobs`
+  hard-deletes at 7 days, so a month-to-date figure derived from job records
+  decays for calendar reasons rather than attribution ones —
+  [pkg/cost/fleetmtd.go:32-34](../../pkg/cost/fleetmtd.go) says so explicitly,
+  and that is why `AttributedPercent` comes from the sampler's own busy-vs-total
+  instance-seconds rather than from dividing two independently sourced numbers.
+- **Attribute existence over status strings for "finished".** `CompletedOnly`
+  and `StaleBefore` key on `completed_at`, which only `MarkJobComplete` writes.
+  Filtering on `status == "completed"` matched almost nothing because terminal
+  rows carry GitHub's raw conclusion (PR #403 — see Gotchas).
+- **`ListPools` paginates** (PR #402). A single non-paginated Scan returned only
+  DynamoDB's first 1 MB page; with the table bloated by leaked claim rows, real
+  pools past that page were invisible to the reconciler, the hot-pool tuner, and
+  the admin console.
+- **`HasLiveInstanceClaim` fails closed.** An unreadable claim row counts as
+  held, because the caller is deciding whether destroying an instance is safe.
+- **`SavePoolConfig`'s SET list is deliberately narrow.** Lock attributes,
+  `last_reconcile_*`, `effective_desired_*`, and `auto_tune` are all written by
+  their own targeted UpdateItems and excluded from the CRUD path, so pool
+  saves, lock traffic, reconcile observability, and tuner recommendations never
+  clobber each other despite sharing a row. The hot-pool *overrides* are the
+  exception — they *are* in the SET list, so a nil pointer clears the override.
+- **SSM split for the free tier** (PR #425). Two parameters per runner keeps
+  both halves under the 4096-character Standard-tier ceiling. Write order is
+  credential-first, delete order is config-first, so either crash point leaves
+  at most a lone credential — which `List` still enumerates and the sweep still
+  deletes — rather than a config that boots a runner and hangs.
+- **Legacy credential layout stays readable.** `SSMStore.loadCredential`
+  treats an absent credential parameter as the *old* layout (credential inline
+  in the config JSON) rather than an error, because agents on an older AMI and a
+  newer orchestrator coexist for the length of a rollout. Only a config with
+  neither a credential parameter nor an inline credential is a real failure.
+- **`marshalConfigHalf` shadows the credential fields via a struct alias**
+  rather than zeroing a copy: `RegistrationToken`'s `jit_token` tag has no
+  `omitempty` (frozen wire contract), so a zeroed copy would still emit an empty
+  `jit_token` — putting a credential-shaped key in the *plaintext* parameter.
+- **One `Store` contract, three backends, one parity suite** (PR #427). SSM is
+  the default (zero ops, IAM-native); Vault is opt-in for forked environments;
+  `EnvStore` covers pre-fetched bootstrap config. The layouts differ on purpose,
+  so the parity tests hold all three to the same behavior.
+- **Vault serializes through JSON, not a field map** (PR #398). A
+  hand-maintained map silently dropped newly added `RunnerConfig` fields; a
+  round-trip cannot.
+- **Circuit breaker keyed per instance type, not per pool**, with auto-reset
+  baked into reads (`CheckCircuit` rewrites the row to `closed` when
+  `auto_reset_at` is past, so no background reconciler is needed) and a
+  two-tier cache (1-minute in-process, 5-minute cleanup tick).
+- **Audit is config-gated and server-stamped.** `SetAuditTable` +
+  `HasAuditTable()` is the flag (not a nil check); `RecordAudit` mints the ULID
+  and timestamp internally so callers cannot fabricate or reorder history; a
+  90-day TTL bounds growth with no cleanup job, which is also what makes
+  in-memory `Offset`/`Limit` acceptable.
 
-## Gotchas [coverage: high -- 12 sources]
+## Gotchas [coverage: high -- 22 sources]
 
+- **A new sentinel prefix that skips `IsReservedPoolKey` becomes a phantom
+  pool. This has now happened twice.** Prefixes are declared in per-feature
+  files (`taskLockPrefix` in `locks.go`, `instanceClaimPrefix` in
+  `instance_claims.go`, `runnerSightingPrefix` in `runner_sightings.go`,
+  `fleetDayPrefix` in `fleet_cost.go`) while the predicate lives in
+  `pool_config.go`. When PR #436's `__runner_offline:` rows were not added to
+  it, they surfaced as zero-count pools in the admin Pools tab and were walked
+  by the reconciler, the ephemeral-pool cleanup, and the hot tuner (fixed in
+  PR #438, 724dc71). Every such row also inflates per-pool CloudWatch metric
+  cardinality — one zero-valued series per ephemeral instance ID.
+
+  There is now a guard: `TestIsReservedPoolKeyCoversEverySentinelPrefix`
+  ([pkg/db/pool_config_reserved_test.go](../../pkg/db/pool_config_reserved_test.go))
+  parses every non-test file in `pkg/db`, collects every `__`-prefixed string
+  constant, and fails if `IsReservedPoolKey` does not filter it. **If you add a
+  row kind to the pools table, add its prefix to `IsReservedPoolKey` — the test
+  will tell you, but only if the prefix is a plain string literal constant in
+  `pkg/db`.**
+- **A second row kind's `ttl` attribute does nothing.** DynamoDB allows one TTL
+  attribute per table, and the pools table's is `claim_expiry`. The `ttl`
+  written on every `__runner_offline:` row is inert
+  ([runner_sightings.go:20-25](../../pkg/db/runner_sightings.go)); those rows
+  survive only because `DeleteStaleRunnerSightings` reaps them. Do not add a new
+  row kind with a `ttl` attribute and assume it will be collected.
+- **Reserved-row reapers only cover repos/instances something still revisits.**
+  The orphaned-runner sweep writes sightings only for repos `ListActiveRepos`
+  reports, so a repo that stops using runs-fleet strands its rows; the reaper is
+  the only thing that collects them. `ListActiveRepos` itself only looks back
+  `activeRepoWindow` (7 days) — and since `ExecuteOldJobs` deletes job rows at
+  7 days, that window is effectively the whole table.
+- **`ExecuteOldJobs` hard-deletes with no archive.** Despite the comment
+  "archives or deletes old job records", the implementation
+  ([tasks.go:955](../../pkg/housekeeping/tasks.go)) only ever
+  `BatchWriteItem`-deletes. Any metric, report, or console view computing
+  month-to-date from the jobs table truncates to ~7 days.
+- **Stored status is often GitHub's raw conclusion, not a `JobStatus`
+  constant.** `MarkJobComplete` takes a bare `status string` and writes whatever
+  it is given; the agent's own vocabulary (`success`/`failure`/`timeout`/
+  `interrupted`, from [pkg/agent/telemetry.go](../../pkg/agent/telemetry.go))
+  goes straight through. Filtering on `status == "completed"` therefore returns
+  near-zero: live July data matched 1 job / 0.0 hours instead of 8,102 / 432.3
+  hours, which broke the admin Cost tab, the Metrics tab's cost figure, and the
+  daily cost report (PR #403). Use `CompletedOnly` / `StaleBefore`
+  (attribute-existence on `completed_at`), never a status string.
+- **`MarkJobComplete` is conditioned on `instance_id`.** An agent booting from
+  a stale config can report a `job_id` whose record has since been
+  re-dispatched; the condition makes that a `(nil, nil)` no-op instead of a
+  clobbered live retry. Callers must handle the nil.
 - **Scan fallbacks are silent except for a WARN.** `GetJobByInstance` and
-  `GetPoolBusyInstanceIDs` only use their GSIs when the corresponding env vars
-  (`RUNS_FLEET_JOBS_INSTANCE_ID_GSI`, `RUNS_FLEET_JOBS_POOL_STATUS_GSI`) are
-  set — unset means every call is a paginated Scan, correct but slow and
-  RCU-expensive at scale. `QueryPoolJobHistory`'s GSI is required and
-  hard-named (`pool-created-at-index`).
+  `GetPoolBusyInstanceIDs` use their GSIs only when
+  `RUNS_FLEET_JOBS_INSTANCE_ID_GSI` / `RUNS_FLEET_JOBS_POOL_STATUS_GSI` are
+  set; unset means a paginated Scan every call — correct but RCU-expensive.
 - **`QueryPoolJobHistory`'s GSI path reads a single page.** The Scan fallback
-  paginates fully, but the Query path stops at DynamoDB's ~1 MB page —
-  sufficient at ~100 jobs/day, but a pool sustaining tens of thousands of jobs
-  per hour would compute p90 concurrency from a truncated dataset (reads
-  under the true value).
+  paginates fully; the Query path stops at DynamoDB's ~1 MB page, so a pool
+  sustaining tens of thousands of jobs an hour would compute p90 concurrency
+  from a truncated dataset (reading *under* the true value).
+- **DynamoDB filters run after the read.** `ListActiveRepos`,
+  `ListBusyInstanceIDs`, and `reapReservedRows` all say so in comments: their
+  filters trim the response, not the RCU. `ListBusyInstanceIDs`' age bound is a
+  correctness bound (a leaked stale row would otherwise mark an instance busy
+  forever and inflate the attributed share), not a cost one.
 - **`created_at` changes meaning across the claim boundary.** On a `claiming`
-  record it's the lease timestamp; `SaveJob` re-stamps it at assignment. Code
-  that reads `created_at` off an arbitrary record must know which phase it's
-  looking at — `events.JobInfo.CreatedAt` is documented as assignment time and
-  is only meaningful on `launched`-or-later records.
-- **Stale code comment on `jobRecord`.** The struct comment in `jobs.go` still
-  says "Primary key is instance_id"; the table's actual hash key is `job_id`
-  (see Terraform), and every lifecycle method keys on `job_id`. `instance_id`
-  is just an attribute (plus the optional GSI hash key).
-- **Reads are eventually consistent by default.** None of the DynamoDB calls
-  in these files set `ConsistentRead: true`. Conditional writes on the same
-  partition key are still atomic, but read-then-write patterns can race
-  across orchestrators — which is exactly why mutations use conditional
-  expressions instead of read-modify-write.
+  record it is the lease timestamp; `SaveJob` re-stamps it at assignment.
+  `events.JobInfo.CreatedAt` documents assignment time and is only meaningful
+  on `launched`-or-later records.
+- **Stale code comment on `jobRecord`.** [jobs.go:46](../../pkg/db/jobs.go)
+  still says "Primary key is instance_id"; the table's hash key is `job_id`,
+  and every lifecycle method keys on it. `instance_id` is an attribute plus the
+  optional GSI hash key.
+- **Reads are eventually consistent almost everywhere.** Only
+  `GetFleetCostDays` and `HasLiveInstanceClaim` set `ConsistentRead: true`.
+  Conditional writes on the same partition key are still atomic, which is why
+  mutations use conditional expressions rather than read-modify-write.
 - **Instance-claim release is best-effort.** `ReleaseInstanceClaim` swallows
-  `ConditionalCheckFailedException` (claim already gone or owned by someone
-  else) as a debug log. Callers shouldn't rely on the claim being present
-  after the call.
+  `ConditionalCheckFailedException` as a debug log; don't rely on the claim's
+  state after the call.
 - **`ListAuditLogs` ordering is not guaranteed.** Only the user-filtered GSI
-  path returns timestamp-sorted results; the unfiltered path is a full table
-  Scan with no ordering. Callers needing strict order should filter by user —
-  or sort client-side, as the admin UI does. `Offset`-based pagination over a
-  Scan is also O(full result set) per request.
-- **Audit failures don't block admin actions.** `pkg/admin` records audit
-  entries best-effort (log-and-continue on `RecordAudit` error), so the audit
-  trail is high-fidelity but not transactional with the action it describes.
-- **Circuit breaker has no `half-open` state machine.** `StateHalfOpen` is
-  defined as a constant but the only transitions implemented are
-  `closed → open` (on threshold) and `open → closed` (on auto-reset or manual
-  reset). There is no probationary launch path today.
-- **Manual `ResetCircuit` clears history.** It zeroes `interruption_count`
-  and `first_interruption_at`, so a flaky type can't be reset-spammed without
-  losing the data needed to spot the pattern.
-- **SSM rate limits and parameter quota.** SSM Parameter Store has a default
-  quota of 10,000 standard parameters per account and per-API throttling on
-  `Put/Get`. Each runner gets one parameter; long retention or high
-  concurrency can hit either limit. `Delete` swallows `ParameterNotFound` so
-  duplicate cleanup is safe.
-- **SSM `List` is paginated.** `GetParametersByPath` follows `NextToken` to
-  completion; on a large fleet this means many round trips and counts against
-  the API rate limit.
-- **Vault token lifecycle is owned by the store.** The renewal goroutine is
-  started by `NewVaultStore` and is only stopped by `Close()`. Leaking a
-  `VaultStore` leaks a goroutine; tests using `NewVaultStoreWithClient` skip
-  renewal entirely, which is intentional.
-- **Vault `Get` for a missing secret returns an error**, not `(nil, nil)`,
-  because the implementation explicitly returns `fmt.Errorf("secret not
-  found")`. SSM's `Get` returns the SDK's not-found error from
-  `GetParameter` — error shapes differ between backends. Callers needing a
-  uniform "missing" signal should normalize at the call site.
-- **Vault KV v2 delete uses metadata delete.** `Delete` calls
-  `DeleteMetadata` on KV v2 to fully remove the secret (rather than soft-
-  delete the latest version). Re-creating the same `runner-id` immediately
-  is fine; relying on previous-version recovery is not.
-- **DynamoDB TTL is opportunistic.** AWS deletes TTL-expired items "within
-  a few days," not immediately. Don't treat a stale `runs-fleet-circuit-state`
-  row as authoritative for current capacity — the auto-reset logic in
-  `CheckCircuit` is what actually transitions state. Same for audit rows:
-  entries may linger somewhat past 90 days.
+  path returns timestamp-sorted results; the unfiltered path is an unordered
+  Scan, and `Offset` pagination over it is O(full result set) per request.
+  Audit failures also don't block admin actions (`pkg/admin` logs and
+  continues), so the trail is high-fidelity but not transactional.
+- **Circuit breaker has no half-open state machine.** `StateHalfOpen` is a
+  defined constant, but only `closed → open` (threshold) and `open → closed`
+  (auto/manual reset) are implemented. Manual `ResetCircuit` also zeroes
+  `interruption_count` and `first_interruption_at`, so reset-spamming a flaky
+  type destroys the evidence.
+- **SSM now consumes two parameters and two writes per runner.** The default
+  quota is 10,000 standard parameters per account with per-API throttling; the
+  split halves the effective headroom. `Delete` swallows `ParameterNotFound`
+  (safe duplicate cleanup) and deletes both halves even if the first fails,
+  because a surviving credential is a live registration credential outliving
+  its instance.
+- **Credential decompression is capped at 1 MiB** and reads one byte past the
+  cap to distinguish "filled it" from "had more to give" — an oversized
+  credential fails at `unpackCredential` rather than reaching the agent
+  silently truncated. `unpackCredential` also assigns only after every fallible
+  step passes, so a rejected credential leaves the config untouched rather than
+  half-applied.
+- **A non-base64 JIT config is stored uncompressed rather than rejected.**
+  GitHub's format is not a contract this package controls, and a credential that
+  cannot be stored means a job that never runs.
+- **Backend error shapes are now unified — mostly.** Both SSM and Vault wrap
+  missing configs in `ErrConfigNotFound`, so `errors.Is` works across backends
+  (PR #427's parity suite enforces this). But `EnvStore` returns plain
+  `fmt.Errorf` for its missing-variable cases, and `Put`/`Delete`/`List` on it
+  always error by design.
+- **Vault KV v2 delete uses metadata delete.** `Delete` calls `DeleteMetadata`
+  to fully remove the secret rather than soft-deleting the latest version;
+  previous-version recovery is not available.
+- **Vault token lifecycle is owned by the store.** The renewal goroutine starts
+  in `NewVaultStore` and stops only on `Close()`; leaking a `VaultStore` leaks
+  a goroutine. `NewVaultStoreWithClient` skips renewal entirely, intentionally.
+- **DynamoDB TTL is opportunistic.** AWS deletes expired items "within a few
+  days", not immediately. A stale `runs-fleet-circuit-state` row is not
+  authoritative — `CheckCircuit`'s auto-reset is what actually transitions
+  state. Audit rows may likewise linger past 90 days.
 
 ## Sources [coverage: high]
 
@@ -531,11 +662,21 @@ extracts `runner-id` from the parsed path (`extractRunnerID`).
 - [pkg/db/jobs.go](../../pkg/db/jobs.go)
 - [pkg/db/job_status.go](../../pkg/db/job_status.go)
 - [pkg/db/pool_config.go](../../pkg/db/pool_config.go)
+- [pkg/db/pool_config_reserved_test.go](../../pkg/db/pool_config_reserved_test.go)
 - [pkg/db/locks.go](../../pkg/db/locks.go)
 - [pkg/db/instance_claims.go](../../pkg/db/instance_claims.go)
+- [pkg/db/runner_sightings.go](../../pkg/db/runner_sightings.go)
+- [pkg/db/fleet_cost.go](../../pkg/db/fleet_cost.go)
+- [pkg/db/active_repos.go](../../pkg/db/active_repos.go)
 - [pkg/db/audit.go](../../pkg/db/audit.go)
 - [pkg/circuit/breaker.go](../../pkg/circuit/breaker.go)
 - [pkg/secrets/store.go](../../pkg/secrets/store.go)
 - [pkg/secrets/ssm.go](../../pkg/secrets/ssm.go)
+- [pkg/secrets/credential.go](../../pkg/secrets/credential.go)
 - [pkg/secrets/vault.go](../../pkg/secrets/vault.go)
+- [pkg/secrets/env.go](../../pkg/secrets/env.go)
+- [pkg/secrets/backend_parity_test.go](../../pkg/secrets/backend_parity_test.go)
+- [pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)
+- [pkg/housekeeping/fleet_cost.go](../../pkg/housekeeping/fleet_cost.go)
+- [pkg/cost/fleetmtd.go](../../pkg/cost/fleetmtd.go)
 - [deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf)

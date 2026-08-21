@@ -20,7 +20,6 @@ type mockTaskExecutor struct {
 	orphanedJobsErr    error
 	staleJobsErr       error
 	unconfirmedRunErr  error
-	poolErr            error
 	costErr            error
 	dlqErr             error
 	ephemeralPoolErr   error
@@ -33,7 +32,6 @@ type mockTaskExecutor struct {
 	orphanedJobsCall   int
 	staleJobsCall      int
 	unconfirmedRunCall int
-	poolCall           int
 	costCall           int
 	dlqCall            int
 	ephemeralPoolCall  int
@@ -76,11 +74,6 @@ func (m *mockTaskExecutor) ExecuteStaleJobs(_ context.Context) error {
 func (m *mockTaskExecutor) ExecuteUnconfirmedRunners(_ context.Context) error {
 	m.unconfirmedRunCall++
 	return m.unconfirmedRunErr
-}
-
-func (m *mockTaskExecutor) ExecutePoolAudit(_ context.Context) error {
-	m.poolCall++
-	return m.poolErr
 }
 
 func (m *mockTaskExecutor) ExecuteCostReport(_ context.Context) error {
@@ -187,7 +180,6 @@ func longIntervals() SchedulerConfig {
 		StaleSSMInterval:                d,
 		OldJobsInterval:                 d,
 		OrphanedJobsInterval:            d,
-		PoolAuditInterval:               d,
 		CostReportInterval:              d,
 		DLQRedriveInterval:              d,
 		EphemeralPoolCleanupInterval:    d,
@@ -265,7 +257,7 @@ func TestRunner_TaskSpecs_Covers(t *testing.T) {
 
 	want := []TaskType{
 		TaskOrphanedInstances, TaskStaleSecrets, TaskOldJobs, TaskOrphanedJobs,
-		TaskStaleJobs, TaskUnconfirmedRunners, TaskPoolAudit, TaskCostReport, TaskDLQRedrive,
+		TaskStaleJobs, TaskUnconfirmedRunners, TaskCostReport, TaskDLQRedrive,
 		TaskEphemeralPoolCleanup, TaskOrphanedPackerInstances, TaskPoolHotTuner,
 		TaskExpiredInstanceClaims, TaskStaleAMIInstances, TaskOrphanedRunners,
 		TaskFleetCostSample,
@@ -307,7 +299,6 @@ func TestRunner_TryRunTask_DispatchesToExecutor(t *testing.T) {
 		{TaskOrphanedJobs, func(m *mockTaskExecutor) int { return m.orphanedJobsCall }},
 		{TaskStaleJobs, func(m *mockTaskExecutor) int { return m.staleJobsCall }},
 		{TaskUnconfirmedRunners, func(m *mockTaskExecutor) int { return m.unconfirmedRunCall }},
-		{TaskPoolAudit, func(m *mockTaskExecutor) int { return m.poolCall }},
 		{TaskCostReport, func(m *mockTaskExecutor) int { return m.costCall }},
 		{TaskDLQRedrive, func(m *mockTaskExecutor) int { return m.dlqCall }},
 		{TaskEphemeralPoolCleanup, func(m *mockTaskExecutor) int { return m.ephemeralPoolCall }},
@@ -509,9 +500,9 @@ func TestRunner_Run_RunsInitialTasksOnStart(t *testing.T) {
 
 		// Non-initial tasks must not have fired: their 1h tickers have not
 		// elapsed, so these counters were never written.
-		if executor.ssmCall != 0 || executor.jobsCall != 0 || executor.poolCall != 0 {
-			t.Errorf("non-initial tasks ran before their interval: ssm=%d jobs=%d pool=%d",
-				executor.ssmCall, executor.jobsCall, executor.poolCall)
+		if executor.ssmCall != 0 || executor.jobsCall != 0 {
+			t.Errorf("non-initial tasks ran before their interval: ssm=%d jobs=%d",
+				executor.ssmCall, executor.jobsCall)
 		}
 
 		cancel()
@@ -731,7 +722,6 @@ func TestTaskTypeConstants(t *testing.T) {
 		{TaskOrphanedInstances, "orphaned_instances"},
 		{TaskStaleSecrets, "stale_secrets"},
 		{TaskOldJobs, "old_jobs"},
-		{TaskPoolAudit, "pool_audit"},
 		{TaskCostReport, "cost_report"},
 		{TaskDLQRedrive, "dlq_redrive"},
 		{TaskEphemeralPoolCleanup, "ephemeral_pool_cleanup"},
@@ -762,7 +752,6 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 		{"StaleSSM", cfg.StaleSSMInterval, 15 * time.Minute},
 		{"OldJobs", cfg.OldJobsInterval, 1 * time.Hour},
 		{"OrphanedJobs", cfg.OrphanedJobsInterval, 15 * time.Minute},
-		{"PoolAudit", cfg.PoolAuditInterval, 10 * time.Minute},
 		{"CostReport", cfg.CostReportInterval, 24 * time.Hour},
 		{"DLQRedrive", cfg.DLQRedriveInterval, 1 * time.Minute},
 		{"EphemeralPoolCleanup", cfg.EphemeralPoolCleanupInterval, 1 * time.Hour},

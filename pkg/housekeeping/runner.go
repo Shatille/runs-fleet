@@ -22,8 +22,6 @@ const (
 	TaskStaleSecrets TaskType = "stale_secrets"
 	// TaskOldJobs archives or deletes old job records.
 	TaskOldJobs TaskType = "old_jobs"
-	// TaskPoolAudit generates pool utilization reports.
-	TaskPoolAudit TaskType = "pool_audit"
 	// TaskCostReport generates daily cost reports.
 	TaskCostReport TaskType = "cost_report"
 	// TaskDLQRedrive moves messages from DLQ back to main queue.
@@ -71,7 +69,6 @@ type TaskExecutor interface {
 	ExecuteOrphanedJobs(ctx context.Context) error
 	ExecuteStaleJobs(ctx context.Context) error
 	ExecuteUnconfirmedRunners(ctx context.Context) error
-	ExecutePoolAudit(ctx context.Context) error
 	ExecuteCostReport(ctx context.Context) error
 	ExecuteDLQRedrive(ctx context.Context) error
 	ExecuteEphemeralPoolCleanup(ctx context.Context) error
@@ -115,10 +112,6 @@ type SchedulerConfig struct {
 	// OrphanedJobsInterval is how often to run orphaned jobs cleanup.
 	// Default: 15 minutes
 	OrphanedJobsInterval time.Duration
-
-	// PoolAuditInterval is how often to run pool utilization audit.
-	// Default: 10 minutes
-	PoolAuditInterval time.Duration
 
 	// CostReportInterval is how often to generate cost reports.
 	// Default: 24 hours
@@ -172,7 +165,6 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		StaleSSMInterval:                15 * time.Minute,
 		OldJobsInterval:                 1 * time.Hour,
 		OrphanedJobsInterval:            15 * time.Minute,
-		PoolAuditInterval:               10 * time.Minute,
 		CostReportInterval:              24 * time.Hour,
 		DLQRedriveInterval:              1 * time.Minute,
 		EphemeralPoolCleanupInterval:    1 * time.Hour,
@@ -253,7 +245,6 @@ func (r *Runner) taskSpecs() []taskSpec {
 		{taskType: TaskOrphanedJobs, interval: c.OrphanedJobsInterval, execute: e.ExecuteOrphanedJobs},
 		{taskType: TaskStaleJobs, interval: c.StaleJobsInterval, execute: e.ExecuteStaleJobs},
 		{taskType: TaskUnconfirmedRunners, interval: c.UnconfirmedRunnersInterval, execute: e.ExecuteUnconfirmedRunners},
-		{taskType: TaskPoolAudit, interval: c.PoolAuditInterval, execute: e.ExecutePoolAudit},
 		{taskType: TaskCostReport, interval: c.CostReportInterval, execute: e.ExecuteCostReport},
 		{taskType: TaskEphemeralPoolCleanup, interval: c.EphemeralPoolCleanupInterval, execute: e.ExecuteEphemeralPoolCleanup},
 		{taskType: TaskOrphanedPackerInstances, interval: c.OrphanedPackerInstancesInterval, execute: e.ExecuteOrphanedPackerInstances},

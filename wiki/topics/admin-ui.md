@@ -1,495 +1,494 @@
 ---
 topic: Admin API + UI
-last_compiled: 2026-07-21
-sources_count: 31
+last_compiled: 2026-08-21
+sources_count: 34
 ---
 
 # Admin API + UI
 
-## Purpose [coverage: high -- 30 sources]
+## Purpose [coverage: high -- 34 sources]
 
-`pkg/admin` exposes a REST API plus a self-contained web dashboard for fleet
-operators. It provides the day-to-day surface for working with the runs-fleet
-control plane: pool configuration (CRUD), inspecting jobs, instances (list and
-detail), SQS queues (list and detail), circuit breaker state, cost reporting
-(month-to-date summary, daily series, per-pool breakdown), an aggregate
-metrics summary, a queryable audit log, and two operator-triggered
-housekeeping actions. The dashboard is the operational counterpart to the
-orchestrator running in `cmd/server/`.
+`pkg/admin` is the REST API plus embedded web console fleet operators work
+from. It has moved decisively past read-only: alongside the Phase 1 dashboards
+(pools, jobs, instances, queues, circuit breaker, cost, metrics, audit) it now
+carries the recovery actions an operator needs when the fleet misbehaves —
+per-job requeue and reconcile, manual and drip instance replacement, manual
+termination with an active-job guard, an on-demand orphaned-instance reaper, a
+GitHub-verified hung-jobs panel, and per-job runner logs pulled from S3.
 
-The current code completes Phase 1 ("Visibility") of `docs/ADMIN_UI_PLAN.md`:
-all read dashboards -- jobs, pools (including reconcile status), instances,
-queues, circuit, cost, metrics, audit viewer -- are built (PR #384,
-2026-07-07), and the audit trail is persisted to DynamoDB with a query API
-and UI page (PR #383, 2026-07-06). Phase 2 (write actions) remains largely
-unbuilt: only orphaned-job cleanup and hung-job requeue are wired; manual
-instance termination, circuit reset, forced reconciliation, and DLQ redrive
-are still planned.
+The through-line of the recent work is that the console had to stop reporting
+runs-fleet's *own* record as the truth. Our record says `running` whether the
+job is genuinely executing or the runner was handed nothing, so
+`handler_hung.go` asks GitHub and reports the verdict (#428), `handler_requeue.go`
+lets the operator act on it (#429), `handler_ami.go` answers "has the new AMI
+rolled out?" without one click per instance (#431/#432), and PR #455's fleet-cost
+card answers what the job-priced total structurally cannot.
 
-## Architecture [coverage: high -- 31 sources]
+**The console reads DynamoDB, EC2, SQS and S3 — never CloudWatch.** There is no
+`GetMetricData` or `GetMetricStatistics` call anywhere in `pkg/admin`. Every
+figure on the metrics and cost pages is computed from job records, pool records
+and sampled fleet-cost rows. This is what makes the console entirely unaffected
+by PR #456 shipping the CloudWatch metrics backend disabled by default: turning
+that backend off removes no data the console ever read.
 
-The package is organised one handler file per resource type, all sharing a
-single `AuthMiddleware` instance:
+## Architecture [coverage: high -- 34 sources]
 
-- `handler.go` -- pool CRUD, the `Handler` type, shared helpers
-  (`writeJSON`, `writeError`, `logAdminAction`, `recordAdminAction`,
-  `poolDiff`), validation, request/response DTOs, and the `AuditDB`
-  interface. Also registers `GET /api/audit-logs`.
-- `handler_audit.go` -- `Handler.ListAuditLogs`, the audit query endpoint
+One handler file per resource type, all sharing a single `AuthMiddleware`, all
+registered onto one `adminMux` that `cmd/server/main.go` wraps in the per-IP
+rate limiter:
+
+- [handler.go](../../pkg/admin/handler.go) — pool CRUD, the `Handler` type, the
+  `PoolDB`/`AuditDB` interfaces, hot-pool override validation against
+  `config.HotPoolCaps`, and the shared helpers `writeJSON`, `writeError`,
+  `logAdminAction`, `recordAdminAction`, `auditDetailsFromAttrs`, `poolDiff`.
+  Also registers `GET /api/audit-logs`.
+- [handler_audit.go](../../pkg/admin/handler_audit.go) — the audit query endpoint
   over `pkg/db/audit.go`.
-- `handler_jobs.go` -- `JobsHandler`, jobs list / detail / stats, plus
-  `GET /api/config/trace-url` (trace-UI deep links; `trace_id` on job
-  responses).
-- `handler_instances.go` -- `InstancesHandler`, EC2-backed instance listing
-  and single-instance detail.
-- `handler_queues.go` -- `QueuesHandler`, SQS queue depth/DLQ snapshot for
-  the list and a per-queue detail with oldest-message age; both resolve
-  names through a shared `queueByName` mapping so they cannot drift.
-- `handler_circuit.go` -- `CircuitHandler`, scans the circuit-state table.
-- `handler_cost.go` -- `CostHandler`, month-to-date cost summary, daily
-  series, and by-pool breakdown. Per-job pricing was extracted to the shared
-  `cost.JobPricer` (`pkg/cost/jobpricing.go`, PR #390): each compute func
-  opens with `cost.NewJobPricer(h.onDemand, h.spot)` (live on-demand/spot
-  prices with hard-coded fallback); the handler's former `priceJob` /
-  `jobPricing` / `spotResult` are gone. Family/shape/pool aggregation stayed
-  in the handler.
-- `handler_metrics.go` -- `MetricsHandler`, the aggregate operational
-  snapshot (`/api/metrics/summary`); reuses `CostHandler.CostMTD`.
-- `handler_housekeeping.go` -- `HousekeepingHandler`, orphaned-job cleanup.
-- `handler_requeue.go` -- `RequeueHandler`, operator-triggered requeue of
-  hung (launched-but-never-confirmed) jobs.
-- `auth.go` -- session-cookie-validating `AuthMiddleware` (as of 2026-07;
-  previously Keycloak gatekeeper header extraction).
-- `oidc.go`, `session.go`, `handler_auth.go` -- native OIDC: discovery/
-  exchange/verify, HMAC-signed session cookies, and the
-  `/api/auth/{login,callback,logout,config}` endpoints (added 2026-07).
-- `ratelimit.go` -- per-IP token-bucket `RateLimiter`; `cmd/server/main.go`
-  wraps the entire admin `/api/` mux with it
-  (`RUNS_FLEET_ADMIN_RATE_LIMIT`, default 60/min).
-- `ui.go` -- serves the embedded Next.js static export.
+- [handler_jobs.go](../../pkg/admin/handler_jobs.go) — jobs list/detail/stats,
+  the `stalled` / `elapsed_seconds` derivation, and `GET
+  /api/config/trace-url`.
+- [handler_job_logs.go](../../pkg/admin/handler_job_logs.go) (#445) — `GET
+  /api/jobs/{id}/logs`: lists the agent-shipped runner logs in S3 and returns
+  15-minute pre-signed URLs. Methods hang off `JobsHandler`.
+- [handler_hung.go](../../pkg/admin/handler_hung.go) (#428) — `HungHandler`: age
+  selects candidates, GitHub returns the verdict.
+- [handler_requeue.go](../../pkg/admin/handler_requeue.go) (#429, #422) —
+  `RequeueHandler`: the fleet-wide requeue sweep plus per-job `requeue` and
+  `reconcile`.
+- [handler_instances.go](../../pkg/admin/handler_instances.go) — instance list
+  and detail, plus `DELETE` manual termination (#422). Registers the routes
+  implemented in the two files below.
+- [handler_ami.go](../../pkg/admin/handler_ami.go) (#431) — `GET
+  /api/instances/amis`: what each architecture would boot today.
+- [handler_replace_stale.go](../../pkg/admin/handler_replace_stale.go) (#432,
+  #451) — `POST /api/instances/replace-stale`.
+- [handler_housekeeping.go](../../pkg/admin/handler_housekeeping.go) —
+  orphaned-job cleanup and the on-demand orphaned-instance reaper (#422), plus
+  the shared `parseMaxItems` batch cap (#443).
+- [handler_queues.go](../../pkg/admin/handler_queues.go),
+  [handler_circuit.go](../../pkg/admin/handler_circuit.go),
+  [handler_cost.go](../../pkg/admin/handler_cost.go),
+  [handler_metrics.go](../../pkg/admin/handler_metrics.go).
+- [auth.go](../../pkg/admin/auth.go), [oidc.go](../../pkg/admin/oidc.go),
+  [session.go](../../pkg/admin/session.go),
+  [handler_auth.go](../../pkg/admin/handler_auth.go) — native OIDC.
+- [ratelimit.go](../../pkg/admin/ratelimit.go),
+  [ui.go](../../pkg/admin/ui.go).
 
-Each handler has its own `RegisterRoutes(mux *http.ServeMux)` method, takes
-the shared `*AuthMiddleware`, and wraps every handler func with
-`auth.WrapFunc(...)`. AWS SDK access is mediated by small per-handler
-interfaces (`PoolDB`, `AuditDB`, `JobsDB`, `EC2API`, `SQSAPI`,
-`CircuitDynamoAPI`, `CostDB`, `metricsDB`, `onDemandPricer`, `spotPricer`,
-`costMTDProvider`, housekeeping's `OrphanEC2API`/`OrphanScanAPI`) so each can
-be unit-tested independently.
+Every handler exposes `RegisterRoutes(mux *http.ServeMux)`, takes the shared
+`*AuthMiddleware`, and wraps each func in `auth.WrapFunc(...)` — except the four
+`/api/auth/*` routes, which are registered unwrapped because they *are* the
+login flow. AWS/DB access is mediated by narrow per-handler interfaces (`PoolDB`,
+`AuditDB`, `JobsDB`, `InstancesDB`, `EC2API`, `SQSAPI`, `CircuitDynamoAPI`,
+`CostDB`, `metricsDB`, `onDemandPricer`, `spotPricer`, `costMTDProvider`,
+`LogsS3API`, `LogsPresignAPI`, `GitHubJobStatusChecker`,
+`OrphanInstanceSweeper`) so each is unit-testable in isolation.
 
-Logging is split: regular operational logs use
-`logging.WithComponent(LogTypeAdmin, "<handler>")`, while audit events go
-through the dedicated `auditLog = logging.WithComponent(LogTypeAdmin, "audit")`
-sink in `handler.go` -- and, since PR #383, are additionally persisted to
-DynamoDB via `recordAdminAction` (see Data).
+Two wiring patterns recur in [cmd/server/main.go](../../cmd/server/main.go) and
+matter:
 
-The UI is a Next.js app under `pkg/admin/ui/` whose static export lives at
-`pkg/admin/ui/out/`. `ui.go` embeds it via `//go:embed all:ui/out` and serves
-it under `/admin` with SPA-style fallback to `index.html`. If the bundle has
-not been built, the handler returns 503 with the message "Admin UI not built.
-Run: make build-admin-ui". Pages live under `ui/app/` (pools at the root,
-plus `jobs`, `jobs/detail`, `instances`, `instances/detail`, `queues`,
-`queues/detail`, `circuit`, `cost`, `metrics`, `audit`); detail pages are
-query-param routes (static export cannot do dynamic path segments). Shared
-formatting helpers (`formatRelativeTime`, `formatTimestamp`,
-`formatDuration`) live in `ui/lib/format.ts`; API response types in
-`ui/lib/types.ts`. The cost page's daily bar chart is hand-rolled -- no chart
-dependency was added.
+- **Typed-nil guards.** `orphanSweeper`, `adminJobChecker` and the fleet-cost
+  store are each assigned through a local interface variable only when the
+  concrete pointer is non-nil — a nil `*housekeeping.Tasks` or `*gh.Client`
+  stored directly would make the interface non-nil and the handler would call a
+  client that cannot answer instead of reporting itself unavailable.
+- **One shared `*fleet.AMIResolver`.** `instancesHandler.SetAMIResolver(ws.amiResolver)`
+  hands the console the same resolver the stale-AMI housekeeping sweep uses, so
+  the two cannot cache independently and disagree for a whole TTL about which
+  AMI is current.
 
-## Talks To [coverage: high -- 31 sources]
+The UI is a Next.js static export under `pkg/admin/ui/`, embedded via `//go:embed
+all:ui/out` and served under `/admin`. Pages: pools (root), `jobs`,
+`jobs/detail`, `instances`, `instances/detail`, `queues`, `queues/detail`,
+`circuit`, `cost`, `audit`, `metrics`, `pools/new`, `pools/edit`. Detail pages
+are query-param routes because a static export cannot do dynamic path segments.
+Notable client-side pieces: `lib/api.ts`'s `apiFetch` (credentials, a 401 →
+`auth-required` event, and a `RequestTimeoutError` that deliberately does *not*
+report a timeout as a failure, because a sweep that outran the browser is still
+committing writes); `hooks/use-auto-refresh.ts`; `components/ami-card.tsx`,
+`hung-jobs-card.tsx`, `job-actions.tsx`, `job-logs-card.tsx`,
+`terminate-instance-button.tsx`, `cost-by-repository-table.tsx`.
+
+## Talks To [coverage: high -- 34 sources]
 
 - **DynamoDB**
-  - `runs-fleet-pools` via `PoolDB` (`ListPools`, `GetPoolConfig`,
-    `SavePoolConfig`, `DeletePoolConfig`, `GetPoolBusyInstanceIDs`). Pool
-    records now carry `last_reconcile_at`/`last_reconcile_result`, written
-    by the pool reconcile loop (`pkg/pools/manager.go`) via a targeted
-    `UpdatePoolReconcileResult`.
-  - `runs-fleet-jobs` via `JobsDB` (admin-specific scan/query helpers
-    `ListJobsForAdmin`, `GetJobForAdmin`, `GetJobStatsForAdmin`), via
-    housekeeping's `OrphanScanAPI` raw `Scan` + `UpdateItem`, and via
-    `CostDB`/`metricsDB` (the cost and metrics handlers derive everything
-    from completed-job records -- no separate telemetry store).
+  - `runs-fleet-pools` via `PoolDB` — pool CRUD, `GetPoolBusyInstanceIDs`, and
+    (via `InstancesDB`) `HasLiveInstanceClaim`. Pool records carry
+    `last_reconcile_at`/`last_reconcile_result` and the reconcile-resolved
+    `effective_desired_running`/`effective_desired_stopped`, all written by
+    `pkg/pools/manager.go`, plus the tuner-written read-only `auto_tune` block
+    and the admin-settable `override_linger_minutes`/`override_max_hot`.
+  - `runs-fleet-jobs` via `JobsDB` (`ListJobsForAdmin`, `GetJobForAdmin`,
+    `GetJobStatsForAdmin`), via `CostDB`/`metricsDB`, via `InstancesDB`'s
+    `GetJobByInstance`/`MarkInstanceTerminating`, and via
+    `housekeeping.OrphanScanAPI`'s raw `Scan`/`UpdateItem`/`GetItem` for the
+    sweeps and per-job actions.
   - `runs-fleet-audit` via `AuditDB` (`RecordAudit`, `ListAuditLogs`,
-    `HasAuditTable`) -- implemented in `pkg/db/audit.go` (PR #383),
-    provisioned in `deploy/terraform/dynamodb.tf`, gated by
-    `RUNS_FLEET_AUDIT_TABLE`.
+    `HasAuditTable`), gated by `RUNS_FLEET_AUDIT_TABLE`.
   - `runs-fleet-circuit-state` via `CircuitDynamoAPI.Scan`.
-- **EC2** -- `DescribeInstances` for the instances list and detail views
-  (`runs-fleet:managed=true` tag filter) and for housekeeping/requeue
-  cross-checks of candidate jobs.
-- **SQS** -- `GetQueueAttributes` for visible/in-flight/delayed counts (and
-  oldest-message age) on the main, pool, events, termination, and
-  housekeeping queues, plus the main queue DLQ. The requeue handler also
-  re-enqueues jobs into the main queue via `housekeeping.JobRequeuer`.
-- **Live EC2 pricing via `pkg/cost`** -- `CostHandler` takes an
-  `onDemandPricer` (satisfied by `pkg/cost.PriceFetcher`) and a `spotPricer`
-  (satisfied by `pkg/fleet.Manager.SpotPrice`) and delegates the pricing math
-  to `cost.JobPricer` (PR #390); both pricers are nil-safe with fallback to
-  the hard-coded price table and fixed spot discount.
-- **An OIDC provider** (Keycloak, Auth0, Okta, Google, or any standards-
-  compliant issuer) -- the orchestrator is its own OIDC relying party as of
-  2026-07 (authorization-code + PKCE, `pkg/admin/oidc.go`). No external
-  gatekeeper or reverse proxy in front is required.
+  - Sampled fleet-cost day rows via `cost.FleetCostStore`.
+- **EC2** — `DescribeInstances` (always with `tag:runs-fleet:managed=true`),
+  `TerminateInstances`, `DescribeSpotInstanceRequests`,
+  `CancelSpotInstanceRequests`, and launch-template reads through
+  `fleet.AMIResolver`.
+- **SQS** — `GetQueueAttributes` only, for the main/pool/events/termination/
+  housekeeping queues and the main DLQ. Requeues go out through
+  `housekeeping.JobRequeuer` onto the main job queue.
+- **S3** — `ListObjectsV2` + `PresignGetObject` for runner logs. Wired from
+  `CacheBucketName` with an empty prefix, and keys are built by
+  `pkg/agent/logship.BuildPrefix`.
+- **GitHub** — via `GitHubJobStatusChecker` (hung classification, per-job status)
+  and `housekeeping.JobQueuedChecker` (the queued re-confirmation that gates a
+  requeue past `launched`).
+- **`pkg/cost` / `pkg/fleet`** — `cost.PriceFetcher` (live on-demand),
+  `fleet.Manager.SpotPrice` (live spot), `cost.NewJobPricer` for per-job pricing,
+  `cost.ComputeFleetMTDIn` for the fleet block, `fleet.GetInstanceSpec` for the
+  arch/vCPU shape matrix.
+- **`pkg/housekeeping`** — the console is the on-demand driver for the same
+  sweeps the scheduler runs. See [housekeeping](housekeeping.md).
+- **An OIDC provider** — the orchestrator is its own relying party.
+- **NOT CloudWatch.** No metric-read API is called from this package.
 
-## API Surface [coverage: high -- 30 sources]
+## API Surface [coverage: high -- 34 sources]
 
-All routes are registered against an `http.ServeMux` using Go 1.22+ method +
-path patterns. Every route is wrapped by `AuthMiddleware`, and the whole
-`/api/` mux sits behind the per-IP `RateLimiter`.
+Routes are Go 1.22+ method+path patterns on `adminMux`; the whole `/api/` tree
+sits behind the per-IP `RateLimiter` (`RUNS_FLEET_ADMIN_RATE_LIMIT`, default
+60/min).
 
-Pools (`handler.go::Handler.RegisterRoutes`):
+**Pools** — `GET /api/pools`, `GET /api/pools/{name}`, `POST /api/pools`,
+`PUT /api/pools/{name}`, `DELETE /api/pools/{name}`. Create requires
+`Content-Type: application/json` and 409s on an existing name; PUT preserves
+`Ephemeral` and `LastJobTime` from the prior record and audits a per-field
+`poolDiff`; DELETE is 403 unless `Ephemeral == true`. Hot-pool overrides are
+three-state (`nil` = auto, `&0` = force cold, a value = forced) and validated
+against the fleet-wide `HotPoolCaps`; `auto_tune` is never accepted from a
+client.
 
-- `GET /api/pools` -- list pools with `current_running`, `current_stopped`,
-  live `busy_instances` count, and `last_reconcile_at` /
-  `last_reconcile_result`.
-- `GET /api/pools/{name}` -- single pool, same enrichment.
-- `POST /api/pools` -- create. Validates name, requires
-  `Content-Type: application/json`, body cap 1 MB, 409 if exists.
-- `PUT /api/pools/{name}` -- update. Preserves `Ephemeral` and `LastJobTime`
-  from existing record; logs a per-field diff via `poolDiff`.
-- `DELETE /api/pools/{name}` -- only allowed when `Ephemeral == true`;
-  returns 403 otherwise.
-- `GET /api/audit-logs` -- query the persisted audit trail. Filters: `user`,
-  `action`, `since`/`until` (RFC3339; unparseable values silently ignored),
-  `limit` (default 50, max 100), `offset`. Returns
-  `{entries, limit, offset}`; 503 when `RUNS_FLEET_AUDIT_TABLE` is unset.
+**Audit** — `GET /api/audit-logs`: `user`, `action`, `since`/`until` (RFC3339,
+unparseable silently ignored), `limit` (default 50, max 100), `offset`. 503 when
+the audit table is unconfigured.
 
-Jobs (`handler_jobs.go::JobsHandler.RegisterRoutes`):
+**Auth** — `GET /api/auth/config`, `GET /api/auth/login`, `GET
+/api/auth/callback`, `POST /api/auth/logout`.
 
-- `GET /api/jobs` -- filters: `status`, `pool`, `since` (RFC3339), `limit`
-  (default 50, max 100), `offset`. Returns `{jobs, total, limit, offset}`.
-- `GET /api/jobs/stats` -- 24-hour default window via `since` query.
-  Computes `hit_rate = warm_pool_hit / completed`.
-- `GET /api/jobs/{id}` -- 64-bit integer job ID.
-- `GET /api/config/trace-url` -- the configured trace-UI base URL
-  (`RUNS_FLEET_TRACE_UI_URL`) so the UI can deep-link `trace_id`s.
+**Jobs** — `GET /api/jobs` (`status` validated against the full `db.JobStatus*`
+set, `pool`, `since`, `stale=true`, `stale_minutes`, `limit` default 50 max 100,
+`offset`), `GET /api/jobs/stats`, `GET /api/jobs/{id}`, `GET /api/config/trace-url`.
 
-Instances (`handler_instances.go::InstancesHandler.RegisterRoutes`):
+**Job logs** — `GET /api/jobs/{id}/logs`: returns `{logs:[{name,size,
+last_modified,url}], expires_in_seconds}`. Prefers the per-job S3 prefix and
+falls back to the run prefix filtered by `instance_id`, so a job whose agent had
+no `job_id` (keyed under `unknown-job`) is still reachable. 503 when no log
+source is wired; every successful read is audited as `job_logs.view`.
 
-- `GET /api/instances` -- filters: `pool`, `state` (default set
-  `pending,running,stopping,stopped`). Always filters by tag
-  `runs-fleet:managed=true`. Cross-references each pool's busy instance IDs
-  to populate the `busy` flag; failures per pool are reported in a
-  `warnings` array rather than failing the whole request.
-- `GET /api/instances/{instance_id}` -- single-instance detail: list fields
-  plus availability zone, image ID, subnet, architecture, state reason, and
-  the full tag map. IDs must match `i-` + 8 or 17 hex chars (400 otherwise);
-  the managed-tag filter means unmanaged and unknown IDs both 404.
+**Hung jobs** — `GET /api/jobs/hung` (`stale_minutes` default 15, `limit`
+default 25 max 50) returns each candidate with GitHub's status/conclusion, the
+runner GitHub actually gave the job to, and a `classification` of
+`hung` / `running` / `completed_upstream` / `unknown`, plus `candidates`,
+`checked`, `truncated`, `github_available`. `GET /api/jobs/{id}/github` is the
+single-job form. GitHub calls fan out at `hungCheckConcurrency = 5`.
 
-Queues (`handler_queues.go::QueuesHandler.RegisterRoutes`):
+**Job recovery** — `POST /api/jobs/{id}/requeue` (`force=true` ignores the retry
+cap, never the queued confirmation) and `POST /api/jobs/{id}/reconcile`. Both
+return a machine-readable `outcome` plus a `details` sentence, and refusals are
+409 rather than 500 so the UI can say *why*: `exhausted`, `wrong_status`,
+`not_queued`, `github_unknown`, `github_unavailable`, `no_run_id`, `lost_race`
+for requeue; `instance_alive`, `no_instance`, `lost_race` for reconcile.
 
-- `GET /api/queues` -- iterates main, pool, events, termination,
-  housekeeping in fixed order. For the main queue it also fetches DLQ depth
-  (`dlq_messages`). Per-queue failures are logged but skipped silently.
-- `GET /api/queues/{queue_name}` -- single queue by name via the shared
-  `queueByName` mapping (unknown or unconfigured names 404); reports
-  `oldest_message_age_seconds` alongside the depth counts.
+**Instances** — `GET /api/instances` (`pool`, `state` validated against the six
+EC2 state names; default set `pending,running,stopping,stopped`) returning
+`busy`, `image_id`, `architecture`, `ami_stale`, plus `warnings[]` for per-pool
+busy-lookup failures and `ami_current_unknown: true` when the reference AMI could
+not be read. `GET /api/instances/amis` → the per-architecture reference AMI with
+launch template, version and version-created, plus `unresolved[]`. `GET
+/api/instances/{instance_id}` → detail (AZ, subnet, state reason, full tag map);
+IDs must match `i-` + 8 or 17 hex chars. `DELETE
+/api/instances/{instance_id}[?force=true]` → 409 with the active job attached
+unless forced. `POST /api/instances/replace-stale` (`pool`, `max` default 5 max
+25, `dry_run`).
 
-Circuit breaker (`handler_circuit.go::CircuitHandler.RegisterRoutes`):
+**Queues** — `GET /api/queues` (fixed order main, pool, events, termination,
+housekeeping; DLQ depth for main) and `GET /api/queues/{queue_name}`.
 
-- `GET /api/circuit` -- paginated `Scan` of the circuit-state table.
-  Returns an empty list with a `message` if `tableName` is empty.
+**Circuit** — `GET /api/circuit`.
 
-Cost (`handler_cost.go::CostHandler.RegisterRoutes`):
+**Cost** — `GET /api/cost/summary`, `/daily`, `/by-pool`, `/by-repository`.
 
-- `GET /api/cost/summary` -- month-to-date totals over completed jobs:
-  spot/on-demand split, spot savings, avg cost per job, per-family
-  breakdown, plus a runner-minute cost matrix keyed by (arch, vCPU) with
-  the configured per-vCPU-minute rates.
-- `GET /api/cost/daily` -- per-day series for the current UTC month,
-  bucketed by job `CreatedAt` and zero-filled through today so the UI can
-  chart a continuous series; daily totals sum to the summary's total.
-- `GET /api/cost/by-pool` -- month-to-date cost grouped by pool, poolless
-  cold-start jobs under the `"cold-start"` pseudo-pool, sorted by total
-  cost descending.
+**Metrics** — `GET /api/metrics/summary`.
 
-Metrics (`handler_metrics.go::MetricsHandler.RegisterRoutes`):
+**Housekeeping** — `POST /api/housekeeping/orphaned-jobs`
+(`threshold_minutes` default 120 min 10, `max_items` default 100 max 500,
+`dry_run`), `POST /api/housekeeping/orphaned-instances` (`dry_run`), `POST
+/api/housekeeping/requeue-hung-jobs` (`threshold_minutes` default 15 min 10,
+`max_items`, `dry_run`; `launched` only).
 
-- `GET /api/metrics/summary` -- trailing-24h job counts
-  (total/completed/failed/in-progress), warm-pool hit rate,
-  `avg_startup_time_seconds`, a best-effort `spot_interruption_rate`
-  (always flagged `spot_interruption_rate_estimated: true`), and
-  `cost_mtd_usd` (omitted -- not zero -- when the cost lookup fails).
+**UI** — `GET /admin/...`.
 
-Housekeeping (`handler_housekeeping.go`, `handler_requeue.go`):
+## Data [coverage: high -- 34 sources]
 
-- `POST /api/housekeeping/orphaned-jobs` -- query params
-  `threshold_minutes` (default 120, minimum 10) and `dry_run=true`. Scans
-  the jobs table for `status in (running, claiming) AND created_at < cutoff`,
-  batch-checks via `DescribeInstances` (batch size 100), and conditionally
-  flips status to `orphaned` with `completed_at = now`.
-- `POST /api/housekeeping/requeue-hung-jobs` -- query params
-  `threshold_minutes` (default 15, minimum 10) and `dry_run=true`.
-  Re-dispatches a fresh runner for jobs stuck in `launched` (runner never
-  confirmed) by terminating the dead instance and re-enqueuing into the
-  main queue, bounded by `housekeeping.MaxRequeueRetries`. Never touches
-  `running` jobs or the GitHub-side job/run.
+**`PoolResponse`** returns configured, reconcile-resolved and observed numbers
+side by side: `desired_running`/`desired_stopped` (config),
+`effective_desired_running`/`effective_desired_stopped` (**pointers** —
+absent until a pool has reconciled once, so a client can tell "not yet known"
+from "the target is zero"), `current_running`/`current_stopped` from the last
+reconcile snapshot, live `busy_instances` computed per request,
+`last_reconcile_at`/`last_reconcile_result`, and the hot-pool
+`override_*`/`auto_tune` pair. The pools table's help text spells out the
+consequence: `busy_instances` is live while the counts are a snapshot, so during
+a burst busy can briefly exceed running.
 
-UI (`ui.go::UIHandler`):
+**`JobResponse`** carries `status`, `exit_code`, `duration_seconds`, and
+`elapsed_seconds` — the live counterpart written for an *unfinished* job, because
+`duration_seconds` is only written at completion and a job hung for six hours
+would otherwise report nothing. `stalled` is a boolean derived from
+`defaultStaleAfter = 15m` (deliberately longer than housekeeping's own 10m
+threshold, so the console does not flag a job the sweep has not had a turn at).
 
-- `GET /admin/...` -- serves the embedded Next.js export with directory ->
-  `index.html` resolution and SPA fallback to root `index.html`.
+**`HungJob`** = `JobResponse` + `github_status`, `github_conclusion`,
+`runner_name`, `classification`, and a `detail` string that is only populated for
+`unknown` — the code is explicit that unknown is never a guess.
 
-## Data [coverage: high -- 31 sources]
+**Cost shapes.** `CostSummaryResponse` carries MTD totals, `cost_per_minute`,
+per-family rows, the `RunnerMinuteEntry` matrix keyed by (arch, vCPU), and an
+optional `Fleet *FleetCostBlock`. The runner-minute matrix reports the *incurred*
+unit price (#419): `cost` / `cost_per_minute` are what this shape actually cost
+divided by its own runner-minutes, so they already reflect the spot/on-demand mix
+it ran on; `baseline_cost` / `baseline_cost_per_minute` price the identical
+minutes at the hosted per-vCPU-minute reference rate and are *not* runs-fleet
+spend. `FleetCostBlock` (PR #455) reports `total_cost`, `compute_cost`,
+`ebs_cost`, `attributed_cost`/`unattributed_cost`/`attributed_percent`,
+`days_covered`/`days_in_period`, `partial`, a prose `warning`, and
+`ebs_estimated` (always true).
 
-**Pool response shape** (`PoolResponse` in `handler.go`) -- the API returns
-both desired and observed counts: `desired_running`, `desired_stopped`,
-`current_running`, `current_stopped`, plus `busy_instances` computed from
-`PoolDB.GetPoolBusyInstanceIDs(pool)` at request time, and reconcile status
-(`last_reconcile_at` as a nullable timestamp, `last_reconcile_result` as
-`"success"` / `"failed: <err>"`). Resource specs (`cpu_min/max`,
-`ram_min/max`, `families`, `arch`) and `schedules` are passed through
-verbatim.
+All four cost endpoints share `monthToDateJobs`: completed jobs since the start
+of the current month **in the configured reporting zone**, not UTC, matching the
+zone the fleet sampler writes its day keys in. "Finished" is keyed on
+`completed_at`, not a status value, because the stored status is GitHub's raw
+conclusion (`success`/`failure`/`interrupted`/…) and all of those burned billable
+EC2 time. The query is deliberately unlimited — the former `Limit: 10000` cap is
+gone from the cost path (it survives only in `handler_metrics.go`).
 
-**Job response shape** (`JobResponse` in `handler_jobs.go`) -- exposes
-`status`, `exit_code`, `duration_seconds`, `warm_pool_hit`, `retry_count`,
-`trace_id`, plus `created_at`/`started_at`/`completed_at` (omitted when
-zero). The underlying `db.AdminJobEntry` and `db.AdminJobStats` are
-admin-specific projections that live in `pkg/db`.
+**`MetricsSummaryResponse`** — trailing-24h job counts, warm-pool hit rate,
+`avg_startup_time_seconds` (mean of `StartedAt - CreatedAt`), an always-flagged
+`spot_interruption_rate`, and a nullable `cost_mtd_usd`.
 
-**`runs-fleet-audit` table** (`pkg/db/audit.go`,
-`deploy/terraform/dynamodb.tf`) -- implemented in PR #383, closely following
-the plan. Primary key `id` (ULID, time-sortable, generated on write along
-with the timestamp -- callers never fabricate either); GSI `user-index` on
-`(user, timestamp)`; attributes `action`, `target`, `result`, `details`
-(map), `client_ip`, `timestamp` (RFC3339 string), and a `ttl` epoch-seconds
-attribute set 90 days out (`auditRetention`) so DynamoDB TTL reaps entries
-with no cleanup job. `RUNS_FLEET_AUDIT_TABLE` unset disables persistence
-entirely (slog-only); `HasAuditTable()` is the presence check.
-`ListAuditLogs` takes the sorted GSI query path when a `user` filter is
-given (falling back to `Scan` on GSI validation errors), otherwise scans;
-`action`/`since`/`until` become FilterExpressions and `offset`/`limit` are
-applied in memory.
+**`runs-fleet-audit`** (`pkg/db/audit.go`) — primary key `id` (ULID, generated
+inside `RecordAudit` along with the timestamp so callers cannot fabricate
+either), GSI `user-index` on `(user, timestamp)`, attributes `action`, `target`,
+`result`, `details` (map), `client_ip`, `timestamp`, and a 90-day `ttl`.
+`recordAdminAction` is the single write path for both sinks: the structured slog
+line and the DynamoDB row, with the variadic `slog.Attr` extras doubling as
+`Details`. Actions now recorded: `pool.create`, `pool.update`, `pool.delete`,
+`housekeeping.orphaned-jobs`, `housekeeping.orphaned-instances`,
+`housekeeping.requeue_hung_jobs`, `job.requeue`, `job.reconcile`,
+`instance.terminate`, `instance.replace_stale`, `job_logs.view` — including every
+`denied` and `error` branch.
 
-**Audit write path** -- `recordAdminAction` (in `handler.go`) does both
-sinks: the structured slog line via `logAdminAction` (fields `audit=true`,
-`user`, `action`, `pool_name`/target, `result`, `remote_addr`;
-`success`→INFO, `denied`→WARN, `error`→ERROR) and DynamoDB persistence,
-where the same variadic `slog.Attr` extras double as the persisted entry's
-`Details` map (`auditDetailsFromAttrs`). Persistence failures are logged but
-never fail the parent request. Actions recorded: `pool.create`,
-`pool.update` (with the `poolDiff` change string), `pool.delete`, and
-`housekeeping.orphaned-jobs`; every denied/error branch is recorded too, and
-`user` falls back to `"anonymous"` when auth is disabled.
+**Statuses the handlers act on.** The orphaned-jobs sweep treats
+running/claiming/launched (and `requeued`, aged on `requeued_at`) as candidates;
+`requeue-hung-jobs` sweeps `launched` only; the per-job requeue and reconcile
+accept `launched`, `running` and `claiming`, with anything past `launched` gated
+on GitHub confirming `queued`.
 
-**Cost response shapes** (`handler_cost.go`) -- `CostSummaryResponse`
-carries the MTD totals, per-family `FamilyBreakdownEntry` rows, and the
-runner-minute matrix (`RunnerMinuteEntry` per (arch, vCPU), plus the rate
-map). `CostDailyResponse.Days` is zero-filled `CostDayEntry` rows;
-`CostByPoolResponse.Pools` is `CostPoolEntry` rows. All three endpoints
-share `monthToDateJobs` (completed jobs since the start of the current UTC
-month, `Limit: 10000`) and a per-request `cost.JobPricer` (memoizes live
-on-demand/spot lookups per instance type; jobs with no instance type price
-as `t4g.medium`; durations ≤ 0 bill as 0.5h minimum).
+## Key Decisions [coverage: high -- 34 sources]
 
-**Metrics summary shape** (`MetricsSummaryResponse` in
-`handler_metrics.go`) -- `jobs_24h` counts from `GetJobStatsForAdmin`,
-`warm_pool_hit_rate` = warm-pool hits / completed, `avg_startup_time_seconds`
-averaged over `StartedAt - CreatedAt` where both are set and sanely ordered,
-and the estimated spot-interruption share (spot jobs with `retry_count > 0`
-or status `requeued`). `cost_mtd_usd` is a nullable pointer so the UI can
-distinguish "unavailable" from a real $0.00.
-
-**Job statuses observed in handlers** -- the housekeeping handler treats
-`running` and `claiming` as the "in-flight" set when looking for orphans and
-writes `orphaned` via a conditional update so racing runners cannot lose
-real completions; the requeue handler deliberately sweeps only `launched`.
-
-**Circuit DynamoDB record** (`circuitRecord`) -- has fields
-`instance_type`, `state`, `interruption_count`, `first_interruption_at`,
-`last_interruption_at`, `opened_at`, `auto_reset_at`. The API renames
-`interruption_count -> failure_count` and `auto_reset_at -> reset_at` for
-display.
-
-## Key Decisions [coverage: high -- 31 sources]
-
-- **Native OIDC, no external gatekeeper (2026-07).** `auth.go`'s
+- **Native OIDC, no external gatekeeper (2026-07, unchanged).**
   `AuthMiddleware` validates a self-contained, HMAC-signed session cookie
-  (`pkg/admin/session.go`) minted by `handler_auth.go` after a real
-  authorization-code + PKCE exchange (`pkg/admin/oidc.go`) against the
-  configured OIDC provider. This replaced the earlier Keycloak-gatekeeper
-  header-trust model, which itself had replaced the original Bearer-token
-  auth -- the project going open-source meant it could no longer assume
-  every self-hoster would stand up their own gatekeeper proxy. Sessions
-  are stateless (no shared session store, matching the orchestrator's
-  multi-Fargate-replica design) and have no refresh-token renewal: a fixed
-  TTL, then re-login. The middleware exposes the user via context
-  (`UserContextKey`, `GroupsContextKey`) and a `GetUsername(ctx)` helper --
-  unchanged from the header-trust era, so audit call sites needed
-  no changes.
-- **Auth requirement derived from OIDC config presence, not a mode flag.**
-  `NewAuthMiddleware("")` sets `requireAuth = false`; the session secret is
-  empty exactly when `RUNS_FLEET_ADMIN_OIDC_ISSUER_URL` (and the rest of
-  the OIDC config) is unset, letting you run the server locally without an
-  IdP. Config validation requires the OIDC fields to be all-set or
-  all-empty -- a partial configuration fails at startup rather than
-  silently disabling auth. Audit entries record `user=anonymous` when auth
-  is disabled.
-- **Audit trail: dual-sink, persistence never blocks the action (PR #383).**
-  `recordAdminAction` keeps the slog line (for CloudWatch Insights /
-  log-based alerting) and adds DynamoDB persistence for `GET
-  /api/audit-logs`. A failed `PutItem` is logged and swallowed -- a gap in
-  the audit trail is a lesser failure than blocking an admin action.
-  Feature-gating follows the table-name convention: `HasAuditTable()` (the
-  env-configured table name being non-empty) is the signal, not a nil
-  interface -- `main.go` always wires the shared `*db.Client` whether or
-  not `RUNS_FLEET_AUDIT_TABLE` is set. IDs are ULIDs and timestamps are
-  generated inside `RecordAudit` so callers can never fabricate them, and
-  the 90-day TTL keeps the table small enough that offset pagination is
-  done in memory rather than with DynamoDB cursors.
-- **Phase 1 stayed strictly read-only, computed from existing stores
-  (PR #384).** The reconcile-status, detail-view, cost-breakdown, and
-  metrics features all read what the control plane already writes
-  (jobs/pools tables, EC2 tags, SQS attributes) rather than introducing new
-  telemetry infrastructure -- the one schema addition is the pool record's
-  `last_reconcile_at`/`last_reconcile_result`, written by the reconcile
-  loop while it still holds the pool lock. Where an exact figure would need
-  new history (spot interruptions), the API ships an explicitly flagged
-  estimate instead of silently wrong data.
-- **One pricing function for all cost endpoints -- now shared with the
-  daily report (PR #390).** `cost.JobPricer` (extracted behavior-preserving
-  from `CostHandler.priceJob`; `handler_cost_test.go` unchanged) is the
-  single source of per-job pricing (live on-demand via `cost.PriceFetcher`,
-  live spot via `fleet.Manager`, hard-coded table + fixed discount as
-  fallback), shared by summary, daily, and by-pool -- and `CostMTD` feeds
-  the metrics summary -- so every surface reports the same dollar figure.
-  The extraction lets `pkg/cost.Reporter`'s daily cost report price the
-  same job records with the same math. Daily buckets by `CreatedAt`
-  deliberately match the `monthToDateJobs` filter dimension so day totals
-  sum to the summary total.
-- **Embedded Next.js UI for single-binary deployment.** `//go:embed
-  all:ui/out` packages the static export into the Go binary; deployment is
-  one artifact. If the export is missing, the handler returns a 503 with the
-  build instruction inline. Detail pages use query params, not dynamic
-  routes, because the export is static.
-- **Per-handler interfaces over a god struct.** Each handler defines a
-  narrow interface for its AWS / DB needs (`PoolDB`, `AuditDB`, `JobsDB`,
-  `CostDB`, `CircuitDynamoAPI`, `onDemandPricer`, `spotPricer`, etc.).
-  Ergonomic for tests and keeps coupling local.
-- **Phase 1 read-only first, Phase 2 actions later.** `ADMIN_UI_PLAN.md`
-  prioritised visibility before destructive ops (manual termination,
-  circuit reset, forced reconcile, DLQ redrive). Phase 1 is now complete;
-  the only write actions are the two housekeeping sweeps
-  (orphaned-jobs cleanup, hung-job requeue), both with `dry_run` support.
-- **Per-IP rate limiting across the whole API.** `RateLimiter.Wrap`
-  encloses the admin mux in `main.go` (`RUNS_FLEET_ADMIN_RATE_LIMIT`,
-  default 60 req/min, X-Forwarded-For-aware), so expensive new endpoints
-  inherit protection automatically.
-- **Soft delete restriction on pools.** `DeletePool` rejects non-ephemeral
-  pools with a 403 + audit `denied/non-ephemeral`. Long-lived pools must be
-  decommissioned via the GitOps flow, not the API.
-- **Consistent failure surface.** Every handler returns
-  `ErrorResponse{Error, Details}` JSON; per-handler `writeError`/`writeJSON`
-  helpers centralise this.
+  (`session.go`) minted by `handler_auth.go` after a real authorization-code +
+  PKCE exchange (`oidc.go`). This replaced Keycloak-gatekeeper header trust,
+  which had replaced Bearer tokens: going open-source meant it could no longer
+  assume every self-hoster runs a gatekeeper proxy. Sessions are stateless (no
+  shared store, matching the multi-replica design) with a fixed TTL and no
+  refresh flow. The user reaches handlers via `UserContextKey`/`GroupsContextKey`
+  and `GetUsername(ctx)`.
+- **Auth requirement derived from config presence, not a mode flag.**
+  `NewAuthMiddleware("")` sets `requireAuth = false`, and the session secret is
+  empty exactly when the OIDC config is. Config validation demands the OIDC
+  fields be all-set or all-empty, so a partial configuration fails at startup
+  rather than silently disabling auth; audit entries then record
+  `user=anonymous`.
+- **The console asks GitHub, because our own record cannot answer (#428).** A
+  job whose runner was minted, confirmed, and then handed nothing reads exactly
+  like a healthy long build in the jobs table. So age selects candidates and
+  GitHub returns the verdict, and a lookup that fails is classified `unknown`
+  with the error text attached rather than guessed. `HungHandler` degrades to
+  age-only candidates when no GitHub client is wired instead of failing outright.
+- **Watching a hang is not enough; the operator must be able to end it (#429).**
+  Per-job `requeue`/`reconcile` drop the sweep's staleness threshold — that floor
+  exists to stop a *sweep* acting on jobs that may still be starting, and means
+  nothing for a row a human picked — but keep every safety the sweep has, and add
+  the queued confirmation for anything past `launched`. Refusals are 409 with a
+  sentence, so the UI never has to say "failed".
+- **Destructive actions fail closed and report what they left alone.** Manual
+  termination 409s with the active job attached unless forced; `replace-stale`
+  refuses to touch a running instance at all (EC2 does not re-image on start, so
+  a running instance picks up the new AMI when it cycles), checks the pool claim
+  *before* the job record (the claim is written before the instance is started,
+  so it is the only signal covering that window), treats any lookup failure as
+  busy, and returns `terminated`/`busy`/`running`/`skipped` lists instead of
+  force-killing (#451). Non-terminable candidates are classified *before* the cap
+  is applied, so instances that can never be terminated do not consume the budget
+  that exists to avoid draining a pool.
+- **A destructive action that partly succeeded must say so.** When
+  `replace-stale` hits a mid-loop `TerminateInstances` failure, both the audit
+  record and the error the operator sees name the instances already destroyed —
+  a bare failure would report a destructive action as having done nothing.
+- **Bounded batches the console drains (#443).** `parseMaxItems` (default 100,
+  max 500) plus a `truncated` flag on every sweep response; the jobs page loops
+  until `truncated` clears, capped at `MAX_DRAIN_BATCHES` and with an idle-batch
+  guard, because a batch can legitimately clean nothing while real work sits
+  further down the scan. `RequestTimeoutError` exists for the same reason: a
+  timed-out sweep is still committing writes, and calling it "failed" sends
+  operators to re-run work already done.
+- **The on-demand reaper deliberately does not take the housekeeping task lock.**
+  The scheduled sweep converges on the same idempotent `TerminateInstances`
+  call, so an overlap costs a duplicate terminate — while waiting on a lock would
+  make the button feel broken.
+- **Runner logs load on click, not on mount (#445).** Each fetch is an audited
+  read of material that may carry secrets, so opening a job page must not record
+  an access. URLs are 15-minute pre-signs, matching the Actions cache's window.
+- **Fleet cost is additive and omitted rather than zeroed (PR #455).**
+  `summary.total_cost` stays the job-attributed headline; the fleet block is a
+  separate optional card. With no sampler store the field is absent and the page
+  renders exactly as before, because a `$0.00` sitting beside a non-zero
+  attributed cost would read as "the fleet has no overhead". The attributed share
+  comes from the sampler's own busy-vs-total instance-seconds, never from
+  dividing the job-priced total by the fleet total — job rows are hard-deleted at
+  7 days, so that ratio would decay across a month for calendar reasons.
+- **One pricing function for every cost surface.** `cost.JobPricer` (live
+  on-demand via `cost.PriceFetcher`, live spot via `fleet.Manager`, hard-coded
+  table + fixed discount as fallback) backs summary, daily, by-pool,
+  by-repository and `CostMTD` — which in turn feeds the metrics summary — so
+  every surface reports the same dollar figure, and `pkg/cost.Reporter`'s daily
+  report prices the same records with the same math.
+- **Cost months are the operator's months.** A UTC boundary would roll the total
+  over mid-morning on the 1st and bucket the daily chart against a day starting
+  at 09:00 local, so `SetReportLocation` ties the handler to the same zone the
+  fleet sampler writes its day keys in.
+- **The console and the housekeeping sweep share one `AMIResolver`.** Two would
+  cache independently and could disagree for a whole TTL about which AMI is
+  current, so the page could call an instance stale that the sweep considers
+  fine, or the reverse.
+- **`ApproximateAgeOfOldestMessage` is read from the response, never requested.**
+  It is a CloudWatch metric rather than an SQS queue attribute, and naming it in
+  `GetQueueAttributes` makes SQS reject the entire call with
+  `InvalidAttributeName` — the one place the console brushes against CloudWatch
+  is a value AWS hands back unasked.
+- **Audit: dual-sink, and persistence never blocks the action.** A failed
+  `PutItem` is logged and swallowed; a gap in the trail is a lesser failure than
+  blocking an admin action. Feature-gating is `HasAuditTable()`, not a nil
+  interface, because `main.go` always wires the shared `*db.Client`.
+- **Per-handler interfaces over a god struct**, and **auto-refresh on every page
+  unconditionally** (#451) rather than behind a per-page toggle, with a
+  `document.hidden` check so a background tab costs nothing.
+- **Embedded Next.js export for single-binary deployment**, with query-param
+  detail routes because a static export cannot do dynamic path segments.
 
-## Gotchas [coverage: high -- 30 sources]
+## Gotchas [coverage: high -- 34 sources]
 
-- **No RBAC beyond authentication.** Session claims carry `Groups` (from the
-  ID token's groups claim, via `GroupsContextKey`), but nothing checks them
-  -- any authenticated user can hit every endpoint, including destructive
-  writes (pool delete, requeue, cleanup). This is a known, separate gap
-  (see `ADMIN_UI_PLAN.md`'s RBAC note), not something this auth model
-  change addresses.
-- **The groups claim name varies by provider and is easy to get wrong on
-  first setup.** `RUNS_FLEET_ADMIN_OIDC_GROUPS_CLAIM` defaults to `"groups"`
-  (correct for Keycloak/Okta); Auth0 commonly namespaces it (e.g.
-  `https://example.com/groups`) and Google has no groups claim at all --
-  worth checking first if group-based logic ever silently sees zero groups.
-- **Sessions don't survive a session-secret rotation.** Rotating
-  `RUNS_FLEET_ADMIN_SESSION_SECRET` invalidates every existing session
-  cookie immediately (the HMAC signature no longer verifies) -- expected
-  and fine given there's no refresh flow to preserve, but worth knowing
-  before rotating in a live deployment.
-- **The metrics page's "Avg Startup" is not the `JobStartupSeconds`
-  metric.** `avgStartupSeconds` in `handler_metrics.go` averages
-  `StartedAt - CreatedAt` from the DynamoDB job record -- i.e. assignment →
-  runner started. The backend `JobStartupSeconds` metric (added later, PR
-  #387) measures GitHub job created → started. The two intentionally
-  differ; don't "fix" one to match the other.
-- **`spot_interruption_rate` over-counts by design.** It is the share of
-  spot jobs with `retry_count > 0` or status `requeued`, which also counts
-  bootstrap failures and stale-claim re-claims. It ships flagged
-  (`spot_interruption_rate_estimated: true`) and the UI shows a caveat
-  banner; an exact figure awaits Phase 3's stored interruption history.
-- **Cost figures are estimates, bounded at 10k jobs.** Fallbacks stack up:
-  missing instance type prices as `t4g.medium`, zero/negative durations
-  bill as a 0.5h minimum, live price lookups fall back to the 3-family
-  hard-coded table and fixed 70% spot discount, and `monthToDateJobs` caps
-  at `Limit: 10000` -- a very busy month silently truncates. The
-  runner-minute matrix separately skips zero-duration jobs, unknown
-  instance types, and arches without a configured rate, so its total is not
-  the EC2 total.
-- **Audit list ordering is only guaranteed on the user-filtered path.**
-  `ListAuditLogs` with a `user` filter queries the `user-index` GSI (sorted
-  by timestamp range key); without it, results come from a `Scan`, which
-  DynamoDB does not sort -- so the unfiltered viewer page can show entries
-  out of order across pages. Offset pagination is in-memory and relies on
-  the 90-day TTL keeping the table small.
-- **`requeue-hung-jobs` audit entries are slog-only.** `RequeueHandler`
-  still uses its own private `auditLog` helper rather than
-  `recordAdminAction`, so hung-job requeues never appear in
-  `GET /api/audit-logs` -- only pool CRUD and orphaned-jobs cleanup are
-  persisted. (The plan says future write actions should call
-  `recordAdminAction`.)
-- **Unparseable audit/jobs filter params are silently ignored.** Bad
-  `since`/`until` RFC3339 values, out-of-range `limit`, or negative
-  `offset` fall back to defaults without a 400 -- deliberate, matching
-  `ListJobs`'s `since` handling, but a typo'd filter looks like "no
-  filter".
+- **No RBAC beyond authentication.** Session claims carry `Groups` and nothing
+  checks them — any authenticated user can terminate instances, force-requeue
+  jobs, replace stale instances and read runner logs. Known, unaddressed gap.
+- **`RUNS_FLEET_ADMIN_OIDC_GROUPS_CLAIM` defaults to `"groups"`**, correct for
+  Keycloak/Okta; Auth0 commonly namespaces it and Google has no groups claim at
+  all. Worth checking first if group-based logic ever sees zero groups.
+- **Rotating `RUNS_FLEET_ADMIN_SESSION_SECRET` invalidates every live session
+  immediately** — the HMAC no longer verifies. Expected, given there is no
+  refresh flow, but disruptive mid-shift.
+- **Runner logs are read from the *cache* bucket.** `main.go` wires
+  `SetLogSource(..., ws.cfg.CacheBucketName, "")` — there is no separate
+  runner-logs bucket env var, so a deployment with no cache bucket gets a 503 on
+  the logs endpoint, and the log objects share a bucket (and lifecycle) with
+  Actions cache artifacts.
+- **`GetJobLogs` lists a single `ListObjectsV2` page and does not paginate.** A
+  job with more than 1000 log objects would silently show only the first page.
+  It also pre-signs every object it lists, so a single failed pre-sign 502s the
+  whole response rather than returning the rest.
+- **The runner-log run-prefix fallback is instance-filtered by substring.** It
+  matches `"/" + instanceID + "/"` inside the key, so it depends on the
+  `logship` key layout keeping the instance ID as a whole path segment.
+- **`GET /api/jobs/hung` mutates a shared slice from concurrent goroutines.**
+  Each goroutine writes only its own `jobs[i]`, which is safe by index, but the
+  work is unbounded in count (only `hungCheckConcurrency` limits *in-flight*
+  calls) and every call shares the request context — a slow GitHub makes the page
+  as slow as its slowest of up to 50 lookups.
+- **`spot_interruption_rate` over-counts by design** — the share of spot jobs with
+  `retry_count > 0` or status `requeued`, which also counts bootstrap failures and
+  stale-claim re-claims. It ships flagged and the UI shows a caveat.
+- **The metrics page's "Avg Startup" is not the `JobStartupSeconds` metric.**
+  `avgStartupSeconds` averages `StartedAt - CreatedAt` from the DynamoDB record
+  (assignment → runner started); the backend metric measures GitHub job created →
+  started. They intentionally differ.
+- **`/api/metrics/summary` still caps at `Limit: 10000`** while the cost
+  endpoints no longer do — a very busy 24h window silently truncates the startup
+  and interruption figures.
+- **Cost figures remain estimates.** Missing instance types price as
+  `t4g.medium`; zero/negative durations bill a 0.5h minimum; live price lookups
+  fall back to a 3-family table and a fixed spot discount; the runner-minute
+  matrix skips zero-duration jobs, uncatalogued instance types, and arches with
+  no configured rate, so its `Cost` column can fall short of `total_cost`.
+- **Everything cost- or metrics-related is truncated at 7 days by housekeeping.**
+  `ExecuteOldJobs` hard-deletes job rows older than 7 days with no archive, so a
+  "month-to-date" total computed from the jobs table only ever sees the last
+  week. The fleet-cost block is the one MTD figure not subject to this.
 - **DynamoDB `Scan` on the hot path.** `ListCircuitStates`, the orphan-job
-  finder, the audit scan fallback, and the underlying `JobsDB` admin
-  queries (which every cost and metrics request fans into) all use
-  full-table scans with pagination loops. Fine at current scale, but cost
-  and latency grow linearly with table size.
-- **`orphaned-jobs` / `requeue-hung-jobs` minimum threshold is 10 minutes
-  -- silently.** If the caller passes `threshold_minutes` below 10 (or a
-  non-integer), the handlers silently keep their defaults (120 and 15
-  minutes respectively) rather than rejecting.
-- **Instance "exists" defaults to true on AWS errors.** In
-  `instanceExists`, anything other than `InvalidInstanceID.NotFound` (e.g.
-  throttling, transient API outage) is treated as "instance exists". Safe
-  default -- avoids false-positive cleanups -- but means a long EC2 outage
-  will mask real orphans.
-- **Pool busy-instance lookup can fail per-pool without failing the call.**
-  `ListInstances` collects warnings into a `warnings: []string` field
-  instead of returning 500; the `busy` flag for those instances will read
-  `false`. Operators should check the warnings array. `GetInstance`
-  likewise degrades `busy` to `false` on a failed lookup.
-- **`ListPools` swallows per-pool errors.** If `GetPoolConfig` errors on one
-  pool name, it is logged and the pool is dropped from the response (not
-  surfaced as a partial-failure warning). The list response can be silently
-  shorter than the actual pool count. `ListQueues` behaves the same way for
-  per-queue attribute failures.
-- **PUT preserves `Ephemeral` and `LastJobTime` from the prior record.**
-  `UpdatePool` copies these two fields from `existing` after building the
-  config, so they cannot be mutated through the API. `DeletePool` then keys
-  off `Ephemeral` to gate deletion.
-- **Pool name validation is permissive on update.** `validatePoolRequest`
-  enforces the `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` and 63-char limit only when
-  `isCreate=true`; on PUT the name comes from the URL path and is overwritten
-  onto the request before validation skips that branch.
+  finder, the audit scan fallback, and the `JobsDB` admin queries every cost and
+  metrics request fans into are all full-table scans with pagination loops.
+- **Audit list ordering is only guaranteed on the user-filtered path.** With a
+  `user` filter it queries the sorted `user-index` GSI; without one it scans,
+  which DynamoDB does not sort — the unfiltered viewer can show entries out of
+  order across pages. Offset pagination is in-memory.
+- **Unparseable filter params are silently ignored.** Bad `since`/`until`,
+  out-of-range `limit`, negative `offset`, and a sub-10-minute
+  `threshold_minutes` all fall back to defaults without a 400 — a typo'd filter
+  looks like "no filter". `max_items`, `max`, `limit` (hung) and `stale_minutes`
+  are the exceptions and *do* 400.
+- **`instanceExists` defaults to true on AWS errors.** Anything other than
+  `InvalidInstanceID.NotFound` reads as "exists" — safe, but a long EC2 outage
+  masks real orphans.
+- **Per-pool failures degrade silently in three places.** `ListInstances`
+  collects them into `warnings[]` and leaves `busy: false`; `GetInstance`
+  degrades `busy` to `false`; `ListPools` **drops** a pool whose `GetPoolConfig`
+  errors, with no warning field at all, so the list can be shorter than the real
+  pool count. `ListQueues` at least surfaces a wholesale failure as a 502 when
+  *every* queue lookup fails.
+- **`ami_stale` is absent, not false, when the reference is unknown.** The list
+  response sets `ami_current_unknown: true` and leaves `ami_stale` unset rather
+  than marking the fleet current — marking it stale on a transient error would
+  invite an operator to replace all of it.
+- **`PUT` cannot change `Ephemeral` or `LastJobTime`** (copied from the existing
+  record), and **pool-name validation only runs on create** — on `PUT` the name
+  comes from the URL and is overwritten onto the request before the branch that
+  would validate it.
 - **UI 503 on a fresh checkout.** `ui.go` checks for `ui/out/index.html` at
-  request time; without `make build-admin-ui` you get
-  `503 Service Unavailable` rather than a 404. Similarly, the audit page
-  renders a "persistence not configured" notice when the API returns 503
-  for an unset `RUNS_FLEET_AUDIT_TABLE`.
-- **SPA fallback masks 404s.** If a `/admin/...` path does not match any file
-  or directory index, `UIHandler` falls back to root `index.html` with a 200
-  so the Next.js client router can resolve. Genuine missing assets look like
-  HTML responses to consumers.
+  request time; without `make build-admin-ui` you get 503, not 404. The audit
+  page similarly renders a "persistence not configured" notice on a 503.
+- **SPA fallback masks 404s for routes but not assets.** A non-matching
+  `/admin/...` path falls back to root `index.html` with a 200; `isStaticAsset`
+  carves out `/_next/` and anything with an extension so a stale chunk URL 404s
+  instead of returning HTML under a `.js` name (which renders an unstyled page
+  with no visible error).
+- **Double-submit guards are `useRef`, not state.** `ConfirmDialog` stays open on
+  confirm and its button carries no pending state, so a key repeat can fire a
+  destructive action twice before React re-renders; `ami-card.tsx`,
+  `job-actions.tsx` and the jobs page each keep an `inFlight` ref for this.
 
 ## Sources [coverage: high]
 
 - [pkg/admin/handler.go](../../pkg/admin/handler.go)
 - [pkg/admin/handler_audit.go](../../pkg/admin/handler_audit.go)
 - [pkg/admin/handler_jobs.go](../../pkg/admin/handler_jobs.go)
+- [pkg/admin/handler_job_logs.go](../../pkg/admin/handler_job_logs.go)
+- [pkg/admin/handler_hung.go](../../pkg/admin/handler_hung.go)
+- [pkg/admin/handler_requeue.go](../../pkg/admin/handler_requeue.go)
 - [pkg/admin/handler_instances.go](../../pkg/admin/handler_instances.go)
+- [pkg/admin/handler_ami.go](../../pkg/admin/handler_ami.go)
+- [pkg/admin/handler_replace_stale.go](../../pkg/admin/handler_replace_stale.go)
 - [pkg/admin/handler_queues.go](../../pkg/admin/handler_queues.go)
 - [pkg/admin/handler_circuit.go](../../pkg/admin/handler_circuit.go)
 - [pkg/admin/handler_cost.go](../../pkg/admin/handler_cost.go)
-- [pkg/cost/jobpricing.go](../../pkg/cost/jobpricing.go)
 - [pkg/admin/handler_metrics.go](../../pkg/admin/handler_metrics.go)
 - [pkg/admin/handler_housekeeping.go](../../pkg/admin/handler_housekeeping.go)
-- [pkg/admin/handler_requeue.go](../../pkg/admin/handler_requeue.go)
 - [pkg/admin/auth.go](../../pkg/admin/auth.go)
 - [pkg/admin/oidc.go](../../pkg/admin/oidc.go)
 - [pkg/admin/session.go](../../pkg/admin/session.go)
@@ -497,16 +496,22 @@ display.
 - [pkg/admin/ratelimit.go](../../pkg/admin/ratelimit.go)
 - [pkg/admin/ui.go](../../pkg/admin/ui.go)
 - [pkg/db/audit.go](../../pkg/db/audit.go)
+- [pkg/cost/jobpricing.go](../../pkg/cost/jobpricing.go)
 - [cmd/server/main.go](../../cmd/server/main.go)
-- [deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf)
 - [docs/ADMIN_UI_PLAN.md](../../docs/ADMIN_UI_PLAN.md)
-- [pkg/admin/ui/app/audit/page.tsx](../../pkg/admin/ui/app/audit/page.tsx)
+- [pkg/admin/ui/app/page.tsx](../../pkg/admin/ui/app/page.tsx)
+- [pkg/admin/ui/app/jobs/page.tsx](../../pkg/admin/ui/app/jobs/page.tsx)
+- [pkg/admin/ui/app/jobs/detail/page.tsx](../../pkg/admin/ui/app/jobs/detail/page.tsx)
+- [pkg/admin/ui/app/instances/page.tsx](../../pkg/admin/ui/app/instances/page.tsx)
 - [pkg/admin/ui/app/cost/page.tsx](../../pkg/admin/ui/app/cost/page.tsx)
-- [pkg/admin/ui/app/metrics/page.tsx](../../pkg/admin/ui/app/metrics/page.tsx)
-- [pkg/admin/ui/app/instances/detail/page.tsx](../../pkg/admin/ui/app/instances/detail/page.tsx)
-- [pkg/admin/ui/app/queues/detail/page.tsx](../../pkg/admin/ui/app/queues/detail/page.tsx)
-- [pkg/admin/ui/components/audit-logs-table.tsx](../../pkg/admin/ui/components/audit-logs-table.tsx)
-- [pkg/admin/ui/components/instances-table.tsx](../../pkg/admin/ui/components/instances-table.tsx)
+- [pkg/admin/ui/app/audit/page.tsx](../../pkg/admin/ui/app/audit/page.tsx)
+- [pkg/admin/ui/components/ami-card.tsx](../../pkg/admin/ui/components/ami-card.tsx)
+- [pkg/admin/ui/components/hung-jobs-card.tsx](../../pkg/admin/ui/components/hung-jobs-card.tsx)
+- [pkg/admin/ui/components/job-actions.tsx](../../pkg/admin/ui/components/job-actions.tsx)
+- [pkg/admin/ui/components/job-logs-card.tsx](../../pkg/admin/ui/components/job-logs-card.tsx)
 - [pkg/admin/ui/components/pool-table.tsx](../../pkg/admin/ui/components/pool-table.tsx)
-- [pkg/admin/ui/lib/format.ts](../../pkg/admin/ui/lib/format.ts)
+- [pkg/admin/ui/components/instances-table.tsx](../../pkg/admin/ui/components/instances-table.tsx)
+- [pkg/admin/ui/components/terminate-instance-button.tsx](../../pkg/admin/ui/components/terminate-instance-button.tsx)
+- [pkg/admin/ui/lib/api.ts](../../pkg/admin/ui/lib/api.ts)
 - [pkg/admin/ui/lib/types.ts](../../pkg/admin/ui/lib/types.ts)
+- [pkg/admin/ui/hooks/use-auto-refresh.ts](../../pkg/admin/ui/hooks/use-auto-refresh.ts)

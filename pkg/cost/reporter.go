@@ -105,6 +105,12 @@ type Breakdown struct {
 	JobsCompleted     int
 	SpotInterruptions int
 
+	// SpotInterruptionsAvailable reports whether SpotInterruptions was actually
+	// observed. It is false when the CloudWatch metrics backend is not publishing
+	// the counter (the default) or the query failed, in which case the count is
+	// unknown rather than zero.
+	SpotInterruptionsAvailable bool
+
 	// RunnerVcpuMinutes is the total billable vCPU-minutes this workload ran
 	// (Σ runner-minutes × vCPU), and RunnerMinuteCost is what that usage costs in
 	// the standard hosted-runner unit (per-vCPU-minute) — a relative comparison
@@ -237,7 +243,7 @@ func (r *Reporter) getCostMetrics(ctx context.Context, startTime, endTime time.T
 		return nil, err
 	}
 
-	breakdown.SpotInterruptions = r.spotInterruptionCount(ctx, startTime, endTime)
+	breakdown.SpotInterruptions, breakdown.SpotInterruptionsAvailable = r.spotInterruptionCount(ctx, startTime, endTime)
 
 	// Supporting-service estimates scale off the completed-job count.
 	jobs := float64(breakdown.JobsCompleted)
@@ -317,9 +323,13 @@ func (r *Reporter) accumulateEC2Costs(ctx context.Context, breakdown *Breakdown,
 }
 
 // spotInterruptionCount sums the SpotInterruptions metric across the Family
-// dimension for the window. Zero data yields 0; a CloudWatch error degrades to 0
-// (interruption counts are informational, not core to the cost figure).
-func (r *Reporter) spotInterruptionCount(ctx context.Context, startTime, endTime time.Time) int {
+// dimension for the window, reporting whether the count could be observed at all.
+//
+// The metric exists only when the CloudWatch metrics backend is publishing it, and
+// that backend ships disabled. An absent series is therefore the common case, not
+// an error — but it is also not zero interruptions, so it must not be rendered as
+// one. A query failure is likewise unavailable rather than zero.
+func (r *Reporter) spotInterruptionCount(ctx context.Context, startTime, endTime time.Time) (int, bool) {
 	output, err := r.cwClient.GetMetricData(ctx, &cloudwatch.GetMetricDataInput{
 		StartTime:         aws.Time(startTime),
 		EndTime:           aws.Time(endTime),
@@ -327,19 +337,21 @@ func (r *Reporter) spotInterruptionCount(ctx context.Context, startTime, endTime
 	})
 	if err != nil {
 		costLog.Warn(ctx, "spot interruption count unavailable", slog.String("error", err.Error()))
-		return 0
+		return 0, false
 	}
 
 	var sum float64
+	var observed bool
 	for _, result := range output.MetricDataResults {
 		if result.Id == nil || *result.Id != spotInterruptionQueryID {
 			continue
 		}
 		for _, v := range result.Values {
 			sum += v
+			observed = true
 		}
 	}
-	return int(sum)
+	return int(sum), observed
 }
 
 const spotInterruptionQueryID = "spot_interruptions"
@@ -379,7 +391,11 @@ func (r *Reporter) generateMarkdownReport(b *Breakdown) string {
 
 	buf.WriteString("## Job Statistics\n\n")
 	buf.WriteString(fmt.Sprintf("- Jobs completed: %d\n", b.JobsCompleted))
-	buf.WriteString(fmt.Sprintf("- Spot interruptions: %d\n", b.SpotInterruptions))
+	if b.SpotInterruptionsAvailable {
+		buf.WriteString(fmt.Sprintf("- Spot interruptions: %d\n", b.SpotInterruptions))
+	} else {
+		buf.WriteString("- Spot interruptions: unavailable (CloudWatch metrics disabled)\n")
+	}
 	if b.JobsCompleted > 0 {
 		costPerJob := b.TotalCost / float64(b.JobsCompleted)
 		buf.WriteString(fmt.Sprintf("- Cost per job: $%.4f\n", costPerJob))

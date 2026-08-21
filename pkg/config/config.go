@@ -119,7 +119,7 @@ type Config struct {
 	AdminSessionTTLMinutes int
 
 	// Metrics configuration
-	MetricsCloudWatchEnabled        bool     // Enable CloudWatch metrics (default: true)
+	MetricsCloudWatchEnabled        bool     // Enable CloudWatch metrics (default: false)
 	MetricsPrometheusEnabled        bool     // Enable Prometheus /metrics endpoint
 	MetricsPrometheusPath           string   // HTTP path for Prometheus /metrics endpoint (default: "/metrics")
 	MetricsDatadogEnabled           bool     // Enable Datadog DogStatsD metrics
@@ -254,7 +254,7 @@ func Load() (*Config, error) {
 		AdminSessionTTLMinutes: getEnvIntDefault("RUNS_FLEET_ADMIN_SESSION_TTL_MINUTES", 480),
 
 		// Metrics
-		MetricsCloudWatchEnabled:        getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", true),
+		MetricsCloudWatchEnabled:        getEnvBool("RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED", false),
 		MetricsPrometheusEnabled:        getEnvBool("RUNS_FLEET_METRICS_PROMETHEUS_ENABLED", false),
 		MetricsPrometheusPath:           getEnv("RUNS_FLEET_METRICS_PROMETHEUS_PATH", "/metrics"),
 		MetricsDatadogEnabled:           getEnvBool("RUNS_FLEET_METRICS_DATADOG_ENABLED", false),
