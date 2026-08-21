@@ -415,14 +415,15 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 		return nil, nil
 	}
 
+	// Guard the typed nil before it is stored in the SpotPricer interface:
+	// a nil *fleet.Manager assigned directly would be a non-nil interface.
+	var spot cost.SpotPricer
+	if fleetManager != nil {
+		spot = fleetManager
+	}
+
 	var costReporter housekeeping.CostReporter
 	if cfg.CostReportSNSTopic != "" || cfg.CostReportBucket != "" {
-		// Guard the typed nil before it is stored in the SpotPricer interface:
-		// a nil *fleet.Manager assigned directly would be a non-nil interface.
-		var spot cost.SpotPricer
-		if fleetManager != nil {
-			spot = fleetManager
-		}
 		costReporter = cost.NewReporter(awsCfg, dbClient, spot, cfg, cfg.CostReportSNSTopic, cfg.CostReportBucket)
 	}
 
@@ -430,6 +431,7 @@ func initHousekeeping(awsCfg aws.Config, cfg *config.Config, secretsStore secret
 	tasksExecutor.SetPoolDB(&poolDBAdapter{client: dbClient})
 	tasksExecutor.SetJobRequeuer(jobQueue)
 	tasksExecutor.SetFleetCostStore(dbClient)
+	tasksExecutor.SetFleetPricers(cost.NewPriceFetcher(awsCfg, awsCfg.Region), spot)
 
 	if githubClient != nil {
 		tasksExecutor.SetGitHubJobChecker(&githubJobCheckerAdapter{client: githubClient})

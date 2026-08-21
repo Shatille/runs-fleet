@@ -313,9 +313,11 @@ Target: ~$55-65/month for 100 jobs/day @ 10 min avg runtime
 Compare to GitHub hosted runners: $80/month
 
 **Cost reporting caveats (pkg/cost/):**
-- Hard-coded pricing for 3 instance families only (t4g, c7g, m7g)
-- 70% spot discount is fixed assumption
-- Regional price variations not included
+- Fallback pricing is a per-vCPU rate per family (ap-northeast-1 list prices),
+  used only when the live Pricing API is unavailable; burstable families are
+  priced per type because their tiers do not scale with vCPU
+- 70% spot discount is a fixed assumption, used only when no live spot price
+- Regional price variations not included (rates assume ap-northeast-1)
 - Data transfer and S3 request costs excluded
 - Estimates only, not exact billing
 

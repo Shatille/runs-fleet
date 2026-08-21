@@ -287,7 +287,7 @@ func TestCostHandler_GetCostSummary_MixedInstances(t *testing.T) {
 	if arm4.VcpuMinutes != 20 {
 		t.Errorf("arm64/4 vcpu-minutes = %v, want 20", arm4.VcpuMinutes)
 	}
-	wantIncurred := 0.145 * (1 - cost.SpotDiscount) * (5.0 / 60)
+	wantIncurred := cost.GetInstancePrice("c7g.xlarge") * (1 - cost.SpotDiscount) * (5.0 / 60)
 	if !approx(arm4.Cost, wantIncurred) {
 		t.Errorf("arm64/4 cost = %v, want %v (incurred EC2, not the flat rate)", arm4.Cost, wantIncurred)
 	}
@@ -449,8 +449,10 @@ func TestCostHandler_RunnerMinuteBreakdown_UnknownInstanceTypeExcluded(t *testin
 	if !approx(resp.RunnerMinuteCost, 0.05) {
 		t.Errorf("baseline runner-minute cost = %v, want 0.05", resp.RunnerMinuteCost)
 	}
-	// Incurred cost stays EC2-priced: $0.145/hr at the spot fallback over 10 min.
-	wantIncurred := 0.145 * (1 - cost.SpotDiscount) / 6
+	// Incurred cost stays EC2-priced: the catalogued rate at the spot fallback
+	// over 10 min. Derived, not hard-coded, so a price-table refresh cannot
+	// silently invalidate the assertion.
+	wantIncurred := cost.GetInstancePrice("c7g.xlarge") * (1 - cost.SpotDiscount) / 6
 	if !approx(row.Cost, wantIncurred) {
 		t.Errorf("shape cost = %v, want %v", row.Cost, wantIncurred)
 	}

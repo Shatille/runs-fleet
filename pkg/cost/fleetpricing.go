@@ -10,7 +10,7 @@ import (
 
 // EBSGiBMonthRate is the gp3 storage rate per GiB-month (approximate, us-east-1).
 //
-// WARNING: ESTIMATE ONLY, like instancePricing. Regional variation, provisioned
+// WARNING: ESTIMATE ONLY, like familyVCPUHourly. Regional variation, provisioned
 // IOPS/throughput above the gp3 baseline, and snapshot storage are not modelled.
 //
 // EBS is priced at all because a stopped warm-pool instance costs nothing else:

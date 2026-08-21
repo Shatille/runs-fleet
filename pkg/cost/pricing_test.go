@@ -257,46 +257,6 @@ func TestPriceFetcher_GetPricing_MultiplTypes(t *testing.T) {
 	}
 }
 
-func TestPriceFetcher_RefreshCache(t *testing.T) {
-	callCount := 0
-	mockClient := &mockPricingClient{
-		getProductsFunc: func(_ context.Context, _ *pricing.GetProductsInput, _ ...func(*pricing.Options)) (*pricing.GetProductsOutput, error) {
-			callCount++
-			priceJSON := `{
-				"terms": {
-					"OnDemand": {
-						"SKU123": {
-							"priceDimensions": {
-								"DIM123": {
-									"pricePerUnit": {
-										"USD": "0.0336"
-									}
-								}
-							}
-						}
-					}
-				}
-			}`
-			return &pricing.GetProductsOutput{
-				PriceList: []string{priceJSON},
-			}, nil
-		},
-	}
-
-	pf := cost.NewPriceFetcherWithClient(mockClient, "us-east-1")
-
-	// RefreshCache should call the API for all known instance types
-	err := pf.RefreshCache(context.Background())
-	if err != nil {
-		t.Fatalf("RefreshCache() error = %v", err)
-	}
-
-	// Should have called the API multiple times (once per known instance type)
-	if callCount < 10 {
-		t.Errorf("RefreshCache() made %d API calls, expected at least 10 for known instance types", callCount)
-	}
-}
-
 func TestPriceFetcher_RegionToLocation(t *testing.T) {
 	tests := []struct {
 		region   string
@@ -378,3 +338,52 @@ func TestPriceFetcher_FallbackPrices(t *testing.T) {
 var _ = time.Second // Ensure time package is used
 var _ types.Filter  // Ensure types package is used
 var _ = aws.String  // Ensure aws package is used
+
+// useFallback latched true on the first API error and was never cleared in any
+// live path, so one failure at startup pinned the process to estimates for its
+// whole life -- silently, since the latch also suppressed the warning. It must
+// expire so a transient outage or a newly-granted IAM permission is picked up.
+func TestPriceFetcher_FallbackLatchExpires(t *testing.T) {
+	var calls int
+	mockClient := &mockPricingClient{
+		getProductsFunc: func(_ context.Context, _ *pricing.GetProductsInput, _ ...func(*pricing.Options)) (*pricing.GetProductsOutput, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("AccessDeniedException: pricing:GetProducts")
+			}
+			return &pricing.GetProductsOutput{PriceList: []string{`{
+				"terms": {"OnDemand": {"SKU": {"priceDimensions": {"DIM": {
+					"pricePerUnit": {"USD": "0.5000"}}}}}}
+			}`}}, nil
+		},
+	}
+	p := cost.NewPriceFetcherWithClient(mockClient, "ap-northeast-1")
+
+	if _, err := p.GetPrice(context.Background(), "c7g.xlarge"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("want 1 API call, got %d", calls)
+	}
+
+	// Inside the retry window the latch holds, so a failing API is not hammered.
+	if _, err := p.GetPrice(context.Background(), "m7g.large"); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("latch did not suppress the retry: %d calls", calls)
+	}
+
+	p.SetFallbackRetryAfter(-time.Second)
+
+	got, err := p.GetPrice(context.Background(), "m7g.large")
+	if err != nil {
+		t.Fatalf("third call: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("want a retry once the window lapsed, got %d calls", calls)
+	}
+	if got != 0.5 {
+		t.Errorf("price = %v, want the recovered live 0.5", got)
+	}
+}

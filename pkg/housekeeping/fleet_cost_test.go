@@ -356,3 +356,72 @@ func TestFleetCostSampleBucketsDaysInTheConfiguredZone(t *testing.T) {
 		t.Errorf("bucketed into day %q, want %q (the configured zone's date)", store.days[0], want)
 	}
 }
+
+type recordingSpotPricer struct {
+	prices map[string]float64
+	asked  []string
+}
+
+func (r *recordingSpotPricer) SpotPrice(_ context.Context, instanceType string) (float64, bool) {
+	r.asked = append(r.asked, instanceType)
+	p, ok := r.prices[instanceType]
+	return p, ok
+}
+
+// The sampler priced every instance off the hard-coded table because it was
+// constructed with nil price sources, so a spot r8g.xlarge billed as an
+// on-demand t4g.medium. Live rates must reach the pricer.
+func TestFleetCostSampleUsesLiveSpotPrice(t *testing.T) {
+	store := &fakeFleetCostStore{}
+	spot := &recordingSpotPricer{prices: map[string]float64{"r8g.xlarge": 0.1431}}
+	tasks := fleetCostTasks(t, store,
+		instance("i-spot", "r8g.xlarge", "", "running", true),
+	)
+	tasks.SetFleetPricers(nil, spot)
+
+	if err := tasks.ExecuteFleetCostSample(context.Background()); err != nil {
+		t.Fatalf("ExecuteFleetCostSample() error = %v", err)
+	}
+	if len(spot.asked) == 0 {
+		t.Fatal("sampler never asked for a live spot price")
+	}
+
+	elapsed := store.deltas[0].InstanceSeconds / 3600
+	wantCompute := 0.1431 * elapsed
+	got := store.deltas[0].ComputeCost
+	if got < wantCompute*0.99 || got > wantCompute*1.01 {
+		t.Errorf("compute cost = %v, want ~%v from the live spot rate", got, wantCompute)
+	}
+}
+
+// Spot prices move continuously, so a rate resolved on an earlier tick must not
+// be reused for a later one: each tick re-asks and prices its own interval.
+func TestFleetCostSampleRefetchesSpotPriceEachTick(t *testing.T) {
+	store := &fakeFleetCostStore{}
+	spot := &recordingSpotPricer{prices: map[string]float64{"r8g.xlarge": 0.10}}
+	tasks := fleetCostTasks(t, store,
+		instance("i-spot", "r8g.xlarge", "", "running", true),
+	)
+	tasks.SetFleetPricers(nil, spot)
+
+	if err := tasks.ExecuteFleetCostSample(context.Background()); err != nil {
+		t.Fatalf("first tick: %v", err)
+	}
+	firstAsks := len(spot.asked)
+
+	spot.prices["r8g.xlarge"] = 0.30
+	if err := tasks.ExecuteFleetCostSample(context.Background()); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+	if len(spot.asked) <= firstAsks {
+		t.Fatal("second tick reused a memoized rate; a stale spot price would be billed forever")
+	}
+
+	if len(store.deltas) != 2 {
+		t.Fatalf("got %d deltas, want 2", len(store.deltas))
+	}
+	perSecond := func(d db.FleetCostDelta) float64 { return d.ComputeCost / d.InstanceSeconds }
+	if perSecond(store.deltas[1]) <= perSecond(store.deltas[0]) {
+		t.Error("a tripled spot price did not raise the second tick's rate")
+	}
+}

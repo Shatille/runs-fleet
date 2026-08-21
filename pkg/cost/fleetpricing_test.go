@@ -7,6 +7,7 @@ import (
 
 	"github.com/Shavakan/runs-fleet/pkg/cost"
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/Shavakan/runs-fleet/pkg/fleet"
 )
 
 // A running instance bills for compute AND its attached storage. This is the
@@ -142,6 +143,42 @@ func TestFleetPricerFallsBackForUnknownInstanceTypes(t *testing.T) {
 	}
 }
 
+// The fallback table covered only t4g/c7g/m7g, so the families the fleet
+// actually runs -- c6i, c7i, c8g, m6i, m7i, m8g, r8g -- all collapsed to the
+// t4g.medium rate. That priced an r8g.xlarge at a 14th of its real cost.
+func TestGetInstancePriceCoversTheFamiliesTheFleetRuns(t *testing.T) {
+	// Real ap-northeast-1 on-demand rates, spot-checked against the AWS API.
+	wants := map[string]float64{
+		"r8g.xlarge": 0.2453,
+		"c7i.large":  0.1071,
+		"m7i.xlarge": 0.2520,
+		"c6i.large":  0.1070,
+		"c8g.xlarge": 0.2098,
+		"m6i.xlarge": 0.2440,
+	}
+	for typ, want := range wants {
+		got := cost.GetInstancePrice(typ)
+		if got < want*0.75 || got > want*1.25 {
+			t.Errorf("GetInstancePrice(%q) = %v, want within 25%% of %v", typ, got, want)
+		}
+	}
+}
+
+// Sizes are priced from a per-family vCPU rate, so a size never seen before
+// still prices correctly instead of silently taking the default.
+func TestGetInstancePriceScalesLinearlyWithinAFamily(t *testing.T) {
+	two := cost.GetInstancePrice("c6i.large")
+	four := cost.GetInstancePrice("c6i.xlarge")
+	eight := cost.GetInstancePrice("c6i.2xlarge")
+
+	if !approx(four, two*2) {
+		t.Errorf("c6i.xlarge = %v, want 2x c6i.large (%v)", four, two*2)
+	}
+	if !approx(eight, two*4) {
+		t.Errorf("c6i.2xlarge = %v, want 4x c6i.large (%v)", eight, two*4)
+	}
+}
+
 // The fleet and job pricers must agree on the compute half for identical
 // inputs; if they drift, the coverage ratio compares two different rate tables.
 func TestFleetPricerComputeMatchesJobPricerForTheSameInstanceHour(t *testing.T) {
@@ -172,5 +209,26 @@ func TestEBSHourlyCostIsProportionalToVolumeSize(t *testing.T) {
 	if !approx(cost.EBSHourlyCost(100), 2*single) {
 		t.Errorf("EBSHourlyCost(100) = %v, want twice EBSHourlyCost(50) = %v",
 			cost.EBSHourlyCost(100), 2*single)
+	}
+}
+
+// Every family the fleet can actually launch must be priced explicitly. A
+// selectable family missing from the tables silently takes the generic default,
+// which is the same failure that made the old 15-entry table under-report the
+// fleet by an order of magnitude -- just quieter.
+func TestEveryCatalogFamilyIsPricedExplicitly(t *testing.T) {
+	seen := map[string]bool{}
+	for _, spec := range fleet.InstanceCatalog {
+		if seen[spec.Family] {
+			continue
+		}
+		seen[spec.Family] = true
+
+		got := cost.GetInstancePrice(spec.Type)
+		generic := cost.DefaultVCPUHourly * float64(spec.CPU)
+		if approx(got, generic) {
+			t.Errorf("family %q (%s) prices at the generic default %v; add an explicit rate",
+				spec.Family, spec.Type, got)
+		}
 	}
 }
