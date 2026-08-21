@@ -414,7 +414,10 @@ func TestReporter_SpotInterruptionsFromSearch(t *testing.T) {
 	}
 }
 
-func TestReporter_SpotInterruptionsZeroWithoutData(t *testing.T) {
+// The count is only observable through the CloudWatch metrics backend, which now
+// ships disabled. Reporting "0" would present an unmeasured quantity as a measured
+// one, so the absence has to be visible.
+func TestReporter_SpotInterruptionsUnavailableWithoutData(t *testing.T) {
 	var body string
 	reporter := cost.NewReporterWithClients(
 		&mockCloudWatchClient{
@@ -427,8 +430,52 @@ func TestReporter_SpotInterruptionsZeroWithoutData(t *testing.T) {
 	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
 		t.Fatalf("GenerateDailyReport() error = %v", err)
 	}
+	if !strings.Contains(body, "Spot interruptions: unavailable") {
+		t.Errorf("report should mark interruptions unavailable, not zero\n---\n%s", body)
+	}
+	if strings.Contains(body, "Spot interruptions: 0") {
+		t.Errorf("an unmeasured count must not render as zero\n---\n%s", body)
+	}
+}
+
+// A real zero — the query answered, and the answer was none — must still read as 0.
+func TestReporter_SpotInterruptionsZeroWhenMeasuredZero(t *testing.T) {
+	var body string
+	reporter := cost.NewReporterWithClients(
+		&mockCloudWatchClient{
+			getMetricDataFunc: func(_ context.Context, _ *cloudwatch.GetMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error) {
+				return &cloudwatch.GetMetricDataOutput{
+					MetricDataResults: []cwtypes.MetricDataResult{
+						{Id: aws.String("spot_interruptions"), Values: []float64{0}},
+					},
+				}, nil
+			},
+		},
+		captureReport(&body), &mockSNSClient{}, &mockJobLister{}, &mockPriceFetcher{}, nil, &config.Config{}, "", "test-bucket",
+	)
+	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
+		t.Fatalf("GenerateDailyReport() error = %v", err)
+	}
 	if !strings.Contains(body, "Spot interruptions: 0") {
-		t.Errorf("report should show zero interruptions without data\n---\n%s", body)
+		t.Errorf("a measured zero should render as 0\n---\n%s", body)
+	}
+}
+
+func TestReporter_SpotInterruptionsUnavailableOnQueryError(t *testing.T) {
+	var body string
+	reporter := cost.NewReporterWithClients(
+		&mockCloudWatchClient{
+			getMetricDataFunc: func(_ context.Context, _ *cloudwatch.GetMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error) {
+				return nil, errors.New("cloudwatch unavailable")
+			},
+		},
+		captureReport(&body), &mockSNSClient{}, &mockJobLister{}, &mockPriceFetcher{}, nil, &config.Config{}, "", "test-bucket",
+	)
+	if err := reporter.GenerateDailyReport(context.Background()); err != nil {
+		t.Fatalf("a failed interruption query must not sink the report: %v", err)
+	}
+	if !strings.Contains(body, "Spot interruptions: unavailable") {
+		t.Errorf("a failed query should mark interruptions unavailable\n---\n%s", body)
 	}
 }
 

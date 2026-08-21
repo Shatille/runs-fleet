@@ -286,9 +286,12 @@ logging:
 # Prometheus/Datadog="runs_fleet". A fixed prefix prevents metric-name
 # collisions across deployments sharing a metrics backend.
 metrics:
-  # CloudWatch metrics (enabled by default)
+  # CloudWatch metrics. Off by default: nothing queries the RunsFleet namespace
+  # (no alarms, no dashboards, and the admin console reads DynamoDB), while every
+  # metric costs one un-batched PutMetricData call plus a per-series monthly
+  # charge. Enable it once something consumes it.
   cloudwatch:
-    enabled: true
+    enabled: false
 
   # Prometheus metrics endpoint
   prometheus:
