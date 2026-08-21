@@ -711,3 +711,43 @@ func TestMarkJobOrphaned_AcceptsRequeuedRecord(t *testing.T) {
 		t.Errorf("marked = %v with %d updates, want the requeued record retired", marked, client.updateCalls)
 	}
 }
+
+func TestMarkJobOrphaned_ClearsEmptyPoolGSIKey(t *testing.T) {
+	t.Parallel()
+	client := &mockOrphanDynamo{}
+	if _, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRequeued)); err != nil {
+		t.Fatal(err)
+	}
+
+	update := aws.ToString(client.lastUpdate.UpdateExpression)
+	if !strings.Contains(update, "REMOVE") {
+		t.Fatalf("update expression has no REMOVE clause, so an empty pool key stays and the write keeps failing: %q", update)
+	}
+
+	var poolAlias string
+	for alias, name := range client.lastUpdate.ExpressionAttributeNames {
+		if name == "pool" {
+			poolAlias = alias
+		}
+	}
+	if poolAlias == "" {
+		t.Fatal("pool is a reserved word and must be aliased in ExpressionAttributeNames")
+	}
+	if !strings.Contains(update, "REMOVE "+poolAlias) {
+		t.Errorf("REMOVE clause does not target the pool alias %q: %q", poolAlias, update)
+	}
+}
+
+func TestMarkJobOrphaned_KeepsConcurrencyGuard(t *testing.T) {
+	t.Parallel()
+	client := &mockOrphanDynamo{}
+	if _, err := MarkJobOrphaned(context.Background(), client, "jobs", 123, string(db.JobStatusRunning)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clearing the GSI key must not widen the write: the status pin is what stops
+	// the sweep retiring a record that went live after it was scanned.
+	if cond := aws.ToString(client.lastUpdate.ConditionExpression); cond != "#status = :observed" {
+		t.Errorf("condition expression changed, concurrency guard weakened: %q", cond)
+	}
+}

@@ -1073,6 +1073,8 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 	}
 
 	var orphanedCount int
+	var failed int
+	var firstErr error
 	for _, c := range orphanedCandidates {
 		jobCtx := logging.ContextWith(ctx,
 			slog.Int64(logging.KeyJobID, c.JobID),
@@ -1081,6 +1083,10 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 		if err != nil {
 			t.logger().Error(jobCtx, "mark job orphaned failed",
 				slog.String("error", err.Error()))
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if !marked {
@@ -1097,6 +1103,13 @@ func (t *Tasks) ExecuteOrphanedJobs(ctx context.Context) error {
 
 	if orphanedCount > 0 {
 		t.logger().Info(ctx, "orphaned jobs cleaned up", slog.Int(logging.KeyCount, orphanedCount))
+	}
+	// Surface per-record failures as a task error. Logging each one and returning
+	// nil reported success from a sweep that retired nothing, which is how a
+	// wholly broken sweep stayed invisible: the runner only logs "task failed"
+	// on a non-nil return.
+	if failed > 0 {
+		return fmt.Errorf("failed to retire %d of %d orphaned jobs: %w", failed, len(orphanedCandidates), firstErr)
 	}
 	return nil
 }
