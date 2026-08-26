@@ -84,7 +84,7 @@ home for any new package. In order of appearance:
   16/17, redis 7, `moby/buildkit:buildx-stable-1`,
   `tonistiigi/binfmt:${BINFMT_VERSION}`, and
   `mcr.microsoft.com/playwright:v1.57.0-noble` (the one exact pin).
-- Vault CLI, yq, CloudWatch agent + config, `actions/runner` OS deps, CI dev
+- Vault CLI, yq, `actions/runner` OS deps, CI dev
   tools, Java 21 + sbt, Python 3.11–3.13 + pipx, Ruby 3.2/3.4 + bundler.
 - **Actions tool cache** (`/opt/hostedtoolcache`, chowned to `ec2-user`):
   Python 3.11/3.12/3.13, Ruby 3.2/3.4, Node lines `20 22 24 20.12 22.15 22.18`,
@@ -117,10 +117,10 @@ than base:
   (see [registry-mirroring](registry-mirroring.md)).
 - `runs-fleet-agent.service` (carrying `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`,
   `PIPX_HOME`/`PIPX_BIN_DIR`, and a `PATH` prepending `/opt/pipx/bin`),
-  `boot-lib.sh`, `agent-bootstrap.sh`, the cloud-init **per-boot** script, and a
-  CloudWatch agent config override (`RunsFleet/Runner` namespace; the `logs`
-  section was removed in #446 — the runner role never had permission for those
-  paths).
+  `boot-lib.sh`, `agent-bootstrap.sh`, and the cloud-init **per-boot** script.
+  The CloudWatch agent was removed entirely once the metrics half proved as
+  inert as the `logs` half #446 dropped: the runner role grants neither
+  `cloudwatch:*` nor `logs:*`, so it published nothing on any runner.
 
 **Then, before the snapshot:**
 [packer/provision-validate-agent.sh](../../packer/provision-validate-agent.sh)

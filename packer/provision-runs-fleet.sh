@@ -250,36 +250,6 @@ sudo mkdir -p /var/lib/cloud/scripts/per-boot
 sudo cp /tmp/cloud-init-boot.sh /var/lib/cloud/scripts/per-boot/runs-fleet-bootstrap.sh
 sudo chmod +x /var/lib/cloud/scripts/per-boot/runs-fleet-bootstrap.sh
 
-echo "==> Updating CloudWatch agent config for runs-fleet"
-sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json > /dev/null <<'CWCONFIG'
-{
-  "agent": {
-    "metrics_collection_interval": 60,
-    "run_as_user": "root"
-  },
-  "metrics": {
-    "namespace": "RunsFleet/Runner",
-    "metrics_collected": {
-      "cpu": {
-        "measurement": ["cpu_usage_active"],
-        "metrics_collection_interval": 60
-      },
-      "mem": {
-        "measurement": ["mem_used_percent"],
-        "metrics_collection_interval": 60
-      },
-      "disk": {
-        "measurement": ["disk_used_percent"],
-        "resources": ["/"],
-        "metrics_collection_interval": 60
-      }
-    },
-    "append_dimensions": {
-      "InstanceId": "${aws:InstanceId}"
-    }
-  }
-}
-CWCONFIG
 
 echo "==> Cleaning up"
 sudo rm -rf /tmp/*
