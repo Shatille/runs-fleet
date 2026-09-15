@@ -1,7 +1,7 @@
 ---
 topic: State Storage (DynamoDB + Circuit + Secrets)
-last_compiled: 2026-08-21
-sources_count: 22
+last_compiled: 2026-09-15
+sources_count: 24
 ---
 
 # State Storage (DynamoDB + Circuit + Secrets)
@@ -308,7 +308,7 @@ Credential packing ([credential.go](../../pkg/secrets/credential.go)):
 `marshalConfigHalf`, `packCredential`, `compressJITConfig`, `unpackCredential`,
 `storedCredential`, `credentialMaxDecodedBytes = 1 << 20`.
 
-## Data [coverage: high -- 22 sources]
+## Data [coverage: high -- 24 sources]
 
 ### `runs-fleet-jobs` table
 
@@ -323,7 +323,8 @@ Partition key: `job_id` (Number). Three GSIs:
   `RUNS_FLEET_JOBS_POOL_STATUS_GSI`. Backs `GetPoolBusyInstanceIDs`.
 
 Attributes: `job_id` (N), `run_id` (N), `repo` (S), `instance_id` (S,
-omitempty), `instance_type` (S), `pool` (S, omitempty), `spot` (BOOL),
+omitempty), `instance_type` (S), `pool` (S, omitempty since PR #227 — see
+Gotchas for the legacy `""` rows that PR #457 had to clear), `spot` (BOOL),
 `retry_count` (N), `warm_pool_hit` (BOOL), `status` (S, omitempty — an empty
 status is dropped rather than written, guarding the status-keyed GSI),
 `created_at` (S, RFC3339), `spot_request_id` (S, omitempty), `persistent_spot`
@@ -537,7 +538,7 @@ the credential parameter — a tag value is readable by anyone with
   90-day TTL bounds growth with no cleanup job, which is also what makes
   in-memory `Offset`/`Limit` acceptable.
 
-## Gotchas [coverage: high -- 22 sources]
+## Gotchas [coverage: high -- 24 sources]
 
 - **A new sentinel prefix that skips `IsReservedPoolKey` becomes a phantom
   pool. This has now happened twice.** Prefixes are declared in per-feature
@@ -557,6 +558,49 @@ the credential parameter — a tag value is readable by anyone with
   row kind to the pools table, add its prefix to `IsReservedPoolKey` — the test
   will tell you, but only if the prefix is a plain string literal constant in
   `pkg/db`.**
+- **Empty-string vs absent attribute matters for GSI keys — always omit, never
+  write `""`.** A sibling data-shape hazard to the sentinel-prefix one, on the
+  jobs table this time. DynamoDB cannot represent an empty string as an index
+  key, and the jobs table has `pool` as the hash key of *two* GSIs
+  (`pool-created-at-index`, `pool-status-index`), `status` as the range key of
+  the second, and `instance_id` as the hash key of the third. All three are
+  `omitempty` on `jobRecord` for exactly this reason — `pool` since PR #227,
+  `instance_id` since PR #276, and `status` pre-emptively, with the comment at
+  [jobs.go:62-66](../../pkg/db/jobs.go) naming both predecessors. The struct
+  tag only protects `PutItem` through `jobRecord`; a raw `UpdateItem` gets no
+  such guard.
+
+  The poison is not confined to write time. A row that *already* holds
+  `pool=""` rejects every later `UpdateItem` that SETs another key attribute of
+  the same index — so any status transition on it fails with
+  `ValidationException`, whichever package issues the write. 250 legacy records
+  written before #227 sat in exactly that state, and the orphaned-jobs sweep
+  ([housekeeping](housekeeping.md)) had never once succeeded in production:
+  16,000 consecutive failures over 16 hours, 250 records retried every 15
+  minutes, zero retirements (PR #457, 2181619). They could not drain by any
+  route — only the sweep would have stamped `completed_at`, and `completed_at`
+  is what `ExecuteOldJobs` collects on (see the hard-delete Gotcha below).
+
+  The fix lives in `pkg/housekeeping`, not `pkg/db` (which #457 did not touch):
+  `MarkJobOrphaned` ([orphans.go:359](../../pkg/housekeeping/orphans.go)) now
+  writes `SET #status = :orphaned, completed_at = :now REMOVE #pool`. `REMOVE`
+  on an absent attribute is a no-op, so healthy records are unaffected, and the
+  two S-decoders that read `pool` — `getStringAttr`
+  ([jobs.go:1564](../../pkg/db/jobs.go)) and `avString`
+  ([unconfirmed.go:209](../../pkg/housekeeping/unconfirmed.go)) — both return
+  `""` for a missing key, so nothing downstream changes. The status pin stays
+  the sole write guard. The same PR also made `ExecuteOrphanedJobs` return an
+  error when any record fails
+  ([tasks.go:1127](../../pkg/housekeeping/tasks.go)); logging each failure and
+  returning nil is how a wholly broken sweep stayed invisible for months.
+
+  Two sharp edges: this bites regardless of `RUNS_FLEET_JOBS_POOL_STATUS_GSI` —
+  that variable only decides whether `pkg/db` *queries* the index
+  ([dynamo.go:55-64](../../pkg/db/dynamo.go)); the rejection comes from the
+  index existing on the table. And adding `omitempty` fixes only the write
+  path — #227 did that in May 2026 and the 250 rows it left behind stayed
+  un-updatable until #457 `REMOVE`d the attribute. Any row already holding
+  `""` in a key attribute needs an explicit `REMOVE`, not a guard.
 - **A second row kind's `ttl` attribute does nothing.** DynamoDB allows one TTL
   attribute per table, and the pools table's is `claim_expiry`. The `ttl`
   written on every `__runner_offline:` row is inert
@@ -677,6 +721,8 @@ the credential parameter — a tag value is readable by anyone with
 - [pkg/secrets/env.go](../../pkg/secrets/env.go)
 - [pkg/secrets/backend_parity_test.go](../../pkg/secrets/backend_parity_test.go)
 - [pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)
+- [pkg/housekeeping/orphans.go](../../pkg/housekeeping/orphans.go)
+- [pkg/housekeeping/unconfirmed.go](../../pkg/housekeeping/unconfirmed.go)
 - [pkg/housekeeping/fleet_cost.go](../../pkg/housekeeping/fleet_cost.go)
 - [pkg/cost/fleetmtd.go](../../pkg/cost/fleetmtd.go)
 - [deploy/terraform/dynamodb.tf](../../deploy/terraform/dynamodb.tf)

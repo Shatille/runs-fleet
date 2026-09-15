@@ -1,7 +1,7 @@
 ---
 topic: Agent (On-Instance Bootstrap Binary)
-last_compiled: 2026-08-21
-sources_count: 9
+last_compiled: 2026-09-15
+sources_count: 12
 ---
 
 # Agent (On-Instance Bootstrap Binary)
@@ -32,7 +32,7 @@ what makes a hot- or warm-pool spare possible: a *running* instance holding a
 live agent that polls for the config the orchestrator will write when it assigns
 that instance a job.
 
-## Architecture [coverage: high -- 9 sources]
+## Architecture [coverage: high -- 10 sources]
 
 ### Standby mode (`cmd/agent/standby.go`, PR #399)
 
@@ -183,8 +183,13 @@ launch-template default. For the agent specifically it asserts:
   (`/var/lib/cloud/scripts/per-boot/runs-fleet-bootstrap.sh`) exist and pass
   `bash -n`;
 - the systemd unit passes `systemd-analyze verify` and contains
-  `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`, `PIPX_BIN_DIR=/opt/pipx/bin`, and
-  a `PATH` prepending `/opt/pipx/bin`;
+  `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`, `PIPX_BIN_DIR=/opt/pipx/bin`,
+  a `PATH` prepending `/opt/pipx/bin`, and (since commit c4c3b01, 2026-09-15)
+  `DOTNET_INSTALL_DIR=/opt/dotnet`;
+- `/opt/pipx/bin` and `/opt/dotnet` both exist and are writable by `ec2-user`
+  (`sudo -u ec2-user test -w`) — both directories are pre-created and
+  `chown`ed in [packer/provision-base.sh](../../packer/provision-base.sh)
+  because `/opt` is root-owned and the job user populates them at run time;
 - the cache-engage helper is `root:root 755`, syntactically valid, **rejects any
   host other than the one results host it pins**, and its sudoers drop-in is
   `root:root 440` and passes `visudo -cf` — then exercises the real
@@ -217,14 +222,29 @@ launch-template default. For the agent specifically it asserts:
 - **`/usr/local/sbin/runs-fleet-cache-engage`** — the AMI-baked root helper for
   the CA trust + `/etc/hosts` pin, invoked via a scoped sudoers drop-in.
 - **CloudWatch Logs** — **no longer used**; PR #446 removed the path entirely
-  (the instance role never had `logs:*`).
+  (the instance role never had `logs:*`). The separate host-level
+  `amazon-cloudwatch-agent` — never part of `cmd/agent` — was likewise dropped
+  from the AMI by #459 (2026-08-26) for the same missing grant; see
+  [infrastructure](infrastructure.md).
 
-## API Surface [coverage: medium -- 4 sources]
+## API Surface [coverage: high -- 7 sources]
 
 The agent has **no CLI flags**. All configuration arrives via environment
 (written into `/opt/runs-fleet/env` by `agent-bootstrap.sh`, plus `Environment=`
 lines in the systemd unit) and the `RunnerConfig` fetched from the secrets
 backend.
+
+The unit's `Environment=` lines are also the channel to **job steps**:
+[pkg/agent/executor.go](../../pkg/agent/executor.go) launches `run.sh` with
+`cmd.Env = append(os.Environ(), "RUNNER_ALLOW_RUNASROOT=1")` (plus
+`ACTIONS_RUNNER_INPUT_JITCONFIG` on the JIT path), so the runner and every
+step inherit the agent's full environment. The runner `.env` file cannot
+shadow them: `SetRunnerEnvironment` writes it with only
+`RUNNER_ALLOW_RUNASROOT` and `ACTIONS_CACHE_URL`/`ACTIONS_CACHE_TOKEN`, and
+every later writer (`AppendRunnerEnv` for `NODE_EXTRA_CA_CERTS`,
+`WriteBuildkitCacheEnv` in
+[pkg/agent/buildkitcache.go](../../pkg/agent/buildkitcache.go)) appends — no
+`.env` writer names a unit variable.
 
 | Env var | Source | Purpose |
 |---------|--------|---------|
@@ -234,6 +254,7 @@ backend.
 | `RUNS_FLEET_STANDBY_DEADLINE_MINUTES` | — | Standby budget before a clean exit 0 (default 120) |
 | `AGENT_TOOLSDIRECTORY` | systemd unit | Tool-cache dir for miss snapshots (default `/opt/hostedtoolcache`) |
 | `PIPX_HOME` / `PIPX_BIN_DIR` / `PATH` | systemd unit | pipx launchers on the job PATH |
+| `DOTNET_INSTALL_DIR` | systemd unit | Install root for `actions/setup-dotnet` (`/opt/dotnet`, `ec2-user`-writable; deliberately **not** on the unit `PATH`). Added by c4c3b01, 2026-09-15 |
 | `RUNS_FLEET_SECRETS_BACKEND`, `VAULT_*` | bootstrap | Backend selection and Vault connection params |
 
 Job-specific values (`run_id`, `job_id`, `jit_token`, `jit_config`,
@@ -279,7 +300,7 @@ No long-lived local state survives termination.
 Bootstrap timing constants in `main.go`: `logShipTimeout` = 60s,
 `logShipMaxFileBytes` = `128 << 20`.
 
-## Key Decisions [coverage: high -- 9 sources]
+## Key Decisions [coverage: high -- 11 sources]
 
 - **Standby exists so a pool spare can hold a live agent (PR #399).** A hot-pool
   claim assigns a *running* instance without calling `StartInstances` — see
@@ -337,6 +358,19 @@ Bootstrap timing constants in `main.go`: `logShipTimeout` = 60s,
 - **Repo-scoped registration only** on the token path: `RegisterRunner` refuses
   to run without `config.Repo`, because org-level registration would let runners
   pick up jobs across repositories.
+- **`.NET` gets an env-var override, not a tool-cache prebake, and stays off
+  the unit `PATH` (c4c3b01).** The unit comment in `provision-runs-fleet.sh`
+  records why: `actions/setup-dotnet` hard-defaults its install root to
+  root-owned `/usr/share/dotnet`, which the `ec2-user` job cannot create, and
+  `DOTNET_INSTALL_DIR` is "the only override it reads (and it must be set
+  before the action loads)" — so it lives in the unit, which is in the
+  environment before any job process starts. `provision-base.sh` adds that the
+  action "consults no tool cache — it shells out to install-dotnet.sh", which is
+  why the `/opt/hostedtoolcache` prebake used for Python/Ruby does not apply.
+  `/opt/dotnet` is deliberately absent from the unit `PATH` because the action
+  puts its install on the job `PATH` itself and nothing is baked there — the
+  `/opt/pipx` precedent (pre-created, `ec2-user`-owned) is mirrored for the
+  directory only.
 - **Every `.env` writer runs before Phase 3.** `run.sh` reads `.env` at startup;
   the ordering comment notes it held when `config.sh` created the runner
   directory and still holds on the JIT path, where the directory comes from the
@@ -370,7 +404,7 @@ Bootstrap timing constants in `main.go`: `logShipTimeout` = 60s,
   disk) would abort the script before the notification and self-termination,
   leaving a zombie instance.
 
-## Gotchas [coverage: high -- 7 sources]
+## Gotchas [coverage: high -- 9 sources]
 
 - **A standby spare burns up to 2 hours before exiting.** The default
   `RUNS_FLEET_STANDBY_DEADLINE_MINUTES` is 120, and the instance bills the whole
@@ -430,6 +464,19 @@ Bootstrap timing constants in `main.go`: `logShipTimeout` = 60s,
 - **Cleanup and telemetry are best-effort.** `.env` writes, buildkit-cache env,
   cache engage, tool-cache snapshots, log shipping, and `CleanupRunner` failures
   all only warn — none abort the job.
+- **`actions/setup-dotnet` ignores `AGENT_TOOLSDIRECTORY` / `RUNNER_TOOL_CACHE`.**
+  Unlike Python, Ruby, Go, Node, and Java, .NET cannot be served from
+  `/opt/hostedtoolcache`: the action does no tool-cache lookup, so every .NET
+  job downloads its SDK into `/opt/dotnet` at run time. `provision-base.sh`'s
+  build summary states it plainly — "setup-dotnet installs here; nothing
+  pre-baked". Without `DOTNET_INSTALL_DIR` the action targets `/usr/share/dotnet`
+  and the job dies on `mkdir … Permission denied`; the post-bake smoke test
+  asserts both the unit line and the directory's writability so a regression
+  fails the AMI build rather than a runner.
+- **.NET SDK downloads are invisible to the tool-cache-miss metric.**
+  `SnapshotToolCache`/`DiffToolCache` (called from `main.go`) walk `AGENT_TOOLSDIRECTORY`
+  (`/opt/hostedtoolcache`); `/opt/dotnet` is outside it, so `ToolCacheMisses`
+  never reports a .NET download even though one happens on every .NET job.
 - **`system_is_stopping` matches on the string, not the exit code.**
   `systemctl is-system-running` exits non-zero for several states (including
   `degraded`), so an exit-code check would misfire; the inner non-zero is masked
@@ -444,5 +491,8 @@ Bootstrap timing constants in `main.go`: `logShipTimeout` = 60s,
 - [scripts/boot-lib.sh](../../scripts/boot-lib.sh)
 - [packer/provision-validate-agent.sh](../../packer/provision-validate-agent.sh)
 - [packer/provision-runs-fleet.sh](../../packer/provision-runs-fleet.sh)
+- [packer/provision-base.sh](../../packer/provision-base.sh)
 - [pkg/agent/registration.go](../../pkg/agent/registration.go)
+- [pkg/agent/executor.go](../../pkg/agent/executor.go)
+- [pkg/agent/buildkitcache.go](../../pkg/agent/buildkitcache.go)
 - [pkg/secrets/store.go](../../pkg/secrets/store.go)

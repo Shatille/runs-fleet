@@ -1,6 +1,6 @@
 ---
 concept: Absent Is Not Zero
-last_compiled: 2026-08-21
+last_compiled: 2026-09-15
 topics_connected: [observability, admin-ui, state-storage, housekeeping]
 status: active
 ---
@@ -57,6 +57,21 @@ entirely fabricated number for weeks.
 - **2026-08-21** in [housekeeping](../topics/housekeeping.md): a tick that clamps
   a long gap at `fleetCostMaxElapsed` marks its day `partial`, so a total known
   to understate is reported as understating rather than as complete.
+- **2026-08-21 (inverse, fixed by #457)** in [housekeeping](../topics/housekeeping.md):
+  the orphaned-jobs sweep logged each per-record failure and returned `nil`, so
+  the task runner's failed path never fired. Every one of its 16,000 consecutive
+  runs over 16 hours failed (250 legacy rows with `pool=""`, unrepresentable as
+  a GSI key) and the sweep reported success throughout — a wholly broken task
+  indistinguishable from a healthy one. #457 makes per-record failures propagate
+  ([pkg/housekeeping/orphans.go](../../pkg/housekeeping/orphans.go)).
+- **2026-08-21 (inverse, fixed by #458)** in [observability](../topics/observability.md):
+  the price fetcher's fallback latch was cleared only by `RefreshCache`, which had
+  no callers, so one startup `AccessDenied` pinned the process to estimated prices
+  for life — and the latch also suppressed the warning, so the silence read as
+  health. Compounded by a fallback table covering three families while the fleet
+  ran seven others, 75% of priced jobs silently resolved to the `t4g.medium` rate.
+  #458 gives the latch a five-minute window and prices every selectable family
+  ([pkg/cost/pricing.go](../../pkg/cost/pricing.go)).
 
 ## What This Means
 
@@ -74,6 +89,14 @@ number that quietly lies. Three properties make it work:
    attributes nothing; `HasLiveInstanceClaim` assumes held. Both are correct
    because both were chosen against a specific consequence — under-reporting a
    cost estimate versus terminating an instance a job is using.
+
+The two inverse instances fixed in the same week (#457, #458) share a shape worth
+naming: a *control-flow* zero. `return nil` after logging every failure, and a
+latch that mutes its own warning, both collapse "this failed" into the same
+signal as "this succeeded" — the task-runner and the operator see nothing either
+way. The fix is the same as for data: let the failure propagate as a distinct
+outcome, and never let the mechanism that degrades gracefully also be the
+mechanism that decides whether to say so.
 
 The pattern is not universally applied, and the gaps are worth knowing. The
 Prometheus and Datadog backends still emit histograms CloudWatch no-ops, so a
