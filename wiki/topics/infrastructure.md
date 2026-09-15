@@ -1,6 +1,6 @@
 ---
 topic: Infrastructure (Docker, Packer, Helm, Nix)
-last_compiled: 2026-08-21
+last_compiled: 2026-09-15
 sources_count: 30
 ---
 
@@ -85,13 +85,22 @@ home for any new package. In order of appearance:
   `tonistiigi/binfmt:${BINFMT_VERSION}`, and
   `mcr.microsoft.com/playwright:v1.57.0-noble` (the one exact pin).
 - Vault CLI, yq, `actions/runner` OS deps, CI dev
-  tools, Java 21 + sbt, Python 3.11–3.13 + pipx, Ruby 3.2/3.4 + bundler.
+  tools, Java 21 + sbt, Python 3.11–3.13 + pipx, then — new in `c4c3b01`
+  (unmerged, branch `fix/runner-dotnet-install-dir`) — an **empty,
+  `ec2-user`-owned `/opt/dotnet`** for `actions/setup-dotnet`
+  ([packer/provision-base.sh:416-422](../../packer/provision-base.sh)),
+  mirroring the `/opt/pipx` precedent: nothing is baked into it, the action
+  downloads and unpacks the SDK there at job time. Then Ruby 3.2/3.4 + bundler.
 - **Actions tool cache** (`/opt/hostedtoolcache`, chowned to `ec2-user`):
   Python 3.11/3.12/3.13, Ruby 3.2/3.4, Node lines `20 22 24 20.12 22.15 22.18`,
   Go 1.24/1.25/1.26 (newest `GO_PATCHES_PER_LINE=2` patches each **plus 8
   explicitly pinned 1.25 patches**), Temurin JDK 17/21, and — new in #448 —
   Helm 4.2, kubectl 1.35, protoc v25.6, uv 0.8, GraalVM CE for JDK 25
-  (both `25.0.2` and `25.1`).
+  (both `25.0.2` and `25.1`). **.NET is deliberately not in the tool cache:**
+  `setup-dotnet` performs no tool-cache lookup at all (it shells out to
+  `install-dotnet.sh`), so the prebake pattern that makes `setup-python` and
+  `setup-ruby` resolve offline cannot apply — `DOTNET_INSTALL_DIR` is its only
+  lever.
 - The `actions/runner` tarball itself, version + SHA-256 injected by the
   workflow (no template defaults).
 - `provision-base-hook.sh` (empty upstream) runs just before cleanup, then the
@@ -116,8 +125,20 @@ than base:
   `/opt/runs-fleet/mirror-env`, which only `ECR_PULL_THROUGH_ENDPOINT` writes
   (see [registry-mirroring](registry-mirroring.md)).
 - `runs-fleet-agent.service` (carrying `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`,
-  `PIPX_HOME`/`PIPX_BIN_DIR`, and a `PATH` prepending `/opt/pipx/bin`),
-  `boot-lib.sh`, `agent-bootstrap.sh`, and the cloud-init **per-boot** script.
+  `PIPX_HOME`/`PIPX_BIN_DIR`, a `PATH` prepending `/opt/pipx/bin`, and — since
+  `c4c3b01` — `DOTNET_INSTALL_DIR=/opt/dotnet`), `boot-lib.sh`,
+  `agent-bootstrap.sh`, and the cloud-init **per-boot** script.
+  On the .NET line
+  ([packer/provision-runs-fleet.sh:229-233](../../packer/provision-runs-fleet.sh)):
+  `/opt/dotnet` is **deliberately absent from the unit's `PATH=` line**, because
+  the action puts its install on the job PATH itself and nothing is baked there
+  for a PATH entry to find. The variable lives in the unit rather than a job
+  step because the action reads it when it loads; `actions/setup-dotnet`
+  hard-defaults its Linux install root to root-owned `/usr/share/dotnet` and
+  reads no other override, so before this every .NET job died on `mkdir:
+  cannot create directory '/usr/share/dotnet': Permission denied` — surfacing
+  as two failures (a warning on the runtime+CLI pass, a throw on the version
+  pass) from one root cause.
   The CloudWatch agent was removed entirely once the metrics half proved as
   inert as the `logs` half #446 dropped: the runner role grants neither
   `cloudwatch:*` nor `logs:*`, so it published nothing on any runner.
@@ -140,8 +161,14 @@ scope. It fails the build *before* snapshot on:
   are non-empty/executable, and pass `bash -n`.
 - `runs-fleet-agent.service` passes `systemd-analyze verify` **and** contains
   `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`, `PIPX_BIN_DIR=/opt/pipx/bin`,
-  and a `PATH` prepending `/opt/pipx/bin`.
+  a `PATH` prepending `/opt/pipx/bin`, and (since `c4c3b01`)
+  `DOTNET_INSTALL_DIR=/opt/dotnet`
+  ([packer/provision-validate-agent.sh:86-89](../../packer/provision-validate-agent.sh)).
 - `/opt/pipx/bin` exists and is `ec2-user`-writable.
+- `/opt/dotnet` exists and is `ec2-user`-writable
+  ([packer/provision-validate-agent.sh:98-102](../../packer/provision-validate-agent.sh))
+  — a regression in either the unit line or the directory fails the AMI build
+  instead of reaching a runner.
 - Unversioned `python`/`pip`/`pipx` and `ruby`/`gem`/`bundle` resolve, defaulting
   to 3.12 and 3.4; every baked Python/Ruby has a tool-cache entry with a
   `.complete` marker and a runnable interpreter; per-version Python headers and
@@ -355,7 +382,10 @@ Illustrative samples with placeholder variables, not production modules:
   each paired with a type-matched DLQ.
 - `iam.tf` — three roles: runner instance role + profile, orchestrator task role
   (Fargate trust shown; IRSA variant described in a comment), CI/Packer OIDC
-  role.
+  role. #457 added `pricing:GetProducts` (`Resource = "*"` — the Pricing API is
+  global and has no resource-level permissions) to the orchestrator policy for
+  the admin cost page and daily cost report; per the file's own header this
+  changes nothing in production until the real policy repository mirrors it.
 
 ### Helm values structure
 
@@ -508,8 +538,8 @@ admin UI).
   don't rebuild the image — while a `go list` failure falls back to building.
   Its *trigger* paths stay a broad `pkg/**` on purpose: over-triggering is safe,
   hand-maintaining the agent's import list is not.
-- **CloudWatch metrics now ship disabled, and it took two changes (this
-  branch).** Nothing queries the `RunsFleet` namespace — no alarms, no
+- **CloudWatch metrics now ship disabled, and it took two changes (#456,
+  merged 2026-08).** Nothing queries the `RunsFleet` namespace — no alarms, no
   dashboards, and the admin console reads DynamoDB — while every metric costs
   one un-batched `PutMetricData` call plus a per-series monthly charge (pool
   reconciliation alone emits 9 gauges per pool per 60s pass, and again on every
@@ -661,6 +691,29 @@ admin UI).
   change, and it lagged the PR #456 CloudWatch default flip until that PR caught
   it. `docs/CONFIGURATION.md` is the maintained reference; treat `AGENTS.md`'s
   list as advisory.
+- **`/opt/dotnet` (and `/opt/pipx/bin`) are created in the base layer but
+  asserted by the runner-layer smoke test.** `provision-base.sh` creates the
+  directory; `provision-validate-agent.sh` — which runs only in the runner
+  build — is what fails on it missing or not `ec2-user`-writable. The coupling
+  is safe in practice because of how `build-amis.yml` sequences the layers:
+  `build-runner-ami` declares `needs: [changes, build-base]` and runs when
+  `build-base` is `success` **or `skipped`**
+  ([build-amis.yml:250-275](../../.github/workflows/build-amis.yml)). A push
+  that touches `provision-base.sh` (as `c4c3b01` does, alongside the other two
+  scripts) rebuilds base first and the runner AMI bakes on the fresh one; a
+  runner-only push skips base and bakes against the latest *registered* base,
+  and if that base predates the directory the smoke test fails the build before
+  snapshot — which is the assertion doing its job, not a race. Same shape as
+  the pre-existing `/opt/pipx/bin` check, so a future base-layer directory the
+  runner layer depends on should follow both halves of the pattern.
+- **`provision-base.sh`'s trailing summary still prints `- CloudWatch Agent:
+  enabled`.** #459 removed the `amazon-cloudwatch-agent` package, both JSON
+  config overrides (base's `Runner` namespace and the runner layer's
+  `RunsFleet/Runner` override), and the `systemctl enable`, but missed the
+  summary echo at [packer/provision-base.sh:876](../../packer/provision-base.sh).
+  It is a cosmetic leftover in the Packer build log — nothing installs or
+  enables the agent — but it will mislead anyone auditing an AMI from its
+  provisioning output.
 
 ## Sources [coverage: high]
 

@@ -1,12 +1,12 @@
 ---
 topic: Housekeeping (Cleanup Tasks)
-last_compiled: 2026-08-21
-sources_count: 12
+last_compiled: 2026-09-15
+sources_count: 14
 ---
 
 # Housekeeping (Cleanup Tasks)
 
-## Purpose [coverage: high -- 12 sources]
+## Purpose [coverage: high -- 14 sources]
 
 `pkg/housekeeping` is the second half of the consistency model: the orchestrator
 makes forward progress with retries and conditional writes, and housekeeping
@@ -31,11 +31,11 @@ longer exist; there is no `housekeeping.Message`, no `TaskExecutor` dispatch
 switch, and nothing publishes to or consumes from the housekeeping SQS queue.
 `RUNS_FLEET_HOUSEKEEPING_QUEUE_URL` survives only so the admin queues view can
 still show that queue's depth
-([cmd/server/main.go:604](../../cmd/server/main.go)). The stated reason for the
+([cmd/server/main.go:606](../../cmd/server/main.go)). The stated reason for the
 change is in `Runner`'s own doc comment: the work is clock-derived and
 idempotent, so a queue bought nothing a timer plus a lock does not.
 
-## Architecture [coverage: high -- 12 sources]
+## Architecture [coverage: high -- 14 sources]
 
 ```
 Runner.Run                      (cmd/server initHousekeeping, main.go:411)
@@ -82,6 +82,12 @@ Key structural facts:
   are all optional wiring. Every sweep whose dependency is missing returns `nil`
   immediately — deliberate, because each of them terminates instances or deletes
   registrations and none may act on an unknown.
+- `SetFleetPricers(onDemand, spot)` ([tasks.go:171](../../pkg/housekeeping/tasks.go),
+  added 2026-08-21 by #458) is the one optional dependency that does **not**
+  gate its task. The *store* gates the fleet-cost sampler; the pricers only
+  decide live-vs-fallback, and either may be nil — "each independently degrades
+  to the fallback ladder" per its doc comment. Pricing is not destructive, so an
+  estimate is the right degradation where a no-op would not be.
 
 **Removed in this window: the pool-audit task.** `TaskPoolAudit` and
 `ExecutePoolAudit` no longer exist anywhere in the Go source. It was a 10-minute
@@ -94,12 +100,13 @@ series: on any minute reconcile missed, the 10-minute-old sample became the
 datapoint. Two writers at different cadences into one series is a correctness
 defect, and it paid for a non-paginated Scan every 10 minutes to be wrong.
 
-## Talks To [coverage: high -- 12 sources]
+## Talks To [coverage: high -- 14 sources]
 
 - **DynamoDB (jobs table)** — `Scan` with `FilterExpression` for every job sweep;
-  `UpdateItem` with `ConditionExpression` on `status` for every transition;
-  `BatchWriteItem` (25 per batch) for the old-jobs delete; `GetItem` for the
-  pre-terminate re-read.
+  `UpdateItem` with `ConditionExpression` on `status` for every transition
+  (`MarkJobOrphaned`'s is `SET #status, completed_at REMOVE #pool` since #457,
+  [orphans.go:359](../../pkg/housekeeping/orphans.go)); `BatchWriteItem` (25 per
+  batch) for the old-jobs delete; `GetItem` for the pre-terminate re-read.
 - **DynamoDB (pools table)** — via `PoolDBAPI`: `ListPools`, `GetPoolConfig`,
   `DeletePoolConfig`, `ListJobsForAdmin`, `UpdatePoolAutoTune`,
   `DeleteExpiredInstanceClaims`, `HasLiveInstanceClaim`,
@@ -118,14 +125,20 @@ defect, and it paid for a non-paginated Scan every 10 minutes to be wrong.
   `*gh.Client` in [cmd/server/main.go](../../cmd/server/main.go).
 - **SSM / Vault** — `secrets.Store.List` / `Delete` for runner configs.
 - **`pkg/cost`** — `CostReporter.GenerateDailyReport` for the 24h report, and
-  `cost.NewFleetPricer` for the per-tick fleet sample.
+  `cost.NewFleetPricer(t.fleetOnDemand, t.fleetSpot, fleetCostEBSGiB)` for the
+  per-tick fleet sample ([fleet_cost.go:93](../../pkg/housekeeping/fleet_cost.go)).
+  Since #458 the sampler receives a `cost.PriceFetcherAPI` (the Pricing API
+  fetcher) and a `cost.SpotPricer` (`*fleet.Manager`'s spot-price cache) via
+  `SetFleetPricers`, wired at [cmd/server/main.go:434](../../cmd/server/main.go);
+  the typed-nil guard on `fleetManager` was hoisted out of the cost-report branch
+  (main.go:418–423) so the sampler shares it with the reporter.
 - **`pkg/admin`** — inbound: the console calls `SweepOrphanedInstances`,
   `FindOrphanedJobCandidates`, `RequeueHungJobs`, `RequeueJob`, `ReconcileJob`,
   `MarkJobOrphaned`, `BatchCheckInstanceExistence` and
   `CancelSpotRequestForInstance` directly. See
   [admin-ui](admin-ui.md).
 
-## API Surface [coverage: high -- 12 sources]
+## API Surface [coverage: high -- 14 sources]
 
 `TaskType` constants ([runner.go:18](../../pkg/housekeeping/runner.go)):
 `orphaned_instances`, `stale_secrets`, `old_jobs`, `cost_report`, `dlq_redrive`,
@@ -154,7 +167,8 @@ costReporter)`), one `Execute*` per task plus:
   Not scheduled; callable ad hoc.
 - Setters: `SetPoolDB`, `SetGitHubJobChecker`, `SetJobRequeuer`,
   `SetAMIReference`, `SetRunnerRegistry(registry, ActiveReposFunc, sightings)`,
-  `SetFleetCostStore`.
+  `SetFleetCostStore`, `SetFleetPricers(onDemand cost.PriceFetcherAPI, spot
+  cost.SpotPricer)` (#458).
 
 Shared helpers other packages consume (mostly `orphans.go` / `requeue.go`):
 
@@ -165,7 +179,9 @@ Shared helpers other packages consume (mostly `orphans.go` / `requeue.go`):
   reports `truncated`. Applied to matches, not `ScanInput.Limit`, which bounds
   items *read* and so cannot express "stop after n matches" behind a filter.
 - `SeparateOrphanedJobs`, `BatchCheckInstanceExistence` (100 IDs per describe,
-  with a per-ID fallback), `MarkJobOrphaned(…, observedStatus)`,
+  with a per-ID fallback), `MarkJobOrphaned(…, observedStatus) (marked bool,
+  error)` — sets `status`/`completed_at` and, since #457, also clears `pool`,
+  under the unchanged `#status = :observed` condition —
   `ReconcileJob` → `ReconcileOutcome`, `RequeueHungJobs(deps, opts)` →
   `RequeueResult`, `RequeueJob(deps, jobID, opts)` → `SingleRequeueResult` /
   `RequeueOutcome`, `GetRequeueableJob`, `BuildRequeueMessage`,
@@ -177,9 +193,10 @@ Interfaces consumed: `TaskLocker`, `TaskExecutor`, `RunnerMetricsAPI`, `EC2API`,
 `OrphanEC2API`, `DynamoDBAPI`, `OrphanScanAPI`, `SQSAPI`, `MetricsAPI`,
 `CostReporter`, `GitHubJobChecker`, `JobQueuedChecker`, `JobRequeuer`,
 `PoolDBAPI`, `AMIReference`, `RunnerRegistry`, `RunnerSightingStore`,
-`ActiveReposFunc`, `FleetCostStore`.
+`ActiveReposFunc`, `FleetCostStore`, and from `pkg/cost`: `PriceFetcherAPI`,
+`SpotPricer`.
 
-## Data [coverage: high -- 12 sources]
+## Data [coverage: high -- 14 sources]
 
 Thresholds and caps, by sweep:
 
@@ -188,7 +205,7 @@ Thresholds and caps, by sweep:
 | `orphaned_instances` | 5 phases (below) | terminates everything merged |
 | `stale_secrets` | config with no instance, or config older than `deadAssignmentAge()` | — |
 | `old_jobs` | `completed_at < now-7d` | 25 deletes per `BatchWriteItem` |
-| `orphaned_jobs` | running/claiming/launched `created_at < now-2h`, **or** requeued `requeued_at < now-2h` | `WithMaxItems` when driven by the console |
+| `orphaned_jobs` | running/claiming/launched `created_at < now-2h`, **or** requeued `requeued_at < now-2h`; the retirement write also `REMOVE`s `pool` (#457) | `WithMaxItems` when driven by the console |
 | `stale_jobs` | running/claiming `created_at < now-10m` | 30 GitHub checks + 5 requeues per cycle |
 | `unconfirmed_runners` | launched, `created_at < now-5m`, has `instance_id` | `MaxRequeueRetries = 2` |
 | `ephemeral_pool_cleanup` | `Ephemeral && now-LastJobTime > 4h` (`EphemeralPoolTTL`) | terminates pool instances before deleting config |
@@ -209,7 +226,7 @@ below it would reap live work):
   before the instance even boots — so a live runner reads `offline` for its whole
   startup, and a standby agent can sit offline for the standby deadline.
 
-The five orphaned-instance phases ([tasks.go:212](../../pkg/housekeeping/tasks.go)):
+The five orphaned-instance phases ([tasks.go:227](../../pkg/housekeeping/tasks.go)):
 
 1. **Tag** — `runs-fleet:managed=true`, running/pending, launched before
    `now - (MaxRuntimeMinutes + 10m)`.
@@ -241,7 +258,15 @@ the instance was both billable and in the busy set), `SampledAt`, `Partial`. Day
 are bucketed in `config.ReportLocation()`, not UTC, and an empty fleet still
 writes a checkpoint so the next tick does not over-attribute the gap.
 
-## Key Decisions [coverage: high -- 12 sources]
+Prices feeding those figures are live since #458 (2026-08-21): each tick builds
+its `FleetPricer` from the wired Pricing-API fetcher and spot cache, and re-asks
+the spot price every tick rather than memoising across ticks. Before #458 the
+sampler was constructed `NewFleetPricer(nil, nil, …)`, so it never attempted a
+live lookup and every fleet-cost figure came from the fallback table — which at
+the time covered only three families. The table itself, and what #458 did to it,
+belong to [observability](observability.md).
+
+## Key Decisions [coverage: high -- 14 sources]
 
 - **In-process timers + a distributed task lock, not SQS.** Scheduling is
   clock-derived and every task is idempotent, so the queue was pure overhead. The
@@ -258,7 +283,36 @@ writes a checkpoint so the next tick does not over-attribute the gap.
   deletes or destroys, so an unknown must read as "do nothing", never as
   "everything qualifies". `ExecuteCostReport` uses an `isNilInterface` reflection
   guard for the same reason — a typed-nil `*cost.Reporter` in the interface would
-  otherwise be non-nil.
+  otherwise be non-nil. The fleet pricers (#458) are the deliberate exception:
+  a missing price source degrades to an estimate rather than a no-op, because
+  pricing destroys nothing and a fleet-cost tick that silently skipped would
+  under-report — the same failure the store gate exists to avoid.
+- **Clear the GSI key, keep the pin (#457, 2026-08-21).** `status` is the range
+  key of the jobs table's pool-status GSI, whose hash key is `pool`. Records
+  written before #227 stored `pool` as an empty string instead of omitting it —
+  unrepresentable in a GSI key — so DynamoDB rejected every `MarkJobOrphaned`
+  update with `ValidationException`; #227 fixed the write path but left the rows.
+  The fix is `REMOVE #pool` in the same update
+  ([orphans.go:335–341](../../pkg/housekeeping/orphans.go)): a record reaching
+  this write is a never-completed job whose instance is gone, so an empty pool
+  holds no information (all 250 affected rows were `warm_pool_hit=false` cold
+  starts), both readers decode a missing attribute to the same empty string, and
+  REMOVE on an absent attribute is a no-op so healthy records are untouched. The
+  `#status = :observed` condition is unchanged — the status pin stays the sole
+  write guard (`TestMarkJobOrphaned_KeepsConcurrencyGuard` pins this). The same
+  write serves the console's `ReconcileJob` ([orphans.go:316](../../pkg/housekeeping/orphans.go)),
+  so the operator path was equally wedged and equally fixed.
+- **Per-record failures are the task's error (#457).** `ExecuteOrphanedJobs`
+  now returns `failed to retire N of M orphaned jobs: <first error>` when any
+  candidate's write fails ([tasks.go:1122–1128](../../pkg/housekeeping/tasks.go)),
+  after still counting and metering the retirements that succeeded. Before, each
+  failure was logged and the loop `continue`d to a `nil` return — and in
+  [runner.go:330–339](../../pkg/housekeeping/runner.go) a nil return means no
+  `"task failed"` log *and* `PublishMessageProcessingSeconds(…, "ok", …)`, so the
+  latency metric reported success too. A task returning nil while 100% of its
+  work failed is [absent-is-not-zero](../concepts/absent-is-not-zero.md) in its
+  purest form: the absence of a result was rendered as the zero value of an
+  error, and read as health for months.
 - **Confirm immediately before every irreversible act.** The scan snapshot is
   minutes old, so `stale_ami` re-reads EC2 state *and* checks
   `HasLiveInstanceClaim` + `HasActiveJobForInstance` per candidate (#433);
@@ -318,13 +372,17 @@ writes a checkpoint so the next tick does not over-attribute the gap.
   interval controls variance, not bias. 60s buys ~3% daily aggregate error for
   1440 `DescribeInstances` calls a day, and halving it would buy under a point.
   Which is exactly why the output feeds a fleet total and is never surfaced as a
-  per-job number.
+  per-job number. Being statistical does not excuse a wrong rate, though: until
+  #458 the sampler held no price sources at all and priced every instance off
+  the fallback table, and the fix was wiring, not sampling — `SetFleetPricers`
+  plus a fresh `FleetPricer` per tick so a moving spot price is re-fetched each
+  interval (`TestFleetCostSampleRefetchesSpotPriceEachTick`).
 
-## Gotchas [coverage: high -- 12 sources]
+## Gotchas [coverage: high -- 14 sources]
 
 - **`ExecuteOldJobs` HARD-DELETES job rows older than 7 days, with no archive.**
   The doc comment says "archives or deletes"; the code only deletes
-  ([tasks.go:955](../../pkg/housekeeping/tasks.go)). Anything computed *from the
+  ([tasks.go:971](../../pkg/housekeeping/tasks.go)). Anything computed *from the
   jobs table* is therefore silently truncated at 7 days — including any
   "month-to-date" figure. This is exactly why the admin cost page's fleet block
   derives its attributed share from the sampler's own busy-vs-total
@@ -358,20 +416,34 @@ writes a checkpoint so the next tick does not over-attribute the gap.
   per describe and 100 per cancel with a single 2s retry. `stale_ami`
   deliberately skips it — warm pools are on-demand only, so a pool member has no
   persistent request.
+- **The orphaned-jobs sweep had never once succeeded in production before #457
+  (2026-08-21).** 16,000 consecutive failures over 16 hours, 250 records retried
+  every 15 minutes, zero retirements — every `MarkJobOrphaned` rejected with
+  `ValidationException` because of the empty `pool` GSI key. Those 250 records
+  had no other exit: the 7-day GC keys on `completed_at`, which only this sweep
+  would have set. The wedge was invisible because the task returned `nil` after
+  logging each failure, so neither the `"task failed"` log nor the `error`
+  latency result ever fired. Both halves are fixed (REMOVE `pool`; report
+  per-record failures), but the second half is worth internalising: **a sweep
+  that logs-and-continues can be 100% broken and read as healthy.**
 - **`ExecuteEphemeralPoolCleanup` returns `nil` even when deletes failed.** Pool
   instance-termination and `DeletePoolConfig` errors are logged and the loop
   continues; the function's only error path is `ListPools`. The task therefore
-  reports success on a partly failed cleanup.
+  reports success on a partly failed cleanup. Unchanged by #457 — it carries the
+  exact shape that hid the orphan-sweep wedge, and `ExecuteOrphanedJobs` is now
+  the exception among these loops, not the rule.
 - **`ExecuteOldJobs` swallows `BatchWriteItem` failures too** — a failed batch
   `continue`s and is simply not counted, so a persistently failing delete is
-  invisible except in the count.
+  invisible except in the count. Also unchanged by #457.
 - **The stale-jobs GitHub budget is a floor, not a ceiling.** `maxStaleJobChecks
   = 30` bounds the *status* calls, but each of the up-to-5 requeues spends one
   more to re-confirm queued, so a cycle's real ceiling is 35.
 - **`ExecuteOrphanedRunners` returns `nil` on almost every failure.** A repo
   whose listing fails is skipped, a failed sighting write leaves the
   registration, and a failed sighting reap returns `nil` early. Only
-  `activeRepos` failing surfaces as a task error.
+  `activeRepos` failing surfaces as a task error. Also unchanged by #457 — the
+  third loop in this package still shaped like the one that hid a wholly broken
+  sweep.
 - **Fleet EBS cost is an assumed 100 GiB per instance.** `DescribeInstances`
   reports volume IDs but not sizes (`EbsInstanceBlockDevice` carries no
   `VolumeSize`), so real sizes would need a `DescribeVolumes` fan-out every tick.

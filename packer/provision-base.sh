@@ -413,6 +413,14 @@ sudo dnf install -y pipx \
 sudo mkdir -p /opt/pipx/bin
 sudo chown -R ec2-user:ec2-user /opt/pipx
 
+echo "==> Creating the .NET install dir"
+# actions/setup-dotnet consults no tool cache — it shells out to install-dotnet.sh and
+# hard-defaults the install root to /usr/share/dotnet, which the job user cannot create.
+# DOTNET_INSTALL_DIR is the only override, so the runs-fleet-agent unit points it here.
+# Pre-created (owned by ec2-user) since /opt is root-owned.
+sudo mkdir -p /opt/dotnet
+sudo chown -R ec2-user:ec2-user /opt/dotnet
+
 echo "==> Pre-populating the Actions Python tool cache"
 # actions/setup-python can't fetch CPython for AL2023 (no build in its manifest and
 # GitHub won't add one), so expose the installed interpreters where the action looks:
@@ -870,6 +878,7 @@ echo "    - Java: $(java -version 2>&1 | head -1)"
 echo "    - sbt: v${SBT_VERSION}"
 echo "    - Python: $(python --version 2>&1) (default); versions ${PYTHON_VERSIONS[*]} in tool cache"
 echo "    - pipx: $(pipx --version 2>&1)"
+echo "    - .NET install dir: /opt/dotnet (setup-dotnet installs here; nothing pre-baked)"
 echo "    - Ruby: $(ruby --version 2>&1) (default); versions ${RUBY_VERSIONS[*]} in tool cache"
 echo "    - Go: $(go version 2>&1) (default)"
 echo "    - Tool cache: Node ${NODE_TC_LINES[*]}, Go 1.24/1.25/1.26 (+${#GO_EXTRA_PATCHES[@]} pinned patches), Temurin JDK 17/21 (${TOOLCACHE_PLATFORM})"

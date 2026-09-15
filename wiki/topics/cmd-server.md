@@ -1,7 +1,7 @@
 ---
 topic: Server (Orchestrator Entry Point)
-last_compiled: 2026-08-21
-sources_count: 6
+last_compiled: 2026-09-15
+sources_count: 8
 ---
 
 # Server (Orchestrator Entry Point)
@@ -9,7 +9,7 @@ sources_count: 6
 ## Purpose [coverage: medium -- 2 sources]
 The `cmd/server` binary is the long-running orchestrator daemon. It receives GitHub webhooks at `/webhook`, enqueues jobs onto SQS, starts EC2 fleets, reconciles warm pools, handles spot interruption events, consumes agent termination telemetry, runs housekeeping tasks, and exposes the admin API plus the GitHub Actions cache protocol. The backend is EC2-only — there is no runtime branch on a Kubernetes provider. Multiple replicas may run concurrently; coordination uses per-pool and per-task DynamoDB locks rather than global leader election.
 
-## Architecture [coverage: medium -- 3 sources]
+## Architecture [coverage: high -- 5 sources]
 Boot sequence in `main()` ([cmd/server/main.go](../../cmd/server/main.go)). Every step below either succeeds or `os.Exit(1)` — the file has no nil-degrade paths for anything load-bearing (see Key Decisions):
 
 1. `logging.Init()`; root context from `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)`.
@@ -22,7 +22,7 @@ Boot sequence in `main()` ([cmd/server/main.go](../../cmd/server/main.go)). Ever
 8. `initCircuitBreaker` (only when `cfg.CircuitBreakerTable` is set and the fleet manager exists) builds `circuit.NewBreaker`, starts its cache cleanup, and wires it into both the fleet manager and the event handler.
 9. `initSecretsStore` builds the SSM or Vault backend; `poolManager.SetRunnerConfigChecker` wraps it as a `pools.RunnerConfigChecker`. When `cfg.TerminationQueueURL` is set, `termination.NewHandler(...)` is built over its own queue client.
 10. `initGitHubClient(cfg)` builds a single `*gh.Client` (nil when App credentials are absent). When non-nil it is fanned out to three consumers: `terminationHandler.SetGitHubJobChecker` (the still-queued re-dispatch check), `eventHandler.SetGitHub(&eventsRerunAdapter{...})` (spot-reclaim job re-run, PR #454), and `initHousekeeping`.
-11. `initHousekeeping` returns both the scheduled `housekeeping.Runner` and its `housekeeping.Tasks` executor (nil,nil when `dbClient` or `cfg.PoolsTableName` is missing) so the admin API can drive the same sweeps on demand. It wires `SetPoolDB`, `SetJobRequeuer(jobQueue)`, `SetFleetCostStore(dbClient)` (the fleet-cost sampler), and — when the GitHub client exists — `SetGitHubJobChecker` and `SetRunnerRegistry`. When `cfg.CostReportSNSTopic` or `cfg.CostReportBucket` is set it builds `cost.NewReporter(awsCfg, dbClient, spot, cfg, ...)`, guarding the typed-nil `*fleet.Manager` before it lands in the `cost.SpotPricer` interface. The runner gets `SetMetrics` and `SetTaskLocker(dbClient, uuid.NewString())`.
+11. `initHousekeeping` returns both the scheduled `housekeeping.Runner` and its `housekeeping.Tasks` executor (nil,nil when `dbClient` or `cfg.PoolsTableName` is missing) so the admin API can drive the same sweeps on demand. Inside, the order is: (a) a guarded `spot cost.SpotPricer` is built **unconditionally** from `fleetManager` (typed-nil `*fleet.Manager` checked before it lands in the interface); (b) only when `cfg.CostReportSNSTopic` or `cfg.CostReportBucket` is set, `cost.NewReporter(awsCfg, dbClient, spot, cfg, ...)` becomes the `housekeeping.CostReporter`; (c) `housekeeping.NewTasks(awsCfg, cfg, secretsStore, metricsPublisher, costReporter)` takes that reporter as a constructor argument; (d) the executor is then wired with `SetPoolDB`, `SetJobRequeuer(jobQueue)`, `SetFleetCostStore(dbClient)`, and `SetFleetPricers(cost.NewPriceFetcher(awsCfg, awsCfg.Region), spot)` — the two live price sources the fleet-cost sampler reads each run when `ExecuteFleetCostSample` builds `cost.NewFleetPricer(t.fleetOnDemand, t.fleetSpot, fleetCostEBSGiB)` ([pkg/housekeeping/fleet_cost.go](../../pkg/housekeeping/fleet_cost.go)); either pricer may be nil and independently degrades to the fallback ladder ([pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)); (e) when the GitHub client exists, `SetGitHubJobChecker` and `SetRunnerRegistry`; (f) `housekeeping.NewRunner(tasksExecutor, housekeeping.DefaultSchedulerConfig())` gets `SetMetrics` and `SetTaskLocker(dbClient, uuid.NewString())`. *Historical (2026-08-21, PR #458):* before this the `spot` guard lived inside the cost-report branch in (b), and `SetFleetPricers` did not exist — the sampler, introduced in PR #455, constructed `cost.NewFleetPricer(nil, nil, fleetCostEBSGiB)` and never attempted a live lookup.
 12. `fleet.NewAMIResolver(ec2Client, cfg.LaunchTemplateName)` — deliberately **one** resolver shared by the admin console and the staleness sweep, so the two cannot disagree about which AMI is current for a whole cache TTL. Handed to `housekeepingTasks.SetAMIReference`.
 13. `initRunnerManager(githubClient, secretsStore, cfg)` builds `runner.Manager` (nil if no GitHub client), carrying `CacheSecret`, `BaseURL`, `TerminationQueueURL`, `BuildkitCacheBucket`/`Region`, and `RunnerLogsBucket` (the last three all riding `cfg.CacheBucketName`).
 14. `worker.DirectProcessor` plus a 10-slot `directProcessorSem` for the webhook fast path.
@@ -42,7 +42,7 @@ Adapters declared at the bottom of `main.go`, each existing to narrow one shared
 
 External: GitHub API via `github.com/google/go-github/v57/github` (event types) and `pkg/github.Client` for App-auth installation tokens; Vault optionally via the secrets backend; an OIDC issuer at startup when admin auth is configured.
 
-## API Surface [coverage: high -- 2 sources]
+## API Surface [coverage: medium -- 2 sources]
 HTTP routes registered in `webhookServer.setupHTTPRoutes` on port `:8080`:
 
 - `GET /health` — always 200 OK.
@@ -78,7 +78,8 @@ Not applicable. The server owns no persistent state directly. All state lives in
 - Fast-path direct processing: `worker.TryDirectProcessing` opportunistically processes the job inline behind a 10-slot semaphore, bypassing the SQS round trip; the always-enqueued SQS copy is the fallback.
 - Graceful shutdown ordering: drain → HTTP stop → worker drain (bounded by `workerDrainTimeout = MessageProcessTimeout + 10s`) → tracing flush → metrics close, so in-flight jobs' final spans and metrics are captured.
 
-## Gotchas [coverage: medium -- 3 sources]
+## Gotchas [coverage: high -- 5 sources]
+- **A dependency constructed inside a feature-flag branch is invisible to every other consumer.** The guarded `cost.SpotPricer` was scoped inside the `CostReportSNSTopic`/`CostReportBucket` branch of `initHousekeeping`, so the fleet-cost sampler added by #455 (2026-08) had nothing to wire and ran `NewFleetPricer(nil, nil, ...)` — silently pricing the whole fleet off the fallback table (the Cost page showed Fleet Cost $1.49 against Total Cost $87.37) until #458 (2026-08-21) hoisted the pricer above the branch and added `SetFleetPricers`. Build shared deps once at function scope; let the flag gate only the consumer that needs it.
 - **A deployment with no metrics env vars now emits nothing.** Before #456, CloudWatch's default-on meant `initMetrics` almost never returned the `NoopPublisher`. It is now the default outcome, and it is silent: the "metrics initialized" log line is only emitted when at least one backend exists, so the absence of metrics looks like the absence of a log line.
 - Worker drain timeout (`workerDrainTimeout = MessageProcessTimeout + 10s`) plus `ShutdownDrainDelay` plus the telemetry flush must all fit inside the deploy's `terminationGracePeriodSeconds` / `stopTimeout`, or the platform SIGKILLs mid-drain.
 - Receive errors from a cancelled/deadline-exceeded context are logged at `Warn`, not `Error`, to avoid noisy shutdown logs; other receive errors are `Error` (`internal/worker/common.go`).
@@ -99,3 +100,5 @@ Not applicable. The server owns no persistent state directly. All state lives in
 - [internal/worker/ec2.go](../../internal/worker/ec2.go)
 - [internal/worker/direct.go](../../internal/worker/direct.go)
 - [pkg/config/config.go](../../pkg/config/config.go)
+- [pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)
+- [pkg/housekeeping/fleet_cost.go](../../pkg/housekeeping/fleet_cost.go)

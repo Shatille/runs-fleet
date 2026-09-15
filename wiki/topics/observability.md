@@ -1,12 +1,12 @@
 ---
 topic: Observability (Metrics, Tracing, Logging, Cost)
-last_compiled: 2026-08-21
-sources_count: 36
+last_compiled: 2026-09-15
+sources_count: 40
 ---
 
 # Observability (Metrics, Tracing, Logging, Cost)
 
-## Purpose [coverage: high -- 36 sources]
+## Purpose [coverage: high -- 40 sources]
 
 runs-fleet emits multi-backend metrics, OpenTelemetry traces, structured JSON
 logs, and cost figures (a daily markdown report plus the admin Cost tab) so
@@ -38,13 +38,16 @@ The observability surface is split across four packages plus a sampler:
   (`FleetPricer` + `ComputeFleetMTD`) prices every managed instance for the
   wall-clock time it existed, including idle pool capacity and stopped
   instances still paying for EBS. Explicit about its limits: live
-  Pricing-API/spot prices with hard-coded fallbacks (three ARM families, fixed
-  70% spot discount), a flat EBS size estimate, no data-transfer line items.
+  Pricing-API/spot prices first; when those are unavailable, a hard-coded
+  fallback that is a per-vCPU rate per family (ap-northeast-1 list prices,
+  burstable families priced per type) and a fixed 70% spot discount (as of
+  #458, 2026-08-21 — before that the fallback was a 15-entry table covering
+  three ARM families); a flat EBS size estimate; no data-transfer line items.
 - `pkg/housekeeping/fleet_cost.go` — the 60-second fleet-cost sampler that
   feeds the fleet-attributed path, accumulating into `__fleet_day:` rollup rows
   in the pools table.
 
-## Architecture [coverage: high -- 36 sources]
+## Architecture [coverage: high -- 40 sources]
 
 ### Metrics fan-out
 
@@ -72,9 +75,9 @@ caller → MultiPublisher.PublishX
             └── goroutine → DatadogPublisher.PublishX     (5s timeout)
 ```
 
-`cmd/server/main.go:451` appends the CloudWatch publisher only when
+`cmd/server/main.go:453` appends the CloudWatch publisher only when
 `cfg.MetricsCloudWatchEnabled` is set, then always wraps the (possibly empty)
-list in `NewMultiPublisher` at `cmd/server/main.go:490`. `NoopPublisher` (same
+list in `NewMultiPublisher` at `cmd/server/main.go:492`. `NoopPublisher` (same
 file as the interface) is a zero-value-friendly stub returned when metrics are
 disabled entirely — every method returns `nil`.
 
@@ -226,17 +229,56 @@ role grants no `logs:*` action, so `PutLogEvents` had been retrying into
 `pkg/agent/logship` (PR #445, 01c048b) and are served back by
 [pkg/admin/handler_job_logs.go](../../pkg/admin/handler_job_logs.go); the
 detail belongs to [agent-runtime](agent-runtime.md) and
-[admin-ui](admin-ui.md). Only the CloudWatch *metrics* collection survived on
-the AMI.
+[admin-ui](admin-ui.md).
+
+**Nor do runner instances publish CloudWatch metrics — and they never did.**
+The 2026-08-21 revision of this article said "only the CloudWatch *metrics*
+collection survived on the AMI". PR #459 (9270d81, 2026-08-26) removed that
+too, for the same reason #446 removed the logs half: the runner role (policy
+`runs-fleet-runner` v6) grants neither `cloudwatch:*` nor `logs:*`, so the
+baked, twice-configured, boot-enabled CloudWatch agent had every
+`PutMetricData` denied. Verified against the live account before removal: the
+`RunsFleet/Runner` and `Runner` namespaces held zero metrics and the
+`/runs-fleet/runner` log group did not exist. The package, both config
+overrides, and the systemd enable are gone from `packer/provision-base.sh` and
+`packer/provision-runs-fleet.sh` (only a stale `"CloudWatch Agent: enabled"`
+line in the base provisioner's end-of-build summary echo remains,
+`provision-base.sh:876`). Nothing consumed those metrics; the admin console
+reads DynamoDB. Every runner-side observation that *does* exist rides the
+termination telemetry (see Key Decisions, "Agent has no metrics client").
 
 ### Cost: two attributions over one rate ladder
 
 `rateMemo` ([pkg/cost/fleetpricing.go](../../pkg/cost/fleetpricing.go):47) is
 the single hourly-rate ladder shared by both pricers — live AWS price when
-available, then the hard-coded table, then a flat spot discount — so the
-job-attributed and fleet-sampled figures are derived from one source and their
-coverage ratio compares like with like. It memoizes per instance type and is
-**not** concurrency-safe (one per pricer).
+available, then the hard-coded fallback (`GetInstancePrice`), then a flat spot
+discount — so the job-attributed and fleet-sampled figures are derived from
+one source and their coverage ratio compares like with like. It memoizes per
+instance type and is **not** concurrency-safe (one per pricer).
+`onDemandHourly` (fleetpricing.go:64) starts from `GetInstancePrice` and
+overrides it with a positive live `GetPrice` result; `spotHourly` (:85)
+returns `(price, live)` and callers apply `SpotDiscount` when `live` is false.
+
+The fallback itself was rebuilt by PR #458 (2bb4703, 2026-08-21).
+`GetInstancePrice` ([pkg/cost/reporter.go](../../pkg/cost/reporter.go):111)
+now resolves in three steps: (1) an exact hit in `burstablePricing`
+(reporter.go:74) — the t3/t4g tiers all expose 2 vCPU across micro→large
+while spanning 8× in price, so they cannot be derived from vCPU; (2)
+otherwise `fleet.GetInstanceSpec`
+([pkg/fleet/instances.go](../../pkg/fleet/instances.go):184) supplies the
+catalog family and vCPU count and the price is `familyVCPUHourly[family] ×
+CPU` (reporter.go:53; 12 non-burstable families) — AWS prices strictly
+linearly in vCPU within such a family, verified against the Pricing API for
+c7g, c6i and m7i, so one rate per family prices sizes never seen before; a
+catalog type whose family is missing from the map uses the exported
+`DefaultVCPUHourly = 0.0550` per vCPU (reporter.go:99), chosen near the mean
+of the known families rather than the cheapest; (3) only a type that is
+neither burstable nor in the catalog takes the flat
+`defaultInstanceHourlyPrice = 0.0336` (reporter.go:103). 11 spot-checked
+types land within 0.1% of real ap-northeast-1 rates.
+`TestEveryCatalogFamilyIsPricedExplicitly`
+(`pkg/cost/fleetpricing_test.go:219`) walks `fleet.InstanceCatalog` and fails
+if any selectable family lands on the generic default.
 
 #### JobPricer — per-job attribution
 
@@ -249,8 +291,9 @@ identically:
 
 - Instance type defaults to `t4g.medium` when the record lacks one; billable
   duration is `DurationSeconds/3600` with a 0.5-hour minimum.
-- On-demand price: the hard-coded table (`GetInstancePrice`), overridden by
-  a live `PriceFetcherAPI.GetPrice` result when available and positive.
+- On-demand price: the hard-coded fallback (`GetInstancePrice` — family
+  per-vCPU rate × vCPU, or the burstable per-type map), overridden by a live
+  `PriceFetcherAPI.GetPrice` result when available and positive.
 - Spot jobs: live market price via `SpotPricer.SpotPrice` (`fleet.Manager`'s
   5-minute spot-price cache with negative caching of confirmed no-price
   types and a `fetchMu`-serialized fetch path); fallback is the fixed
@@ -280,7 +323,19 @@ at all. PR #455 added a sampler that measures the fleet directly:
    first tick after local midnight would otherwise find no checkpoint. An
    elapsed gap beyond `fleetCostMaxElapsed = 15m` is clamped and marks the day
    `partial`; a zero or future checkpoint falls back to the nominal interval.
-4. `FleetPricer.PriceInterval` ([pkg/cost/fleetpricing.go](../../pkg/cost/fleetpricing.go):137)
+4. Each tick constructs `cost.NewFleetPricer(t.fleetOnDemand, t.fleetSpot,
+   fleetCostEBSGiB)` (fleet_cost.go:93). The two price sources arrive via
+   `(*Tasks).SetFleetPricers` ([pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go):171),
+   which `cmd/server/main.go:434` calls with a fresh `cost.NewPriceFetcher`
+   and the typed-nil-guarded `*fleet.Manager` spot pricer. **Historical
+   (fixed by #458, 2026-08-21):** from #455 until #458 the sampler was
+   constructed `NewFleetPricer(nil, nil, fleetCostEBSGiB)` — no price fetcher,
+   no spot pricer, never a live lookup — because `main.go` had built the
+   guarded `SpotPricer` inside the cost-report `if` branch, out of the
+   sampler's reach. Combined with the three-family fallback table, the Cost
+   page showed Fleet Cost $1.49 against Total Cost $87.37, an order of
+   magnitude low for a figure that must *exceed* the job total.
+   `FleetPricer.PriceInterval` ([pkg/cost/fleetpricing.go](../../pkg/cost/fleetpricing.go):137)
    charges a running instance compute + storage and a stopped one storage
    alone. `Hours` counts billable compute only, so a stopped instance cannot
    dilute a per-minute rate. EBS is priced from a **flat
@@ -321,7 +376,7 @@ from Korea, and a UTC day boundary would cut every "cost per day" bucket at
 09:00 local and roll a month-to-date total over mid-morning on the 1st. An
 unparseable zone is a **hard config error**, not a silent fallback
 (`pkg/config/config.go:191`). `Config.ReportLocation()` falls back to UTC only
-for a zero/nil Config so tests cannot panic. `cmd/server/main.go:639` pushes it
+for a zero/nil Config so tests cannot panic. `cmd/server/main.go:641` pushes it
 into the admin cost handler; the sampler reads it at
 `pkg/housekeeping/fleet_cost.go:83`. Sampler and reader must agree — a mismatch
 puts the range off by a day and drops the current day's accumulating rollup out
@@ -352,7 +407,7 @@ of the queried window (`ComputeFleetMTDIn` doc, fleetmtd.go:61).
    **error fails the whole run**.
 3. Each job is priced by a fresh `JobPricer`; spot/on-demand cost, hours, and
    savings aggregate into the breakdown.
-4. `spotInterruptionCount` (reporter.go:332) queries CloudWatch with
+4. `spotInterruptionCount` (reporter.go:382) queries CloudWatch with
    metric-math
    `SUM(SEARCH('{RunsFleet,Family} MetricName="SpotInterruptions"', 'Sum', 3600))`
    — the Family-dimensioned form, since a plain undimensioned lookup matches
@@ -379,20 +434,37 @@ of the queried window (`ComputeFleetMTDIn` doc, fleetmtd.go:61).
    <date>` (skipped if `snsTopicARN` is empty). Both failures are warnings,
    not errors.
 
-`cmd/server/main.go` wires `*db.Client` and `*fleet.Manager` into
-`NewReporter`, guarding the typed-nil case (`var spot cost.SpotPricer; if
-fleetManager != nil { spot = fleetManager }`) so a nil manager never becomes
-a non-nil interface.
+`initHousekeeping` in `cmd/server/main.go` (:418–:434) builds the typed-nil
+guard once (`var spot cost.SpotPricer; if fleetManager != nil { spot =
+fleetManager }`) so a nil manager never becomes a non-nil interface, and hands
+the same `spot` to both `cost.NewReporter` (:427, only when an SNS topic or
+report bucket is configured) and `tasksExecutor.SetFleetPricers` (:434,
+always). #458 hoisted the guard out of the cost-report branch so the sampler
+could share it.
 
 `pkg/cost/pricing.go` defines `PriceFetcher` — a 24-hour cache wrapping
 `pricing.Client`. The Pricing API is region-locked to `us-east-1` and
 `ap-south-1`, so the fetcher overrides the supplied `aws.Config` to
-`us-east-1`. `GetPrice` checks the cache, queries the API, and on any
-error logs a warning, sets `useFallback = true` (sticky for the lifetime
-of the fetcher until `RefreshCache` resets it), and returns the
-hard-coded price from the package-level `instancePricing` map.
+`us-east-1` (the *lookup* still targets the configured region via
+`regionToLocation`, pricing.go:264). `GetPrice` (pricing.go:84) checks the
+cache, queries the API, and on any error logs `"pricing api fetch failed,
+using fallback"`, latches fallback, and returns `getFallbackPrice` — which
+since #458 simply delegates to `GetInstancePrice` (pricing.go:294) so both
+paths estimate identically. The latch is a **window, not a switch**:
+`enterFallback` (pricing.go:127) stores `fallbackUntil = now +
+fallbackRetryAfter` (`5 * time.Minute`, pricing.go:54) and `inFallback`
+(:115) clears `useFallback` once that instant passes, so the next `GetPrice`
+retries the API. `SetFallbackRetryAfter(d)` overrides the window (a
+non-positive `d` expires the latch at once; test seam). **Historical (fixed by
+#458):** the latch was previously cleared only by `RefreshCache`, which had no
+callers, so one API error at startup pinned the process to estimates for its
+whole lifetime — and because the latch also short-circuits the warning, the
+silence read as health. `RefreshCache` was deleted rather than left as a dead
+path whose hard-coded type list had gone stale. The three state fields
+(`useFallback`, `fallbackUntil`, `retryAfter`) are atomics because the admin
+cost page prices jobs per request against a shared fetcher.
 
-## Talks To [coverage: high -- 36 sources]
+## Talks To [coverage: high -- 40 sources]
 
 | Component             | Direction | Backend / API                                |
 | --------------------- | --------- | -------------------------------------------- |
@@ -407,11 +479,11 @@ hard-coded price from the package-level `instancePricing` map.
 | Reporter (cost)       | out       | `cloudwatch.GetMetricData` (SpotInterruptions + RunnerExecutionSeconds metric-math) |
 | Reporter (cost)       | out       | `s3.PutObject` (cost reports bucket)               |
 | Reporter (cost)       | out       | `sns.Publish` (daily-cost SNS topic)               |
-| Fleet-cost sampler    | out       | `ec2.DescribeInstances` (tag `runs-fleet:managed`), `dynamodb.UpdateItem` (`__fleet_day:` ADD), `dynamodb.Scan` (busy jobs) |
+| Fleet-cost sampler    | out       | `ec2.DescribeInstances` (tag `runs-fleet:managed`), `dynamodb.UpdateItem` (`__fleet_day:` ADD), `dynamodb.Scan` (busy jobs); since #458 also `pricing.GetProducts` via its own `PriceFetcher` and the `fleet.Manager` spot cache |
 | ComputeFleetMTD       | in        | `dynamodb.Scan` (ConsistentRead) over `__fleet_day:` rows |
 | Admin CostHandler     | out       | `ComputeFleetMTDIn` → `GET /api/cost/summary` `fleet` block |
-| JobPricer/FleetPricer | out       | Pricing API via `PriceFetcher`; `ec2.DescribeSpotPriceHistory` via `fleet.Manager` spot cache |
-| PriceFetcher          | out       | `pricing.GetProducts` (us-east-1 endpoint)         |
+| JobPricer/FleetPricer | out       | Pricing API via `PriceFetcher`; `ec2.DescribeSpotPriceHistory` via `fleet.Manager` spot cache (the FleetPricer half of this row was aspirational until #458 — the deployed sampler had nil sources) |
+| PriceFetcher          | out       | `pricing.GetProducts` (us-east-1 endpoint, `location` filter = configured region); needs `pricing:GetProducts` on the orchestrator role, resource `"*"` |
 
 Metric producers span the codebase; the notable cross-package flows are the
 webhook `in_progress` path (→ `JobStartupSeconds`) and the termination
@@ -421,7 +493,7 @@ handler, which converts agent telemetry into `RunnerConfirmed`,
 buildx-layer-cache, and runner-log-upload counters — see
 [events-and-termination](events-and-termination.md).
 
-## API Surface [coverage: high -- 36 sources]
+## API Surface [coverage: high -- 40 sources]
 
 ### Publisher interface (`pkg/metrics/publisher.go`)
 
@@ -535,12 +607,23 @@ Log-type constants: `LogTypeServer`, `LogTypeWebhook`, `LogTypeQueue`,
   both args nil-safe (nil ⇒ hard-coded table / fixed discount)
 - `(*JobPricer).Price(ctx, db.AdminJobEntry) JobPricing` — one job's cost,
   split as `{Total, Spot, OnDemand, Savings, Hours}`; not concurrent-safe
-- `GetInstancePrice(instanceType) float64` — hard-coded table lookup,
-  `t4g.medium` price for unknown types
-- `NewPriceFetcher(cfg aws.Config, region string) *PriceFetcher`
-- `(*PriceFetcher).GetPrice(ctx, instanceType) (float64, error)`
+- `GetInstancePrice(instanceType) float64` — fallback estimate: exact
+  `burstablePricing` hit → `familyVCPUHourly[family] × CPU` from the instance
+  catalog → `DefaultVCPUHourly × CPU` for a catalog type of unknown family →
+  `defaultInstanceHourlyPrice` (0.0336) only for a type absent from the
+  catalog. (Before #458: a 15-entry per-type table, `t4g.medium` for every
+  miss.)
+- `DefaultVCPUHourly = 0.0550` — exported so tests can assert no selectable
+  family lands on it
+- `NewPriceFetcher(cfg aws.Config, region string) *PriceFetcher` /
+  `NewPriceFetcherWithClient(client PricingAPI, region) *PriceFetcher`
+- `(*PriceFetcher).GetPrice(ctx, instanceType) (float64, error)` — never
+  returns a non-nil error in practice; failures degrade to the fallback price
 - `(*PriceFetcher).GetPricing(ctx, instanceTypes []string) map[string]float64`
-- `(*PriceFetcher).RefreshCache(ctx) error`
+- `(*PriceFetcher).SetFallbackRetryAfter(d time.Duration)` — overrides the
+  5-minute fallback window; `d <= 0` expires the latch immediately
+- `(*PriceFetcher).RefreshCache(ctx) error` — **removed in #458 (2026-08-21)**;
+  it was the only thing that cleared the fallback latch and had no callers
 - `DefaultRunnerMinuteRates() map[string]float64` — fresh copy, safe to
   retain/mutate
 
@@ -563,6 +646,9 @@ Log-type constants: `LogTypeServer`, `LogTypeWebhook`, `LogTypeQueue`,
 - `housekeeping.FleetCostStore` (a wider interface: `AddFleetCostSample` +
   `GetFleetCostDays` + `ListBusyInstanceIDs`) and
   `(*Tasks).SetFleetCostStore(s)`; `(*Tasks).ExecuteFleetCostSample(ctx) error`
+- `(*Tasks).SetFleetPricers(onDemand cost.PriceFetcherAPI, spot cost.SpotPricer)`
+  (#458) — live price sources for the sampler; either may be nil and each
+  independently degrades to the fallback ladder
 - `admin.(*CostHandler).SetFleetCostStore(s cost.FleetCostStore)` /
   `.SetReportLocation(loc *time.Location)`
 - `config.LoadReportLocation() (*time.Location, error)`;
@@ -571,7 +657,7 @@ Log-type constants: `LogTypeServer`, `LogTypeWebhook`, `LogTypeQueue`,
 
 `SpotDiscount = 0.7` (package-level constant).
 
-## Data [coverage: high -- 36 sources]
+## Data [coverage: high -- 40 sources]
 
 ### Metric taxonomy (summary)
 
@@ -655,7 +741,7 @@ label when the job was resolved via a config-driven alias.
 
 ### Cost report shape
 
-`Breakdown` struct (`pkg/cost/reporter.go`:92):
+`Breakdown` struct (`pkg/cost/reporter.go`:142):
 
 ```go
 type Breakdown struct {
@@ -698,20 +784,44 @@ optional Runner-Minute Cost, and a disclaimer footer. S3 path:
 `attributed_percent`, `days_covered`, `days_in_period`, `partial`, `warning`,
 `ebs_estimated` (always true).
 
-### Hard-coded pricing table (`pkg/cost/reporter.go`)
+### Fallback pricing tables (`pkg/cost/reporter.go`, as of #458)
 
-`instancePricing` is the fallback (and both pricers' base) behind the live
-Pricing API — three ARM families, on-demand `us-east-1` prices, 2024
-vintage:
+Two maps back `GetInstancePrice`, the fallback (and both pricers' base) behind
+the live Pricing API. Rates are **ap-northeast-1** on-demand list prices,
+estimate-grade, used only when the live lookup fails:
 
-- `t4g.{micro,small,medium,large,xlarge,2xlarge}` — `0.0084` to `0.2688`
-- `c7g.{medium,large,xlarge,2xlarge}` — `0.0361` to `0.2900`
-- `m7g.{medium,large,xlarge,2xlarge}` — `0.0408` to `0.3264`
+`familyVCPUHourly` (reporter.go:53) — $/vCPU-hour per non-burstable family;
+the price of a type is this × the catalog's vCPU count:
 
-Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
-(the `t4g.medium` rate).
+| Family | $/vCPU-h | Family | $/vCPU-h | Family | $/vCPU-h |
+| ------ | -------- | ------ | -------- | ------ | -------- |
+| `c7g`  | 0.0428   | `c6i`  | 0.0535   | `r8g`  | 0.0613   |
+| `c8g`  | 0.0525   | `c7i`  | 0.0536   | `r7g`  | 0.0803   |
+| `m7g`  | 0.0490   | `m6i`  | 0.0610   | `r6i`  | 0.0800   |
+| `m8g`  | 0.0540   | `m7i`  | 0.0630   | `r7i`  | 0.0840   |
 
-## Key Decisions [coverage: high -- 36 sources]
+`burstablePricing` (reporter.go:74) — per type, because the t-tiers do not
+scale with vCPU: `t3.{nano…2xlarge}` `0.0068`→`0.4352` and
+`t4g.{nano…2xlarge}` `0.0042`→`0.2688`. `nano`/`micro`/`small` are listed
+although the instance catalog excludes them (too little RAM for a job) — a
+pool can still hold one and it must not price as the flat default.
+
+Resolution order and the two defaults: a catalog type whose family is missing
+from `familyVCPUHourly` prices at `DefaultVCPUHourly = 0.0550 × CPU` (near
+the mean of the known families, so a large unknown instance never prices as a
+small one); a type absent from the catalog entirely takes
+`defaultInstanceHourlyPrice = 0.0336` (the `t4g.medium` rate).
+
+**Historical (until #458, 2026-08-21):** the fallback was a single
+`instancePricing` map of 15 entries — `t4g.{micro…2xlarge}`,
+`c7g.{medium…2xlarge}`, `m7g.{medium…2xlarge}` — with 2024-vintage `us-east-1`
+prices, and every other type fell to `0.0336`. The fleet actually runs r8g,
+c7i, c6i, c8g, m6i, m7i and m8g, so 75% of priced jobs hit the miss path; an
+`r8g.xlarge` was priced at a 14th of its real cost (errors up to 1300% on the
+11 spot-checked types), skewing the job-attributed total as well as the fleet
+figure. The old per-type shape also could not price a size it had never seen.
+
+## Key Decisions [coverage: high -- 40 sources]
 
 - **CloudWatch metrics ship disabled (2026-08-21, PR #456).**
   `RUNS_FLEET_METRICS_CLOUDWATCH_ENABLED` defaults to `false` in **both**
@@ -844,10 +954,14 @@ Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
   `contextHandler` injects stashed attrs at Handle time.
 - **Stdlib `log` redirected to slog as WARN.** Any `log.Print` from
   vendored deps becomes JSON with `log_type=stdlib` — no silent stderr drips.
-- **One log route, not a dormant second one (PR #446, 2026-08-18).** The
-  CloudWatch Logs path was removed rather than fixed with an IAM grant: it had
-  never worked (no `logs:*` on the instance role), and S3 shipping via
-  `pkg/agent/logship` already covered the need.
+- **One log route, not a dormant second one (PR #446, 2026-08-18; metrics
+  half PR #459, 2026-08-26).** The CloudWatch Logs path was removed rather
+  than fixed with an IAM grant: it had never worked (no `logs:*` on the
+  instance role), and S3 shipping via `pkg/agent/logship` already covered the
+  need. #459 applied the same reasoning to the AMI's CloudWatch *agent*
+  (metrics): the role lacks `cloudwatch:*` too, the `RunsFleet/Runner` and
+  `Runner` namespaces were empty, and nothing consumed them — so a service
+  that reported `active` while failing every call was deleted, not granted.
 - **Asymmetric failure semantics in the daily report.** A job-lister error
   fails the run — housekeeping retries, and a zeroed-core report is worse
   than none — while CloudWatch, S3, and SNS failures log warnings and
@@ -855,16 +969,32 @@ Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
   same rule: a read failure degrades to `nil`, never a 500.
 - **Cost reports are estimates, not billing.** Per-job durations and instance
   types are exact, but pricing is estimate-grade: live Pricing-API/spot prices
-  when available, hard-coded table + fixed 70% spot discount as fallback, a
-  flat EBS size, hand-tuned supporting-service coefficients; the published
-  markdown ends with a disclaimer pointing at AWS Cost Explorer.
-- **Pricing API region override + sticky fallback.** `pricing.Client` only
-  works in `us-east-1`/`ap-south-1`, so `NewPriceFetcher` force-sets
-  `us-east-1`; a single API failure flips `useFallback = true` for the
-  fetcher's lifetime (reset only by `RefreshCache`) to avoid hammering a
-  broken API on every report.
+  when available, the per-vCPU-per-family fallback + fixed 70% spot discount
+  only when those fail, a flat EBS size, hand-tuned supporting-service
+  coefficients; the published markdown ends with a disclaimer pointing at AWS
+  Cost Explorer.
+- **Fallback prices are derived per family × vCPU, not listed per type (PR
+  #458, 2026-08-21).** A per-type table can only be complete for the sizes
+  someone typed in, and its miss path — a single cheap default — under-reports
+  while looking authoritative (the old table priced an `r8g.xlarge` at 1/14th
+  and hid it behind a plausible dollar figure). AWS prices non-burstable
+  families linearly in vCPU, so one verified rate per family plus the
+  catalog's vCPU count prices every size including future ones; burstable
+  tiers keep a per-type map because their price tracks memory/credits, not
+  vCPU. The unknown-family default is deliberately near the *mean* rate rather
+  than the cheapest, and a test walks `fleet.InstanceCatalog` so a newly
+  selectable family cannot silently land there.
+- **Pricing API region override + fallback window (was: sticky latch).**
+  `pricing.Client` only works in `us-east-1`/`ap-south-1`, so `NewPriceFetcher`
+  force-sets `us-east-1`. An API failure latches fallback so a broken API is
+  not hammered once per priced instance — but the latch now expires after
+  `fallbackRetryAfter = 5m` (#458), short enough that a transient outage or a
+  newly granted `pricing:GetProducts` permission is picked up within one
+  cost-report cycle. Before #458 the latch was cleared only by `RefreshCache`,
+  which nothing called, so a single startup failure meant estimates for the
+  process's lifetime with the warning suppressed.
 
-## Gotchas [coverage: high -- 36 sources]
+## Gotchas [coverage: high -- 40 sources]
 
 ### CloudWatch backend (relevant when you turn it on)
 
@@ -900,7 +1030,7 @@ Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
   pass — 5 `PoolInstances` states, 2 `PoolDesired` kinds, 2 `Instances`
   (`pkg/pools/manager.go`:737–753) — on a 60s ticker, **plus** an extra
   triggered pass per queued-job webhook via `NotifyPoolDemand`
-  (`cmd/server/main.go`:759).
+  (`cmd/server/main.go`:761).
 - **The `Repo` dimension scales with repository count.** `JobsEnqueued`,
   `JobsAssigned`, and `JobsCompleted` mint a separately billed custom metric
   per repo × other-dimension combination. `docs/METRICS.md` documents this as
@@ -1018,15 +1148,46 @@ Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
   report by its UTC start day; only the fleet-cost day keys and the admin Cost
   tab honour `RUNS_FLEET_REPORT_TIMEZONE`. Comparing a daily report against a
   Cost-tab day will show a boundary offset.
-- **Pricing API hard-fails to fallback.** A single failed Pricing API call
-  flips `useFallback` permanently for that fetcher instance. To recover, call
-  `RefreshCache` or construct a new `PriceFetcher`.
-- **Hard-coded prices are us-east-1, 2024, three families only.** `t4g`,
-  `c7g`, `m7g`; anything else (including the `c8g`/`m8g` Graviton4
-  generations the labels support) falls back to `t4g.medium = 0.0336`. Does
-  not reflect ap-northeast-1 (this project's default region). Live
-  Pricing-API and spot lookups mask this when they succeed; the table is what
-  you get when they don't.
+- **The orchestrator role needs `pricing:GetProducts`, or every figure is an
+  estimate.** `PriceFetcher` treats `AccessDenied` like any other error: a
+  warning, then the fallback table. In a new deployment without the grant,
+  the Cost tab and daily report look fully populated while pricing everything
+  from the hard-coded ap-northeast-1 rates — wrong by an unknown margin in any
+  other region. #457's second commit (2181619) added the statement to
+  [deploy/terraform/iam.tf](../../deploy/terraform/iam.tf):240 — `Action =
+  ["pricing:GetProducts"]`, `Resource = "*"` because the Pricing API is
+  global and has no resource-level permissions — but **that file is
+  illustrative, not the deployed policy**; the real grant lives in the
+  separate IAM repository and must be applied there. Since #458 the
+  `"pricing api fetch failed, using fallback"` warning re-fires on the first
+  lookup after each 5-minute window lapses rather than once per process —
+  for the sampler's fetcher, exercised every 60s, that is roughly every five
+  minutes, so a missing grant is no longer silent in the orchestrator log.
+  (The reporter's fetcher is exercised once a day and the admin handler's only
+  on Cost-tab loads, so theirs re-warn less often.)
+- **Three independent `PriceFetcher`s, three caches, three latches (two if
+  no cost report is configured).** `initHousekeeping` constructs one inside
+  `cost.NewReporter` (main.go:427 → `NewPriceFetcher(cfg, cfg.Region)` at
+  reporter.go:204) and one for `SetFleetPricers` (:434); the admin web server
+  constructs a third for `NewCostHandler` (:630). Each has its own 24-hour
+  cache and 5-minute fallback window, so the daily report, the sampler, and
+  the Cost tab can briefly disagree on whether a price is live or estimated.
+- **[Fixed 2026-08-21, PR #458] Pricing API hard-failed to fallback for the
+  process lifetime.** A single failed call flipped `useFallback` permanently
+  for that fetcher; the only reset, `RefreshCache`, had no callers. Now a
+  5-minute window (`fallbackRetryAfter`), and `RefreshCache` is gone. Cost
+  figures produced by any orchestrator process that saw one Pricing API error
+  at startup before #458 are fallback-table estimates throughout.
+- **[Fixed 2026-08-21, PR #458] Hard-coded prices were us-east-1, 2024, three
+  families only.** `t4g`, `c7g`, `m7g`; anything else — including the
+  `c8g`/`m8g` Graviton4 generations the labels support and the r8g/c7i/c6i/
+  m6i/m7i families the fleet mostly runs — fell back to `t4g.medium = 0.0336`,
+  and 75% of priced jobs took that path. Now `familyVCPUHourly` × vCPU with
+  ap-northeast-1 rates for 12 families plus a t3/t4g per-type map, guarded by
+  `TestEveryCatalogFamilyIsPricedExplicitly`. Still an estimate: a region
+  other than ap-northeast-1 needs the live API to be right, and a family
+  added to `fleet.InstanceCatalog` without a `familyVCPUHourly` entry fails
+  that test rather than pricing at the generic default.
 - **Data transfer, ENIs, NAT, ECR still excluded.** EBS is now modelled (as
   an estimate) on the fleet path only; the daily report's breakdown still
   covers EC2 compute + Fargate + SQS + DynamoDB + CloudWatch + S3 with
@@ -1080,12 +1241,14 @@ Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
 - [pkg/cost/reporter.go](../../pkg/cost/reporter.go)
 - [pkg/cost/jobpricing.go](../../pkg/cost/jobpricing.go)
 - [pkg/cost/fleetpricing.go](../../pkg/cost/fleetpricing.go)
+- [pkg/cost/fleetpricing_test.go](../../pkg/cost/fleetpricing_test.go)
 - [pkg/cost/fleetmtd.go](../../pkg/cost/fleetmtd.go)
 - [pkg/cost/pricing.go](../../pkg/cost/pricing.go)
 - [pkg/cost/runnerminutes.go](../../pkg/cost/runnerminutes.go)
 - [pkg/db/fleet_cost.go](../../pkg/db/fleet_cost.go)
 - [pkg/db/pool_config.go](../../pkg/db/pool_config.go)
 - [pkg/db/jobs.go](../../pkg/db/jobs.go)
+- [pkg/fleet/instances.go](../../pkg/fleet/instances.go)
 - [pkg/housekeeping/fleet_cost.go](../../pkg/housekeeping/fleet_cost.go)
 - [pkg/housekeeping/runner.go](../../pkg/housekeeping/runner.go)
 - [pkg/housekeeping/tasks.go](../../pkg/housekeeping/tasks.go)
@@ -1099,6 +1262,8 @@ Unknown instance types fall back to `defaultInstanceHourlyPrice = 0.0336`
 - [internal/awsobs/middleware.go](../../internal/awsobs/middleware.go)
 - [internal/handler/webhook.go](../../internal/handler/webhook.go)
 - [cmd/server/main.go](../../cmd/server/main.go)
+- [deploy/terraform/iam.tf](../../deploy/terraform/iam.tf)
+- [packer/provision-base.sh](../../packer/provision-base.sh)
 - [deploy/helm/runs-fleet/values.yaml](../../deploy/helm/runs-fleet/values.yaml)
 - [deploy/helm/runs-fleet/templates/deployment.yaml](../../deploy/helm/runs-fleet/templates/deployment.yaml)
 - [docs/METRICS.md](../../docs/METRICS.md)

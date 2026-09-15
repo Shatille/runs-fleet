@@ -1,7 +1,7 @@
 ---
 topic: Project Overview
-last_compiled: 2026-08-21
-sources_count: 9
+last_compiled: 2026-09-15
+sources_count: 11
 ---
 
 # Project Overview
@@ -304,6 +304,21 @@ the full loader):
   waits for GitHub's conclusion and calls `RerunJobByID`. Deliberately
   single-job, not rerun-failed-jobs, so genuine failures are not
   re-executed.
+- **2026-08: fallback pricing is a per-vCPU rate per family (PR #458).**
+  The Cost page had rendered Fleet Cost $1.49 against Total Cost $87.37 —
+  the wrong direction, since fleet cost includes boot, idle, and teardown.
+  The old per-type fallback table covered only t4g/c7g/m7g while the fleet
+  ran r8g/c7i/c6i/c8g/m6i/m7i/m8g, so 75% of priced jobs silently took the
+  t4g.medium rate; and the fleet-cost sampler had been built with nil
+  pricers, so it never attempted a live lookup at all. Within a
+  non-burstable family AWS prices linearly in vCPU (verified against the
+  Pricing API), so one rate per family times the catalog's vCPU count now
+  prices every size, including ones never seen before; burstable `t3`/`t4g`
+  keep a per-type map because their tiers track memory, not vCPU. An
+  unknown family falls to a mean rate that still scales with size, so a
+  large instance never prices as a small one
+  ([pkg/cost/reporter.go](../../pkg/cost/reporter.go),
+  [.claude/CLAUDE.md](../../.claude/CLAUDE.md)).
 - **Ephemeral instances, no reuse.** Each job gets a fresh runner that
   self-terminates — no state accumulation, no cross-tenant leakage.
 - **Bounded spot diversification.** `cpu=N` expands to `[N, 2N]` vCPUs by
@@ -334,16 +349,34 @@ the full loader):
   delegates the env-var reference to `docs/CONFIGURATION.md`, while
   `AGENTS.md` inlines an abridged copy of it.
 
-## Gotchas [coverage: medium -- 4 sources]
+## Gotchas [coverage: high -- 10 sources]
 
 - **Cost reporting is approximate.** The EC2 section is computed per-job
   from DynamoDB job records via the shared `JobPricer` (exact instance type,
-  spot flag, duration), preferring the live Pricing API and spot feed but
-  falling back to a hard-coded table (t4g, c7g, m7g) and a fixed 70% spot
-  discount. Supporting-service costs (Fargate, SQS, DynamoDB, CloudWatch,
-  S3) remain flat per-job estimates; regional price variation, data
-  transfer, and S3 request costs are excluded
-  ([AGENTS.md](../../AGENTS.md)).
+  spot flag, duration), preferring the live Pricing API and spot feed.
+  Since PR #458 the fallback is a per-vCPU rate per family at ap-northeast-1
+  list prices (`familyVCPUHourly`, 12 non-burstable families), used only
+  when the Pricing API is unavailable; `t3`/`t4g` are priced per type
+  (`burstablePricing`) because their tiers do not scale with vCPU; an
+  unknown family takes `DefaultVCPUHourly` × vCPU, and only a type absent
+  from the instance catalog takes the flat `defaultInstanceHourlyPrice`.
+  The 70% `SpotDiscount` is a fixed assumption applied only when no live
+  spot price is available
+  ([pkg/cost/reporter.go](../../pkg/cost/reporter.go),
+  [.claude/CLAUDE.md](../../.claude/CLAUDE.md)). Before #458 the table was
+  15 per-type entries covering only t4g/c7g/m7g, and 75% of priced jobs
+  silently resolved to the t4g.medium rate. Supporting-service costs
+  (Fargate, SQS, DynamoDB, CloudWatch, S3) remain flat per-job estimates;
+  regional price variation, data transfer, and S3 request costs are
+  excluded ([AGENTS.md](../../AGENTS.md)).
+- **A Pricing API failure latches the fallback for five minutes.** A failed
+  on-demand lookup sets `useFallback` with a `fallbackRetryAfter` window of
+  5 minutes, after which the next `GetPrice` retries the API
+  ([pkg/cost/pricing.go](../../pkg/cost/pricing.go)). Before #458 the latch
+  was cleared only by `RefreshCache`, which had no callers, so one API error
+  at startup pinned the process to estimates for its whole lifetime — and
+  because the latch also suppressed the warning, the silence read as
+  health.
 - **Disabling CloudWatch blanks the metric-derived parts of the cost
   report.** The daily report reads two series back out of CloudWatch. The
   runner-minute section already self-hid when absent; PR #456 additionally
@@ -358,6 +391,10 @@ the full loader):
   instance-grace-period vars.
   [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md) and
   [pkg/config/config.go](../../pkg/config/config.go) are authoritative.
+  The same drift affects its cost caveats: as of 2026-09-15 `AGENTS.md`
+  (last touched in #456) still describes the fallback as "a hard-coded
+  table (t4g, c7g, m7g)", the pre-#458 wording that
+  [.claude/CLAUDE.md](../../.claude/CLAUDE.md) replaced.
 - **Family-less `gen=3` (amd64) and `gen=4` (arm64) now error.** Those
   generations contained only burstable families, so after #385 dropped
   `t3`/`t4g` from the defaults, such requests resolve to zero matching
@@ -403,3 +440,5 @@ the full loader):
 - [docs/ROADMAP.md](../../docs/ROADMAP.md)
 - [Makefile](../../Makefile)
 - [go.mod](../../go.mod)
+- [pkg/cost/reporter.go](../../pkg/cost/reporter.go)
+- [pkg/cost/pricing.go](../../pkg/cost/pricing.go)

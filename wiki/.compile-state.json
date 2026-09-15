@@ -1,5 +1,5 @@
 {
-  "last_compiled": "2026-08-21",
+  "last_compiled": "2026-09-15",
   "mode": "codebase",
   "topics": [
     "admin-ui",
@@ -150,6 +150,7 @@
     "pkg/config/timezone.go",
     "pkg/cost/fleetmtd.go",
     "pkg/cost/fleetpricing.go",
+    "pkg/cost/fleetpricing_test.go",
     "pkg/cost/jobpricing.go",
     "pkg/cost/pricing.go",
     "pkg/cost/reporter.go",
@@ -218,5 +219,5 @@
     "scripts/boot-lib.sh",
     "scripts/cloud-init-boot.sh"
   ],
-  "total_sources_scanned": 185
+  "total_sources_scanned": 186
 }
