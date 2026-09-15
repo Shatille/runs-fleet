@@ -293,7 +293,7 @@ like the Actions cache — appropriate for a same-org fleet
   cache **v1** protocol, decommissioned 2025-04-15 — so any job using
   `--cache-to type=gha` failed on a dead endpoint. Cache service v2 needs
   buildx ≥ 0.21. `provision-base.sh` now downloads a SHA-256-verified
-  buildx **0.35.0** to `/usr/libexec/docker/cli-plugins/docker-buildx` *and
+  buildx **0.37.1** to `/usr/libexec/docker/cli-plugins/docker-buildx` *and
   deletes the distro copy from every higher-precedence system dir* so the
   stale 0.12.1 can never shadow it, then asserts `docker buildx version`
   resolves to the pin
