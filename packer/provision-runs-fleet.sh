@@ -226,6 +226,11 @@ Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
 Environment=PIPX_HOME=/opt/pipx
 Environment=PIPX_BIN_DIR=/opt/pipx/bin
 Environment=PATH=/opt/pipx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# actions/setup-dotnet hard-defaults its install root to root-owned /usr/share/dotnet,
+# which the job user cannot create; this is the only override it reads (and it must be
+# set before the action loads). The action puts the install on the job PATH itself, so
+# /opt/dotnet is deliberately absent from PATH above — nothing is baked there.
+Environment=DOTNET_INSTALL_DIR=/opt/dotnet
 ExecStart=/opt/runs-fleet/runs-fleet-agent
 Restart=no
 StandardOutput=journal

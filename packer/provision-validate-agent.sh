@@ -83,6 +83,10 @@ grep -qF "PIPX_BIN_DIR=/opt/pipx/bin" "$UNIT" \
   || fail "$UNIT missing PIPX_BIN_DIR=/opt/pipx/bin"
 grep -qE "^Environment=PATH=/opt/pipx/bin:" "$UNIT" \
   || fail "$UNIT PATH does not prepend /opt/pipx/bin"
+# Without this, actions/setup-dotnet installs to root-owned /usr/share/dotnet and the
+# job fails on mkdir; it reads no other override.
+grep -qF "DOTNET_INSTALL_DIR=/opt/dotnet" "$UNIT" \
+  || fail "$UNIT missing DOTNET_INSTALL_DIR=/opt/dotnet"
 echo "  OK: $UNIT"
 
 echo "==> Validating pipx bin dir"
@@ -90,6 +94,12 @@ echo "==> Validating pipx bin dir"
 # ec2-user runs `pipx install` during the job, so the dir must be writable by it.
 sudo -u ec2-user test -w /opt/pipx/bin || fail "/opt/pipx/bin not writable by ec2-user"
 echo "  OK: /opt/pipx/bin (ec2-user-writable)"
+
+echo "==> Validating .NET install dir"
+[ -d /opt/dotnet ] || fail "/opt/dotnet missing"
+# actions/setup-dotnet unpacks the SDK here as ec2-user during the job.
+sudo -u ec2-user test -w /opt/dotnet || fail "/opt/dotnet not writable by ec2-user"
+echo "  OK: /opt/dotnet (ec2-user-writable)"
 
 echo "==> Validating Python toolchain"
 case "$ARCH" in
