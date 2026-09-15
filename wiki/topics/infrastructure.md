@@ -73,7 +73,7 @@ home for any new package. In order of appearance:
 - On ARM64 only: a **from-source gold linker** (binutils) for Go race-detector
   compatibility ([packer/provision-base.sh:78-98](../../packer/provision-base.sh)).
 - SSM agent + Session Manager plugin; Docker enabled; Docker Compose (standalone
-  + cli-plugin); a SHA-256-pinned **buildx 0.35.0** cli-plugin installed to
+  + cli-plugin); a SHA-256-pinned **buildx 0.37.1** cli-plugin installed to
   `/usr/libexec/docker/cli-plugins` with the distro copy removed from every
   higher-precedence dir (see [build-caching](build-caching.md)).
 - Node.js 22.13.1 + yarn/pnpm; QEMU binfmt (`BINFMT_VERSION=qemu-v9.2.0-51`
@@ -173,7 +173,7 @@ Stage 1 (`golang:1.26-alpine`, `--platform=$BUILDPLATFORM`) cross-compiles all
 three host binaries. Stage 2 (named `runtime` — load-bearing, see Gotchas)
 strips the upstream-bundled Docker binaries and reinstalls `docker-ce`,
 `docker-ce-cli`, `containerd.io` from Docker's apt repo; installs SHA-256-pinned
-buildx 0.35.0 and compose 5.3.1 cli-plugins from their upstream GitHub releases;
+buildx 0.37.1 and compose 5.5.1 cli-plugins from their upstream GitHub releases;
 deletes `externals/node20` with `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`;
 self-updates the bundled npm; narrows sudo to apt; copies the three binaries in.
 

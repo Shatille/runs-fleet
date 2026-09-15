@@ -247,7 +247,7 @@ contributes only the consumer side: `buildx-setup.service` attaches
 `/opt/runs-fleet/buildkitd.toml` to the baked `multiarch` builder when the file
 exists, resolved at boot via backticks (systemd `$`-expands `ExecStart` but
 leaves backticks for the shell) — provision-base.sh:256. It also pins buildx to
-0.35.0, which matters because AL2023's packaged 0.12.1 predates the
+0.37.1, which matters because AL2023's packaged 0.12.1 predates the
 `--buildkitd-config` flag name.
 
 ### Coverage map
