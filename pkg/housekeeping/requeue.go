@@ -619,6 +619,13 @@ func statusIn(status string, statuses []db.JobStatus) bool {
 // stays terminable. With no registry wired the sweep keeps its prior behavior
 // rather than stalling, so an operator who has not wired one gets the sweep they
 // had before — not silent inaction.
+//
+// The suffix is a truncated tail, not a proof of identity, and GitHub exposes no
+// instance-bound field to compare instead. The asymmetry is deliberate: it is the
+// same tail buildRunnerName minted, which only truncates the prefix, so the real
+// runner always matches and a busy one can never be missed. A collision can only
+// add a false busy reading, which defers the terminate rather than costing a job;
+// the instance is then reaped by findUnclaimedOrphans once no record claims it.
 func runnerIsBusy(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *logging.Logger) bool {
 	// A launched record skips confirmStillQueued's repo check, so this is the only
 	// thing standing between an empty repo and a listing call that cannot succeed.

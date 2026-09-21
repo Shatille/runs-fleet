@@ -42,9 +42,8 @@ func (h *RequeueHandler) SetGitHubChecker(checker housekeeping.JobQueuedChecker)
 	h.github = checker
 }
 
-// SetRunnerRegistry wires the runner listing that keeps an operator's requeue from
-// terminating an instance whose runner is executing a job it was handed instead of
-// the one being re-dispatched.
+// SetRunnerRegistry is optional. Without it an operator requeue terminates on
+// GitHub's queued reading alone, which kills the job a stolen runner is running.
 func (h *RequeueHandler) SetRunnerRegistry(registry housekeeping.RunnerRegistry) {
 	h.runners = registry
 }
