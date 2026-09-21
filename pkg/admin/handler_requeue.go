@@ -42,8 +42,8 @@ func (h *RequeueHandler) SetGitHubChecker(checker housekeeping.JobQueuedChecker)
 	h.github = checker
 }
 
-// SetRunnerRegistry is optional. Without it an operator requeue terminates on
-// GitHub's queued reading alone, which kills the job a stolen runner is running.
+// SetRunnerRegistry is optional; without it a requeue cannot tell a stolen
+// runner from a dead one and terminates on GitHub's queued reading alone.
 func (h *RequeueHandler) SetRunnerRegistry(registry housekeeping.RunnerRegistry) {
 	h.runners = registry
 }
