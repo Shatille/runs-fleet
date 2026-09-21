@@ -610,8 +610,6 @@ func statusIn(status string, statuses []db.JobStatus) bool {
 	return false
 }
 
-// runnerIsBusy reports whether this job's runner is executing work at GitHub.
-//
 // GitHub reporting the job queued does not mean its instance is idle: a runner
 // binds to labels, not to a job, so it can be handed a sibling's work while its
 // own record still reads queued. Terminating then kills that job mid-run, which
