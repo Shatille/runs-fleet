@@ -1568,6 +1568,7 @@ func (t *Tasks) requeueStaleQueuedJob(ctx context.Context, c staleJobCandidate) 
 		Requeuer:     t.jobRequeuer,
 		Metrics:      t.metrics,
 		GitHub:       staleQueuedChecker{checker: t.gitHubChecker},
+		Runners:      t.runnerRegistry,
 		JobsTable:    t.config.JobsTableName,
 		Log:          log,
 	}

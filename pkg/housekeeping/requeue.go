@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -163,6 +165,10 @@ type RequeueDeps struct {
 	// re-dispatched. Optional, and unused for launched records; without it, only
 	// launched records can be requeued.
 	GitHub JobQueuedChecker
+	// Runners reports whether the instance's runner is executing work, so a runner
+	// handed someone else's job is not terminated mid-flight. Optional; without it
+	// a confirmed-runner record is terminated on GitHub's queued reading alone.
+	Runners RunnerRegistry
 	// Log is optional; a default is used when nil.
 	Log *logging.Logger
 }
@@ -388,6 +394,10 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 		alive = BatchCheckInstanceExistence(ctx, deps.EC2, checkList, fallback)
 	}
 
+	if deps.Runners != nil {
+		deps.Runners = newSweepRunnerCache(deps.Runners)
+	}
+
 	result.Candidates = len(candidates)
 	for _, c := range candidates {
 		jobCtx := logging.ContextWith(ctx,
@@ -496,7 +506,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 		return res, nil
 	}
 
-	if c.InstanceID != "" && instanceAlive {
+	if c.InstanceID != "" && instanceAlive && !runnerIsBusy(ctx, deps, c, log) {
 		if termErr := terminateDeadAgentInstance(ctx, deps, c.InstanceID, log); termErr != nil {
 			res.Outcome = OutcomeTerminateFailed
 			log.Error(ctx, "requeue terminate failed", slog.String("error", termErr.Error()))
@@ -598,6 +608,105 @@ func statusIn(status string, statuses []db.JobStatus) bool {
 		}
 	}
 	return false
+}
+
+// GitHub reporting the job queued does not mean its instance is idle: a runner
+// binds to labels, not to a job, so it can be handed a sibling's work while its
+// own record still reads queued. Terminating then kills that job mid-run, which
+// is the failure this guard exists to prevent.
+//
+// A listing that cannot be read counts as busy: terminating on an unproven
+// reading is the one mistake that costs a running job. A registration absent
+// from a listing that WAS read is the dead agent this sweep exists for, so that
+// stays terminable. With no registry wired the sweep keeps its prior behavior
+// rather than stalling, so an operator who has not wired one gets the sweep they
+// had before — not silent inaction.
+//
+// The suffix is a truncated tail, not a proof of identity, and GitHub exposes no
+// instance-bound field to compare instead. The asymmetry is deliberate: it is the
+// same tail buildRunnerName minted, which only truncates the prefix, so the real
+// runner always matches and a busy one can never be missed. A collision can only
+// add a false busy reading, which defers the terminate rather than costing a job;
+// the instance is then reaped by findUnclaimedOrphans once no record claims it.
+func runnerIsBusy(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *logging.Logger) bool {
+	// A launched record skips confirmStillQueued's repo check, so this is the only
+	// thing standing between an empty repo and a listing call that cannot succeed.
+	if deps.Runners == nil || c.Repo == "" {
+		return false
+	}
+
+	runners, err := deps.Runners.ListRunners(ctx, c.Repo)
+	if err != nil {
+		log.Warn(ctx, "terminate skipped: runner listing failed, so the runner cannot be proven idle",
+			slog.String("error", err.Error()))
+		return true
+	}
+
+	suffix := runnerNameSuffix(c.JobID, c.InstanceID)
+	for _, r := range runners {
+		if !strings.HasSuffix(r.Name, suffix) || !r.Busy {
+			continue
+		}
+		log.Info(ctx, "terminate skipped: runner is executing a job, so it is left to finish",
+			slog.String("runner_name", r.Name))
+		return true
+	}
+	return false
+}
+
+// sweepRunnerCache reads each repo's runner listing once per sweep. RequeueHungJobs
+// is bounded only by MaxItems (100 by default, 500 at most), so listing per candidate
+// would be an N+1 against GitHub, and rate-limiting it would read as busy and stall
+// every terminate in the sweep. Failures are cached for that reason: a repo that just
+// refused one listing will refuse the next 499.
+//
+// Only that loop wraps its registry, so the snapshot ages by at most one sweep. The
+// housekeeping path builds its deps per candidate and stays uncached, keeping the
+// freshest possible reading where it matters most — next to the terminate.
+//
+// The maps are unsynchronized because one cache belongs to exactly one sweep and is
+// only ever reached from the goroutine that built it: RequeueHungJobs constructs it
+// and then ranges over candidates sequentially, so parallelizing that loop means
+// giving this a mutex.
+type sweepRunnerCache struct {
+	inner   RunnerRegistry
+	runners map[string][]RegisteredRunner
+	errs    map[string]error
+}
+
+func newSweepRunnerCache(inner RunnerRegistry) *sweepRunnerCache {
+	return &sweepRunnerCache{
+		inner:   inner,
+		runners: map[string][]RegisteredRunner{},
+		errs:    map[string]error{},
+	}
+}
+
+func (c *sweepRunnerCache) ListRunners(ctx context.Context, repo string) ([]RegisteredRunner, error) {
+	if err, ok := c.errs[repo]; ok {
+		return nil, err
+	}
+	if runners, ok := c.runners[repo]; ok {
+		return runners, nil
+	}
+
+	runners, err := c.inner.ListRunners(ctx, repo)
+	if err != nil {
+		c.errs[repo] = err
+		return nil, err
+	}
+	c.runners[repo] = runners
+	return runners, nil
+}
+
+func (c *sweepRunnerCache) DeleteRunner(ctx context.Context, repo string, runnerID int64) error {
+	return c.inner.DeleteRunner(ctx, repo, runnerID)
+}
+
+// runnerNameSuffix is the registration tail for a job, built by the same code that
+// minted the name so the two cannot drift apart.
+func runnerNameSuffix(jobID int64, instanceID string) string {
+	return runner.NameSuffix(strconv.FormatInt(jobID, 10), instanceID)
 }
 
 // terminateDeadAgentInstance cancels any persistent spot request and terminates an
@@ -731,7 +840,11 @@ func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, 
 		Key: map[string]types.AttributeValue{
 			"job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
 		},
-		UpdateExpression:         aws.String("SET #status = :requeued, requeued_at = :now"),
+		// Clearing instance_id fences the old agent out: MarkJobComplete is gated on
+		// instance_id matching, so a runner left alive by the busy-runner check would
+		// otherwise report its boot-time job on this record and overwrite the requeue
+		// with a bogus completion before the fresh dispatch claims it.
+		UpdateExpression:         aws.String("SET #status = :requeued, requeued_at = :now REMOVE instance_id"),
 		ConditionExpression:      aws.String("#status = :from"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
