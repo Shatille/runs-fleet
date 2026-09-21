@@ -394,6 +394,10 @@ func RequeueHungJobs(ctx context.Context, deps RequeueDeps, opts RequeueOptions)
 		alive = BatchCheckInstanceExistence(ctx, deps.EC2, checkList, fallback)
 	}
 
+	if deps.Runners != nil {
+		deps.Runners = newSweepRunnerCache(deps.Runners)
+	}
+
 	result.Candidates = len(candidates)
 	for _, c := range candidates {
 		jobCtx := logging.ContextWith(ctx,
@@ -650,6 +654,50 @@ func runnerIsBusy(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *
 		return true
 	}
 	return false
+}
+
+// sweepRunnerCache reads each repo's runner listing once per sweep. RequeueHungJobs
+// is bounded only by MaxItems (100 by default, 500 at most), so listing per candidate
+// would be an N+1 against GitHub, and rate-limiting it would read as busy and stall
+// every terminate in the sweep. Failures are cached for that reason: a repo that just
+// refused one listing will refuse the next 499.
+//
+// Only that loop wraps its registry, so the snapshot ages by at most one sweep. The
+// housekeeping path builds its deps per candidate and stays uncached, keeping the
+// freshest possible reading where it matters most — next to the terminate.
+type sweepRunnerCache struct {
+	inner   RunnerRegistry
+	runners map[string][]RegisteredRunner
+	errs    map[string]error
+}
+
+func newSweepRunnerCache(inner RunnerRegistry) *sweepRunnerCache {
+	return &sweepRunnerCache{
+		inner:   inner,
+		runners: map[string][]RegisteredRunner{},
+		errs:    map[string]error{},
+	}
+}
+
+func (c *sweepRunnerCache) ListRunners(ctx context.Context, repo string) ([]RegisteredRunner, error) {
+	if err, ok := c.errs[repo]; ok {
+		return nil, err
+	}
+	if runners, ok := c.runners[repo]; ok {
+		return runners, nil
+	}
+
+	runners, err := c.inner.ListRunners(ctx, repo)
+	if err != nil {
+		c.errs[repo] = err
+		return nil, err
+	}
+	c.runners[repo] = runners
+	return runners, nil
+}
+
+func (c *sweepRunnerCache) DeleteRunner(ctx context.Context, repo string, runnerID int64) error {
+	return c.inner.DeleteRunner(ctx, repo, runnerID)
 }
 
 // runnerNameSuffix is the registration tail for a job, built by the same code that

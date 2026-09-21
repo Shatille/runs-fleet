@@ -1097,11 +1097,15 @@ func TestRequeueJob_FlipPinsTheObservedStatus(t *testing.T) {
 
 // mockRunnerRegistry stands in for GitHub's view of live runner registrations.
 type mockRunnerRegistry struct {
-	runners []RegisteredRunner
-	err     error
+	runners   []RegisteredRunner
+	err       error
+	listCalls int
+	listRepos []string
 }
 
-func (m *mockRunnerRegistry) ListRunners(_ context.Context, _ string) ([]RegisteredRunner, error) {
+func (m *mockRunnerRegistry) ListRunners(_ context.Context, repo string) ([]RegisteredRunner, error) {
+	m.listCalls++
+	m.listRepos = append(m.listRepos, repo)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -1281,5 +1285,69 @@ func TestMarkRequeued_ClearsInstanceIDSoStaleAgentCannotComplete(t *testing.T) {
 	expr := aws.ToString(captured[0].UpdateExpression)
 	if !strings.Contains(expr, "REMOVE instance_id") {
 		t.Errorf("flip must clear instance_id so a stale agent's MarkJobComplete cannot match; expr=%q", expr)
+	}
+}
+
+// An operator sweep is bounded by MaxItems (100 by default, up to 500), not by the
+// housekeeping path's budget of 5, so one listing per candidate would be an N+1
+// against GitHub. The listing is per-repo, so the sweep reads each repo once.
+func TestRequeueHungJobs_ListsRunnersOncePerRepo(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{
+		runningReservation("i-aaa"), runningReservation("i-bbb"), runningReservation("i-ccc"),
+	}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(1, "i-aaa", 7, 0, db.JobStatusLaunched),
+		requeueJobItem(2, "i-bbb", 8, 0, db.JobStatusLaunched),
+		requeueJobItem(3, "i-ccc", 9, 0, db.JobStatusLaunched),
+	}}
+	rq := &mockJobRequeuer{}
+	reg := &mockRunnerRegistry{}
+
+	res, err := RequeueHungJobs(context.Background(),
+		newRequeueDepsWithRunners(ec2, dyn, rq, &mockQueuedChecker{status: "queued"}, reg),
+		RequeueOptions{Threshold: 15 * time.Minute, Statuses: []db.JobStatus{db.JobStatusLaunched}})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+	if res.Requeued != 3 {
+		t.Errorf("Requeued = %d, want 3", res.Requeued)
+	}
+	if reg.listCalls != 1 {
+		t.Errorf("ListRunners called %d times for one repo, want 1 (repos: %v)", reg.listCalls, reg.listRepos)
+	}
+	if ec2.terminateCalls != 3 {
+		t.Errorf("terminateCalls = %d, want 3 (no runner registered, so each is a dead agent)", ec2.terminateCalls)
+	}
+}
+
+// A failed listing is cached too: a rate-limited repo must not be re-hammered once
+// per candidate. The cached error still reads as busy, so terminates are skipped
+// while every job is still requeued.
+func TestRequeueHungJobs_CachedListErrorSkipsAllTerminates(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{
+		runningReservation("i-aaa"), runningReservation("i-bbb"), runningReservation("i-ccc"),
+	}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(1, "i-aaa", 7, 0, db.JobStatusLaunched),
+		requeueJobItem(2, "i-bbb", 8, 0, db.JobStatusLaunched),
+		requeueJobItem(3, "i-ccc", 9, 0, db.JobStatusLaunched),
+	}}
+	rq := &mockJobRequeuer{}
+	reg := &mockRunnerRegistry{err: errors.New("rate limited")}
+
+	res, err := RequeueHungJobs(context.Background(),
+		newRequeueDepsWithRunners(ec2, dyn, rq, &mockQueuedChecker{status: "queued"}, reg),
+		RequeueOptions{Threshold: 15 * time.Minute, Statuses: []db.JobStatus{db.JobStatusLaunched}})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+	if reg.listCalls != 1 {
+		t.Errorf("ListRunners called %d times, want 1 (the failure is cached)", reg.listCalls)
+	}
+	if ec2.terminateCalls != 0 {
+		t.Errorf("terminateCalls = %d, want 0 (an unproven reading never terminates)", ec2.terminateCalls)
+	}
+	if res.Requeued != 3 {
+		t.Errorf("Requeued = %d, want 3 (a skipped terminate still requeues)", res.Requeued)
 	}
 }
