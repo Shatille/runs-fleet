@@ -663,6 +663,11 @@ func runnerIsBusy(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *
 // Only that loop wraps its registry, so the snapshot ages by at most one sweep. The
 // housekeeping path builds its deps per candidate and stays uncached, keeping the
 // freshest possible reading where it matters most — next to the terminate.
+//
+// The maps are unsynchronized because one cache belongs to exactly one sweep and is
+// only ever reached from the goroutine that built it: RequeueHungJobs constructs it
+// and then ranges over candidates sequentially, so parallelizing that loop means
+// giving this a mutex.
 type sweepRunnerCache struct {
 	inner   RunnerRegistry
 	runners map[string][]RegisteredRunner

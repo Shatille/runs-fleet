@@ -1351,3 +1351,32 @@ func TestRequeueHungJobs_CachedListErrorSkipsAllTerminates(t *testing.T) {
 		t.Errorf("Requeued = %d, want 3 (a skipped terminate still requeues)", res.Requeued)
 	}
 }
+
+// sweepRunnerCache's maps are unsynchronized, which is safe only while one sweep
+// owns one cache on one goroutine. Run the sweep under -race with several candidates
+// so parallelizing the candidate loop trips the detector here rather than in prod.
+func TestRequeueHungJobs_CacheIsOwnedByASingleSweep(t *testing.T) {
+	items := make([]map[string]types.AttributeValue, 0, 6)
+	reservations := make([]ec2types.Reservation, 0, 6)
+	for i := int64(1); i <= 6; i++ {
+		id := "i-00" + strconv.FormatInt(i, 10)
+		items = append(items, requeueJobItem(i, id, i+100, 0, db.JobStatusLaunched))
+		reservations = append(reservations, runningReservation(id))
+	}
+
+	reg := &mockRunnerRegistry{}
+	res, err := RequeueHungJobs(context.Background(),
+		newRequeueDepsWithRunners(&mockEC2API{instances: reservations},
+			&mockTaskDynamoDBAPI{items: items}, &mockJobRequeuer{},
+			&mockQueuedChecker{status: "queued"}, reg),
+		RequeueOptions{Threshold: 15 * time.Minute, Statuses: []db.JobStatus{db.JobStatusLaunched}})
+	if err != nil {
+		t.Fatalf("RequeueHungJobs() error = %v", err)
+	}
+	if res.Requeued != 6 {
+		t.Errorf("Requeued = %d, want 6", res.Requeued)
+	}
+	if reg.listCalls != 1 {
+		t.Errorf("ListRunners called %d times across 6 candidates in one repo, want 1", reg.listCalls)
+	}
+}
