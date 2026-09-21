@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
+	"github.com/Shavakan/runs-fleet/pkg/runner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -163,6 +165,10 @@ type RequeueDeps struct {
 	// re-dispatched. Optional, and unused for launched records; without it, only
 	// launched records can be requeued.
 	GitHub JobQueuedChecker
+	// Runners reports whether the instance's runner is executing work, so a runner
+	// handed someone else's job is not terminated mid-flight. Optional; without it
+	// a confirmed-runner record is terminated on GitHub's queued reading alone.
+	Runners RunnerRegistry
 	// Log is optional; a default is used when nil.
 	Log *logging.Logger
 }
@@ -496,7 +502,7 @@ func requeueCandidate(ctx context.Context, deps RequeueDeps, c RequeueableJob, i
 		return res, nil
 	}
 
-	if c.InstanceID != "" && instanceAlive {
+	if c.InstanceID != "" && instanceAlive && !runnerIsBusy(ctx, deps, c, log) {
 		if termErr := terminateDeadAgentInstance(ctx, deps, c.InstanceID, log); termErr != nil {
 			res.Outcome = OutcomeTerminateFailed
 			log.Error(ctx, "requeue terminate failed", slog.String("error", termErr.Error()))
@@ -598,6 +604,51 @@ func statusIn(status string, statuses []db.JobStatus) bool {
 		}
 	}
 	return false
+}
+
+// runnerIsBusy reports whether this job's runner is executing work at GitHub.
+//
+// GitHub reporting the job queued does not mean its instance is idle: a runner
+// binds to labels, not to a job, so it can be handed a sibling's work while its
+// own record still reads queued. Terminating then kills that job mid-run, which
+// is the failure this guard exists to prevent.
+//
+// A listing that cannot be read counts as busy: terminating on an unproven
+// reading is the one mistake that costs a running job. A registration absent
+// from a listing that WAS read is the dead agent this sweep exists for, so that
+// stays terminable. With no registry wired the sweep keeps its prior behavior
+// rather than stalling, so an operator who has not wired one gets the sweep they
+// had before — not silent inaction.
+func runnerIsBusy(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *logging.Logger) bool {
+	// A launched record skips confirmStillQueued's repo check, so this is the only
+	// thing standing between an empty repo and a listing call that cannot succeed.
+	if deps.Runners == nil || c.Repo == "" {
+		return false
+	}
+
+	runners, err := deps.Runners.ListRunners(ctx, c.Repo)
+	if err != nil {
+		log.Warn(ctx, "terminate skipped: runner listing failed, so the runner cannot be proven idle",
+			slog.String("error", err.Error()))
+		return true
+	}
+
+	suffix := runnerNameSuffix(c.JobID, c.InstanceID)
+	for _, r := range runners {
+		if !strings.HasSuffix(r.Name, suffix) || !r.Busy {
+			continue
+		}
+		log.Info(ctx, "terminate skipped: runner is executing a job, so it is left to finish",
+			slog.String("runner_name", r.Name))
+		return true
+	}
+	return false
+}
+
+// runnerNameSuffix is the registration tail for a job, built by the same code that
+// minted the name so the two cannot drift apart.
+func runnerNameSuffix(jobID int64, instanceID string) string {
+	return runner.NameSuffix(strconv.FormatInt(jobID, 10), instanceID)
 }
 
 // terminateDeadAgentInstance cancels any persistent spot request and terminates an
@@ -731,7 +782,11 @@ func markRequeued(ctx context.Context, scanAPI OrphanScanAPI, jobsTable string, 
 		Key: map[string]types.AttributeValue{
 			"job_id": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", jobID)},
 		},
-		UpdateExpression:         aws.String("SET #status = :requeued, requeued_at = :now"),
+		// Clearing instance_id fences the old agent out: MarkJobComplete is gated on
+		// instance_id matching, so a runner left alive by the busy-runner check would
+		// otherwise report its boot-time job on this record and overwrite the requeue
+		// with a bogus completion before the fresh dispatch claims it.
+		UpdateExpression:         aws.String("SET #status = :requeued, requeued_at = :now REMOVE instance_id"),
 		ConditionExpression:      aws.String("#status = :from"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{

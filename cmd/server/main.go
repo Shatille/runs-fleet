@@ -624,6 +624,7 @@ func (ws *webhookServer) setupHTTPRoutes(ctx context.Context, cacheServer *cache
 	requeueHandler := admin.NewRequeueHandler(ec2Client, dynamoClient, ws.jobQueue, ws.metricsPublisher, ws.cfg.JobsTableName, ws.dbClient, adminAuth)
 	if ws.githubClient != nil {
 		requeueHandler.SetGitHubChecker(&terminationJobCheckerAdapter{client: ws.githubClient})
+		requeueHandler.SetRunnerRegistry(&runnerRegistryAdapter{client: ws.githubClient})
 	}
 	requeueHandler.RegisterRoutes(adminMux)
 
@@ -961,7 +962,7 @@ func (g *githubJobCheckerAdapter) GetWorkflowJobStatus(ctx context.Context, _ st
 }
 
 // runnerRegistryAdapter adapts *gh.Client to housekeeping.RunnerRegistry for the
-// orphaned-runner sweep.
+// orphaned-runner sweep and the requeue paths' busy-runner check.
 type runnerRegistryAdapter struct {
 	client *gh.Client
 }

@@ -236,6 +236,30 @@ func (m *Manager) CleanupRunner(ctx context.Context, instanceID string) error {
 
 const runnerNameMaxLen = 64
 
+// NameSuffix builds the job+instance tail of a runner name. buildRunnerName
+// truncates only the prefix to fit runnerNameMaxLen, so this tail survives intact
+// and is what identifies a registration after the fact — the housekeeping sweep
+// joins a live GitHub runner back to its job through it. Exported so that match
+// cannot drift from the name actually minted here.
+func NameSuffix(jobID, instanceID string) string {
+	var suffix string
+	if jobID != "" {
+		jobPart := jobID
+		if len(jobPart) > 6 {
+			jobPart = jobPart[len(jobPart)-6:]
+		}
+		suffix = "-" + jobPart
+	}
+	if instanceID != "" {
+		instPart := instanceID
+		if len(instPart) > 5 {
+			instPart = instPart[len(instPart)-5:]
+		}
+		suffix += "-" + instPart
+	}
+	return suffix
+}
+
 func buildRunnerName(pool, repoName, conditions, jobID, instanceID string) string {
 	const prefix = "runs-fleet-runner-"
 
@@ -255,21 +279,7 @@ func buildRunnerName(pool, repoName, conditions, jobID, instanceID string) strin
 	// instance ID suffix distinguishes duplicate dispatches of the same job —
 	// the agent registers with --replace, so two instances sharing one name
 	// would evict each other's GitHub registration and fail the job.
-	var suffix string
-	if jobID != "" {
-		jobPart := jobID
-		if len(jobPart) > 6 {
-			jobPart = jobPart[len(jobPart)-6:]
-		}
-		suffix = "-" + jobPart
-	}
-	if instanceID != "" {
-		instPart := instanceID
-		if len(instPart) > 5 {
-			instPart = instPart[len(instPart)-5:]
-		}
-		suffix += "-" + instPart
-	}
+	suffix := NameSuffix(jobID, instanceID)
 
 	if len(name)+len(suffix) > runnerNameMaxLen {
 		name = strings.TrimRight(name[:runnerNameMaxLen-len(suffix)], "-")

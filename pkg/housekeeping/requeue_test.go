@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Shavakan/runs-fleet/pkg/db"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -1091,5 +1092,194 @@ func TestRequeueJob_FlipPinsTheObservedStatus(t *testing.T) {
 	rollback := updates[1]
 	if v, ok := rollback.ExpressionAttributeValues[":from"].(*types.AttributeValueMemberS); !ok || v.Value != string(db.JobStatusRunning) {
 		t.Errorf("rollback restored %v, want running", rollback.ExpressionAttributeValues[":from"])
+	}
+}
+
+// mockRunnerRegistry stands in for GitHub's view of live runner registrations.
+type mockRunnerRegistry struct {
+	runners []RegisteredRunner
+	err     error
+}
+
+func (m *mockRunnerRegistry) ListRunners(_ context.Context, _ string) ([]RegisteredRunner, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.runners, nil
+}
+
+// matchesJob reports whether a fixture name actually joins to the job under test,
+// so a test cannot pass by silently falling through to the not-found branch.
+func (m *mockRunnerRegistry) matchesJob(jobID int64, instanceID string) bool {
+	suffix := runnerNameSuffix(jobID, instanceID)
+	for _, r := range m.runners {
+		if strings.HasSuffix(r.Name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockRunnerRegistry) DeleteRunner(_ context.Context, _ string, _ int64) error { return nil }
+
+func newRequeueDepsWithRunners(ec2 *mockEC2API, dyn *mockTaskDynamoDBAPI, rq JobRequeuer, gh JobQueuedChecker, reg RunnerRegistry) RequeueDeps {
+	deps := newRequeueDepsWithGitHub(ec2, dyn, rq, gh)
+	deps.Runners = reg
+	return deps
+}
+
+// The ck-client incident: GitHub reports this job queued because its runner took
+// a different job. The runner is busy on that stolen work, so terminating the
+// instance kills a job mid-flight. Requeue must still happen; the terminate must not.
+func TestRequeueJob_BusyRunnerIsRequeuedWithoutTerminating(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-09bcc97bf69ca735d")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(105441163755, "i-09bcc97bf69ca735d", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{
+		{ID: 1, Name: "runs-fleet-runner-shared-4cpu-x64-163755-a735d", Status: "online", Busy: true},
+	}}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithRunners(ec2, dyn, rq, gh, reg), 105441163755, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Fatalf("expected the job requeued, got %+v", res)
+	}
+	if ec2.terminateCalls != 0 {
+		t.Errorf("busy runner must not be terminated; terminate calls=%d ids=%v", ec2.terminateCalls, ec2.terminatedIDs)
+	}
+	if res.InstanceTerminated {
+		t.Error("InstanceTerminated must be false when the runner is busy")
+	}
+	if len(rq.sent) != 1 {
+		t.Errorf("expected the job still re-dispatched, got %d sends", len(rq.sent))
+	}
+}
+
+// A runner that never registered leaves no listing entry. That dead agent is
+// exactly what this sweep exists for, so the terminate must still happen.
+func TestRequeueJob_UnregisteredRunnerStillTerminates(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-dead")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-dead", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{
+		{ID: 1, Name: "runs-fleet-runner-shared-4cpu-x64-999999-other", Status: "online", Busy: true},
+	}}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithRunners(ec2, dyn, rq, gh, reg), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Fatalf("expected the job requeued, got %+v", res)
+	}
+	if ec2.terminateCalls != 1 || ec2.terminatedIDs[0] != "i-dead" {
+		t.Errorf("expected the dead-agent instance terminated; calls=%d ids=%v", ec2.terminateCalls, ec2.terminatedIDs)
+	}
+}
+
+// An idle registered runner is the unmatchable-runner case: it holds a slot but
+// will never take this job, so terminating it is still correct.
+func TestRequeueJob_IdleRunnerStillTerminates(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-idle0")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-idle0", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{
+		{ID: 1, Name: "runs-fleet-runner-shared-4cpu-x64-42-idle0", Status: "online", Busy: false},
+	}}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithRunners(ec2, dyn, rq, gh, reg), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Fatalf("expected the job requeued, got %+v", res)
+	}
+	if ec2.terminateCalls != 1 {
+		t.Errorf("expected the idle unmatchable runner terminated; calls=%d", ec2.terminateCalls)
+	}
+	if !reg.matchesJob(42, "i-idle0") {
+		t.Error("fixture never matched the runner, so the idle branch went untested")
+	}
+}
+
+// A listing failure is not proof the runner is idle, and terminating on an
+// unproven reading is the one mistake that kills a job.
+func TestRequeueJob_RunnerListErrorSkipsTerminate(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-unknown")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-unknown", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+	reg := &mockRunnerRegistry{err: errors.New("github unreachable")}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithRunners(ec2, dyn, rq, gh, reg), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Fatalf("expected the job requeued, got %+v", res)
+	}
+	if ec2.terminateCalls != 0 {
+		t.Errorf("an unreadable runner listing must not terminate; calls=%d", ec2.terminateCalls)
+	}
+	if len(rq.sent) != 1 {
+		t.Errorf("expected the job still re-dispatched, got %d sends", len(rq.sent))
+	}
+}
+
+// Without a runner registry the sweep keeps its prior behavior, so an operator
+// call with no registry wired still recovers dead agents.
+func TestRequeueJob_NoRunnerRegistryTerminatesAsBefore(t *testing.T) {
+	ec2 := &mockEC2API{instances: []ec2types.Reservation{runningReservation("i-nogh")}}
+	dyn := &mockTaskDynamoDBAPI{items: []map[string]types.AttributeValue{
+		requeueJobItem(42, "i-nogh", 7, 0, db.JobStatusRunning),
+	}}
+	rq := &mockJobRequeuer{}
+	gh := &mockQueuedChecker{status: "queued"}
+
+	res, err := RequeueJob(context.Background(), newRequeueDepsWithGitHub(ec2, dyn, rq, gh), 42, RequeueJobOptions{})
+	if err != nil {
+		t.Fatalf("RequeueJob() error = %v", err)
+	}
+	if res.Outcome != OutcomeRequeued {
+		t.Fatalf("expected the job requeued, got %+v", res)
+	}
+	if ec2.terminateCalls != 1 {
+		t.Errorf("expected prior behavior preserved; calls=%d", ec2.terminateCalls)
+	}
+}
+
+// A skipped terminate leaves the busy instance alive, so its eventual completion
+// report must not land on a record that has moved on to a fresh dispatch.
+// MarkJobComplete is gated on instance_id, so the flip has to clear it.
+func TestMarkRequeued_ClearsInstanceIDSoStaleAgentCannotComplete(t *testing.T) {
+	var captured []*dynamodb.UpdateItemInput
+	dyn := &mockTaskDynamoDBAPI{captureUpdates: &captured}
+
+	flipped, err := markRequeued(context.Background(), dyn, "jobs-table", 42, string(db.JobStatusRunning))
+	if err != nil {
+		t.Fatalf("markRequeued() error = %v", err)
+	}
+	if !flipped {
+		t.Fatal("expected the flip to land")
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected one update, got %d", len(captured))
+	}
+	expr := aws.ToString(captured[0].UpdateExpression)
+	if !strings.Contains(expr, "REMOVE instance_id") {
+		t.Errorf("flip must clear instance_id so a stale agent's MarkJobComplete cannot match; expr=%q", expr)
 	}
 }

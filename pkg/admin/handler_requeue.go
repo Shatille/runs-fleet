@@ -30,6 +30,7 @@ type RequeueHandler struct {
 	jobsTableName string
 	auditDB       AuditDB
 	github        housekeeping.JobQueuedChecker
+	runners       housekeeping.RunnerRegistry
 	auth          *AuthMiddleware
 	log           *logging.Logger
 }
@@ -39,6 +40,13 @@ type RequeueHandler struct {
 // job whose runner was stolen from one that is being executed right now.
 func (h *RequeueHandler) SetGitHubChecker(checker housekeeping.JobQueuedChecker) {
 	h.github = checker
+}
+
+// SetRunnerRegistry wires the runner listing that keeps an operator's requeue from
+// terminating an instance whose runner is executing a job it was handed instead of
+// the one being re-dispatched.
+func (h *RequeueHandler) SetRunnerRegistry(registry housekeeping.RunnerRegistry) {
+	h.runners = registry
 }
 
 // NewRequeueHandler creates a requeue admin handler. metrics is optional (nil-safe)
@@ -400,6 +408,7 @@ func (h *RequeueHandler) requeueDeps() housekeeping.RequeueDeps {
 		Requeuer:     h.requeuer,
 		Metrics:      h.metrics,
 		GitHub:       h.github,
+		Runners:      h.runners,
 		JobsTable:    h.jobsTableName,
 		Log:          h.log,
 	}
