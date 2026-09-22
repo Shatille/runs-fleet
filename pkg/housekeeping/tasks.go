@@ -134,7 +134,7 @@ type PoolDBAPI interface {
 	// them is still live. Goes through the same instance_id GSI as
 	// HasActiveJobForInstance, which reports only running/launched work and so
 	// cannot answer when a finished job ended.
-	LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error)
+	LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, db.CompletedJobRef, error)
 }
 
 // Tasks implements housekeeping task execution.
@@ -294,7 +294,13 @@ func (t *Tasks) SweepOrphanedInstances(ctx context.Context, dryRun bool) (Orphan
 	// Cancel persistent spot requests before termination to prevent zombie resurrection
 	t.cancelSpotRequestsForInstances(ctx, orphanedIDs)
 
-	t.logger().Info(ctx, "terminating orphaned instances", slog.Int(logging.KeyCount, len(orphanedIDs)))
+	t.logger().Info(ctx, "terminating orphaned instances",
+		slog.Int(logging.KeyCount, len(orphanedIDs)),
+		slog.Any("tagged", taggedOrphans),
+		slog.Any("untagged", untaggedOrphans),
+		slog.Any("unclaimed", unclaimedOrphans),
+		slog.Any("completed", completedOrphans),
+		slog.Any("stopped", stoppedOrphans))
 
 	_, err := t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: orphanedIDs,
@@ -657,6 +663,11 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		},
 	}
 
+	var registry RunnerRegistry
+	if t.runnerRegistry != nil {
+		registry = newSweepRunnerCache(t.runnerRegistry)
+	}
+
 	var completed []string
 	var errs []error
 	var unchecked int
@@ -669,7 +680,7 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		}
 
 		for id, launchedAt := range completedOrphanCandidates(output) {
-			done, err := t.jobsFinishedBefore(ctx, id, cutoff, launchedAt)
+			done, err := t.jobsFinishedBefore(ctx, registry, id, cutoff, launchedAt)
 			if err != nil {
 				unchecked++
 				if firstLookupErr == nil {
@@ -705,15 +716,72 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 // LaunchTime when it is restarted for the next job. Treating that stale row as
 // current would reap the instance during the window between StartInstances and
 // the new job record being written.
-func (t *Tasks) jobsFinishedBefore(ctx context.Context, instanceID string, cutoff, launchedAt time.Time) (bool, error) {
-	completedAt, err := t.poolDB.LastJobCompletionForInstance(ctx, instanceID)
+func (t *Tasks) jobsFinishedBefore(ctx context.Context, registry RunnerRegistry, instanceID string, cutoff, launchedAt time.Time) (bool, error) {
+	completedAt, ref, err := t.poolDB.LastJobCompletionForInstance(ctx, instanceID)
 	if err != nil {
 		return false, err
 	}
 	if completedAt.IsZero() {
 		return false, nil
 	}
-	return completedAt.Before(cutoff) && !completedAt.Before(launchedAt), nil
+	if !completedAt.Before(cutoff) || completedAt.Before(launchedAt) {
+		return false, nil
+	}
+	busy, err := t.completedRunnerIsBusy(ctx, registry, ref, instanceID)
+	if err != nil {
+		return false, err
+	}
+	return !busy, nil
+}
+
+// completedRunnerIsBusy reports whether the runner this instance registered is
+// executing a job at GitHub.
+//
+// A terminal job record does not mean the box is idle: a runner binds to labels,
+// not to a job, so GitHub can hand it a sibling's work, and the record goes
+// terminal when that sibling's own runner finishes it. Reaping on the record
+// alone then kills live work — the 2026-09-22 ck-client incident.
+//
+// A listing that was read is itself the proof. A runner shown busy is spared; one
+// shown idle, or absent, is done — the agent registers with --ephemeral
+// (pkg/agent/registration.go), so GitHub deletes the registration the moment its
+// job finishes, making absence the expected end state of a completed runner
+// rather than a gap in the reading. The caller only asks once the record is
+// terminal, aged past the grace window and newer than the launch, so absence is
+// read as idle only for an instance already proven finished by three other tests.
+//
+// Unproven means the listing could not be read at all, or the record names no
+// runner to ask about — a row carrying no job identity decodes cleanly, since
+// job_id and repo have no omitempty. Both yield an error, not a verdict: the
+// caller spares the candidate and counts it in the sweep's unchecked total,
+// because terminating on an unproven reading is the one mistake that costs a
+// running job and a silent skip would hide a registry failing every call. With no
+// registry wired there is nothing to prove anything with, so the sweep keeps its
+// prior behavior rather than stalling on every candidate.
+func (t *Tasks) completedRunnerIsBusy(ctx context.Context, registry RunnerRegistry, ref db.CompletedJobRef, instanceID string) (bool, error) {
+	if registry == nil {
+		return false, nil
+	}
+	if ref.Repo == "" || ref.JobID == 0 {
+		return false, fmt.Errorf("completed job for %s names no runner to check", instanceID)
+	}
+
+	runners, err := registry.ListRunners(ctx, ref.Repo)
+	if err != nil {
+		return false, fmt.Errorf("runner listing for %s: %w", ref.Repo, err)
+	}
+
+	suffix := runnerNameSuffix(ref.JobID, instanceID)
+	for _, r := range runners {
+		if !strings.HasSuffix(r.Name, suffix) || !r.Busy {
+			continue
+		}
+		t.logger().Info(ctx, "completed orphan spared: runner is executing a job, so it is left to finish",
+			slog.String(logging.KeyInstanceID, instanceID),
+			slog.String("runner_name", r.Name))
+		return true, nil
+	}
+	return false, nil
 }
 
 func mergeUniqueIDs(lists ...[]string) []string {

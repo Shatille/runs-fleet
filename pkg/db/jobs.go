@@ -1639,26 +1639,36 @@ func extractTraceID(traceparent string) string {
 	return traceID
 }
 
+// CompletedJobRef identifies the job behind a completion timestamp. Both fields
+// are zero when the record carried no job identity, which callers read as "no
+// runner to ask about".
+type CompletedJobRef struct {
+	JobID int64
+	Repo  string
+}
+
 // LastJobCompletionForInstance returns when the instance's most recent job
 // reached a terminal state, or the zero time when it holds no job record or any
-// of its jobs is still live.
+// of its jobs is still live. The returned ref identifies that job.
 //
 // Unlike GetJobByInstance this needs the terminal records themselves, so it
 // cannot reuse that status filter. It also declines the scan fallback: the
 // caller uses this to decide whether to terminate an instance, and an unindexed
 // scan could answer off a partial page.
-func (c *Client) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error) {
+func (c *Client) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, CompletedJobRef, error) {
+	var ref CompletedJobRef
 	if instanceID == "" {
-		return time.Time{}, fmt.Errorf("instance ID cannot be empty")
+		return time.Time{}, ref, fmt.Errorf("instance ID cannot be empty")
 	}
 	if c.jobsTable == "" {
-		return time.Time{}, fmt.Errorf("jobs table not configured")
+		return time.Time{}, ref, fmt.Errorf("jobs table not configured")
 	}
 	if c.jobsInstanceIDGSI == "" {
-		return time.Time{}, fmt.Errorf("instance-id GSI not configured")
+		return time.Time{}, ref, fmt.Errorf("instance-id GSI not configured")
 	}
 
 	var latest time.Time
+	var latestItem map[string]types.AttributeValue
 	input := &dynamodb.QueryInput{
 		TableName:              aws.String(c.jobsTable),
 		IndexName:              aws.String(c.jobsInstanceIDGSI),
@@ -1671,24 +1681,25 @@ func (c *Client) LastJobCompletionForInstance(ctx context.Context, instanceID st
 	for {
 		output, err := c.dynamoClient.Query(ctx, input)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("failed to query jobs by instance: %w", err)
+			return time.Time{}, ref, fmt.Errorf("failed to query jobs by instance: %w", err)
 		}
 
 		for _, item := range output.Items {
 			status, ok := item["status"].(*types.AttributeValueMemberS)
 			if !ok || !JobStatus(status.Value).IsTerminal() {
-				return time.Time{}, nil
+				return time.Time{}, CompletedJobRef{}, nil
 			}
 			completedAt, ok := item["completed_at"].(*types.AttributeValueMemberS)
 			if !ok {
-				return time.Time{}, nil
+				return time.Time{}, CompletedJobRef{}, nil
 			}
 			ts, parseErr := time.Parse(time.RFC3339, completedAt.Value)
 			if parseErr != nil {
-				return time.Time{}, nil
+				return time.Time{}, CompletedJobRef{}, nil
 			}
 			if ts.After(latest) {
 				latest = ts
+				latestItem = item
 			}
 		}
 
@@ -1698,5 +1709,13 @@ func (c *Client) LastJobCompletionForInstance(ctx context.Context, instanceID st
 		input.ExclusiveStartKey = output.LastEvaluatedKey
 	}
 
-	return latest, nil
+	if latestItem != nil {
+		var rec jobRecord
+		if err := attributevalue.UnmarshalMap(latestItem, &rec); err != nil {
+			return time.Time{}, CompletedJobRef{}, fmt.Errorf("failed to unmarshal completed job for %s: %w", instanceID, err)
+		}
+		ref = CompletedJobRef{JobID: rec.JobID, Repo: rec.Repo}
+	}
+
+	return latest, ref, nil
 }

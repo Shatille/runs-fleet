@@ -660,14 +660,12 @@ func runnerIsBusy(ctx context.Context, deps RequeueDeps, c RequeueableJob, log *
 // every terminate in the sweep. Failures are cached for that reason: a repo that just
 // refused one listing will refuse the next 499.
 //
-// Only that loop wraps its registry, so the snapshot ages by at most one sweep. The
-// housekeeping path builds its deps per candidate and stays uncached, keeping the
-// freshest possible reading where it matters most — next to the terminate.
+// A cache belongs to exactly one sweep, so the snapshot ages by at most one sweep.
+// RequeueHungJobs and findCompletedOrphans each build their own.
 //
-// The maps are unsynchronized because one cache belongs to exactly one sweep and is
-// only ever reached from the goroutine that built it: RequeueHungJobs constructs it
-// and then ranges over candidates sequentially, so parallelizing that loop means
-// giving this a mutex.
+// The maps are unsynchronized because one cache is only ever reached from the
+// goroutine that built it: both constructors range over their candidates
+// sequentially, so parallelizing either loop means giving this a mutex.
 type sweepRunnerCache struct {
 	inner   RunnerRegistry
 	runners map[string][]RegisteredRunner
