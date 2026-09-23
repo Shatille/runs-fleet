@@ -866,7 +866,7 @@ func (p *poolDBAdapter) HasActiveJobForInstance(ctx context.Context, instanceID 
 	return info != nil, nil
 }
 
-func (p *poolDBAdapter) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, error) {
+func (p *poolDBAdapter) LastJobCompletionForInstance(ctx context.Context, instanceID string) (time.Time, db.CompletedJobRef, error) {
 	return p.client.LastJobCompletionForInstance(ctx, instanceID)
 }
 
