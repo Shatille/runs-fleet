@@ -1101,11 +1101,22 @@ type mockRunnerRegistry struct {
 	err       error
 	listCalls int
 	listRepos []string
+	// listFn, when set, answers each call by repo and 1-based per-repo call count,
+	// so a test can make the pre-terminate re-list disagree with detection.
+	listFn    func(repo string, call int) ([]RegisteredRunner, error)
+	repoCalls map[string]int
 }
 
 func (m *mockRunnerRegistry) ListRunners(_ context.Context, repo string) ([]RegisteredRunner, error) {
 	m.listCalls++
 	m.listRepos = append(m.listRepos, repo)
+	if m.listFn != nil {
+		if m.repoCalls == nil {
+			m.repoCalls = map[string]int{}
+		}
+		m.repoCalls[repo]++
+		return m.listFn(repo, m.repoCalls[repo])
+	}
 	if m.err != nil {
 		return nil, m.err
 	}

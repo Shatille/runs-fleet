@@ -245,8 +245,18 @@ func (t *Tasks) SweepOrphanedInstances(ctx context.Context, dryRun bool) (Orphan
 	// Phase 4: Completed detection. Phases 1-3 all miss an instance that claimed a
 	// job, finished it, and then failed to self-terminate: it has a job record, so
 	// the unclaimed sweep skips it, and it bills until the whole-job-timeout cutoff.
-	completedOrphans, completedErr := t.findCompletedOrphans(ctx,
-		time.Now().Add(-time.Duration(t.config.CompletedInstanceGraceMinutes)*time.Minute))
+	now := time.Now()
+	completedCandidates, completedErr := t.findCompletedOrphans(ctx,
+		now.Add(-time.Duration(t.idleRunnerGraceMinutes())*time.Minute),
+		now.Add(-time.Duration(t.config.CompletedInstanceGraceMinutes)*time.Minute))
+	completedOrphans := make([]string, 0, len(completedCandidates))
+	var earlyIdleOrphans []string
+	for _, c := range completedCandidates {
+		completedOrphans = append(completedOrphans, c.ID)
+		if c.Early {
+			earlyIdleOrphans = append(earlyIdleOrphans, c.ID)
+		}
+	}
 
 	// Phase 5: Abandoned stopped instances. Every phase above filters to running
 	// instances, and the pool reconciler only manages instances carrying its tag,
@@ -284,15 +294,74 @@ func (t *Tasks) SweepOrphanedInstances(ctx context.Context, dryRun bool) (Orphan
 			slog.Any("unclaimed_ids", unclaimedOrphans))
 	}
 
+	// Phase 4 is the only judgment made on a job record rather than on the
+	// instance itself, so only instances no other phase flagged are re-verified; a
+	// max-runtime or untagged orphan is reaped regardless of what its runner says.
+	otherPhases := make(map[string]bool)
+	for _, list := range [][]string{taggedOrphans, untaggedOrphans, unclaimedOrphans, stoppedOrphans} {
+		for _, id := range list {
+			otherPhases[id] = true
+		}
+	}
+	var completedOnly []completedOrphan
+	for _, c := range completedCandidates {
+		if !otherPhases[c.ID] {
+			completedOnly = append(completedOnly, c)
+		}
+	}
+
+	spared := make(map[string]bool)
+	applySpares := func(more map[string]bool) {
+		for id := range more {
+			spared[id] = true
+		}
+		orphanedIDs = withoutIDs(orphanedIDs, spared)
+		sweep.InstanceIDs = orphanedIDs
+		completedOrphans = withoutIDs(completedOrphans, spared)
+		earlyIdleOrphans = withoutIDs(earlyIdleOrphans, spared)
+	}
+	unspared := func() []completedOrphan {
+		var out []completedOrphan
+		for _, c := range completedOnly {
+			if !spared[c.ID] {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+
+	recordSpared, recordErr := t.confirmCompletedRecords(ctx, completedOnly)
+	applySpares(recordSpared)
+
 	if dryRun {
+		runnerSpared, runnerErr := t.confirmCompletedRunners(ctx, unspared())
+		applySpares(runnerSpared)
+		if err := t.withheldError(ctx, errors.Join(recordErr, runnerErr), len(orphanedIDs)); err != nil {
+			return sweep, err
+		}
 		t.logger().Info(ctx, "orphaned instance sweep (dry run)",
 			slog.Int(logging.KeyCount, len(orphanedIDs)),
-			slog.Any("instance_ids", orphanedIDs))
+			slog.Any("instance_ids", orphanedIDs),
+			slog.Int("spared", len(spared)))
 		return sweep, nil
+	}
+	if len(orphanedIDs) == 0 {
+		return sweep, t.withheldError(ctx, recordErr, 0)
 	}
 
 	// Cancel persistent spot requests before termination to prevent zombie resurrection
 	t.cancelSpotRequestsForInstances(ctx, orphanedIDs)
+
+	// The runner re-list is the last read before the terminate so the gap in which
+	// GitHub can hand an idle runner a job is as short as the API allows.
+	runnerSpared, runnerErr := t.confirmCompletedRunners(ctx, unspared())
+	applySpares(runnerSpared)
+	if err := t.withheldError(ctx, errors.Join(recordErr, runnerErr), len(orphanedIDs)); err != nil {
+		return sweep, err
+	}
+	if len(orphanedIDs) == 0 {
+		return sweep, nil
+	}
 
 	t.logger().Info(ctx, "terminating orphaned instances",
 		slog.Int(logging.KeyCount, len(orphanedIDs)),
@@ -300,7 +369,9 @@ func (t *Tasks) SweepOrphanedInstances(ctx context.Context, dryRun bool) (Orphan
 		slog.Any("untagged", untaggedOrphans),
 		slog.Any("unclaimed", unclaimedOrphans),
 		slog.Any("completed", completedOrphans),
-		slog.Any("stopped", stoppedOrphans))
+		slog.Any("completed_idle", earlyIdleOrphans),
+		slog.Any("stopped", stoppedOrphans),
+		slog.Int("spared", len(spared)))
 
 	_, err := t.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: orphanedIDs,
@@ -645,13 +716,29 @@ func (t *Tasks) findUnclaimedOrphans(ctx context.Context, cutoff time.Time) ([]s
 	return unclaimed, errors.Join(errs...)
 }
 
+type completedOrphan struct {
+	ID         string
+	Ref        db.CompletedJobRef
+	LaunchedAt time.Time
+	Early      bool
+}
+
+type runnerState int
+
+const (
+	runnerAbsent runnerState = iota
+	runnerIdle
+	runnerBusy
+)
+
 // findCompletedOrphans returns instances whose every job row is terminal and
-// whose most recent completion is older than cutoff. Instances are ephemeral, so
-// a finished job means the box has no further work; the grace window covers the
-// gap between the record being written terminal and the agent self-terminating.
-// A lookup failure is reported rather than treated as "done", so a DynamoDB fault
-// can never escalate into terminating live instances.
-func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]string, error) {
+// whose most recent completion is older than its window: idleCutoff when the
+// runner is still registered and idle, absentCutoff when it is gone. Instances are
+// ephemeral, so a finished job means the box has no further work; the completed
+// window covers the gap between the record being written terminal and the agent
+// self-terminating. A lookup failure is reported rather than treated as "done", so
+// a DynamoDB fault can never escalate into terminating live instances.
+func (t *Tasks) findCompletedOrphans(ctx context.Context, idleCutoff, absentCutoff time.Time) ([]completedOrphan, error) {
 	if t.config.JobsTableName == "" || t.poolDB == nil {
 		return nil, nil
 	}
@@ -668,7 +755,7 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		registry = newSweepRunnerCache(t.runnerRegistry)
 	}
 
-	var completed []string
+	var completed []completedOrphan
 	var errs []error
 	var unchecked int
 	var firstLookupErr error
@@ -680,7 +767,7 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 		}
 
 		for id, launchedAt := range completedOrphanCandidates(output) {
-			done, err := t.jobsFinishedBefore(ctx, registry, id, cutoff, launchedAt)
+			orphan, done, err := t.jobsFinishedBefore(ctx, registry, id, idleCutoff, absentCutoff, launchedAt)
 			if err != nil {
 				unchecked++
 				if firstLookupErr == nil {
@@ -689,7 +776,7 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 				continue
 			}
 			if done {
-				completed = append(completed, id)
+				completed = append(completed, orphan)
 			}
 		}
 
@@ -709,46 +796,56 @@ func (t *Tasks) findCompletedOrphans(ctx context.Context, cutoff time.Time) ([]s
 }
 
 // jobsFinishedBefore reports whether instanceID's work is done and finished
-// before cutoff.
+// before its window.
 //
 // A completion that predates launchedAt belongs to a previous life of the
 // instance: a stopped warm-pool member keeps its old job row, and EC2 refreshes
 // LaunchTime when it is restarted for the next job. Treating that stale row as
 // current would reap the instance during the window between StartInstances and
 // the new job record being written.
-func (t *Tasks) jobsFinishedBefore(ctx context.Context, registry RunnerRegistry, instanceID string, cutoff, launchedAt time.Time) (bool, error) {
+func (t *Tasks) jobsFinishedBefore(ctx context.Context, registry RunnerRegistry, instanceID string, idleCutoff, absentCutoff, launchedAt time.Time) (completedOrphan, bool, error) {
+	orphan := completedOrphan{ID: instanceID, LaunchedAt: launchedAt}
 	completedAt, ref, err := t.poolDB.LastJobCompletionForInstance(ctx, instanceID)
 	if err != nil {
-		return false, err
+		return orphan, false, err
 	}
+	orphan.Ref = ref
 	if completedAt.IsZero() {
-		return false, nil
+		return orphan, false, nil
 	}
-	if !completedAt.Before(cutoff) || completedAt.Before(launchedAt) {
-		return false, nil
+	if !completedAt.Before(idleCutoff) || completedAt.Before(launchedAt) {
+		return orphan, false, nil
 	}
-	busy, err := t.completedRunnerIsBusy(ctx, registry, ref, instanceID)
+	pastCompletedWindow := completedAt.Before(absentCutoff)
+
+	state, err := t.completedRunnerState(ctx, registry, ref, instanceID)
 	if err != nil {
-		return false, err
+		return orphan, false, err
 	}
-	return !busy, nil
+	switch state {
+	case runnerBusy:
+		return orphan, false, nil
+	case runnerIdle:
+		orphan.Early = !pastCompletedWindow
+		return orphan, true, nil
+	default:
+		return orphan, pastCompletedWindow, nil
+	}
 }
 
-// completedRunnerIsBusy reports whether the runner this instance registered is
-// executing a job at GitHub.
+// completedRunnerState reports what GitHub says about the runner this instance
+// registered.
 //
 // A terminal job record does not mean the box is idle: a runner binds to labels,
 // not to a job, so GitHub can hand it a sibling's work, and the record goes
 // terminal when that sibling's own runner finishes it. Reaping on the record
 // alone then kills live work — the 2026-09-22 ck-client incident.
 //
-// A listing that was read is itself the proof. A runner shown busy is spared; one
-// shown idle, or absent, is done — the agent registers with --ephemeral
+// A listing that was read is itself the proof. A runner shown busy is spared. One
+// shown online and idle never got the job its record names, so it has no teardown
+// to wait for. One offline or absent has finished — the agent registers with --ephemeral
 // (pkg/agent/registration.go), so GitHub deletes the registration the moment its
-// job finishes, making absence the expected end state of a completed runner
-// rather than a gap in the reading. The caller only asks once the record is
-// terminal, aged past the grace window and newer than the launch, so absence is
-// read as idle only for an instance already proven finished by three other tests.
+// job finishes — and is still tearing down until the completed window passes.
 //
 // Unproven means the listing could not be read at all, or the record names no
 // runner to ask about — a row carrying no job identity decodes cleanly, since
@@ -756,32 +853,165 @@ func (t *Tasks) jobsFinishedBefore(ctx context.Context, registry RunnerRegistry,
 // caller spares the candidate and counts it in the sweep's unchecked total,
 // because terminating on an unproven reading is the one mistake that costs a
 // running job and a silent skip would hide a registry failing every call. With no
-// registry wired there is nothing to prove anything with, so the sweep keeps its
-// prior behavior rather than stalling on every candidate.
-func (t *Tasks) completedRunnerIsBusy(ctx context.Context, registry RunnerRegistry, ref db.CompletedJobRef, instanceID string) (bool, error) {
+// registry wired there is nothing to prove anything with, so the runner reads as
+// absent and the sweep keeps its prior behavior rather than stalling.
+func (t *Tasks) completedRunnerState(ctx context.Context, registry RunnerRegistry, ref db.CompletedJobRef, instanceID string) (runnerState, error) {
 	if registry == nil {
-		return false, nil
+		return runnerAbsent, nil
 	}
 	if ref.Repo == "" || ref.JobID == 0 {
-		return false, fmt.Errorf("completed job for %s names no runner to check", instanceID)
+		return runnerAbsent, fmt.Errorf("completed job for %s names no runner to check", instanceID)
 	}
 
 	runners, err := registry.ListRunners(ctx, ref.Repo)
 	if err != nil {
-		return false, fmt.Errorf("runner listing for %s: %w", ref.Repo, err)
+		return runnerAbsent, fmt.Errorf("runner listing for %s: %w", ref.Repo, err)
 	}
+	return matchRunnerState(ctx, t.logger(), runners, ref, instanceID), nil
+}
 
+func matchRunnerState(ctx context.Context, log *logging.Logger, runners []RegisteredRunner, ref db.CompletedJobRef, instanceID string) runnerState {
 	suffix := runnerNameSuffix(ref.JobID, instanceID)
+	state := runnerAbsent
 	for _, r := range runners {
-		if !strings.HasSuffix(r.Name, suffix) || !r.Busy {
+		if !strings.HasSuffix(r.Name, suffix) {
 			continue
 		}
-		t.logger().Info(ctx, "completed orphan spared: runner is executing a job, so it is left to finish",
-			slog.String(logging.KeyInstanceID, instanceID),
-			slog.String("runner_name", r.Name))
-		return true, nil
+		if r.Busy {
+			log.Info(ctx, "completed orphan spared: runner is executing a job, so it is left to finish",
+				slog.String(logging.KeyInstanceID, instanceID),
+				slog.String("runner_name", r.Name))
+			return runnerBusy
+		}
+		// Offline may be an agent reconnecting, which only the completed window
+		// is long enough to rule out.
+		if r.Status == "online" {
+			state = runnerIdle
+		}
 	}
-	return false, nil
+	return state
+}
+
+// confirmCompletedRecords re-reads what the orchestrator itself knows about each
+// phase-4 candidate and returns the IDs that must be spared: a job row that is
+// live again or now names a different job, or a live instance claim. Any read
+// failure spares the candidate. The job lookup goes through an eventually
+// consistent index, so a just-written row can be missed; the claim, read
+// consistently, is what covers an assignment in flight.
+func (t *Tasks) confirmCompletedRecords(ctx context.Context, candidates []completedOrphan) (map[string]bool, error) {
+	spare := make(map[string]bool)
+	var errs []error
+	for _, c := range candidates {
+		completedAt, ref, err := t.poolDB.LastJobCompletionForInstance(ctx, c.ID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("job re-read for %s: %w", c.ID, err))
+			t.spareCompletedOrphan(ctx, spare, c.ID, "job record unreadable")
+			continue
+		}
+		if completedAt.IsZero() || completedAt.Before(c.LaunchedAt) {
+			t.spareCompletedOrphan(ctx, spare, c.ID, "job record live")
+			continue
+		}
+		if ref != c.Ref {
+			t.spareCompletedOrphan(ctx, spare, c.ID, "job record changed since detection")
+			continue
+		}
+
+		claimed, err := t.poolDB.HasLiveInstanceClaim(ctx, c.ID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("claim read for %s: %w", c.ID, err))
+			t.spareCompletedOrphan(ctx, spare, c.ID, "instance claim unreadable")
+			continue
+		}
+		if claimed {
+			t.spareCompletedOrphan(ctx, spare, c.ID, "instance claimed")
+		}
+	}
+	return spare, errors.Join(errs...)
+}
+
+// confirmCompletedRunners re-lists runners uncached, one call per repo, and
+// returns the IDs that must be spared: a runner now busy, or an early reap whose
+// runner is no longer online and idle. A failed listing spares the whole repo.
+// Some gap between GitHub's answer and the terminate remains; GitHub offers no
+// way to stop a runner accepting work from outside the instance.
+func (t *Tasks) confirmCompletedRunners(ctx context.Context, candidates []completedOrphan) (map[string]bool, error) {
+	spare := make(map[string]bool)
+	if t.runnerRegistry == nil {
+		return spare, nil
+	}
+	byRepo := make(map[string][]completedOrphan)
+	for _, c := range candidates {
+		if c.Ref.Repo != "" && c.Ref.JobID != 0 {
+			byRepo[c.Ref.Repo] = append(byRepo[c.Ref.Repo], c)
+		}
+	}
+
+	var errs []error
+	for repo, group := range byRepo {
+		runners, err := t.runnerRegistry.ListRunners(ctx, repo)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("runner re-list for %s: %w", repo, err))
+			for _, c := range group {
+				t.spareCompletedOrphan(ctx, spare, c.ID, "runner listing unreadable")
+			}
+			continue
+		}
+		for _, c := range group {
+			state := matchRunnerState(ctx, t.logger(), runners, c.Ref, c.ID)
+			switch {
+			case state == runnerBusy:
+				t.spareCompletedOrphan(ctx, spare, c.ID, "runner picked up a job")
+			case c.Early && state != runnerIdle:
+				t.spareCompletedOrphan(ctx, spare, c.ID, "runner no longer online and idle")
+			}
+		}
+	}
+	return spare, errors.Join(errs...)
+}
+
+func (t *Tasks) spareCompletedOrphan(ctx context.Context, spare map[string]bool, id, reason string) {
+	spare[id] = true
+	t.logger().Info(ctx, "completed orphan spared before terminate",
+		slog.String(logging.KeyInstanceID, id),
+		slog.String(logging.KeyReason, reason))
+}
+
+// withheldError surfaces failed pre-terminate checks. When candidates remain to be
+// terminated it only warns, matching how partial detection failures are handled;
+// when the failures withheld everything it returns the error, so a check failing
+// on every run cannot pass for a clean sweep.
+func (t *Tasks) withheldError(ctx context.Context, err error, remaining int) error {
+	if err == nil {
+		return nil
+	}
+	if remaining == 0 {
+		return fmt.Errorf("every orphan candidate withheld: %w", err)
+	}
+	t.logger().Warn(ctx, "orphan candidates withheld after a failed pre-terminate check",
+		slog.String("error", err.Error()))
+	return nil
+}
+
+func withoutIDs(ids []string, drop map[string]bool) []string {
+	var out []string
+	for _, id := range ids {
+		if !drop[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// idleRunnerGraceMinutes is the idle-runner window, falling back to the completed
+// window when unset or out of range so a config built without Load keeps the
+// sweep's original timing.
+func (t *Tasks) idleRunnerGraceMinutes() int {
+	idle := t.config.IdleRunnerGraceMinutes
+	if idle <= 0 || idle > t.config.CompletedInstanceGraceMinutes {
+		return t.config.CompletedInstanceGraceMinutes
+	}
+	return idle
 }
 
 func mergeUniqueIDs(lists ...[]string) []string {

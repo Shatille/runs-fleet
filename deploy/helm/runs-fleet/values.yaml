@@ -220,6 +220,14 @@ hotPools:
   #   lookbackDays: 7
   #   burstGapMinutes: 20
 
+# Orphaned-instance sweep. idleRunnerGraceMinutes shortens the reap window for an
+# instance whose job record is terminal but whose runner is still registered,
+# online and idle at GitHub (it never got its job). Leave empty to keep the completed-instance
+# window (15 minutes) for every instance. Minimum 5. Running, claimed or busy
+# runners are never reaped regardless of this value.
+orphanSweep:
+  idleRunnerGraceMinutes: ""
+
 # Secrets backend configuration
 secrets:
   # Backend selection: "ssm" (default) or "vault"

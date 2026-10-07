@@ -2212,6 +2212,11 @@ type mockPoolDBAPI struct {
 	lastCompletion    map[string]time.Time
 	lastCompletionJob map[string]completedJobRef
 	lastCompletionErr error
+	// lastCompletionLater replaces lastCompletion from the second lookup of an
+	// instance on, modelling a record that changes between detection and terminate.
+	lastCompletionLater    map[string]time.Time
+	lastCompletionCalls    map[string]int
+	lastCompletionJobLater map[string]completedJobRef
 }
 
 type completedJobRef struct {
@@ -2296,8 +2301,19 @@ func (m *mockPoolDBAPI) LastJobCompletionForInstance(_ context.Context, instance
 	if m.lastCompletionErr != nil {
 		return time.Time{}, db.CompletedJobRef{}, m.lastCompletionErr
 	}
+	if m.lastCompletionCalls == nil {
+		m.lastCompletionCalls = map[string]int{}
+	}
+	m.lastCompletionCalls[instanceID]++
 	ref := m.lastCompletionJob[instanceID]
-	return m.lastCompletion[instanceID], db.CompletedJobRef{JobID: ref.JobID, Repo: ref.Repo}, nil
+	completedAt := m.lastCompletion[instanceID]
+	if later, ok := m.lastCompletionLater[instanceID]; ok && m.lastCompletionCalls[instanceID] > 1 {
+		completedAt = later
+	}
+	if later, ok := m.lastCompletionJobLater[instanceID]; ok && m.lastCompletionCalls[instanceID] > 1 {
+		ref = later
+	}
+	return completedAt, db.CompletedJobRef{JobID: ref.JobID, Repo: ref.Repo}, nil
 }
 
 func TestExecuteExpiredInstanceClaims_NoPoolDB(t *testing.T) {
@@ -4506,8 +4522,9 @@ func TestExecuteOrphanedInstances_ListsRunnersOncePerRepo(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if reg.listCalls != 1 {
-		t.Errorf("ListRunners called %d times, want 1: one listing per repo per sweep", reg.listCalls)
+	if reg.listCalls != 2 {
+		t.Errorf("ListRunners called %d times, want 2: one cached detection listing and one "+
+			"pre-terminate re-list per repo, never one per instance", reg.listCalls)
 	}
 }
 
@@ -4533,5 +4550,348 @@ func TestExecuteOrphanedInstances_IncompleteJobRefSparesInstance(t *testing.T) {
 	if len(ec2Client.terminatedIDs) != 0 {
 		t.Errorf("terminated = %v, want none: an unnameable runner cannot be proven idle",
 			ec2Client.terminatedIDs)
+	}
+}
+
+func idleWindowSweepTasks(ec2Client *mockEC2API, poolDB *mockPoolDBAPI, idleMinutes int, reg RunnerRegistry) *Tasks {
+	tasks := completedSweepTasks(ec2Client, poolDB)
+	tasks.config.IdleRunnerGraceMinutes = idleMinutes
+	if reg != nil {
+		tasks.runnerRegistry = reg
+	}
+	return tasks
+}
+
+func idleRunner(jobID int64, instanceID string, busy bool) RegisteredRunner {
+	return RegisteredRunner{ID: jobID, Name: "runs-fleet-runner-octo" + runnerNameSuffix(jobID, instanceID), Status: "online", Busy: busy}
+}
+
+func completedInstanceFixture(ids map[string]time.Duration) (*mockEC2API, *mockPoolDBAPI) {
+	var instances []ec2types.Instance
+	poolDB := &mockPoolDBAPI{
+		activeJobInstances: map[string]bool{},
+		lastCompletion:     map[string]time.Time{},
+		lastCompletionJob:  map[string]completedJobRef{},
+	}
+	var job int64 = 100
+	for id, ago := range ids {
+		job++
+		instances = append(instances, managedInstance(id, time.Now().Add(-45*time.Minute)))
+		poolDB.activeJobInstances[id] = true
+		poolDB.lastCompletion[id] = time.Now().Add(-ago)
+		poolDB.lastCompletionJob[id] = completedJobRef{JobID: job, Repo: "octo/repo"}
+	}
+	return &mockEC2API{instances: []ec2types.Reservation{{Instances: instances}}}, poolDB
+}
+
+func TestExecuteOrphanedInstances_DefaultIdleWindowKeepsTodaysTiming(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-early": 8 * time.Minute})
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{idleRunner(101, "i-early", false)}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 0, reg)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: an unset idle window must keep the 15-minute behavior", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_IdleWindowReapsOnlyRegisteredIdleRunners(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{
+		"i-idle8":  8 * time.Minute,
+		"i-gone8":  8 * time.Minute,
+		"i-gone20": 20 * time.Minute,
+		"i-busy8":  8 * time.Minute,
+		"i-young3": 3 * time.Minute,
+	})
+	ref := func(id string) int64 { return poolDB.lastCompletionJob[id].JobID }
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{
+		idleRunner(ref("i-idle8"), "i-idle8", false),
+		idleRunner(ref("i-busy8"), "i-busy8", true),
+		idleRunner(ref("i-young3"), "i-young3", false),
+	}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, id := range ec2Client.terminatedIDs {
+		got[id] = true
+	}
+	want := map[string]bool{"i-idle8": true, "i-gone20": true}
+	if len(got) != len(want) || !got["i-idle8"] || !got["i-gone20"] {
+		t.Errorf("terminated = %v, want exactly %v: registered-idle reaps at the idle window, "+
+			"absent waits for the completed window, busy and too-young are spared", ec2Client.terminatedIDs, want)
+	}
+}
+
+func TestExecuteOrphanedInstances_IdleWindowWithoutRegistryKeepsCompletedWindow(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-noreg": 8 * time.Minute})
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, nil)
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: without a registry idle cannot be told from absent", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalCheckSparesRunnerThatTookAJob(t *testing.T) {
+	t.Parallel()
+
+	for name, ago := range map[string]time.Duration{"idle window": 8 * time.Minute, "completed window": 20 * time.Minute} {
+		t.Run(name, func(t *testing.T) {
+			ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-race": ago})
+			job := poolDB.lastCompletionJob["i-race"].JobID
+			reg := &mockRunnerRegistry{listFn: func(_ string, call int) ([]RegisteredRunner, error) {
+				return []RegisteredRunner{idleRunner(job, "i-race", call > 1)}, nil
+			}}
+
+			tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+			if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(ec2Client.terminatedIDs) != 0 {
+				t.Errorf("terminated = %v, want none: the runner was busy on the re-list right before terminate", ec2Client.terminatedIDs)
+			}
+		})
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalCheckSparesEarlyRunnerThatVanished(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-left": 8 * time.Minute})
+	job := poolDB.lastCompletionJob["i-left"].JobID
+	reg := &mockRunnerRegistry{listFn: func(_ string, call int) ([]RegisteredRunner, error) {
+		if call > 1 {
+			return nil, nil
+		}
+		return []RegisteredRunner{idleRunner(job, "i-left", false)}, nil
+	}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a runner gone before the completed window may be tearing down", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalListingErrorSparesOnlyThatRepo(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{
+		"i-repoa": 20 * time.Minute,
+		"i-repob": 20 * time.Minute,
+	})
+	poolDB.lastCompletionJob["i-repob"] = completedJobRef{JobID: poolDB.lastCompletionJob["i-repob"].JobID, Repo: "octo/other"}
+	reg := &mockRunnerRegistry{listFn: func(repo string, call int) ([]RegisteredRunner, error) {
+		if repo != "octo/other" && call > 1 {
+			return nil, errors.New("github unreachable")
+		}
+		return nil, nil
+	}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v: a partly withheld sweep still terminated something and reports success", err)
+	}
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-repob" {
+		t.Errorf("terminated = %v, want [i-repob]: only the repo whose re-list failed is spared", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_AllWithheldByErrorsReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-claimerr": 20 * time.Minute})
+	reg := &mockRunnerRegistry{}
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+	poolDB.claimErr = errors.New("ProvisionedThroughputExceeded")
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err == nil {
+		t.Error("got nil error, want the withheld candidate reported when nothing was terminated")
+	}
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: an unreadable claim cannot prove the instance unassigned", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalCheckReadsFreshListingOncePerRepo(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{
+		"i-one":   20 * time.Minute,
+		"i-two":   20 * time.Minute,
+		"i-three": 8 * time.Minute,
+	})
+	job := poolDB.lastCompletionJob["i-three"].JobID
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{idleRunner(job, "i-three", false)}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reg.listCalls != 2 {
+		t.Errorf("ListRunners called %d times, want 2: one cached for detection, one fresh before terminate", reg.listCalls)
+	}
+	if len(ec2Client.terminatedIDs) != 3 {
+		t.Errorf("terminated = %v, want all three", ec2Client.terminatedIDs)
+	}
+}
+
+func TestSweepOrphanedInstances_DryRunAppliesFinalChecks(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{
+		"i-dry":     20 * time.Minute,
+		"i-claimed": 20 * time.Minute,
+	})
+	poolDB.claimedInstances = map[string]bool{"i-claimed": true}
+	poolDB.activeJobInstances["i-busy"] = true
+	poolDB.lastCompletion["i-busy"] = time.Now().Add(-20 * time.Minute)
+	poolDB.lastCompletionJob["i-busy"] = completedJobRef{JobID: 555, Repo: "octo/repo"}
+	ec2Client.instances[0].Instances = append(ec2Client.instances[0].Instances,
+		managedInstance("i-busy", time.Now().Add(-45*time.Minute)))
+	reg := &mockRunnerRegistry{listFn: func(_ string, call int) ([]RegisteredRunner, error) {
+		return []RegisteredRunner{idleRunner(555, "i-busy", call > 1)}, nil
+	}}
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+
+	sweep, err := tasks.SweepOrphanedInstances(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sweep.InstanceIDs) != 1 || sweep.InstanceIDs[0] != "i-dry" || len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("dry run: ids=%v terminated=%v, want [i-dry] previewed and nothing terminated: "+
+			"the preview must match what a real run would terminate", sweep.InstanceIDs, ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalCheckSparesClaimedInstance(t *testing.T) {
+	t.Parallel()
+
+	for name, ago := range map[string]time.Duration{"idle window": 8 * time.Minute, "completed window": 20 * time.Minute} {
+		t.Run(name, func(t *testing.T) {
+			ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-claimed": ago})
+			poolDB.claimedInstances = map[string]bool{"i-claimed": true}
+			job := poolDB.lastCompletionJob["i-claimed"].JobID
+			reg := &mockRunnerRegistry{runners: []RegisteredRunner{idleRunner(job, "i-claimed", false)}}
+
+			tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+			if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(ec2Client.terminatedIDs) != 0 {
+				t.Errorf("terminated = %v, want none: the instance is promised to a job", ec2Client.terminatedIDs)
+			}
+		})
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalCheckSparesInstanceReassignedSinceDetection(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-reused": 20 * time.Minute})
+	poolDB.lastCompletionLater = map[string]time.Time{"i-reused": {}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, &mockRunnerRegistry{})
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: a live job row appeared before terminate", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_TimeoutOrphanSkipsFinalCheck(t *testing.T) {
+	t.Parallel()
+
+	ec2Client := &mockEC2API{instances: []ec2types.Reservation{{Instances: []ec2types.Instance{
+		managedInstance("i-ancient", time.Now().Add(-400*time.Minute)),
+	}}}}
+	poolDB := &mockPoolDBAPI{
+		activeJobInstances: map[string]bool{"i-ancient": true},
+		lastCompletion:     map[string]time.Time{"i-ancient": time.Now().Add(-20 * time.Minute)},
+		lastCompletionJob:  map[string]completedJobRef{"i-ancient": {JobID: 7, Repo: "octo/repo"}},
+		claimedInstances:   map[string]bool{"i-ancient": true},
+	}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, &mockRunnerRegistry{})
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 1 {
+		t.Errorf("terminated = %v, want [i-ancient]: past max runtime is a timeout, not a phase-4 judgment", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_EqualWindowsKeepTodaysTiming(t *testing.T) {
+	t.Parallel()
+
+	for name, idle := range map[string]int{"explicitly equal": 15, "out of range falls back": 30} {
+		t.Run(name, func(t *testing.T) {
+			ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-early": 8 * time.Minute})
+			job := poolDB.lastCompletionJob["i-early"].JobID
+			reg := &mockRunnerRegistry{runners: []RegisteredRunner{idleRunner(job, "i-early", false)}}
+
+			tasks := idleWindowSweepTasks(ec2Client, poolDB, idle, reg)
+			if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(ec2Client.terminatedIDs) != 0 {
+				t.Errorf("terminated = %v, want none before the completed window", ec2Client.terminatedIDs)
+			}
+		})
+	}
+}
+
+func TestExecuteOrphanedInstances_OfflineRunnerKeepsCompletedWindow(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{
+		"i-off8":  8 * time.Minute,
+		"i-off20": 20 * time.Minute,
+	})
+	offline := func(id string) RegisteredRunner {
+		r := idleRunner(poolDB.lastCompletionJob[id].JobID, id, false)
+		r.Status = "offline"
+		return r
+	}
+	reg := &mockRunnerRegistry{runners: []RegisteredRunner{offline("i-off8"), offline("i-off20")}}
+
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, reg)
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 1 || ec2Client.terminatedIDs[0] != "i-off20" {
+		t.Errorf("terminated = %v, want [i-off20]: an offline runner may be an agent reconnecting", ec2Client.terminatedIDs)
+	}
+}
+
+func TestExecuteOrphanedInstances_FinalCheckSparesInstanceWhoseJobChanged(t *testing.T) {
+	t.Parallel()
+
+	ec2Client, poolDB := completedInstanceFixture(map[string]time.Duration{"i-newjob": 20 * time.Minute})
+	poolDB.lastCompletionLater = map[string]time.Time{"i-newjob": time.Now().Add(-time.Minute)}
+	tasks := idleWindowSweepTasks(ec2Client, poolDB, 5, &mockRunnerRegistry{})
+	poolDB.lastCompletionJobLater = map[string]completedJobRef{"i-newjob": {JobID: 999, Repo: "octo/repo"}}
+
+	if err := tasks.ExecuteOrphanedInstances(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ec2Client.terminatedIDs) != 0 {
+		t.Errorf("terminated = %v, want none: the instance's record names a different job than at detection", ec2Client.terminatedIDs)
 	}
 }
