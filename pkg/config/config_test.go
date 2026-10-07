@@ -1402,3 +1402,73 @@ func TestValidateOIDCConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadIdleRunnerGrace(t *testing.T) {
+	originalEnv := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, e := range originalEnv {
+			pair := splitEnv(e)
+			_ = os.Setenv(pair[0], pair[1])
+		}
+	})
+
+	baseEnv := map[string]string{
+		"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+		"RUNS_FLEET_VPC_ID":                 "vpc-123",
+		"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+		"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+		"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+		"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+		"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+		"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+		"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+		"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
+	}
+
+	tests := []struct {
+		name      string
+		idle      string
+		completed string
+		want      int
+		wantError bool
+	}{
+		{name: "unset follows the completed window", want: 15},
+		{name: "unset follows a custom completed window", completed: "20", want: 20},
+		{name: "shorter than completed", idle: "7", want: 7},
+		{name: "at the floor", idle: "5", want: 5},
+		{name: "equal to completed", idle: "15", want: 15},
+		{name: "below the floor rejected", idle: "4", wantError: true},
+		{name: "explicit zero rejected", idle: "0", wantError: true},
+		{name: "longer than completed rejected", idle: "16", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			for k, v := range baseEnv {
+				_ = os.Setenv(k, v)
+			}
+			if tt.idle != "" {
+				_ = os.Setenv("RUNS_FLEET_IDLE_RUNNER_GRACE_MINUTES", tt.idle)
+			}
+			if tt.completed != "" {
+				_ = os.Setenv("RUNS_FLEET_COMPLETED_INSTANCE_GRACE_MINUTES", tt.completed)
+			}
+
+			cfg, err := Load()
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("Load() expected error for idle grace %q, got nil", tt.idle)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.IdleRunnerGraceMinutes != tt.want {
+				t.Errorf("IdleRunnerGraceMinutes = %d, want %d", cfg.IdleRunnerGraceMinutes, tt.want)
+			}
+		})
+	}
+}

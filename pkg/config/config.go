@@ -73,6 +73,11 @@ type Config struct {
 	// once its job ends, so without this it bills until the MaxRuntimeMinutes
 	// cutoff even though every sweep can see the job is done.
 	CompletedInstanceGraceMinutes int
+	// IdleRunnerGraceMinutes is the shorter window for the same instance when its
+	// runner is still registered at GitHub and idle: it never got the job its record
+	// names, so it has no teardown to wait for. Defaults to
+	// CompletedInstanceGraceMinutes, which leaves the sweep unchanged.
+	IdleRunnerGraceMinutes int
 	// StoppedInstanceGraceHours reaps stopped instances that carry no pool tag.
 	// Nothing else can: the pool reconciler only manages tagged members, and every
 	// other sweep filters to running instances, so an untagged stopped instance
@@ -169,6 +174,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	idleRunnerGraceMinutes, err := getEnvInt("RUNS_FLEET_IDLE_RUNNER_GRACE_MINUTES", completedInstanceGraceMinutes)
+	if err != nil {
+		return nil, err
+	}
+
 	// Defaults off: reaping a stopped instance destroys its EBS volume.
 	stoppedInstanceGraceHours, err := getEnvInt("RUNS_FLEET_STOPPED_INSTANCE_GRACE_HOURS", 0)
 	if err != nil {
@@ -228,6 +238,7 @@ func Load() (*Config, error) {
 		MaxRuntimeMinutes:             maxRuntimeMinutes,
 		UnclaimedInstanceGraceMinutes: unclaimedInstanceGraceMinutes,
 		CompletedInstanceGraceMinutes: completedInstanceGraceMinutes,
+		IdleRunnerGraceMinutes:        idleRunnerGraceMinutes,
 		StoppedInstanceGraceHours:     stoppedInstanceGraceHours,
 		LaunchTemplateName:            getEnv("RUNS_FLEET_LAUNCH_TEMPLATE_NAME", "runs-fleet-runner"),
 		RunnerImage:                   getEnv("RUNS_FLEET_RUNNER_IMAGE", ""),
@@ -340,6 +351,10 @@ func (c *Config) Validate() error {
 	// self-terminates, so this must leave room for that tail.
 	if c.CompletedInstanceGraceMinutes < 5 {
 		return fmt.Errorf("RUNS_FLEET_COMPLETED_INSTANCE_GRACE_MINUTES must be at least 5, got %d", c.CompletedInstanceGraceMinutes)
+	}
+	if c.IdleRunnerGraceMinutes < 5 || c.IdleRunnerGraceMinutes > c.CompletedInstanceGraceMinutes {
+		return fmt.Errorf("RUNS_FLEET_IDLE_RUNNER_GRACE_MINUTES must be between 5 and RUNS_FLEET_COMPLETED_INSTANCE_GRACE_MINUTES (%d), got %d",
+			c.CompletedInstanceGraceMinutes, c.IdleRunnerGraceMinutes)
 	}
 	// A stopped instance can legitimately sit banked between jobs, so anything
 	// shorter than an hour risks reaping capacity that is about to be started.
