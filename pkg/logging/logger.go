@@ -156,6 +156,7 @@ const (
 	LogTypeDB          = "db"
 	LogTypeAgent       = "agent"
 	LogTypeAWS         = "aws"
+	LogTypeSecrets     = "secrets"
 )
 
 // Logger wraps slog.Logger with a context-first logging API. The underlying
