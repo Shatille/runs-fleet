@@ -5,13 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/vault/api"
+
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
+
+var vaultLog = logging.WithComponent(logging.LogTypeSecrets, "vault")
+
+// tokenCheckInterval is how often the renewal loop inspects the token. A var so
+// tests can derive the re-login threshold from it.
+var tokenCheckInterval = 5 * time.Minute
+
+const reloginTimeout = 30 * time.Second
+
+var errReloginFailed = errors.New("vault re-login failed")
 
 // VaultConfig holds configuration for Vault secrets backend.
 type VaultConfig struct {
@@ -37,6 +51,15 @@ type VaultConfig struct {
 
 	// Token auth (for testing/development)
 	Token string
+
+	// Metrics, when set, receives authentication failures.
+	Metrics AuthFailureRecorder
+}
+
+// AuthFailureRecorder receives secrets-backend authentication failures.
+// metrics.Publisher satisfies it.
+type AuthFailureRecorder interface {
+	PublishSecretsAuthFailure(ctx context.Context, backend, reason string) error
 }
 
 // VaultStore implements Store using HashiCorp Vault KV secrets engine.
@@ -45,6 +68,10 @@ type VaultStore struct {
 	kvMount   string
 	basePath  string
 	kvVersion int
+
+	login   func(context.Context) (string, error)
+	loginMu sync.Mutex
+	metrics AuthFailureRecorder
 
 	// Token renewal
 	renewCancel context.CancelFunc
@@ -91,6 +118,8 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 		kvMount:   kvMount,
 		basePath:  basePath,
 		kvVersion: cfg.KVVersion,
+		login:     reloginFunc(client, cfg),
+		metrics:   cfg.Metrics,
 	}
 
 	// Auto-detect KV version if not specified
@@ -248,22 +277,22 @@ func (v *VaultStore) Put(ctx context.Context, runnerID string, config *RunnerCon
 		return fmt.Errorf("failed to marshal runner config: %w", err)
 	}
 	var data map[string]interface{}
-	if err := json.Unmarshal(jsonBytes, &data); err != nil {
+	if err = json.Unmarshal(jsonBytes, &data); err != nil {
 		return fmt.Errorf("failed to build Vault secret data: %w", err)
 	}
 
 	path := v.secretPath(runnerID)
 
-	if v.kvVersion == 2 {
-		_, err := v.client.KVv2(v.kvMount).Put(ctx, v.basePath+"/"+runnerID, data)
-		if err != nil {
-			return fmt.Errorf("failed to write secret to Vault: %w", err)
+	err = v.withReauth(ctx, func() error {
+		if v.kvVersion == 2 {
+			_, putErr := v.client.KVv2(v.kvMount).Put(ctx, v.basePath+"/"+runnerID, data)
+			return putErr
 		}
-	} else {
-		_, err := v.client.Logical().WriteWithContext(ctx, path, data)
-		if err != nil {
-			return fmt.Errorf("failed to write secret to Vault: %w", err)
-		}
+		_, putErr := v.client.Logical().WriteWithContext(ctx, path, data)
+		return putErr
+	})
+	if err != nil {
+		return fmt.Errorf("failed to write secret to Vault: %w", err)
 	}
 
 	return nil
@@ -274,7 +303,12 @@ func (v *VaultStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, e
 	var data map[string]interface{}
 
 	if v.kvVersion == 2 {
-		secret, err := v.client.KVv2(v.kvMount).Get(ctx, v.basePath+"/"+runnerID)
+		var secret *api.KVSecret
+		err := v.withReauth(ctx, func() error {
+			var err error
+			secret, err = v.client.KVv2(v.kvMount).Get(ctx, v.basePath+"/"+runnerID)
+			return err
+		})
 		if err != nil {
 			if isNotFoundError(err) {
 				return nil, fmt.Errorf("%s: %w", runnerID, ErrConfigNotFound)
@@ -286,7 +320,12 @@ func (v *VaultStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, e
 		}
 		data = secret.Data
 	} else {
-		secret, err := v.client.Logical().ReadWithContext(ctx, v.secretPath(runnerID))
+		var secret *api.Secret
+		err := v.withReauth(ctx, func() error {
+			var err error
+			secret, err = v.client.Logical().ReadWithContext(ctx, v.secretPath(runnerID))
+			return err
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to read secret from Vault: %w", err)
 		}
@@ -313,17 +352,16 @@ func (v *VaultStore) Get(ctx context.Context, runnerID string) (*RunnerConfig, e
 
 // Delete removes runner configuration from Vault.
 func (v *VaultStore) Delete(ctx context.Context, runnerID string) error {
-	if v.kvVersion == 2 {
-		// For KV v2, we need to delete metadata to fully remove the secret
-		err := v.client.KVv2(v.kvMount).DeleteMetadata(ctx, v.basePath+"/"+runnerID)
-		if err != nil && !isNotFoundError(err) {
-			return fmt.Errorf("failed to delete secret from Vault: %w", err)
+	err := v.withReauth(ctx, func() error {
+		if v.kvVersion == 2 {
+			// For KV v2, we need to delete metadata to fully remove the secret
+			return v.client.KVv2(v.kvMount).DeleteMetadata(ctx, v.basePath+"/"+runnerID)
 		}
-	} else {
 		_, err := v.client.Logical().DeleteWithContext(ctx, v.secretPath(runnerID))
-		if err != nil && !isNotFoundError(err) {
-			return fmt.Errorf("failed to delete secret from Vault: %w", err)
-		}
+		return err
+	})
+	if err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("failed to delete secret from Vault: %w", err)
 	}
 
 	return nil
@@ -350,7 +388,12 @@ func (v *VaultStore) List(ctx context.Context) ([]string, error) {
 		listPath = fmt.Sprintf("%s/%s", v.kvMount, v.basePath)
 	}
 
-	secret, err := v.client.Logical().ListWithContext(ctx, listPath)
+	var secret *api.Secret
+	err := v.withReauth(ctx, func() error {
+		var err error
+		secret, err = v.client.Logical().ListWithContext(ctx, listPath)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list secrets from Vault: %w", err)
 	}
@@ -405,8 +448,7 @@ func (v *VaultStore) startTokenRenewal(ctx context.Context) {
 
 // renewTokenLoop periodically renews the Vault token.
 func (v *VaultStore) renewTokenLoop(ctx context.Context) {
-	// Check token TTL and renew at 50% of remaining time
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(tokenCheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -414,19 +456,41 @@ func (v *VaultStore) renewTokenLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := v.maybeRenewToken(ctx); err != nil {
-				// Log but don't fail - next iteration will retry
-				continue
-			}
+			v.checkToken(ctx)
 		}
 	}
 }
 
-// maybeRenewToken checks if token needs renewal and renews it.
+func (v *VaultStore) checkToken(ctx context.Context) {
+	if err := v.maybeRenewToken(ctx); err != nil {
+		vaultLog.Warn(ctx, "vault token check failed; retrying next tick",
+			slog.String("error", err.Error()))
+		if !errors.Is(err, errReloginFailed) {
+			v.recordAuthFailure(ctx, "renew")
+		}
+	}
+}
+
+func (v *VaultStore) recordAuthFailure(ctx context.Context, reason string) {
+	if v.metrics == nil {
+		return
+	}
+	if err := v.metrics.PublishSecretsAuthFailure(ctx, BackendVault, reason); err != nil {
+		vaultLog.Error(ctx, "secrets auth-failure metric failed",
+			slog.String("reason", reason), slog.String("error", err.Error()))
+	}
+}
+
+// maybeRenewToken renews a token nearing expiry, and logs in again when the
+// token is revoked or renewal can no longer extend it past the role's max TTL.
 func (v *VaultStore) maybeRenewToken(ctx context.Context) error {
-	// Look up current token info
+	staleToken := v.client.Token()
+
 	secret, err := v.client.Auth().Token().LookupSelfWithContext(ctx)
 	if err != nil {
+		if v.login != nil && isPermissionDenied(err) {
+			return v.relogin(ctx, staleToken)
+		}
 		return fmt.Errorf("failed to lookup token: %w", err)
 	}
 
@@ -434,7 +498,6 @@ func (v *VaultStore) maybeRenewToken(ctx context.Context) error {
 		return nil
 	}
 
-	// Get TTL from token data
 	ttlRaw, ok := secret.Data["ttl"]
 	if !ok {
 		return nil
@@ -451,15 +514,96 @@ func (v *VaultStore) maybeRenewToken(ctx context.Context) error {
 		return nil
 	}
 
-	// Renew if less than 50% TTL remaining
+	remaining := time.Duration(ttlSeconds * float64(time.Second))
+	var renewErr error
 	if ttlSeconds > 0 && ttlSeconds < 3600 {
-		_, err := v.client.Auth().Token().RenewSelfWithContext(ctx, 0)
-		if err != nil {
-			return fmt.Errorf("failed to renew token: %w", err)
+		renewed, err := v.client.Auth().Token().RenewSelfWithContext(ctx, 0)
+		switch {
+		case err != nil && v.login != nil && isPermissionDenied(err):
+			return v.relogin(ctx, staleToken)
+		case err != nil:
+			renewErr = fmt.Errorf("failed to renew token: %w", err)
+		case renewed != nil:
+			if ttl, ttlErr := renewed.TokenTTL(); ttlErr == nil && ttl > 0 {
+				remaining = ttl
+			}
 		}
 	}
 
+	// Near the role's max TTL Vault returns a truncated lease; log in before it lapses.
+	if v.login != nil && remaining > 0 && remaining < 2*tokenCheckInterval {
+		return v.relogin(ctx, staleToken)
+	}
+
+	return renewErr
+}
+
+// withReauth runs op, and when Vault rejects the token, logs in again and
+// retries op once.
+func (v *VaultStore) withReauth(ctx context.Context, op func() error) error {
+	staleToken := v.client.Token()
+	err := op()
+	if err == nil || v.login == nil || !isPermissionDenied(err) {
+		return err
+	}
+	if loginErr := v.relogin(ctx, staleToken); loginErr != nil {
+		return errors.Join(err, loginErr)
+	}
+	return op()
+}
+
+// relogin replaces staleToken with a fresh login. Concurrent callers holding
+// the same stale token share one login.
+func (v *VaultStore) relogin(ctx context.Context, staleToken string) error {
+	v.loginMu.Lock()
+	defer v.loginMu.Unlock()
+
+	if v.client.Token() != staleToken {
+		return nil
+	}
+
+	// Detached: waiters share this login, so one caller's cancellation must not fail them all.
+	loginCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reloginTimeout)
+	defer cancel()
+
+	token, err := v.login(loginCtx)
+	if err == nil && token == "" {
+		err = errors.New("login returned no client token")
+	}
+	if err != nil {
+		vaultLog.Error(ctx, "vault re-login failed", slog.String("error", err.Error()))
+		v.recordAuthFailure(ctx, "relogin")
+		return fmt.Errorf("%w: %w", errReloginFailed, err)
+	}
+
+	v.client.SetToken(token)
+	vaultLog.Info(ctx, "vault re-login succeeded")
 	return nil
+}
+
+func isPermissionDenied(err error) bool {
+	var respErr *api.ResponseError
+	return errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden
+}
+
+// reloginFunc returns how to obtain a fresh token for cfg, or nil when the
+// token was supplied statically and cannot be replaced.
+func reloginFunc(client *api.Client, cfg VaultConfig) func(context.Context) (string, error) {
+	if cfg.AuthMethod == AuthMethodToken || (cfg.AuthMethod == "" && os.Getenv("VAULT_TOKEN") != "") {
+		return nil
+	}
+	return func(ctx context.Context) (string, error) {
+		// Log in on a clone so a failed login leaves the live token in place.
+		fresh, err := client.CloneWithHeaders()
+		if err != nil {
+			return "", fmt.Errorf("failed to clone Vault client: %w", err)
+		}
+		fresh.ClearToken()
+		if err := authenticate(ctx, fresh, cfg); err != nil {
+			return "", err
+		}
+		return fresh.Token(), nil
+	}
 }
 
 // Close stops token renewal and cleans up resources.

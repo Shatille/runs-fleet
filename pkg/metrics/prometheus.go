@@ -67,6 +67,7 @@ type PrometheusPublisher struct {
 	cacheBytesStored        prometheus.Counter
 	cacheErrors             *prometheus.CounterVec
 	cacheAuthRejected       *prometheus.CounterVec
+	secretsAuthFailures     *prometheus.CounterVec
 	housekeepingActions     *prometheus.CounterVec
 	schedulingFailure       *prometheus.CounterVec
 	messageDeletionFailures *prometheus.CounterVec
@@ -234,6 +235,10 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "cache_auth_rejected_total",
 			Help: "Total rejected cache auth attempts by reason",
 		}, []string{"reason"}),
+		secretsAuthFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "secrets_auth_failures_total",
+			Help: "Total secrets backend authentication failures by backend and reason",
+		}, []string{"backend", "reason"}),
 		housekeepingActions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns, Name: "housekeeping_actions_total",
 			Help: "Total number of housekeeping actions by type",
@@ -285,7 +290,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.poolInstances, p.poolDesired, p.poolActions, p.poolReconcileSeconds,
 		p.messageProcessingSeconds, p.lockWaitSeconds, p.workerInflight,
 		p.queueDepth, p.queueReceive, p.awsCallDuration, p.awsCallFailures,
-		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected,
+		p.cacheRequests, p.cacheOperations, p.cacheBytesStored, p.cacheErrors, p.cacheAuthRejected, p.secretsAuthFailures,
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
 		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds, p.runnerToolCacheMiss,
 		p.runnerCacheInterception, p.runnerBuildCacheInterception, p.runnerLogUpload,
@@ -474,6 +479,11 @@ func (p *PrometheusPublisher) PublishCacheError(_ context.Context, operation str
 
 func (p *PrometheusPublisher) PublishCacheAuthRejected(_ context.Context, reason string) error { //nolint:revive
 	p.cacheAuthRejected.WithLabelValues(reason).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishSecretsAuthFailure(_ context.Context, backend, reason string) error { //nolint:revive
+	p.secretsAuthFailures.WithLabelValues(backend, reason).Inc()
 	return nil
 }
 

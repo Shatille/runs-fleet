@@ -119,6 +119,7 @@ func TestPrometheusPublisher_PublishMethods(t *testing.T) {
 		{"PublishCacheBytesStored", func() error { return pub.PublishCacheBytesStored(ctx, 1024) }},
 		{"PublishCacheError", func() error { return pub.PublishCacheError(ctx, "commit") }},
 		{"PublishCacheAuthRejected", func() error { return pub.PublishCacheAuthRejected(ctx, "invalid") }},
+		{"PublishSecretsAuthFailure", func() error { return pub.PublishSecretsAuthFailure(ctx, "vault", "relogin") }},
 		{"PublishHousekeepingAction", func() error { return pub.PublishHousekeepingAction(ctx, "ssm_params", 3) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "job_claim") }},
 		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx, "events") }},
@@ -155,6 +156,7 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 	_ = pub.PublishCacheBytesStored(ctx, 2048)
 	_ = pub.PublishCacheError(ctx, "commit")
 	_ = pub.PublishCacheAuthRejected(ctx, "invalid")
+	_ = pub.PublishSecretsAuthFailure(ctx, "vault", "relogin")
 	_ = pub.PublishJobStartupSeconds(ctx, "default", "cold_start", 38)
 	_ = pub.PublishAgentBootstrapSeconds(ctx, "default", "total", 20)
 
@@ -172,6 +174,7 @@ func TestPrometheusPublisher_MetricsExposed(t *testing.T) {
 		`runs_fleet_cache_bytes_stored_total 2048`,
 		`runs_fleet_cache_errors_total{operation="commit"} 1`,
 		`runs_fleet_cache_auth_rejected_total{reason="invalid"} 1`,
+		`runs_fleet_secrets_auth_failures_total{backend="vault",reason="relogin"} 1`,
 		`runs_fleet_job_startup_seconds_count{pool="default",source="cold_start"} 1`,
 		`runs_fleet_agent_bootstrap_seconds_count{phase="total",pool="default"} 1`,
 	}

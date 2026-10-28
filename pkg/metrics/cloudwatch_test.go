@@ -174,6 +174,13 @@ func TestCloudWatchPublisher_CounterMetrics(t *testing.T) {
 			},
 		},
 		{
+			name: "SecretsAuthFailure", wantName: "SecretsAuthFailures",
+			wantDims: map[string]string{"Backend": "vault", "Reason": "relogin"},
+			publish: func(p *CloudWatchPublisher) error {
+				return p.PublishSecretsAuthFailure(context.Background(), "vault", "relogin")
+			},
+		},
+		{
 			name: "SchedulingFailure", wantName: "SchedulingFailure",
 			wantDims: map[string]string{"TaskType": "job_claim"},
 			publish: func(p *CloudWatchPublisher) error {

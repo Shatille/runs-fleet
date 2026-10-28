@@ -171,6 +171,7 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 		{"PublishCacheBytesStored", func() error { return multi.PublishCacheBytesStored(ctx, 1024) }},
 		{"PublishCacheError", func() error { return multi.PublishCacheError(ctx, "commit") }},
 		{"PublishCacheAuthRejected", func() error { return multi.PublishCacheAuthRejected(ctx, "invalid") }},
+		{"PublishSecretsAuthFailure", func() error { return multi.PublishSecretsAuthFailure(ctx, "vault", "relogin") }},
 		{"PublishHousekeepingAction", func() error { return multi.PublishHousekeepingAction(ctx, "ssm_params", 3) }},
 		{"PublishSchedulingFailure", func() error { return multi.PublishSchedulingFailure(ctx, "job_claim") }},
 		{"PublishMessageDeletionFailure", func() error { return multi.PublishMessageDeletionFailure(ctx, "events") }},

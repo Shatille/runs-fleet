@@ -284,6 +284,12 @@ func (m *MultiPublisher) PublishCacheAuthRejected(ctx context.Context, reason st
 	})
 }
 
+func (m *MultiPublisher) PublishSecretsAuthFailure(ctx context.Context, backend, reason string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishSecretsAuthFailure(ctx, backend, reason)
+	})
+}
+
 func (m *MultiPublisher) PublishHousekeepingAction(ctx context.Context, action string, count int) error { //nolint:revive
 	return m.publishAll(ctx, func(p Publisher) error {
 		return p.PublishHousekeepingAction(ctx, action, count)

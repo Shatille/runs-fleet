@@ -255,6 +255,10 @@ func (p *DatadogPublisher) PublishCacheAuthRejected(_ context.Context, reason st
 	return p.client.Incr("cache_auth_rejected", ddTag(nil, "reason", reason), 1)
 }
 
+func (p *DatadogPublisher) PublishSecretsAuthFailure(_ context.Context, backend, reason string) error { //nolint:revive
+	return p.client.Incr("secrets_auth_failures", []string{"backend:" + backend, "reason:" + reason}, 1)
+}
+
 func (p *DatadogPublisher) PublishHousekeepingAction(_ context.Context, action string, count int) error { //nolint:revive
 	return p.client.Count("housekeeping_actions", int64(count), ddTag(nil, "action", action), 1)
 }
