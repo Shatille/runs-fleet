@@ -15,6 +15,8 @@ import (
 
 var cacheLog = logging.WithComponent(logging.LogTypeCache, "handler")
 
+const refreshAfter = 24 * time.Hour
+
 // Metrics defines the interface for publishing cache metrics.
 type Metrics interface {
 	PublishCacheRequest(ctx context.Context, result string) error
@@ -138,6 +140,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	server := h.scopedServer(r)
+	req.Key = unmarkRefresh(req.Key)
 	cacheKey, err := server.CreateCacheEntry(r.Context(), req.Key, req.Version)
 	if err != nil {
 		http.Error(w, "Invalid cache parameters", http.StatusBadRequest)
@@ -156,7 +159,7 @@ func (h *Handler) ReserveCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	resp := reserveCacheResponse{
 		CacheID:  int(time.Now().Unix()),
-		CacheKey: cacheKey,
+		CacheKey: req.Key,
 	}
 
 	scope := ScopeFromContext(r.Context())
@@ -234,7 +237,7 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 	server := h.scopedServer(r)
 	scope := ScopeFromContext(r.Context())
 	keys := strings.Split(keysParam, ",")
-	cacheKey, found, err := server.GetCacheEntry(r.Context(), keys, version)
+	match, found, err := server.GetCacheEntry(r.Context(), keys, version)
 	if err != nil {
 		cacheLog.Error(r.Context(), "cache entry check failed",
 			slog.Any("keys", keys),
@@ -260,21 +263,23 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	downloadURL, err := server.GeneratePresignedURL(r.Context(), cacheKey, http.MethodGet)
+	downloadURL, err := server.GeneratePresignedURL(r.Context(), match.Key, http.MethodGet)
 	if err != nil {
 		cacheLog.Error(r.Context(), "download URL generation failed",
-			slog.String("cache_key", cacheKey),
+			slog.String("cache_key", match.Key),
 			slog.String("error", err.Error()))
 		h.emitError(r.Context(), "get")
 		http.Error(w, "Failed to generate download URL", http.StatusInternalServerError)
 		return
 	}
 
+	refresh := match.Exact && refreshEligible(match.BareKey) && !match.Modified.IsZero() && time.Since(match.Modified) > refreshAfter
 	cacheLog.Info(r.Context(), "cache hit",
-		slog.String("cache_key", cacheKey),
+		slog.String("cache_key", match.Key),
 		slog.Any("keys", keys),
 		slog.String("version", version),
-		slog.String("scope", scope))
+		slog.String("scope", scope),
+		slog.Bool("refresh", refresh))
 	if h.metrics != nil {
 		if err := h.metrics.PublishCacheRequest(r.Context(), "hit"); err != nil {
 			cacheLog.Error(r.Context(), "cache hit metric failed", slog.String("error", err.Error()))
@@ -283,7 +288,10 @@ func (h *Handler) GetCacheEntry(w http.ResponseWriter, r *http.Request) {
 
 	resp := wire.GetCacheResponse{
 		ArchiveLocation: downloadURL,
-		CacheKey:        cacheKey,
+		CacheKey:        match.BareKey,
+	}
+	if refresh {
+		resp.CacheKey = markRefresh(match.BareKey)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

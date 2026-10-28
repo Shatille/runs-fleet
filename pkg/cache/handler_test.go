@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -640,5 +642,165 @@ func TestHandler_DownloadCacheArtifact_EmitsOperation(t *testing.T) {
 	}
 	if len(m.operations) != 1 || m.operations[0] != "download" {
 		t.Errorf("operations = %v, want [download]", m.operations)
+	}
+}
+
+func TestHandler_GetCacheEntry_RefreshMarker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		scope        string
+		queryKeys    string
+		headHitKey   string
+		age          time.Duration
+		noTimestamp  bool
+		listKey      string
+		wantCacheKey string
+		wantPresign  string
+	}{
+		{
+			name:         "stale setup-go exact hit is marked",
+			queryKeys:    "setup-go-x",
+			headHitKey:   "caches/abc123/setup-go-x",
+			age:          48 * time.Hour,
+			wantCacheKey: "setup-go-x~refresh",
+			wantPresign:  "caches/abc123/setup-go-x",
+		},
+		{
+			name:         "fresh setup-go exact hit is not marked",
+			queryKeys:    "setup-go-x",
+			headHitKey:   "caches/abc123/setup-go-x",
+			age:          time.Hour,
+			wantCacheKey: "setup-go-x",
+			wantPresign:  "caches/abc123/setup-go-x",
+		},
+		{
+			name:         "setup-go exact hit of unknown age is not marked",
+			queryKeys:    "setup-go-x",
+			headHitKey:   "caches/abc123/setup-go-x",
+			noTimestamp:  true,
+			wantCacheKey: "setup-go-x",
+			wantPresign:  "caches/abc123/setup-go-x",
+		},
+		{
+			name:         "setup-go restore-key hit is not marked",
+			queryKeys:    "setup-go-x,setup-go-",
+			listKey:      "caches/abc123/setup-go-y",
+			wantCacheKey: "setup-go-y",
+			wantPresign:  "caches/abc123/setup-go-y",
+		},
+		{
+			name:         "other stale keys are untouched",
+			queryKeys:    "my-key",
+			headHitKey:   "caches/abc123/my-key",
+			age:          48 * time.Hour,
+			wantCacheKey: "my-key",
+			wantPresign:  "caches/abc123/my-key",
+		},
+		{
+			name:         "scoped stale setup-go exact hit is marked",
+			scope:        "org/repo",
+			queryKeys:    "setup-go-x",
+			headHitKey:   "caches/org/repo/abc123/setup-go-x",
+			age:          48 * time.Hour,
+			wantCacheKey: "setup-go-x~refresh",
+			wantPresign:  "caches/org/repo/abc123/setup-go-x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockS3 := &mockS3Client{
+				headObjectFunc: func(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+					if *params.Key == tt.headHitKey {
+						if tt.noTimestamp {
+							return &s3.HeadObjectOutput{}, nil
+						}
+						return &s3.HeadObjectOutput{LastModified: aws.Time(time.Now().Add(-tt.age))}, nil
+					}
+					return nil, &types.NotFound{}
+				},
+				listObjectsV2Func: func(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+					if tt.listKey == "" {
+						return &s3.ListObjectsV2Output{}, nil
+					}
+					return &s3.ListObjectsV2Output{Contents: []types.Object{{Key: &tt.listKey}}}, nil
+				},
+			}
+			var presigned string
+			mockPresign := &mockPresignClient{presignGetFunc: func(_ context.Context, params *s3.GetObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+				presigned = *params.Key
+				return &v4.PresignedHTTPRequest{URL: "https://example.com/get"}, nil
+			}}
+
+			server := cache.NewServerWithClientsAndScope(mockS3, mockPresign, "test-bucket", tt.scope)
+			handler := cache.NewHandler(server)
+
+			req := httptest.NewRequest(http.MethodGet, "/_apis/artifactcache/cache?keys="+tt.queryKeys+"&version=abc123", nil)
+			w := httptest.NewRecorder()
+			handler.GetCacheEntry(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			var resp struct {
+				CacheKey string `json:"cacheKey"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.CacheKey != tt.wantCacheKey {
+				t.Errorf("cacheKey = %q, want %q", resp.CacheKey, tt.wantCacheKey)
+			}
+			if presigned != tt.wantPresign {
+				t.Errorf("presigned key = %q, want %q", presigned, tt.wantPresign)
+			}
+		})
+	}
+}
+
+func TestHandler_ReserveCacheEntry_StripsRefreshMarker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, key, wantPresign, wantCacheKey string
+	}{
+		{"setup-go marker is stripped", "setup-go-x~refresh", "caches/abc123/setup-go-x", "setup-go-x"},
+		{"other keys keep their suffix", "deps-abc~refresh", "caches/abc123/deps-abc~refresh", "deps-abc~refresh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var presigned string
+			mockPresign := &mockPresignClient{presignPutFunc: func(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+				presigned = *params.Key
+				return &v4.PresignedHTTPRequest{URL: "https://example.com/put"}, nil
+			}}
+			handler := cache.NewHandler(cache.NewServerWithClients(&mockS3Client{}, mockPresign, "test-bucket"))
+
+			req := httptest.NewRequest(http.MethodPost, "/_apis/artifactcache/caches", strings.NewReader(`{"key":"`+tt.key+`","version":"abc123"}`))
+			w := httptest.NewRecorder()
+			handler.ReserveCacheEntry(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			var resp struct {
+				CacheKey string `json:"cacheKey"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if presigned != tt.wantPresign {
+				t.Errorf("presigned key = %q, want %q", presigned, tt.wantPresign)
+			}
+			if resp.CacheKey != tt.wantCacheKey {
+				t.Errorf("cacheKey = %q, want %q", resp.CacheKey, tt.wantCacheKey)
+			}
+		})
 	}
 }

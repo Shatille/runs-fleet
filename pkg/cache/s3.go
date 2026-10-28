@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -13,7 +14,11 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
+
+var s3Log = logging.WithComponent(logging.LogTypeCache, "s3")
 
 // S3API defines S3 operations required for cache server.
 type S3API interface {
@@ -179,95 +184,110 @@ func (s *Server) GeneratePresignedURL(ctx context.Context, key string, method st
 	return req.URL, nil
 }
 
-// GetCacheEntry checks if a cache entry exists (metadata lookup)
-// GitHub Actions cache protocol uses keys array as primary + restore-keys fallbacks.
-// The first key is treated as an exact match, subsequent keys support prefix matching.
-func (s *Server) GetCacheEntry(ctx context.Context, keys []string, version string) (string, bool, error) {
+// Match describes a cache lookup hit: the S3 object, the key as the client
+// compares it, whether the primary key matched, and when the object was written.
+type Match struct {
+	Key      string
+	BareKey  string
+	Exact    bool
+	Modified time.Time
+}
+
+// GetCacheEntry resolves keys against the cache: keys[0] must match exactly,
+// keys[1:] are restore-key prefixes resolved to their newest object.
+func (s *Server) GetCacheEntry(ctx context.Context, keys []string, version string) (Match, bool, error) {
 	if len(keys) == 0 {
-		return "", false, nil
+		return Match{}, false, nil
 	}
 
 	if err := validateVersion(version); err != nil {
-		return "", false, fmt.Errorf("invalid version: %w", err)
+		return Match{}, false, fmt.Errorf("invalid version: %w", err)
 	}
 
 	for _, k := range keys {
 		if err := validateKey(k); err != nil {
-			return "", false, fmt.Errorf("invalid key: %w", err)
+			return Match{}, false, fmt.Errorf("invalid key: %w", err)
 		}
 	}
 
-	// First key: exact match only (primary cache key)
 	primaryKey := s.buildCacheKey(version, keys[0])
-	_, err := s.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+	head, err := s.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.cacheBucketName),
 		Key:    aws.String(primaryKey),
 	})
 	if err == nil {
-		return primaryKey, true, nil
+		return Match{Key: primaryKey, BareKey: keys[0], Exact: true, Modified: aws.ToTime(head.LastModified)}, true, nil
 	}
 
-	// Check if it's a real error (not just not found)
 	var notFound *types.NoSuchKey
 	var notFoundErr *types.NotFound
 	if !errors.As(err, &notFound) && !errors.As(err, &notFoundErr) {
-		// Check for 404 status code error
 		if !strings.Contains(err.Error(), "NotFound") && !strings.Contains(err.Error(), "404") {
-			return "", false, fmt.Errorf("failed to check cache entry: %w", err)
+			return Match{}, false, fmt.Errorf("failed to check cache entry: %w", err)
 		}
 	}
 
-	// Restore keys: support prefix matching (keys[1:])
-	// This allows cache hits on partial matches like "node-modules-linux-" matching "node-modules-linux-abc123"
-	for i := 1; i < len(keys); i++ {
-		restoreKey := keys[i]
-		matchedKey, found, err := s.findCacheByPrefix(ctx, version, restoreKey)
+	for _, restoreKey := range keys[1:] {
+		obj, found, err := s.findCacheByPrefix(ctx, version, restoreKey)
 		if err != nil {
-			return "", false, err
+			return Match{}, false, err
 		}
 		if found {
-			return matchedKey, true, nil
+			return Match{
+				Key:      *obj.Key,
+				BareKey:  strings.TrimPrefix(*obj.Key, s.buildCacheKey(version, "")),
+				Modified: aws.ToTime(obj.LastModified),
+			}, true, nil
 		}
 	}
 
-	return "", false, nil
+	return Match{}, false, nil
 }
 
-// findCacheByPrefix searches for cache entries matching a key prefix.
-// Returns the most recently modified matching entry.
-func (s *Server) findCacheByPrefix(ctx context.Context, version, keyPrefix string) (string, bool, error) {
+const (
+	prefixListPageSize int32 = 1000
+	prefixListMaxPages int   = 10
+)
+
+// findCacheByPrefix returns the most recently modified object under the prefix,
+// scanning up to prefixListMaxPages pages.
+func (s *Server) findCacheByPrefix(ctx context.Context, version, keyPrefix string) (*types.Object, bool, error) {
 	prefix := s.buildCachePrefix(version, keyPrefix)
+	pages := s3.NewListObjectsV2Paginator(s.s3Client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.cacheBucketName),
+		Prefix: aws.String(prefix),
+	}, func(o *s3.ListObjectsV2PaginatorOptions) { o.Limit = prefixListPageSize })
 
-	input := &s3.ListObjectsV2Input{
-		Bucket:  aws.String(s.cacheBucketName),
-		Prefix:  aws.String(prefix),
-		MaxKeys: aws.Int32(100), // Limit results for performance
-	}
-
-	output, err := s.s3Client.ListObjectsV2(ctx, input)
-	if err != nil {
-		return "", false, fmt.Errorf("failed to list cache entries: %w", err)
-	}
-
-	if len(output.Contents) == 0 {
-		return "", false, nil
-	}
-
-	// Find the most recently modified entry
-	var bestMatch *types.Object
-	for i := range output.Contents {
-		obj := &output.Contents[i]
-		if bestMatch == nil || (obj.LastModified != nil && bestMatch.LastModified != nil &&
-			obj.LastModified.After(*bestMatch.LastModified)) {
-			bestMatch = obj
+	var best *types.Object
+	for page := 1; pages.HasMorePages(); page++ {
+		if page > prefixListMaxPages {
+			s3Log.Warn(ctx, "restore-key search truncated",
+				slog.String("prefix", prefix),
+				slog.Int("pages", prefixListMaxPages))
+			break
+		}
+		output, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to list cache entries: %w", err)
+		}
+		for i := range output.Contents {
+			if obj := &output.Contents[i]; obj.Key != nil && newerThan(obj, best) {
+				best = obj
+			}
 		}
 	}
 
-	if bestMatch != nil && bestMatch.Key != nil {
-		return *bestMatch.Key, true, nil
-	}
+	return best, best != nil, nil
+}
 
-	return "", false, nil
+func newerThan(obj, best *types.Object) bool {
+	if best == nil {
+		return true
+	}
+	if obj.LastModified == nil {
+		return false
+	}
+	return best.LastModified == nil || obj.LastModified.After(*best.LastModified)
 }
 
 // CreateCacheEntry prepares for a new cache upload

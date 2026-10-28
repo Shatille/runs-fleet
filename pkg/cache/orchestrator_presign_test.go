@@ -59,8 +59,8 @@ func TestHTTPPresignerDownloadHit(t *testing.T) {
 	if url != "https://example.com/presigned-get" {
 		t.Errorf("download url = %q", url)
 	}
-	if matchedKey != "caches/org/repo/v1/k" {
-		t.Errorf("matchedKey = %q, want full S3 key", matchedKey)
+	if matchedKey != "k" {
+		t.Errorf("matchedKey = %q, want the bare key the client sent", matchedKey)
 	}
 }
 
