@@ -25,6 +25,8 @@ var tokenCheckInterval = 5 * time.Minute
 
 const reloginTimeout = 30 * time.Second
 
+var errReloginFailed = errors.New("vault re-login failed")
+
 // VaultConfig holds configuration for Vault secrets backend.
 type VaultConfig struct {
 	Address    string // VAULT_ADDR
@@ -49,6 +51,15 @@ type VaultConfig struct {
 
 	// Token auth (for testing/development)
 	Token string
+
+	// Metrics, when set, receives authentication failures.
+	Metrics AuthFailureRecorder
+}
+
+// AuthFailureRecorder receives secrets-backend authentication failures.
+// metrics.Publisher satisfies it.
+type AuthFailureRecorder interface {
+	PublishSecretsAuthFailure(ctx context.Context, backend, reason string) error
 }
 
 // VaultStore implements Store using HashiCorp Vault KV secrets engine.
@@ -60,6 +71,7 @@ type VaultStore struct {
 
 	login   func(context.Context) (string, error)
 	loginMu sync.Mutex
+	metrics AuthFailureRecorder
 
 	// Token renewal
 	renewCancel context.CancelFunc
@@ -107,6 +119,7 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 		basePath:  basePath,
 		kvVersion: cfg.KVVersion,
 		login:     reloginFunc(client, cfg),
+		metrics:   cfg.Metrics,
 	}
 
 	// Auto-detect KV version if not specified
@@ -443,11 +456,28 @@ func (v *VaultStore) renewTokenLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := v.maybeRenewToken(ctx); err != nil {
-				vaultLog.Warn(ctx, "vault token check failed; retrying next tick",
-					slog.String("error", err.Error()))
-			}
+			v.checkToken(ctx)
 		}
+	}
+}
+
+func (v *VaultStore) checkToken(ctx context.Context) {
+	if err := v.maybeRenewToken(ctx); err != nil {
+		vaultLog.Warn(ctx, "vault token check failed; retrying next tick",
+			slog.String("error", err.Error()))
+		if !errors.Is(err, errReloginFailed) {
+			v.recordAuthFailure(ctx, "renew")
+		}
+	}
+}
+
+func (v *VaultStore) recordAuthFailure(ctx context.Context, reason string) {
+	if v.metrics == nil {
+		return
+	}
+	if err := v.metrics.PublishSecretsAuthFailure(ctx, BackendVault, reason); err != nil {
+		vaultLog.Error(ctx, "secrets auth-failure metric failed",
+			slog.String("reason", reason), slog.String("error", err.Error()))
 	}
 }
 
@@ -542,7 +572,8 @@ func (v *VaultStore) relogin(ctx context.Context, staleToken string) error {
 	}
 	if err != nil {
 		vaultLog.Error(ctx, "vault re-login failed", slog.String("error", err.Error()))
-		return fmt.Errorf("vault re-login failed: %w", err)
+		v.recordAuthFailure(ctx, "relogin")
+		return fmt.Errorf("%w: %w", errReloginFailed, err)
 	}
 
 	v.client.SetToken(token)

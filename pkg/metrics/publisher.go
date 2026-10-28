@@ -179,6 +179,10 @@ type Publisher interface {
 	// PublishCacheAuthRejected counts a rejected cache auth attempt, by reason.
 	PublishCacheAuthRejected(ctx context.Context, reason string) error
 
+	// PublishSecretsAuthFailure counts a secrets-backend authentication
+	// failure, by backend and reason (relogin or renew).
+	PublishSecretsAuthFailure(ctx context.Context, backend, reason string) error
+
 	// PublishHousekeepingAction increments the housekeeping action counter by
 	// count, labeled by action. action is orphaned_instances, ssm_params,
 	// job_records, orphaned_jobs, or stale_jobs.
@@ -369,6 +373,9 @@ func (NoopPublisher) PublishCacheError(context.Context, string) error { return n
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishCacheAuthRejected(context.Context, string) error { return nil }
+
+//nolint:revive // Interface implementation - documented on Publisher interface
+func (NoopPublisher) PublishSecretsAuthFailure(context.Context, string, string) error { return nil }
 
 //nolint:revive // Interface implementation - documented on Publisher interface
 func (NoopPublisher) PublishHousekeepingAction(context.Context, string, int) error { return nil }

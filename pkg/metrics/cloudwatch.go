@@ -257,6 +257,11 @@ func (p *CloudWatchPublisher) PublishCacheAuthRejected(ctx context.Context, reas
 	return p.putCounter(ctx, "CacheAuthRejected", dims("Reason", reason))
 }
 
+// PublishSecretsAuthFailure publishes the secrets-backend auth failure counter.
+func (p *CloudWatchPublisher) PublishSecretsAuthFailure(ctx context.Context, backend, reason string) error {
+	return p.putCounter(ctx, "SecretsAuthFailures", dims("Backend", backend, "Reason", reason))
+}
+
 // PublishHousekeepingAction publishes the housekeeping action counter.
 func (p *CloudWatchPublisher) PublishHousekeepingAction(ctx context.Context, action string, count int) error {
 	return p.putCounterValue(ctx, "HousekeepingActions", float64(count), dims("Action", action))

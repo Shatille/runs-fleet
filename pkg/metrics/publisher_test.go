@@ -53,6 +53,7 @@ func TestNoopPublisher_AllMethodsReturnNil(t *testing.T) {
 		{"PublishCacheBytesStored", func() error { return pub.PublishCacheBytesStored(ctx, 1024) }},
 		{"PublishCacheError", func() error { return pub.PublishCacheError(ctx, "commit") }},
 		{"PublishCacheAuthRejected", func() error { return pub.PublishCacheAuthRejected(ctx, "invalid") }},
+		{"PublishSecretsAuthFailure", func() error { return pub.PublishSecretsAuthFailure(ctx, "vault", "relogin") }},
 		{"PublishHousekeepingAction", func() error { return pub.PublishHousekeepingAction(ctx, "ssm_params", 3) }},
 		{"PublishSchedulingFailure", func() error { return pub.PublishSchedulingFailure(ctx, "job_claim") }},
 		{"PublishMessageDeletionFailure", func() error { return pub.PublishMessageDeletionFailure(ctx, "events") }},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -344,5 +345,86 @@ func TestVaultStore_RevokedToken_MissingSecretStillNotFound(t *testing.T) {
 	}
 	if got := stub.calls.Load(); got != 1 {
 		t.Errorf("login calls = %d, want 1", got)
+	}
+}
+
+type recordedAuthFailure struct{ backend, reason string }
+
+type authFailureRecorder struct {
+	mu       sync.Mutex
+	failures []recordedAuthFailure
+}
+
+func (r *authFailureRecorder) PublishSecretsAuthFailure(_ context.Context, backend, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures = append(r.failures, recordedAuthFailure{backend, reason})
+	return nil
+}
+
+func (r *authFailureRecorder) recorded() []recordedAuthFailure {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]recordedAuthFailure(nil), r.failures...)
+}
+
+func TestVaultStore_FailedRelogin_PublishesMetric(t *testing.T) {
+	t.Parallel()
+	_, server := newFakeVault(t)
+	stub := &loginStub{next: []loginResult{{err: errors.New("vault unreachable")}}}
+	store := newReloginStore(t, server, testStaleToken, stub)
+	rec := &authFailureRecorder{}
+	store.metrics = rec
+
+	_, _ = store.Get(t.Context(), reloginRunnerID)
+
+	want := []recordedAuthFailure{{"vault", "relogin"}}
+	if got := rec.recorded(); !reflect.DeepEqual(got, want) {
+		t.Errorf("recorded failures = %v, want %v", got, want)
+	}
+}
+
+func TestVaultStore_CheckToken_PublishesRenewFailure(t *testing.T) {
+	t.Parallel()
+	_, server := newFakeVault(t)
+	store := newReloginStore(t, server, testStaleToken, nil)
+	rec := &authFailureRecorder{}
+	store.metrics = rec
+
+	store.checkToken(t.Context())
+
+	want := []recordedAuthFailure{{"vault", "renew"}}
+	if got := rec.recorded(); !reflect.DeepEqual(got, want) {
+		t.Errorf("recorded failures = %v, want %v", got, want)
+	}
+}
+
+func TestVaultStore_CheckToken_HealthyTokenPublishesNothing(t *testing.T) {
+	t.Parallel()
+	_, server := newFakeVault(t, testStaleToken)
+	store := newReloginStore(t, server, testStaleToken, nil)
+	rec := &authFailureRecorder{}
+	store.metrics = rec
+
+	store.checkToken(t.Context())
+
+	if got := rec.recorded(); len(got) != 0 {
+		t.Errorf("recorded failures = %v, want none", got)
+	}
+}
+
+func TestVaultStore_CheckToken_FailedReloginCountedOnce(t *testing.T) {
+	t.Parallel()
+	_, server := newFakeVault(t)
+	stub := &loginStub{next: []loginResult{{err: errors.New("vault unreachable")}}}
+	store := newReloginStore(t, server, testStaleToken, stub)
+	rec := &authFailureRecorder{}
+	store.metrics = rec
+
+	store.checkToken(t.Context())
+
+	want := []recordedAuthFailure{{"vault", "relogin"}}
+	if got := rec.recorded(); !reflect.DeepEqual(got, want) {
+		t.Errorf("recorded failures = %v, want %v", got, want)
 	}
 }

@@ -143,7 +143,7 @@ func main() {
 
 	initCircuitBreaker(ctx, awsCfg, cfg, fleetManager, eventHandler)
 
-	secretsStore := initSecretsStore(ctx, awsCfg, cfg)
+	secretsStore := initSecretsStore(ctx, awsCfg, cfg, metricsPublisher)
 	poolManager.SetRunnerConfigChecker(&runnerConfigCheckerAdapter{store: secretsStore})
 	var terminationHandler *termination.Handler
 	if cfg.TerminationQueueURL != "" {
@@ -377,7 +377,7 @@ func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Conf
 	return cb
 }
 
-func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config) secrets.Store {
+func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config, metricsPublisher metrics.Publisher) secrets.Store {
 	log := logging.WithComponent(logging.LogTypeServer, "secrets")
 	secretsCfg := secrets.Config{
 		Backend: cfg.SecretsBackend,
@@ -394,6 +394,7 @@ func initSecretsStore(ctx context.Context, awsCfg aws.Config, cfg *config.Config
 			K8sAuthMount: cfg.VaultK8sAuthMount,
 			K8sRole:      cfg.VaultK8sRole,
 			K8sJWTPath:   cfg.VaultK8sJWTPath,
+			Metrics:      metricsPublisher,
 		},
 	}
 	store, err := secrets.NewStore(ctx, secretsCfg, awsCfg)
