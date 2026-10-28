@@ -1,9 +1,9 @@
 {
-  "_note": "Empty by design: no finding in the current runner image warrants a not-affected analysis. The HIGH findings the gate still reports live in third-party binaries already at their latest upstream release (npm's vendored tree at npm 12.0.2; moby/go-archive vendored by buildx 0.37.1) \u2014 there is no fixed build to move to and no unreachability argument to make, so they stay visible and clear when upstream republishes. CONTRACT for future entries: each statement is a per-CVE analysis (dead code, unreachable path, or no privilege boundary in this deployment) backed by evidence \u2014 never a blanket package ignore, and never a substitute for a fix upstream already shipped. Pin each product PURL to the exact version Trivy detects so a rebuild past the fix stops matching and forces re-review; prune statements whose PURLs no longer match anything. Never use .trivyignore.",
+  "_note": "Empty by design: no finding in the current runner image warrants a not-affected analysis. The HIGH findings the gate still reports live in third-party binaries already at their latest upstream release (undici in npm 12.2.1's vendored tree; moby/go-archive, golang.org/x/net and docker/docker vendored by buildx 0.38.1; golang.org/x/net vendored by compose 5.6.1) \u2014 there is no fixed build to move to and no unreachability argument to make, so they stay visible and clear when upstream republishes. CONTRACT for future entries: each statement is a per-CVE analysis (dead code, unreachable path, or no privilege boundary in this deployment) backed by evidence \u2014 never a blanket package ignore, and never a substitute for a fix upstream already shipped. Pin each product PURL to the exact version Trivy detects so a rebuild past the fix stops matching and forces re-review; prune statements whose PURLs no longer match anything. Never use .trivyignore.",
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/Shatille/runs-fleet/.trivy/vex.json",
   "author": "runs-fleet maintainers",
-  "timestamp": "2026-09-15T00:00:00Z",
-  "version": 5,
+  "timestamp": "2026-10-28T00:00:00Z",
+  "version": 6,
   "statements": []
 }

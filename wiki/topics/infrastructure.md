@@ -73,7 +73,7 @@ home for any new package. In order of appearance:
 - On ARM64 only: a **from-source gold linker** (binutils) for Go race-detector
   compatibility ([packer/provision-base.sh:78-98](../../packer/provision-base.sh)).
 - SSM agent + Session Manager plugin; Docker enabled; Docker Compose (standalone
-  + cli-plugin); a SHA-256-pinned **buildx 0.37.1** cli-plugin installed to
+  + cli-plugin); a SHA-256-pinned **buildx 0.38.1** cli-plugin installed to
   `/usr/libexec/docker/cli-plugins` with the distro copy removed from every
   higher-precedence dir (see [build-caching](build-caching.md)).
 - Node.js 22.13.1 + yarn/pnpm; QEMU binfmt (`BINFMT_VERSION=qemu-v9.2.0-51`
@@ -195,12 +195,12 @@ scope. It fails the build *before* snapshot on:
 
 ### Runner container image
 
-Extends `ghcr.io/actions/actions-runner` (`RUNNER_BASE_TAG`, default 2.335.1).
+Extends `ghcr.io/actions/actions-runner` (`RUNNER_BASE_TAG`, default 2.338.2).
 Stage 1 (`golang:1.26-alpine`, `--platform=$BUILDPLATFORM`) cross-compiles all
 three host binaries. Stage 2 (named `runtime` — load-bearing, see Gotchas)
 strips the upstream-bundled Docker binaries and reinstalls `docker-ce`,
 `docker-ce-cli`, `containerd.io` from Docker's apt repo; installs SHA-256-pinned
-buildx 0.37.1 and compose 5.5.1 cli-plugins from their upstream GitHub releases;
+buildx 0.38.1 and compose 5.6.1 cli-plugins from their upstream GitHub releases;
 deletes `externals/node20` with `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`;
 self-updates the bundled npm; narrows sudo to apt; copies the three binaries in.
 
@@ -267,7 +267,7 @@ Packages `server` (default), `agent-{amd64,arm64}`, `buildx-shim-{amd64,arm64}`,
 | `test` / `coverage` | `go test -race -parallel=$(CPUS) ./...` |
 | `lint` | `CGO_ENABLED=0 golangci-lint run --concurrency=$(CPUS) --timeout=$(LINT_TIMEOUT)` |
 | `docker-build` / `docker-push` | Orchestrator image build / ECR push |
-| `docker-build-runner` | Runner image, local arch only (`RUNNER_BASE_TAG?=2.335.1`) |
+| `docker-build-runner` | Runner image, local arch only (`RUNNER_BASE_TAG?=2.338.2`) |
 | `docker-push-runner` | Multi-arch: `make -j2 --output-sync=target` both arches, then `buildx imagetools create` |
 | `scan-runner` | Build + Trivy scan, then `.trivy/gate.sh` (identical to CI) |
 | `sbom-runner` | CycloneDX SBOM at `bin/runs-fleet-runner.sbom.json` |
@@ -345,7 +345,7 @@ bump).
 - Runner: `runs-fleet-runner:latest` locally. CI publishes per-arch tags, joins
   them into `$VERSION-unverified`, scans that, then promotes the *manifest* to
   `$VERSION` (+ `latest` on push) via `ecr put-image` and deletes the staging
-  tags. Build args: `RUNNER_BASE_TAG` (default 2.335.1 in both Makefile and
+  tags. Build args: `RUNNER_BASE_TAG` (default 2.338.2 in both Makefile and
   Dockerfile, CI override `vars.RUNNER_BASE_TAG`), `VERSION` (→
   `-X main.version`), `TARGETARCH`.
 
@@ -474,8 +474,8 @@ admin UI).
   because this image is snapshotted and never rebooted in place. The repeat in
   the runner layer exists because that layer runs the gate and rebuilds far more
   often. Separately, Go-toolchain CVEs (e.g. CVE-2026-46600) are cleared by
-  bumping the `toolchain` directive — `go.mod` now carries `go 1.25.12` with
-  `toolchain go1.26.6`.
+  bumping the `toolchain` directive — `go.mod` now carries `go 1.26.0` with
+  `toolchain go1.26.10`.
 - **Tool-cache entries must match the key each `setup-*` action computes
   (#452, #448).** This is the single most error-prone thing in the base layer,
   because a wrong directory name is invisible at runtime — the action silently
@@ -649,7 +649,7 @@ admin UI).
   act. Enforcement for github.com began 2026-09-25 with brownouts from
   2026-08-24; Enterprise Cloud with Data Residency was enforced from 2026-07-31.
 - **The container image is a separate, static supply chain on the same 30-day
-  clock.** `RUNNER_BASE_TAG` 2.335.1 in the Makefile and Dockerfile
+  clock.** `RUNNER_BASE_TAG` 2.338.2 in the Makefile and Dockerfile
   (`vars.RUNNER_BASE_TAG` to override) gets none of the AMI's bake-time
   resolution, so EC2 jobs and container-based runs can report different runner
   versions.
@@ -660,12 +660,10 @@ admin UI).
   like `npm install -g npm@latest` and `apt-get upgrade` were served stale from
   the registry cache instead of running fresh. Renaming the stage silently
   reintroduces that.
-- **The server Dockerfile and the runner Dockerfile build on different Go
-  images.** `Dockerfile` uses `golang:1.25-alpine`, `docker/runner/Dockerfile`
-  uses `golang:1.26-alpine`, and `go.mod` declares `go 1.25.12` with
-  `toolchain go1.26.6`. The server build therefore relies on the toolchain
-  directive being honoured (a download) rather than the base image already
-  carrying it — worth knowing before assuming a CVE fix reached both images.
+- **Both Dockerfiles build on the floating `golang:1.26-alpine` image, while
+  `go.mod` pins `toolchain go1.26.10`.** A stdlib fix reaches the images either
+  through the floating tag or through the toolchain directive (a download when
+  the image lags) — worth knowing before assuming a CVE fix reached both.
 - **Nix Go binaries and the AMI's diverge.** `nix build .#agent-arm64` builds
   from the Nix store; the AMI's binaries are extracted from the
   `runs-fleet-runner` ECR image at Packer build time. Different toolchain,

@@ -74,7 +74,7 @@ docker-push: docker-build
 # Build runner Docker image
 RUNNER_IMAGE?=runs-fleet-runner
 RUNNER_TAG?=latest
-RUNNER_BASE_TAG?=2.335.1
+RUNNER_BASE_TAG?=2.338.2
 
 # Build runner image for local architecture only (for testing)
 docker-build-runner:
