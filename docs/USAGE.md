@@ -118,7 +118,8 @@ Behind the scenes runs-fleet transparently serves both cache protocols — the l
 What to know:
 
 - **Isolation:** Cache entries are scoped per repository (`owner/repo`). Repositories cannot read each other's caches.
-- **Eviction:** Entries expire 30 days after upload. Unlike GitHub-hosted runners there is no ~10 GB per-repo size cap — but treat caching as an optimization, not guaranteed storage.
+- **Eviction:** Entries expire 14 days after their last write. Unlike GitHub-hosted runners there is no ~10 GB per-repo size cap — but treat caching as an optimization, not guaranteed storage.
+- **Go build cache stays fresh:** `actions/setup-go` with `cache: true` normally restores the first snapshot it ever saved for a given `go.sum` and never saves again, so its go-build cache goes stale with every commit. runs-fleet answers an exact hit on a `setup-go-*` entry older than 24 hours with a marked key, so the action re-saves at the end of that job and the cache tracks the last day of commits. No workflow change needed. Jobs that start concurrently while the entry is stale each re-save once; after the first save lands, later jobs see a fresh entry.
 - **Architecture:** `arm64` and `amd64` runners keep separate caches (the runner OS/arch folds into the cache key), so a `arch=arm64`/`arch=amd64` matrix won't cross-contaminate — same as GitHub-hosted behavior.
 - **Best-effort:** Caching is fail-open. If the cache backend is unreachable the job still runs (just without a cache hit); it never fails the build.
 
