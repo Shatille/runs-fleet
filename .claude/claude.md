@@ -16,7 +16,7 @@ The EC2 instances that host runners are built from a two-layer Packer pipeline i
 
 ## Stack
 
-- Go 1.25+ (AWS SDK v2, go-github)
+- Go 1.26+ (AWS SDK v2, go-github)
 - AWS: EC2 Fleet API, SQS FIFO, DynamoDB, S3, SSM, ECS Fargate
 - Infra: Terraform, in a separate IaC repository (location kept in Claude memory, not committed here; if that memory is unavailable, ask the user and save it back to memory)
 - Nix: Dev tooling (flake.nix)

@@ -13,7 +13,7 @@ replaces GitHub-hosted runners with spot-first EC2 instances. It targets
 cost reduction (~$55-65/month vs ~$80/month for hosted runners on a
 100 jobs/day workload) while preserving job-start latency via warm pools.
 
-The system is written in Go (`go 1.25.12`, `toolchain go1.26.6` in
+The system is written in Go (`go 1.26.0`, `toolchain go1.26.10` in
 [go.mod](../../go.mod)) and runs as a long-lived orchestrator that consumes
 GitHub webhooks, materialises workflow jobs onto ephemeral EC2 instances, and
 tears them down after each job. EC2 is the only compute backend — the former

@@ -119,15 +119,15 @@ sudo systemctl enable docker
 sudo usermod -aG docker ec2-user
 
 echo "==> Installing Docker Compose (${COMPOSE_ARCH})"
-DOCKER_COMPOSE_VERSION="5.5.1"
+DOCKER_COMPOSE_VERSION="5.6.1"
 # Digests pinned in-repo rather than fetched from the release page, so the
 # trust anchor is this repo (upstream publishes no artifact signatures).
 # Update together with the version bump; must match the runner image
 # COMPOSE_* ARGs in docker/runner/Dockerfile (enforced in CI by
 # .github/scripts/check-pin-sync.sh).
 case "${COMPOSE_ARCH}" in
-  x86_64)  DOCKER_COMPOSE_SHA256="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576" ;;
-  aarch64) DOCKER_COMPOSE_SHA256="732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7" ;;
+  x86_64)  DOCKER_COMPOSE_SHA256="47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0" ;;
+  aarch64) DOCKER_COMPOSE_SHA256="42cfa75f51ad0ccf290bad37899e0038a8c10a0069e85233ecc1d53e3ff1347d" ;;
   *) echo "Unsupported compose arch: ${COMPOSE_ARCH}"; exit 1 ;;
 esac
 COMPOSE_BINARY="docker-compose-linux-${COMPOSE_ARCH}"
@@ -153,13 +153,13 @@ echo "==> Installing Docker buildx cli-plugin"
 # buildx >= 0.21. Digests pinned in-repo (same trust-anchor rationale as
 # compose above); version + digests must match the BUILDX_* ARGs in
 # docker/runner/Dockerfile (enforced in CI by .github/scripts/check-pin-sync.sh).
-BUILDX_VERSION="0.37.1"
+BUILDX_VERSION="0.38.1"
 if [ "$ARCH" = "x86_64" ]; then
   BUILDX_ARCH="amd64"
-  BUILDX_SHA256="9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b"
+  BUILDX_SHA256="e25d5cd675092bb5d1d03632fdc46cdf3fede7b514dc5f023a105e00d3ce5ad4"
 else
   BUILDX_ARCH="arm64"
-  BUILDX_SHA256="e5cc9fe3bbff5cbc91230981f7860e06076110730a2db997082652199042a1f2"
+  BUILDX_SHA256="3b83b3731916ba433feccaaa689fe5bcdc81c641d92c8e6c2ea865dfa141c97a"
 fi
 BUILDX_BINARY="buildx-v${BUILDX_VERSION}.linux-${BUILDX_ARCH}"
 BUILDX_URL="https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}"

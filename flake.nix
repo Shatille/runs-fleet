@@ -63,7 +63,7 @@
           };
         };
 
-        runs-fleet-server = pkgs.buildGoModule {
+        runs-fleet-server = pkgs.buildGo126Module {
           pname = "runs-fleet-server";
           inherit version;
           src = ./.;
@@ -87,7 +87,7 @@
           };
         };
 
-        runs-fleet-agent = arch: pkgs.buildGoModule {
+        runs-fleet-agent = arch: pkgs.buildGo126Module {
           pname = "runs-fleet-agent-${arch}";
           inherit version;
           src = ./.;
@@ -113,7 +113,7 @@
           };
         };
 
-        runs-fleet-buildx-shim = arch: pkgs.buildGoModule {
+        runs-fleet-buildx-shim = arch: pkgs.buildGo126Module {
           pname = "runs-fleet-buildx-shim-${arch}";
           inherit version;
           src = ./.;
