@@ -372,8 +372,6 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 func TestDefaultFamilies_NoBurstableByDefault(t *testing.T) {
 	t.Parallel()
 
-	// Derive the burstable set from the catalog so a newly added t-family cannot
-	// slip into the defaults unnoticed.
 	burstable := map[string]bool{}
 	for _, inst := range InstanceCatalog {
 		if burstableFamily.MatchString(inst.Family) {

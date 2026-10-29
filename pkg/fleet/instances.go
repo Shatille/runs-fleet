@@ -103,7 +103,6 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "t3.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "t3", Gen: 3},
 	{Type: "t3.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "t3", Gen: 3},
 
-	// amd64 - Burstable (8th gen, Intel Xeon 6)
 	// t8i tops out at medium; nano (0.5 GiB), micro (1 GiB) and small (2 GiB)
 	// are excluded by the same RAM floor as t3/t4g.
 	{Type: "t8i.medium", CPU: 2, RAM: 4, Arch: "amd64", Family: "t8i", Gen: 8},
