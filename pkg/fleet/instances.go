@@ -103,6 +103,11 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "t3.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "t3", Gen: 3},
 	{Type: "t3.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "t3", Gen: 3},
 
+	// amd64 - Burstable (8th gen, Intel Xeon 6)
+	// t8i tops out at medium; nano (0.5 GiB), micro (1 GiB) and small (2 GiB)
+	// are excluded by the same RAM floor as t3/t4g.
+	{Type: "t8i.medium", CPU: 2, RAM: 4, Arch: "amd64", Family: "t8i", Gen: 8},
+
 	// amd64 - Compute Optimized (6th gen)
 	{Type: "c6i.large", CPU: 2, RAM: 4, Arch: "amd64", Family: "c6i", Gen: 6},
 	{Type: "c6i.xlarge", CPU: 4, RAM: 8, Arch: "amd64", Family: "c6i", Gen: 6},
@@ -317,7 +322,7 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
 // When arch is empty, returns both ARM64 and AMD64 families for maximum spot diversification.
 // Includes 8th gen families (c8g, m8g, r8g) which may not be available in all regions.
-// Burstable families (t3/t4g) stay in the catalog for explicit family= opt-in but are
+// Burstable families (t3/t4g/t8i) stay in the catalog for explicit family= opt-in but are
 // excluded here: price-weighted selection made t3.medium dominate warm pools (a benchmark
 // measured CI 2.25x slower on it), so an unconstrained request must not land on one.
 func DefaultFlexibleFamilies(arch string) []string {
