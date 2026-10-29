@@ -1,9 +1,12 @@
 package fleet
 
 import (
+	"regexp"
 	"slices"
 	"testing"
 )
+
+var burstableFamily = regexp.MustCompile(`^t\d+[a-z]*$`)
 
 func TestGetInstanceSpec(t *testing.T) {
 	t.Parallel()
@@ -31,6 +34,14 @@ func TestGetInstanceSpec(t *testing.T) {
 			wantCPU:      2,
 			wantRAM:      4,
 			wantArch:     "arm64",
+		},
+		{
+			name:         "t8i.medium exists",
+			instanceType: "t8i.medium",
+			wantFound:    true,
+			wantCPU:      2,
+			wantRAM:      4,
+			wantArch:     "amd64",
 		},
 		{
 			name:         "c6i.2xlarge exists",
@@ -126,6 +137,17 @@ func TestResolveInstanceTypes(t *testing.T) {
 			// smallest selectable is t3.medium (4 GiB).
 			contains: []string{"t3.medium", "t3.large"},
 			excludes: []string{"t3.micro", "t3.small", "t3.xlarge"},
+		},
+		{
+			name: "2 CPU amd64 t8i family",
+			spec: FlexibleSpec{
+				CPUMin:   2,
+				CPUMax:   2,
+				Arch:     "amd64",
+				Families: []string{"t8i"},
+			},
+			contains: []string{"t8i.medium"},
+			excludes: []string{"t8i.nano", "t8i.micro", "t8i.small"},
 		},
 		{
 			name: "RAM filter - minimum 16GB",
@@ -244,7 +266,7 @@ func TestRAMFloor_NoSubFourGiBSelectable(t *testing.T) {
 	}
 
 	// The dropped types must be gone.
-	for _, typ := range []string{"t3.micro", "t3.small", "t4g.micro", "t4g.small"} {
+	for _, typ := range []string{"t3.micro", "t3.small", "t4g.micro", "t4g.small", "t8i.nano", "t8i.micro", "t8i.small"} {
 		if _, ok := GetInstanceSpec(typ); ok {
 			t.Errorf("dropped type %q still present in catalog", typ)
 		}
@@ -350,15 +372,24 @@ func TestDefaultFlexibleFamilies(t *testing.T) {
 func TestDefaultFamilies_NoBurstableByDefault(t *testing.T) {
 	t.Parallel()
 
-	if slices.Contains(DefaultFlexibleFamilies("amd64"), "t3") {
-		t.Errorf("DefaultFlexibleFamilies(amd64) should not contain t3, got %v", DefaultFlexibleFamilies("amd64"))
+	burstable := map[string]bool{}
+	for _, inst := range InstanceCatalog {
+		if burstableFamily.MatchString(inst.Family) {
+			burstable[inst.Family] = true
+		}
 	}
-	if slices.Contains(DefaultFlexibleFamilies("arm64"), "t4g") {
-		t.Errorf("DefaultFlexibleFamilies(arm64) should not contain t4g, got %v", DefaultFlexibleFamilies("arm64"))
+	for _, want := range []string{"t3", "t4g", "t8i"} {
+		if !burstable[want] {
+			t.Errorf("catalog is missing burstable family %q", want)
+		}
 	}
-	empty := DefaultFlexibleFamilies("")
-	if slices.Contains(empty, "t3") || slices.Contains(empty, "t4g") {
-		t.Errorf("DefaultFlexibleFamilies(\"\") should not contain t3 or t4g, got %v", empty)
+
+	for _, arch := range []string{"amd64", "arm64", ""} {
+		for _, fam := range DefaultFlexibleFamilies(arch) {
+			if burstable[fam] {
+				t.Errorf("DefaultFlexibleFamilies(%q) should not contain burstable family %q", arch, fam)
+			}
+		}
 	}
 
 	// Incident-shaped cpu=2 request per arch: resolves to a non-empty list with no
@@ -375,18 +406,22 @@ func TestDefaultFamilies_NoBurstableByDefault(t *testing.T) {
 				t.Errorf("resolved type %q not in catalog", typ)
 				continue
 			}
-			if inst.Family == "t3" || inst.Family == "t4g" {
+			if burstable[inst.Family] {
 				t.Errorf("cpu=2 %s resolved burstable type %q (family %q)", arch, typ, inst.Family)
 			}
 		}
 	}
 
 	// Explicit family= opt-in still resolves the burstable tiers.
-	if !slices.Contains(ResolveInstanceTypes(FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: "amd64", Families: []string{"t3"}}), "t3.medium") {
-		t.Error("family=t3 should still resolve t3.medium")
+	optIn := []struct{ arch, family, want string }{
+		{"amd64", "t3", "t3.medium"},
+		{"arm64", "t4g", "t4g.medium"},
+		{"amd64", "t8i", "t8i.medium"},
 	}
-	if !slices.Contains(ResolveInstanceTypes(FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: "arm64", Families: []string{"t4g"}}), "t4g.medium") {
-		t.Error("family=t4g should still resolve t4g.medium")
+	for _, tc := range optIn {
+		if !slices.Contains(ResolveInstanceTypes(FlexibleSpec{CPUMin: 2, CPUMax: 4, Arch: tc.arch, Families: []string{tc.family}}), tc.want) {
+			t.Errorf("family=%s should still resolve %s", tc.family, tc.want)
+		}
 	}
 }
 

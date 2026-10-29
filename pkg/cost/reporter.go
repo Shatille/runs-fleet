@@ -86,6 +86,10 @@ var burstablePricing = map[string]float64{
 	"t4g.large":   0.0672,
 	"t4g.xlarge":  0.1344,
 	"t4g.2xlarge": 0.2688,
+	"t8i.nano":    0.00816,
+	"t8i.micro":   0.01632,
+	"t8i.small":   0.03264,
+	"t8i.medium":  0.06528,
 }
 
 // SpotDiscount is the average spot discount compared to on-demand

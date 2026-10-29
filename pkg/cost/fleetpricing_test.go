@@ -164,6 +164,22 @@ func TestGetInstancePriceCoversTheFamiliesTheFleetRuns(t *testing.T) {
 	}
 }
 
+// Burstable sizes are priced per type, so each t8i tier must carry its own
+// ap-northeast-1 rate -- including the sub-4GiB sizes the catalog excludes.
+func TestGetInstancePriceCoversT8i(t *testing.T) {
+	wants := map[string]float64{
+		"t8i.nano":   0.00816,
+		"t8i.micro":  0.01632,
+		"t8i.small":  0.03264,
+		"t8i.medium": 0.06528,
+	}
+	for typ, want := range wants {
+		if got := cost.GetInstancePrice(typ); !approx(got, want) {
+			t.Errorf("GetInstancePrice(%q) = %v, want %v", typ, got, want)
+		}
+	}
+}
+
 // Sizes are priced from a per-family vCPU rate, so a size never seen before
 // still prices correctly instead of silently taking the default.
 func TestGetInstancePriceScalesLinearlyWithinAFamily(t *testing.T) {

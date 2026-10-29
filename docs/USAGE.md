@@ -82,7 +82,7 @@ If you want hard control over architecture, set `arch=arm64` or `arch=amd64` exp
 - AMD64: `c6i, c7i, m6i, m7i`
 - No arch: all of the above
 
-Burstable families (`t3`, `t4g`) are excluded from these defaults — their price-weighted selection made t3.medium dominate warm pools. To use them, request them explicitly with `family=t3` or `family=t4g`.
+Burstable families (`t3`, `t4g`, `t8i`) are excluded from these defaults — their price-weighted selection made t3.medium dominate warm pools. To use them, request them explicitly with `family=t3`, `family=t4g`, or `family=t8i`. Note that `t8i` only offers `t8i.medium` (2 vCPU, 4 GiB); its smaller sizes fall under the 4 GiB RAM floor.
 
 ## Custom Disk Size
 
