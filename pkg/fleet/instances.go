@@ -103,7 +103,6 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "t3.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "t3", Gen: 3},
 	{Type: "t3.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "t3", Gen: 3},
 
-	// AWS ships no t8i size above medium, so the RAM floor leaves a single entry.
 	{Type: "t8i.medium", CPU: 2, RAM: 4, Arch: "amd64", Family: "t8i", Gen: 8},
 
 	// amd64 - Compute Optimized (6th gen)
