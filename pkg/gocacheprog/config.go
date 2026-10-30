@@ -11,15 +11,22 @@ const (
 	EnvDir        = "RUNS_FLEET_GOCACHE_DIR"
 	EnvOutcome    = "RUNS_FLEET_GOCACHE_OUTCOME"
 	EnvGetWorkers = "RUNS_FLEET_GOCACHE_GET_WORKERS"
+	EnvBucket     = "RUNS_FLEET_GOCACHE_BUCKET"
+	EnvRegion     = "RUNS_FLEET_GOCACHE_REGION"
+	EnvPrefix     = "RUNS_FLEET_GOCACHE_PREFIX"
 )
 
 const defaultGetWorkers = 8
 
-// Config is the helper's runtime configuration.
+// Config is the helper's runtime configuration. An empty Bucket keeps the
+// helper local-only.
 type Config struct {
 	Dir         string
 	OutcomeFile string
 	GetWorkers  int
+	Bucket      string
+	Region      string
+	Prefix      string
 }
 
 // ConfigFromEnv builds a Config from lookup (normally os.Getenv). The cache
@@ -29,6 +36,9 @@ func ConfigFromEnv(lookup func(string) string) (Config, error) {
 		Dir:         lookup(EnvDir),
 		OutcomeFile: lookup(EnvOutcome),
 		GetWorkers:  defaultGetWorkers,
+		Bucket:      lookup(EnvBucket),
+		Region:      lookup(EnvRegion),
+		Prefix:      lookup(EnvPrefix),
 	}
 	if cfg.Dir == "" {
 		return Config{}, fmt.Errorf("%s is not set", EnvDir)

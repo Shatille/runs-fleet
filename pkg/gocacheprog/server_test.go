@@ -2,12 +2,14 @@ package gocacheprog
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,7 +97,7 @@ func newTestServer(t *testing.T, store Store) (*Server, *Stats) {
 	}
 	stats := &Stats{}
 	srv := NewServer(store, stats, 4)
-	srv.logger.SetOutput(io.Discard)
+	srv.warn.logger.SetOutput(io.Discard)
 	return srv, stats
 }
 
@@ -271,7 +273,7 @@ func TestServer_FramingErrorIsFatal(t *testing.T) {
 	}
 }
 
-type panickingStore struct{ Local }
+type panickingStore struct{ *Local }
 
 func (panickingStore) Get([]byte) (Entry, bool, error) { panic("boom") }
 func (panickingStore) Put([]byte, []byte, int64, io.Reader) (string, error) {
@@ -324,5 +326,143 @@ func TestServer_PutIntegrityFailureReportsErrAndKeepsServing(t *testing.T) {
 	c.wait(3)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+type closeRecordingStore struct {
+	*Local
+	remoteHit bool
+	closed    atomic.Bool
+}
+
+func (s *closeRecordingStore) Get(actionID []byte) (Entry, bool, error) {
+	e, ok, err := s.Local.Get(actionID)
+	if ok && s.remoteHit {
+		e.Remote = true
+	}
+	return e, ok, err
+}
+
+func (s *closeRecordingStore) Close(context.Context) { s.closed.Store(true) }
+
+func TestServer_RemoteHitsAreCountedSeparately(t *testing.T) {
+	t.Parallel()
+
+	store := &closeRecordingStore{Local: newTestLocal(t), remoteHit: true}
+	srv, stats := newTestServer(t, store)
+	c, done := startClient(t, srv)
+	c.wait(0)
+
+	c.send(Request{ID: 1, Command: CmdPut, ActionID: testID(1), OutputID: testID(2), BodySize: 3}, []byte("abc"))
+	c.wait(1)
+	c.send(Request{ID: 2, Command: CmdGet, ActionID: testID(1)})
+	if resp := c.wait(2); resp.Miss || resp.DiskPath == "" {
+		t.Fatalf("get = %+v", resp)
+	}
+	c.send(Request{ID: 3, Command: CmdClose})
+	c.wait(3)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	sum := stats.Summary()
+	if sum.HitsRemote != 1 || sum.HitsLocal != 0 || sum.GetBytes != 3 {
+		t.Fatalf("stats = %+v", sum)
+	}
+}
+
+func TestServer_CloseDrainsStoreBeforeReplying(t *testing.T) {
+	t.Parallel()
+
+	store := &closeRecordingStore{Local: newTestLocal(t)}
+	srv, _ := newTestServer(t, store)
+	c, done := startClient(t, srv)
+	c.wait(0)
+	c.send(Request{ID: 1, Command: CmdClose})
+	c.wait(1)
+	if !store.closed.Load() {
+		t.Fatal("close reply sent before the store was closed")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServer_EOFDrainsStore(t *testing.T) {
+	t.Parallel()
+
+	store := &closeRecordingStore{Local: newTestLocal(t)}
+	srv, _ := newTestServer(t, store)
+	c, done := startClient(t, srv)
+	c.wait(0)
+	if err := c.w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !store.closed.Load() {
+		t.Fatal("store not closed on EOF")
+	}
+}
+
+func TestServer_WithCacheOverFailingRemoteNeverAnswersErr(t *testing.T) {
+	t.Parallel()
+
+	remote := newMemRemote()
+	remote.getErr = errors.New("access denied")
+	stats := &Stats{}
+	srv := NewServer(newCache(newTestLocal(t), remote, stats, io.Discard), stats, 4)
+	srv.warn.logger.SetOutput(io.Discard)
+	c, done := startClient(t, srv)
+	c.wait(0)
+
+	for i := int64(1); i <= 3; i++ {
+		c.send(Request{ID: i, Command: CmdGet, ActionID: testID(byte(i))})
+		if resp := c.wait(i); !resp.Miss || resp.Err != "" {
+			t.Fatalf("get %d = %+v, want a plain miss", i, resp)
+		}
+	}
+	c.send(Request{ID: 4, Command: CmdPut, ActionID: testID(1), OutputID: testID(2), BodySize: 3}, []byte("abc"))
+	if resp := c.wait(4); resp.Err != "" || resp.DiskPath == "" {
+		t.Fatalf("put = %+v", resp)
+	}
+	c.send(Request{ID: 5, Command: CmdClose})
+	if resp := c.wait(5); resp.Err != "" {
+		t.Fatalf("close = %+v", resp)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	sum := stats.Summary()
+	if sum.Errors != 0 || sum.RemoteErrors != 3 || sum.Misses != 3 || sum.Puts != 1 {
+		t.Fatalf("stats = %+v", sum)
+	}
+}
+
+type writerFailingAfterHandshake struct {
+	writes int
+}
+
+func (w *writerFailingAfterHandshake) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > 1 {
+		return 0, errors.New("stdout gone")
+	}
+	return len(p), nil
+}
+
+func TestServer_WriteErrorStillDrainsStore(t *testing.T) {
+	t.Parallel()
+
+	store := &closeRecordingStore{Local: newTestLocal(t)}
+	srv, _ := newTestServer(t, store)
+	var in bytes.Buffer
+	mustWriteFrames(t, &in, Request{ID: 1, Command: CmdPut, ActionID: testID(1), OutputID: testID(2), BodySize: 1}, []byte("x"))
+	err := srv.Run(&in, &writerFailingAfterHandshake{})
+	if err == nil {
+		t.Fatal("Run returned nil although stdout failed")
+	}
+	if !store.closed.Load() {
+		t.Fatal("store not closed after a write error")
 	}
 }

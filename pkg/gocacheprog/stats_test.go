@@ -15,6 +15,15 @@ func TestStats_SummaryAndOutcomeFileRoundTrip(t *testing.T) {
 	s.Puts.Add(4)
 	s.PutBytes.Add(100)
 	s.GetBytes.Add(50)
+	s.HitsRemote.Add(5)
+	s.DownloadBytes.Add(60)
+	s.Uploads.Add(6)
+	s.UploadBytes.Add(70)
+	s.UploadsSkipped.Add(7)
+	s.UploadsDropped.Add(8)
+	s.UploadsFailed.Add(9)
+	s.UploadsAbandoned.Add(10)
+	s.RemoteErrors.Add(11)
 
 	path := filepath.Join(t.TempDir(), "outcome")
 	if err := AppendOutcome(path, s.Summary()); err != nil {
@@ -33,6 +42,9 @@ func TestStats_SummaryAndOutcomeFileRoundTrip(t *testing.T) {
 	}
 	if got[0] != s.Summary() {
 		t.Fatalf("first = %+v, want %+v", got[0], s.Summary())
+	}
+	if got[0].HitsRemote != 5 || got[0].UploadsAbandoned != 10 || got[0].RemoteErrors != 11 {
+		t.Fatalf("remote counters lost: %+v", got[0])
 	}
 	if got[1].Gets != 1 || got[1].Errors != 1 {
 		t.Fatalf("second = %+v", got[1])

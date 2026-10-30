@@ -2,6 +2,7 @@ package gocacheprog
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,12 +14,14 @@ import (
 	"time"
 )
 
-// Entry describes a cached output.
+// Entry describes a cached output. Remote marks one that was just fetched
+// from the remote tier rather than found on disk.
 type Entry struct {
 	OutputID []byte
 	Size     int64
 	Time     time.Time
 	DiskPath string
+	Remote   bool
 }
 
 // Local is the on-disk cache tier: an index file per action ID pointing at a
@@ -117,6 +120,9 @@ func (l *Local) Put(actionID, outputID []byte, size int64, body io.Reader) (stri
 	}
 	return path, nil
 }
+
+// Close is a no-op: the local tier has nothing in flight.
+func (l *Local) Close(context.Context) {}
 
 func (l *Local) outputPath(outputID []byte) string {
 	return filepath.Join(l.dir, "o", hex.EncodeToString(outputID))
