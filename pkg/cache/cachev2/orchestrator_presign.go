@@ -64,7 +64,8 @@ func (p *HTTPPresigner) PresignUpload(ctx context.Context, key, version string) 
 }
 
 // PresignDownload looks up keys at version on the orchestrator and returns the
-// presigned GET URL plus matched (full S3) key, or found=false on a 204 miss.
+// presigned GET URL plus the matched key (bare from current orchestrators, the
+// full S3 key from older ones), or found=false on a 204 miss.
 func (p *HTTPPresigner) PresignDownload(ctx context.Context, keys []string, version string) (string, string, bool, error) {
 	q := url.Values{}
 	q.Set("keys", strings.Join(keys, ","))

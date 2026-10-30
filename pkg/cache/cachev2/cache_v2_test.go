@@ -210,6 +210,8 @@ func TestBareKeyForVersion(t *testing.T) {
 		{"key contains slash", "caches/org/repo/v1/a/b/c", "v1", "a/b/c"},
 		{"version substring of key", "caches/org/repo/abc123/abc123-linux", "abc123", "abc123-linux"},
 		{"no marker returns input", "weird-key", "v1", "weird-key"},
+		{"bare key containing the version is untouched", "tools/v1/linux", "v1", "tools/v1/linux"},
+		{"refresh suffix survives", "caches/org/repo/v1/setup-go-k~refresh", "v1", "setup-go-k~refresh"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,5 +247,19 @@ func TestV2NonPostRejected(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestGetDownloadURLPassesRefreshMarkerThrough(t *testing.T) {
+	t.Parallel()
+
+	p := &mockPresigner{downloadURL: "https://s3.example/get", matchedKey: "caches/org/repo/v1/setup-go-k~refresh", found: true}
+	rec := postJSON(t, NewServiceV2(p, testBlobBase, nil), "GetCacheEntryDownloadURL", `{"key":"setup-go-k","version":"v1"}`)
+	var resp getCacheEntryDownloadURLResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK || resp.MatchedKey != "setup-go-k~refresh" {
+		t.Errorf("ok=%v matchedKey=%q, want the orchestrator's marked key untouched", resp.OK, resp.MatchedKey)
 	}
 }

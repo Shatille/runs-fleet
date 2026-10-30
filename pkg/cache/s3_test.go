@@ -281,7 +281,7 @@ func TestGetCacheEntry(t *testing.T) {
 				cacheBucketName: "test-bucket",
 			}
 
-			key, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
+			match, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetCacheEntry() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -289,8 +289,8 @@ func TestGetCacheEntry(t *testing.T) {
 			if found != tt.found {
 				t.Errorf("GetCacheEntry() found = %v, want %v", found, tt.found)
 			}
-			if key != tt.wantKey {
-				t.Errorf("GetCacheEntry() key = %v, want %v", key, tt.wantKey)
+			if match.Key != tt.wantKey {
+				t.Errorf("GetCacheEntry() key = %v, want %v", match.Key, tt.wantKey)
 			}
 		})
 	}
@@ -373,7 +373,7 @@ func TestGetCacheEntry_RestoreKeyPrefixMatching(t *testing.T) {
 				cacheBucketName: "test-bucket",
 			}
 
-			key, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
+			match, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
 			if err != nil {
 				t.Errorf("GetCacheEntry() unexpected error = %v", err)
 				return
@@ -381,8 +381,8 @@ func TestGetCacheEntry_RestoreKeyPrefixMatching(t *testing.T) {
 			if found != tt.found {
 				t.Errorf("GetCacheEntry() found = %v, want %v", found, tt.found)
 			}
-			if key != tt.wantKey {
-				t.Errorf("GetCacheEntry() key = %v, want %v", key, tt.wantKey)
+			if match.Key != tt.wantKey {
+				t.Errorf("GetCacheEntry() key = %v, want %v", match.Key, tt.wantKey)
 			}
 		})
 	}
@@ -463,7 +463,7 @@ func TestGetCacheEntry_WithScope(t *testing.T) {
 				defaultScope:    tt.scope,
 			}
 
-			key, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
+			match, found, err := server.GetCacheEntry(context.Background(), tt.keys, tt.version)
 			if err != nil {
 				t.Errorf("GetCacheEntry() unexpected error = %v", err)
 				return
@@ -471,8 +471,8 @@ func TestGetCacheEntry_WithScope(t *testing.T) {
 			if found != tt.found {
 				t.Errorf("GetCacheEntry() found = %v, want %v", found, tt.found)
 			}
-			if key != tt.wantKey {
-				t.Errorf("GetCacheEntry() key = %v, want %v", key, tt.wantKey)
+			if match.Key != tt.wantKey {
+				t.Errorf("GetCacheEntry() key = %v, want %v", match.Key, tt.wantKey)
 			}
 		})
 	}
@@ -843,5 +843,135 @@ func TestBuildCachePrefix(t *testing.T) {
 				t.Errorf("buildCachePrefix() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFindCacheByPrefix_Pagination(t *testing.T) {
+	t.Parallel()
+
+	now := timeNow()
+	page := func(keys []string, ages []time.Duration, next string) *s3.ListObjectsV2Output {
+		out := &s3.ListObjectsV2Output{}
+		for i, k := range keys {
+			out.Contents = append(out.Contents, types.Object{Key: aws.String(k), LastModified: aws.Time(now.Add(-ages[i]))})
+		}
+		if next != "" {
+			out.IsTruncated = aws.Bool(true)
+			out.NextContinuationToken = aws.String(next)
+		}
+		return out
+	}
+
+	t.Run("newest on a later page wins", func(t *testing.T) {
+		t.Parallel()
+		var tokens []*string
+		mock := &MockS3API{ListObjectsV2Func: func(_ context.Context, params *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+			tokens = append(tokens, params.ContinuationToken)
+			if aws.ToInt32(params.MaxKeys) != prefixListPageSize {
+				t.Errorf("MaxKeys = %d, want %d", aws.ToInt32(params.MaxKeys), prefixListPageSize)
+			}
+			switch aws.ToString(params.ContinuationToken) {
+			case "":
+				return page([]string{"caches/v1/go-a", "caches/v1/go-b"}, []time.Duration{48 * time.Hour, 24 * time.Hour}, "t1"), nil
+			case "t1":
+				return page([]string{"caches/v1/go-c"}, []time.Duration{time.Hour}, ""), nil
+			}
+			t.Fatalf("unexpected token %q", aws.ToString(params.ContinuationToken))
+			return nil, nil
+		}}
+		server := &Server{s3Client: mock, cacheBucketName: "b"}
+		obj, found, err := server.findCacheByPrefix(context.Background(), "v1", "go-")
+		if err != nil || !found || aws.ToString(obj.Key) != "caches/v1/go-c" {
+			t.Fatalf("got obj=%v found=%v err=%v, want caches/v1/go-c", obj, found, err)
+		}
+		if len(tokens) != 2 || tokens[0] != nil || aws.ToString(tokens[1]) != "t1" {
+			t.Errorf("continuation tokens = %v, want [nil t1]", tokens)
+		}
+	})
+
+	t.Run("stops at the page cap with the best so far", func(t *testing.T) {
+		t.Parallel()
+		calls := 0
+		mock := &MockS3API{ListObjectsV2Func: func(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+			calls++
+			return page([]string{fmt.Sprintf("caches/v1/go-%d", calls)}, []time.Duration{time.Duration(calls) * time.Hour}, "more"), nil
+		}}
+		server := &Server{s3Client: mock, cacheBucketName: "b"}
+		obj, found, err := server.findCacheByPrefix(context.Background(), "v1", "go-")
+		if err != nil || !found || aws.ToString(obj.Key) != "caches/v1/go-1" {
+			t.Fatalf("got obj=%v found=%v err=%v, want caches/v1/go-1", obj, found, err)
+		}
+		if calls != prefixListMaxPages {
+			t.Errorf("list calls = %d, want %d", calls, prefixListMaxPages)
+		}
+	})
+
+	t.Run("error on a later page surfaces", func(t *testing.T) {
+		t.Parallel()
+		mock := &MockS3API{ListObjectsV2Func: func(_ context.Context, params *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+			if params.ContinuationToken == nil {
+				return page([]string{"caches/v1/go-a"}, []time.Duration{time.Hour}, "t1"), nil
+			}
+			return nil, fmt.Errorf("throttled")
+		}}
+		server := &Server{s3Client: mock, cacheBucketName: "b"}
+		_, found, err := server.findCacheByPrefix(context.Background(), "v1", "go-")
+		if err == nil || found {
+			t.Fatalf("got found=%v err=%v, want error", found, err)
+		}
+	})
+}
+
+func TestFindCacheByPrefix_NilTimestampNeverWins(t *testing.T) {
+	t.Parallel()
+
+	mock := &MockS3API{ListObjectsV2Func: func(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+		return &s3.ListObjectsV2Output{Contents: []types.Object{
+			{Key: aws.String("caches/v1/go-untimed")},
+			{Key: aws.String("caches/v1/go-timed"), LastModified: aws.Time(timeNow())},
+		}}, nil
+	}}
+	server := &Server{s3Client: mock, cacheBucketName: "b"}
+	obj, found, err := server.findCacheByPrefix(context.Background(), "v1", "go-")
+	if err != nil || !found || aws.ToString(obj.Key) != "caches/v1/go-timed" {
+		t.Fatalf("got obj=%v found=%v err=%v, want the timestamped object", obj, found, err)
+	}
+}
+
+func TestGetCacheEntry_MatchDetails(t *testing.T) {
+	t.Parallel()
+
+	modified := timeNow()
+	mock := &MockS3API{
+		HeadObjectFunc: func(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+			if *params.Key == "caches/org/repo/v1/setup-go-x" {
+				return &s3.HeadObjectOutput{LastModified: aws.Time(modified)}, nil
+			}
+			return nil, &types.NotFound{}
+		},
+		ListObjectsV2Func: func(_ context.Context, _ *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+			return &s3.ListObjectsV2Output{Contents: []types.Object{
+				{Key: aws.String("caches/org/repo/v1/setup-go-older"), LastModified: aws.Time(modified.Add(-time.Hour))},
+			}}, nil
+		},
+	}
+	server := NewServerWithClientsAndScope(mock, &MockPresignAPI{}, "b", "org/repo")
+
+	exact, found, err := server.GetCacheEntry(context.Background(), []string{"setup-go-x", "setup-go-"}, "v1")
+	if err != nil || !found {
+		t.Fatalf("exact lookup: found=%v err=%v", found, err)
+	}
+	want := Match{Key: "caches/org/repo/v1/setup-go-x", BareKey: "setup-go-x", Exact: true, Modified: modified}
+	if exact != want {
+		t.Errorf("exact match = %+v, want %+v", exact, want)
+	}
+
+	partial, found, err := server.GetCacheEntry(context.Background(), []string{"setup-go-missing", "setup-go-"}, "v1")
+	if err != nil || !found {
+		t.Fatalf("restore-key lookup: found=%v err=%v", found, err)
+	}
+	want = Match{Key: "caches/org/repo/v1/setup-go-older", BareKey: "setup-go-older", Modified: modified.Add(-time.Hour)}
+	if partial != want {
+		t.Errorf("restore-key match = %+v, want %+v", partial, want)
 	}
 }

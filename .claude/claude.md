@@ -138,7 +138,7 @@ the webhook payload. The legacy `runs-fleet=<run-id>/...` form remains supported
 - `runs-fleet-circuit-state` - Circuit breaker state for instance types
 
 **S3:**
-- `runs-fleet-cache` - GitHub Actions cache artifacts (30-day lifecycle)
+- `runs-fleet-cache` - GitHub Actions cache artifacts under `caches/` (14-day lifecycle rule on that prefix; no in-process pruning)
 - `runs-fleet-config` - Runner configs, agent binaries
 
 **SQS:**

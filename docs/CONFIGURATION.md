@@ -231,6 +231,17 @@ serves exactly one job, then self-terminates — no multi-job reuse.
 | `RUNS_FLEET_CACHE_SECRET` | HMAC secret for cache auth |
 | `RUNS_FLEET_BASE_URL` | **Required.** Orchestrator's externally-reachable HTTPS base URL; served to runners as `ACTIONS_CACHE_URL` for the S3-backed Actions cache |
 
+Actions cache entries live under `caches/<org>/<repo>/<version>/<key>` and are
+expected to expire on a 14-day lifecycle rule scoped to that prefix (set it in
+the bucket's lifecycle configuration, beside the `buildkit/` and `runner-logs/`
+rules; there is no in-process pruning). Age is measured from the last write:
+`actions/setup-go` entries are rewritten at least daily (an exact hit on a
+`setup-go-*` object older than 24 h is answered with a `~refresh`-marked key, so
+the action re-saves its go-build cache instead of restoring the same snapshot
+forever; a `~refresh` suffix echoed back on a save is stripped), and per-run
+`actions/cache` keys are newest-first by construction, so expiry alone keeps the
+live entries and drops the rest.
+
 The cache bucket (`RUNS_FLEET_CACHE_BUCKET`) also serves transparent Docker
 layer caching for buildx builds, under a `buildkit/` prefix beside the Actions
 cache's `caches/`. This needs no configuration; it becomes effective once the

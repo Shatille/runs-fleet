@@ -201,6 +201,9 @@ func (c *ServiceV2) handleGetDownloadURL(w http.ResponseWriter, r *http.Request)
 // orchestrator's full S3 key (caches/<scope>/<version>/<key>). The client
 // compares matchedKey against its requested keys, so it must be the bare key.
 func bareKeyForVersion(fullKey, version string) string {
+	if !strings.HasPrefix(fullKey, "caches/") {
+		return fullKey
+	}
 	marker := "/" + version + "/"
 	if i := strings.Index(fullKey, marker); i >= 0 {
 		return fullKey[i+len(marker):]
