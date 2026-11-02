@@ -5,7 +5,7 @@ Two-layer AMI build:
 | Layer | Template | Provisioner | What it contains |
 |---|---|---|---|
 | **Base** | `runner-base-{amd64,arm64}.pkr.hcl` | `provision-base.sh` | OS + every package that's stable across runner-image revs: docker, git/git-lfs, node, vault, yq, pinned buildx cli-plugin (AL2023's bundled 0.12.1 predates the GHA cache v2 protocol), gh, runner OS deps, dev tools, language toolchains, the actions/runner binary. |
-| **Runner** | `runs-fleet-runner-{amd64,arm64}.pkr.hcl` | `provision-runs-fleet.sh` | The diff over base: the `runs-fleet-agent` binary extracted from the ECR runner image, the `runs-fleet-buildx-shim` installed as the `docker-buildx` CLI plugin, its systemd unit, the bootstrap shim, and the per-boot cloud-init script. |
+| **Runner** | `runs-fleet-runner-{amd64,arm64}.pkr.hcl` | `provision-runs-fleet.sh` | The diff over base: the `runs-fleet-agent` binary extracted from the ECR runner image, the `runs-fleet-buildx-shim` installed as the `docker-buildx` CLI plugin, the `runs-fleet-gocacheprog` Go build cache helper, its systemd unit, the bootstrap shim, and the per-boot cloud-init script. |
 
 Both layers are built by a single workflow at `.github/workflows/build-amis.yml`. The runner-AMI job declares `needs: build-base`, so when a single push touches both `provision-base.sh` and `provision-runs-fleet.sh`, the runner AMI waits for the new base to register before starting Packer (its `source_ami_filter` then resolves to the fresh base). When a push only touches one layer, the other layer's job is skipped.
 
@@ -22,6 +22,7 @@ Both layers are built by a single workflow at `.github/workflows/build-amis.yml`
 
 - Extracting the `runs-fleet-agent` binary from the ECR runner image (this is the project's actual artifact).
 - Extracting the `runs-fleet-buildx-shim` from the same image and installing it as the `docker-buildx` CLI plugin at `/usr/local/lib/docker/cli-plugins/docker-buildx` (this dir precedes the OS plugin dir in docker's search order, so it shadows the packaged buildx without replacing it). The real plugin path is recorded to `/opt/runs-fleet/buildx-real-path`. Like the agent, this is a runs-fleet orchestration artifact, not a CI-workload package — the shim is inert until the orchestrator injects the cache env vars.
+- Extracting the `runs-fleet-gocacheprog` helper from the same image and installing it root-owned `0755` at `/usr/local/bin/runs-fleet-gocacheprog`. The agent sets `GOCACHEPROG` to that path only when the file is executable by every user, because cmd/go treats a helper it cannot exec as fatal, so the mode is load-bearing and `provision-validate-agent.sh` asserts it, then runs `go build` twice through the helper on the oldest and newest baked toolchains and requires the second build to hit. Inert until the orchestrator stamps a cache bucket into the runner config.
 - Installing the `runs-fleet-agent.service` systemd unit.
 - Installing `agent-bootstrap.sh` and the per-boot cloud-init script.
 

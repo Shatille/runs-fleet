@@ -80,6 +80,9 @@ type PrometheusPublisher struct {
 	runnerCacheInterception      *prometheus.CounterVec
 	runnerBuildCacheInterception *prometheus.CounterVec
 	runnerLogUpload              *prometheus.CounterVec
+	runnerGoCache                *prometheus.CounterVec
+	goCacheRequests              *prometheus.CounterVec
+	goCacheBytes                 *prometheus.CounterVec
 }
 
 // Ensure PrometheusPublisher implements Publisher.
@@ -280,6 +283,18 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 			Namespace: ns, Name: "runner_log_upload_total",
 			Help: "Jobs by runner-log upload outcome (uploaded, partial, failed, skipped, disabled)",
 		}, []string{"status"}),
+		runnerGoCache: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "runner_go_cache_total",
+			Help: "Jobs by transparent Go build cache outcome (engaged, unused, degraded, disabled)",
+		}, []string{"status"}),
+		goCacheRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "go_cache_requests_total",
+			Help: "GOCACHEPROG requests by result (hit_local, hit_remote, miss, put, remote_error)",
+		}, []string{"result"}),
+		goCacheBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: ns, Name: "go_cache_bytes_total",
+			Help: "Go build cache bytes moved between runner and S3 by direction (download, upload)",
+		}, []string{"direction"}),
 	}
 
 	registry.MustRegister(
@@ -294,6 +309,7 @@ func NewPrometheusPublisher(_ PrometheusConfig) *PrometheusPublisher {
 		p.housekeepingActions, p.schedulingFailure, p.messageDeletionFailures,
 		p.instanceHours, p.estimatedCost, p.runnerExecutionSeconds, p.runnerToolCacheMiss,
 		p.runnerCacheInterception, p.runnerBuildCacheInterception, p.runnerLogUpload,
+		p.runnerGoCache, p.goCacheRequests, p.goCacheBytes,
 	)
 
 	return p
@@ -539,6 +555,21 @@ func (p *PrometheusPublisher) PublishRunnerBuildCacheInterception(_ context.Cont
 
 func (p *PrometheusPublisher) PublishRunnerLogUpload(_ context.Context, status string) error { //nolint:revive
 	p.runnerLogUpload.WithLabelValues(status).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishRunnerGoCache(_ context.Context, status string) error { //nolint:revive
+	p.runnerGoCache.WithLabelValues(status).Inc()
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishGoCacheRequests(_ context.Context, result string, count int64) error { //nolint:revive
+	p.goCacheRequests.WithLabelValues(result).Add(float64(count))
+	return nil
+}
+
+func (p *PrometheusPublisher) PublishGoCacheBytes(_ context.Context, direction string, bytes int64) error { //nolint:revive
+	p.goCacheBytes.WithLabelValues(direction).Add(float64(bytes))
 	return nil
 }
 

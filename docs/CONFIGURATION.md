@@ -230,6 +230,8 @@ serves exactly one job, then self-terminates — no multi-job reuse.
 |----------|-------------|
 | `RUNS_FLEET_CACHE_SECRET` | HMAC secret for cache auth |
 | `RUNS_FLEET_BASE_URL` | **Required.** Orchestrator's externally-reachable HTTPS base URL; served to runners as `ACTIONS_CACHE_URL` for the S3-backed Actions cache |
+| `RUNS_FLEET_GOCACHE_ENABLED` | Turn on the transparent Go build cache (default `false`). Runners then point every `go` command at the `runs-fleet-gocacheprog` helper, backed by `RUNS_FLEET_CACHE_BUCKET` under a `gocache/` prefix |
+| `RUNS_FLEET_GOCACHE_REPOS` | Comma-separated allowlist of `org/repo` or `org/*` entries the Go build cache is enabled for. Empty = every repo. Only consulted when `RUNS_FLEET_GOCACHE_ENABLED=true` |
 
 Actions cache entries live under `caches/<org>/<repo>/<version>/<key>` and are
 expected to expire on a 14-day lifecycle rule scoped to that prefix (set it in
@@ -248,6 +250,32 @@ cache's `caches/`. This needs no configuration; it becomes effective once the
 instance profile has S3 read/write on `buildkit/*` (until then, builds succeed
 with cache-miss warnings). Per-workflow opt-out: `RUNS_FLEET_BUILD_CACHE=off`.
 See "Build Cache" in [USAGE.md](USAGE.md).
+
+With `RUNS_FLEET_GOCACHE_ENABLED=true` the cache bucket also serves the
+transparent Go build cache under a `gocache/<org>/<repo>/` prefix, one object
+per Go action ID. The orchestrator stamps the bucket, region and prefix into
+the runner config for allowed repos; the agent writes them into the runner
+`.env` as `RUNS_FLEET_GOCACHE_BUCKET`, `RUNS_FLEET_GOCACHE_REGION`,
+`RUNS_FLEET_GOCACHE_PREFIX`, `RUNS_FLEET_GOCACHE_DIR` (per-job local tier under
+the runner directory) and `RUNS_FLEET_GOCACHE_OUTCOME`, then sets `GOCACHEPROG`
+to `/usr/local/bin/runs-fleet-gocacheprog`, but only when that helper is an
+executable file (cmd/go treats a missing helper as fatal, so an AMI without it
+reports `degraded` and leaves `go` untouched). The instance profile needs
+`s3:GetObject` and `s3:PutObject` on `gocache/*` **and** `s3:ListBucket`
+on the bucket conditioned to the `gocache/*` prefix: without ListBucket a
+missing object is reported as AccessDenied rather than NoSuchKey, the helper's
+breaker trips after five such failures, and every job on a cold repo reads
+`degraded`. Until the grants land the cache fails open to local-only. Expire
+`gocache/` with a 30-day lifecycle rule beside the others. Tunables baked into
+the helper rather than exposed: 64 MiB per-object upload cap, 10 s remote get
+timeout, 20 s upload drain at exit plus a 5 s grace for cancelled uploads to
+return, 4 upload workers over a 256-deep queue,
+breaker at 5 consecutive remote failures; get concurrency (default 8) is the
+one knob, via `RUNS_FLEET_GOCACHE_GET_WORKERS` in the runner environment. The
+orchestrator refuses to start when the cache is enabled without a bucket or
+with an allowlist entry that is not `org/repo` or `org/*`. Per-workflow opt-out:
+`env: GOCACHEPROG: ""`. See "Automatic Go build caching" in
+[USAGE.md](USAGE.md) and `RunnerGoCache{Status}` in [METRICS.md](METRICS.md).
 
 The same bucket also holds each job's runner logs under a `runner-logs/` prefix,
 so a failure stays diagnosable after GitHub expires its own logs (a superseded

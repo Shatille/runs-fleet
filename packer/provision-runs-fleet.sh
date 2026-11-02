@@ -40,11 +40,13 @@ aws ecr get-login-password --region ${REGION} | sudo docker login --username AWS
 # Pull the runner image for current architecture
 sudo docker pull --platform linux/${DOCKER_ARCH} ${RUNNER_IMAGE}
 
-# Extract agent binary, the buildx cache shim, and the mirror proxy from the image
+# Extract the agent binary, the buildx cache shim, the mirror proxy and the Go
+# build cache helper from the image
 CONTAINER_ID=$(sudo docker create ${RUNNER_IMAGE})
 sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-agent /opt/runs-fleet/runs-fleet-agent
 sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-buildx-shim /tmp/runs-fleet-buildx-shim
 sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-mirror-proxy /tmp/runs-fleet-mirror-proxy
+sudo docker cp ${CONTAINER_ID}:/usr/local/bin/runs-fleet-gocacheprog /tmp/runs-fleet-gocacheprog
 sudo docker rm ${CONTAINER_ID}
 
 sudo chmod +x /opt/runs-fleet/runs-fleet-agent
@@ -100,6 +102,14 @@ echo "==> Installing scoped sudoers drop-in for cache-engage"
 sudo install -m 0440 -o root -g root /tmp/sudoers-cache-engage /etc/sudoers.d/10-runs-fleet-cache
 # Fail the build (before snapshot) on a malformed drop-in rather than at boot.
 sudo visudo -cf /etc/sudoers.d/10-runs-fleet-cache
+
+echo "==> Installing Go build cache helper"
+# The agent sets GOCACHEPROG to this path only when every user can execute the
+# file (jobs run as ec2-user; the file is root-owned), because cmd/go treats a
+# helper it cannot exec as fatal. The 0755 here is therefore load-bearing: a
+# tighter mode silently disables the Go build cache on every job.
+sudo install -m 0755 -o root -g root /tmp/runs-fleet-gocacheprog /usr/local/bin/runs-fleet-gocacheprog
+sudo rm -f /tmp/runs-fleet-gocacheprog
 
 echo "==> Installing Docker Hub mirror proxy"
 # The port is defined once here: the unit passes it to the proxy, the
@@ -263,3 +273,4 @@ echo "==> runs-fleet runner AMI provisioning complete"
 echo "    - Agent binary: extracted from ECR"
 echo "    - Buildx cache shim: installed as docker-buildx CLI plugin (real plugin: ${REAL_BUILDX:-<fallback search list>})"
 echo "    - Systemd service: runs-fleet-agent.service"
+echo "    - Go build cache helper: /usr/local/bin/runs-fleet-gocacheprog"

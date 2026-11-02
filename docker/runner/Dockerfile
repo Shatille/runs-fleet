@@ -37,6 +37,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
     -ldflags "-s -w -X main.version=$VERSION" \
     -o /bin/runs-fleet-mirror-proxy ./cmd/mirror-proxy
 
+# The GOCACHEPROG helper behind the transparent Go build cache. Extracted from
+# this image by the runner AMI provisioner and installed on the EC2 host, where
+# the agent points every go command at it; not used inside the container.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+    -ldflags "-s -w" \
+    -o /bin/runs-fleet-gocacheprog ./cmd/gocacheprog
+
 # Stage 2: Official GitHub Actions runner base
 # Provides: actions-runner at /home/runner, Node.js externals, sudo, common
 # workflow tooling. Docker tooling is replaced below with apt-managed packages
@@ -153,6 +160,9 @@ RUN chmod +x /usr/local/bin/runs-fleet-buildx-shim
 
 COPY --from=builder /bin/runs-fleet-mirror-proxy /usr/local/bin/runs-fleet-mirror-proxy
 RUN chmod +x /usr/local/bin/runs-fleet-mirror-proxy
+
+COPY --from=builder /bin/runs-fleet-gocacheprog /usr/local/bin/runs-fleet-gocacheprog
+RUN chmod +x /usr/local/bin/runs-fleet-gocacheprog
 
 COPY docker/runner/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

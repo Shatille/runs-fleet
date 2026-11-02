@@ -32,6 +32,12 @@ type ManagerConfig struct {
 	// RunnerLogsBucket enables uploading the runner's _diag logs to S3. Empty =
 	// disabled, leaving the runner config's RunnerLogs* fields empty.
 	RunnerLogsBucket string
+	// GoCacheBucket enables the transparent Go build cache for repos matching
+	// GoCacheRepos ("org/repo" or "org/*"; empty = all). Empty bucket =
+	// disabled, leaving the runner config's GoCache* fields empty.
+	GoCacheBucket string
+	GoCacheRegion string
+	GoCacheRepos  []string
 	// RunnerGroup is the GitHub runner group to place runners in. Empty = GitHub's
 	// Default group, resolved without an API call. Only consulted on the JIT path,
 	// which needs the group's numeric ID; token registration passes the name
@@ -129,6 +135,15 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		buildkitPrefix = fmt.Sprintf("buildkit/%s/%s/", org, repoName)
 	}
 
+	// Transparent Go build cache: per-repo allowlist on top of the bucket gate.
+	// The gocache/<org>/<repo> prefix keys outputs by Go's own action ID.
+	goCacheBucket, goCacheRegion, goCachePrefix := "", "", ""
+	if m.config.GoCacheBucket != "" && repoAllowed(m.config.GoCacheRepos, req.Repo) {
+		goCacheBucket = m.config.GoCacheBucket
+		goCacheRegion = m.config.GoCacheRegion
+		goCachePrefix = fmt.Sprintf("gocache/%s/%s", org, repoName)
+	}
+
 	// Runner logs are keyed by run/job/instance, so the prefix stays flat — a
 	// repo segment would break deriving the key from a GitHub job URL alone.
 	runnerLogsBucket, runnerLogsPrefix := "", ""
@@ -162,6 +177,9 @@ func (m *Manager) PrepareRunner(ctx context.Context, req PrepareRunnerRequest) e
 		BuildkitCachePrefix: buildkitPrefix,
 		RunnerLogsBucket:    runnerLogsBucket,
 		RunnerLogsPrefix:    runnerLogsPrefix,
+		GoCacheBucket:       goCacheBucket,
+		GoCacheRegion:       goCacheRegion,
+		GoCachePrefix:       goCachePrefix,
 	}
 
 	runnerLog.Info(ctx, "storing runner config")
@@ -285,4 +303,23 @@ func buildRunnerName(pool, repoName, conditions, jobID, instanceID string) strin
 		name = strings.TrimRight(name[:runnerNameMaxLen-len(suffix)], "-")
 	}
 	return name + suffix
+}
+
+// repoAllowed reports whether "org/repo" matches the allowlist: an exact
+// entry, or "org/*" for every repo in the org. An empty list allows all.
+// Comparison is case-insensitive, as GitHub owner and repo names are.
+func repoAllowed(allowed []string, repo string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	org, _, hasSlash := strings.Cut(repo, "/")
+	for _, entry := range allowed {
+		if strings.EqualFold(entry, repo) {
+			return true
+		}
+		if entryOrg, rest, ok := strings.Cut(entry, "/"); ok && hasSlash && rest == "*" && strings.EqualFold(entryOrg, org) {
+			return true
+		}
+	}
+	return false
 }

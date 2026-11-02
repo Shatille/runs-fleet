@@ -14,6 +14,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/events"
+	"github.com/Shavakan/runs-fleet/pkg/gocacheprog"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
 )
@@ -227,6 +228,10 @@ type mockMetricsAPI struct {
 
 	buildCacheInterceptionCalls int
 	lastBuildCacheInterception  string
+	goCacheCalls                int
+	lastGoCache                 string
+	goCacheRequests             map[string]int64
+	goCacheBytes                map[string]int64
 	logUploadCalls              int
 	lastLogUpload               string
 
@@ -336,6 +341,28 @@ func (m *mockMetricsAPI) PublishRunnerCacheInterception(_ context.Context, statu
 func (m *mockMetricsAPI) PublishRunnerBuildCacheInterception(_ context.Context, status string) error {
 	m.buildCacheInterceptionCalls++
 	m.lastBuildCacheInterception = status
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishRunnerGoCache(_ context.Context, status string) error {
+	m.goCacheCalls++
+	m.lastGoCache = status
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishGoCacheRequests(_ context.Context, result string, count int64) error {
+	if m.goCacheRequests == nil {
+		m.goCacheRequests = map[string]int64{}
+	}
+	m.goCacheRequests[result] += count
+	return nil
+}
+
+func (m *mockMetricsAPI) PublishGoCacheBytes(_ context.Context, direction string, bytes int64) error {
+	if m.goCacheBytes == nil {
+		m.goCacheBytes = map[string]int64{}
+	}
+	m.goCacheBytes[direction] += bytes
 	return nil
 }
 
@@ -2413,5 +2440,94 @@ func TestHandler_processMessage_LogUploadAbsentIsSilent(t *testing.T) {
 	}
 	if metrics.logUploadCalls != 0 {
 		t.Errorf("log upload metric fired for absent field: calls = %d, want 0", metrics.logUploadCalls)
+	}
+}
+
+func TestMessage_CarriesGoCacheOutcomeFromAgent(t *testing.T) {
+	t.Parallel()
+
+	raw := `{"instance_id":"i-1","job_id":"1","status":"success","go_cache":"degraded","go_cache_stats":{"gets":20,"hits_local":1,"hits_remote":0,"misses":19,"puts":19,"errors":0,"get_bytes":10,"put_bytes":20,"download_bytes":0,"uploads":0,"upload_bytes":0,"uploads_skipped":0,"uploads_dropped":0,"uploads_failed":0,"uploads_abandoned":0,"remote_errors":5}}`
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.GoCache != "degraded" || msg.GoCacheStats == nil || msg.GoCacheStats.RemoteErrors != 5 || msg.GoCacheStats.Misses != 19 {
+		t.Fatalf("msg = %+v / %+v", msg.GoCache, msg.GoCacheStats)
+	}
+
+	var old Message
+	if err := json.Unmarshal([]byte(`{"instance_id":"i-1","job_id":"1","status":"success"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.GoCache != "" || old.GoCacheStats != nil {
+		t.Fatalf("pre-rollout agent decoded as %+v / %+v, want absent", old.GoCache, old.GoCacheStats)
+	}
+}
+
+func TestHandler_processMessage_GoCacheStatusAndCounters(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	msg := Message{
+		InstanceID:      "i-12345",
+		JobID:           "12345678901",
+		Status:          "success",
+		DurationSeconds: 120,
+		GoCache:         "degraded",
+		GoCacheStats:    &gocacheprog.Summary{Gets: 20, HitsLocal: 4, HitsRemote: 6, Misses: 10, Puts: 10, RemoteErrors: 5, DownloadBytes: 4096, UploadBytes: 2048, Uploads: 10},
+	}
+	body, _ := json.Marshal(msg)
+	if err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if metrics.goCacheCalls != 1 || metrics.lastGoCache != "degraded" {
+		t.Errorf("go cache status metric = (%d, %q), want (1, degraded)", metrics.goCacheCalls, metrics.lastGoCache)
+	}
+	wantRequests := map[string]int64{"hit_local": 4, "hit_remote": 6, "miss": 10, "put": 10, "remote_error": 5}
+	if len(metrics.goCacheRequests) != len(wantRequests) {
+		t.Fatalf("go cache requests = %v, want %v", metrics.goCacheRequests, wantRequests)
+	}
+	for k, v := range wantRequests {
+		if metrics.goCacheRequests[k] != v {
+			t.Errorf("go cache requests[%s] = %d, want %d", k, metrics.goCacheRequests[k], v)
+		}
+	}
+	if metrics.goCacheBytes["download"] != 4096 || metrics.goCacheBytes["upload"] != 2048 || len(metrics.goCacheBytes) != 2 {
+		t.Errorf("go cache bytes = %v", metrics.goCacheBytes)
+	}
+}
+
+func TestHandler_processMessage_GoCacheStatusOnlyPublishesNoCounters(t *testing.T) {
+	q := &mockQueueAPI{}
+	db := &mockDBAPI{completeRecord: &events.JobInfo{JobID: 12345678901, RunID: 99, Repo: testRepo}}
+	metrics := &mockMetricsAPI{}
+	handler := NewHandler(q, db, metrics, &mockSecretsStore{}, nil, &config.Config{})
+
+	for _, msg := range []Message{
+		{InstanceID: "i-1", JobID: "12345678901", Status: "success", GoCache: "disabled"},
+		{InstanceID: "i-1", JobID: "12345678901", Status: "success", GoCache: "unused", GoCacheStats: &gocacheprog.Summary{}},
+	} {
+		body, _ := json.Marshal(msg)
+		if err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if metrics.goCacheCalls != 2 || metrics.lastGoCache != "unused" {
+		t.Errorf("go cache status metric = (%d, %q), want (2, unused)", metrics.goCacheCalls, metrics.lastGoCache)
+	}
+	if len(metrics.goCacheRequests) != 0 || len(metrics.goCacheBytes) != 0 {
+		t.Errorf("zero counters were published: requests=%v bytes=%v", metrics.goCacheRequests, metrics.goCacheBytes)
+	}
+
+	old := Message{InstanceID: "i-1", JobID: "12345678901", Status: "success"}
+	body, _ := json.Marshal(old)
+	if err := handler.processMessage(context.Background(), queue.Message{Body: string(body), Handle: testReceiptTermination}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if metrics.goCacheCalls != 2 {
+		t.Errorf("pre-rollout agent published a go cache status: calls = %d", metrics.goCacheCalls)
 	}
 }

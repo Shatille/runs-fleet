@@ -246,6 +246,20 @@ type Publisher interface {
 	// instance role never gained s3:PutObject reports failed on every job, which
 	// is the only signal that the logs are silently not being kept.
 	PublishRunnerLogUpload(ctx context.Context, status string) error
+
+	// PublishRunnerGoCache counts a job by the transparent Go build cache's
+	// outcome (status: engaged | unused | degraded | disabled). Sustained
+	// degraded means the helper is missing from the AMI or the instance role
+	// lacks the gocache/ S3 grants.
+	PublishRunnerGoCache(ctx context.Context, status string) error
+
+	// PublishGoCacheRequests adds a job's GOCACHEPROG request counts by result
+	// (hit_local | hit_remote | miss | put | remote_error).
+	PublishGoCacheRequests(ctx context.Context, result string, count int64) error
+
+	// PublishGoCacheBytes adds a job's bytes moved between the runner and the
+	// gocache/ prefix by direction (download | upload).
+	PublishGoCacheBytes(ctx context.Context, direction string, bytes int64) error
 }
 
 // NoopPublisher is a no-op implementation of Publisher for testing or disabled metrics.
@@ -422,6 +436,21 @@ func (NoopPublisher) PublishRunnerBuildCacheInterception(context.Context, string
 
 // PublishRunnerLogUpload is a no-op.
 func (NoopPublisher) PublishRunnerLogUpload(context.Context, string) error {
+	return nil
+}
+
+// PublishRunnerGoCache is a no-op.
+func (NoopPublisher) PublishRunnerGoCache(context.Context, string) error {
+	return nil
+}
+
+// PublishGoCacheRequests is a no-op.
+func (NoopPublisher) PublishGoCacheRequests(context.Context, string, int64) error {
+	return nil
+}
+
+// PublishGoCacheBytes is a no-op.
+func (NoopPublisher) PublishGoCacheBytes(context.Context, string, int64) error {
 	return nil
 }
 

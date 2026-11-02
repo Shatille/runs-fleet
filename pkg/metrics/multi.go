@@ -361,3 +361,21 @@ func (m *MultiPublisher) PublishRunnerLogUpload(ctx context.Context, status stri
 		return p.PublishRunnerLogUpload(ctx, status)
 	})
 }
+
+func (m *MultiPublisher) PublishRunnerGoCache(ctx context.Context, status string) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishRunnerGoCache(ctx, status)
+	})
+}
+
+func (m *MultiPublisher) PublishGoCacheRequests(ctx context.Context, result string, count int64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishGoCacheRequests(ctx, result, count)
+	})
+}
+
+func (m *MultiPublisher) PublishGoCacheBytes(ctx context.Context, direction string, bytes int64) error { //nolint:revive
+	return m.publishAll(ctx, func(p Publisher) error {
+		return p.PublishGoCacheBytes(ctx, direction, bytes)
+	})
+}

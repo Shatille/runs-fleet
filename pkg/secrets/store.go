@@ -62,6 +62,12 @@ type RunnerConfig struct {
 	// BuildkitCache*: absent is inert both directions.
 	RunnerLogsBucket string `json:"runner_logs_bucket,omitempty"`
 	RunnerLogsPrefix string `json:"runner_logs_prefix,omitempty"`
+	// GoCache* carry the transparent Go build cache config the agent writes
+	// into the runner .env so every go invocation uses the GOCACHEPROG helper.
+	// Same omitempty discipline: absent is inert both directions.
+	GoCacheBucket string `json:"go_cache_bucket,omitempty"`
+	GoCacheRegion string `json:"go_cache_region,omitempty"`
+	GoCachePrefix string `json:"go_cache_prefix,omitempty"`
 }
 
 // Store defines operations for storing and retrieving runner configuration.

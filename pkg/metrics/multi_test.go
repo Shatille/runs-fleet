@@ -178,6 +178,9 @@ func TestMultiPublisher_PublishMethods(t *testing.T) {
 		{"PublishInstanceHours", func() error { return multi.PublishInstanceHours(ctx, "4", "c7g", 2) }},
 		{"PublishEstimatedCost", func() error { return multi.PublishEstimatedCost(ctx, 12.5) }},
 		{"PublishRunnerBuildCacheInterception", func() error { return multi.PublishRunnerBuildCacheInterception(ctx, "engaged") }},
+		{"PublishRunnerGoCache", func() error { return multi.PublishRunnerGoCache(ctx, "engaged") }},
+		{"PublishGoCacheRequests", func() error { return multi.PublishGoCacheRequests(ctx, "hit_remote", 42) }},
+		{"PublishGoCacheBytes", func() error { return multi.PublishGoCacheBytes(ctx, "download", 4096) }},
 	}
 
 	for _, tt := range tests {

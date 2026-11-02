@@ -64,7 +64,7 @@ The `node20/` directory is deleted in the Dockerfile, and `FORCE_JAVASCRIPT_ACTI
 The scan does not fail on every HIGH/CRITICAL. `.trivy/gate.sh` post-processes the Trivy JSON and **fails only on findings we can act on**:
 
 - **OS / apt packages** (`Class == os-pkgs`) — fixed by `apt-get upgrade` on rebuild.
-- **our own `runs-fleet-agent` binary** (`Target ~ runs-fleet-agent`) — fixed by a `go.mod` bump.
+- **our own Go binaries** (`Target ~ runs-fleet-agent | runs-fleet-buildx-shim | runs-fleet-mirror-proxy | runs-fleet-gocacheprog`) — fixed by a `go.mod` bump.
 
 Findings that live **only** in third-party prebuilt binaries we install but do not build — Docker/containerd's `dockerd` and the `buildx`/`compose` cli-plugins — or in upstream-bundled `node_modules` (npm's vendored libs, e.g. `undici`) are **reported but non-blocking**. We cannot rebuild those binaries (see the base-image policy above), so failing on them would perpetually block image promotion and the AMI rebuild until the upstream project republishes on patched libraries. They clear on their own when upstream ships a fixed build, and `--ignore-unfixed` already drops anything with no fix.
 
@@ -90,7 +90,7 @@ Pushes to `main` touching `docker/runner/**`, `cmd/agent/**`, `pkg/agent/**`, `.
 
 ## What lives where
 
-- `Dockerfile` — image build. Stage 1 builds the agent binary; stage 2 (`runtime` — the name is load-bearing: `build-runner.yml`'s `no-cache-filters: runtime` forces its layers fresh each CI build so `npm@latest` / `apt-get upgrade` can't be served stale from registry cache) extends the official base, installs apt packages, installs pinned buildx/compose plugins, refreshes npm, copies the agent.
+- `Dockerfile` — image build. Stage 1 builds the agent binary; stage 2 (`runtime` — the name is load-bearing: `build-runner.yml`'s `no-cache-filters: runtime` forces its layers fresh each CI build so `npm@latest` / `apt-get upgrade` can't be served stale from registry cache) extends the official base, installs apt packages, installs pinned buildx/compose plugins, refreshes npm, copies the agent plus the buildx shim, mirror proxy and Go build cache helper that the AMI provisioner extracts.
 - `entrypoint.sh` — execs the agent binary. Keep it trivial.
 - `../../.trivy/trivy.yaml` — shared Trivy config for local + CI (severity, pkg types).
 - `../../.trivy/vex.json` — OpenVEX statements with per-CVE rationale.

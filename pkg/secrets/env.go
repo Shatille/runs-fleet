@@ -57,6 +57,9 @@ func (s *EnvStore) Get(_ context.Context, _ string) (*RunnerConfig, error) {
 		BuildkitCachePrefix: os.Getenv("RUNS_FLEET_BUILDKIT_CACHE_PREFIX"),
 		RunnerLogsBucket:    os.Getenv("RUNS_FLEET_RUNNER_LOGS_BUCKET"),
 		RunnerLogsPrefix:    os.Getenv("RUNS_FLEET_RUNNER_LOGS_PREFIX"),
+		GoCacheBucket:       os.Getenv("RUNS_FLEET_GOCACHE_BUCKET"),
+		GoCacheRegion:       os.Getenv("RUNS_FLEET_GOCACHE_REGION"),
+		GoCachePrefix:       os.Getenv("RUNS_FLEET_GOCACHE_PREFIX"),
 	}
 
 	// Parse labels from comma-separated string
