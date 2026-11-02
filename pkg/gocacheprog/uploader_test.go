@@ -13,13 +13,14 @@ import (
 )
 
 type memRemote struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	block   chan struct{}
-	putErr  error
-	puts    int
-	getErr  error
-	gets    int
+	mu           sync.Mutex
+	objects      map[string][]byte
+	block        chan struct{}
+	ignoreCancel bool
+	putErr       error
+	puts         int
+	getErr       error
+	gets         int
 }
 
 func newMemRemote() *memRemote {
@@ -65,6 +66,10 @@ func (m *memRemote) Put(ctx context.Context, actionID, _ []byte, _ int64, body i
 
 func (m *memRemote) wait(ctx context.Context) error {
 	if m.block == nil {
+		return nil
+	}
+	if m.ignoreCancel {
+		<-m.block
 		return nil
 	}
 	select {
@@ -191,6 +196,46 @@ func TestUploader_DrainDeadlineAbandonsInFlightAndQueued(t *testing.T) {
 		}
 		if u.enqueue(upload{actionID: testID(1), outputID: testID(2), size: 1, path: "/o"}) {
 			t.Fatal("enqueue accepted after drain")
+		}
+	})
+}
+
+func TestUploader_DrainGivesUpOnWorkersThatIgnoreCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		remote := newMemRemote()
+		remote.block = make(chan struct{})
+		remote.ignoreCancel = true
+		files := map[string][]byte{"/o": []byte("x")}
+		u, stats := newTestUploader(remote, 1, 4, files)
+		var warned bytes.Buffer
+		u.warn = newWarner(&warned)
+
+		for range 3 {
+			if !u.enqueue(upload{actionID: testID(1), outputID: testID(2), size: 1, path: "/o"}) {
+				t.Fatal("enqueue refused")
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		start := time.Now()
+		abandoned := u.drain(ctx)
+		if elapsed := time.Since(start); elapsed != 20*time.Second+drainCancelGrace {
+			t.Fatalf("drain returned after %v, want deadline plus %v grace", elapsed, drainCancelGrace)
+		}
+		if abandoned != 0 {
+			t.Fatalf("abandoned = %d, want 0 while the worker is still stuck", abandoned)
+		}
+		if !bytes.Contains(warned.Bytes(), []byte("drain:")) {
+			t.Fatalf("no drain warning, got %q", warned.String())
+		}
+		if u.enqueue(upload{actionID: testID(1), outputID: testID(2), size: 1, path: "/o"}) {
+			t.Fatal("enqueue accepted after drain")
+		}
+
+		close(remote.block)
+		u.wg.Wait()
+		if sum := stats.Summary(); sum.Uploads != 1 || sum.UploadsAbandoned != 2 {
+			t.Fatalf("stats after release = %+v", sum)
 		}
 	})
 }

@@ -9,7 +9,12 @@ import (
 	"time"
 )
 
-const uploadTimeout = 60 * time.Second
+const (
+	uploadTimeout    = 60 * time.Second
+	drainCancelGrace = 5 * time.Second
+)
+
+var errUploadWorkersStuck = errors.New("gocacheprog: upload workers did not return after cancellation")
 
 type upload struct {
 	actionID []byte
@@ -81,7 +86,11 @@ func (u *uploader) drain(ctx context.Context) int64 {
 	case <-done:
 	case <-ctx.Done():
 		u.cancel()
-		<-done
+		select {
+		case <-done:
+		case <-time.After(drainCancelGrace):
+			u.warn.warn("drain", errUploadWorkersStuck)
+		}
 	}
 	u.cancel()
 	return u.stats.UploadsAbandoned.Load()

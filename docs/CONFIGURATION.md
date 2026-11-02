@@ -268,7 +268,8 @@ breaker trips after five such failures, and every job on a cold repo reads
 `degraded`. Until the grants land the cache fails open to local-only. Expire
 `gocache/` with a 30-day lifecycle rule beside the others. Tunables baked into
 the helper rather than exposed: 64 MiB per-object upload cap, 10 s remote get
-timeout, 20 s upload drain at exit, 4 upload workers over a 256-deep queue,
+timeout, 20 s upload drain at exit plus a 5 s grace for cancelled uploads to
+return, 4 upload workers over a 256-deep queue,
 breaker at 5 consecutive remote failures; get concurrency (default 8) is the
 one knob, via `RUNS_FLEET_GOCACHE_GET_WORKERS` in the runner environment. The
 orchestrator refuses to start when the cache is enabled without a bucket or
