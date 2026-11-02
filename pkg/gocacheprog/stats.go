@@ -74,6 +74,28 @@ func (s *Stats) Summary() Summary {
 	}
 }
 
+// Add returns the field-wise sum of two summaries.
+func (s Summary) Add(o Summary) Summary {
+	return Summary{
+		Gets:             s.Gets + o.Gets,
+		HitsLocal:        s.HitsLocal + o.HitsLocal,
+		HitsRemote:       s.HitsRemote + o.HitsRemote,
+		Misses:           s.Misses + o.Misses,
+		Puts:             s.Puts + o.Puts,
+		Errors:           s.Errors + o.Errors,
+		GetBytes:         s.GetBytes + o.GetBytes,
+		PutBytes:         s.PutBytes + o.PutBytes,
+		DownloadBytes:    s.DownloadBytes + o.DownloadBytes,
+		Uploads:          s.Uploads + o.Uploads,
+		UploadBytes:      s.UploadBytes + o.UploadBytes,
+		UploadsSkipped:   s.UploadsSkipped + o.UploadsSkipped,
+		UploadsDropped:   s.UploadsDropped + o.UploadsDropped,
+		UploadsFailed:    s.UploadsFailed + o.UploadsFailed,
+		UploadsAbandoned: s.UploadsAbandoned + o.UploadsAbandoned,
+		RemoteErrors:     s.RemoteErrors + o.RemoteErrors,
+	}
+}
+
 // AppendOutcome appends one JSON line to path, creating the file if needed.
 func AppendOutcome(path string, sum Summary) error {
 	line, err := json.Marshal(sum)
@@ -92,7 +114,8 @@ func AppendOutcome(path string, sum Summary) error {
 }
 
 // ReadOutcomes parses every JSON line AppendOutcome wrote to path. A missing
-// file yields no summaries and no error.
+// file yields no summaries and no error. A line that does not parse stops
+// the read; the summaries before it are returned alongside the error.
 func ReadOutcomes(path string) ([]Summary, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -111,7 +134,7 @@ func ReadOutcomes(path string) ([]Summary, error) {
 		}
 		var sum Summary
 		if uerr := json.Unmarshal([]byte(line), &sum); uerr != nil {
-			return nil, uerr
+			return out, uerr
 		}
 		out = append(out, sum)
 	}

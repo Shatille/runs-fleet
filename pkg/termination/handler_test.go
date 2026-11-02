@@ -2415,3 +2415,24 @@ func TestHandler_processMessage_LogUploadAbsentIsSilent(t *testing.T) {
 		t.Errorf("log upload metric fired for absent field: calls = %d, want 0", metrics.logUploadCalls)
 	}
 }
+
+func TestMessage_CarriesGoCacheOutcomeFromAgent(t *testing.T) {
+	t.Parallel()
+
+	raw := `{"instance_id":"i-1","job_id":"1","status":"success","go_cache":"degraded","go_cache_stats":{"gets":20,"hits_local":1,"hits_remote":0,"misses":19,"puts":19,"errors":0,"get_bytes":10,"put_bytes":20,"download_bytes":0,"uploads":0,"upload_bytes":0,"uploads_skipped":0,"uploads_dropped":0,"uploads_failed":0,"uploads_abandoned":0,"remote_errors":5}}`
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.GoCache != "degraded" || msg.GoCacheStats == nil || msg.GoCacheStats.RemoteErrors != 5 || msg.GoCacheStats.Misses != 19 {
+		t.Fatalf("msg = %+v / %+v", msg.GoCache, msg.GoCacheStats)
+	}
+
+	var old Message
+	if err := json.Unmarshal([]byte(`{"instance_id":"i-1","job_id":"1","status":"success"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.GoCache != "" || old.GoCacheStats != nil {
+		t.Fatalf("pre-rollout agent decoded as %+v / %+v, want absent", old.GoCache, old.GoCacheStats)
+	}
+}

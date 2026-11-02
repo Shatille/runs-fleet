@@ -261,6 +261,11 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	// when the orchestrator did not configure a bucket (empty outcome file).
 	buildCacheOutcomeFile := registrar.WriteBuildkitCacheEnv(runnerPath, ac.runnerConfig)
 
+	// Transparent Go build cache: point every go invocation at the GOCACHEPROG
+	// helper. Engages only when the orchestrator configured a bucket and the
+	// AMI ships the helper; the outcome is read before cleanup wipes the dir.
+	goCache := registrar.WriteGoCacheEnv(runnerPath, ac.runnerConfig)
+
 	// Engage the transparent v2 cache interceptor. Best effort and fail-open:
 	// any failure leaves the runner talking to GitHub's cache directly.
 	cacheProxy, cacheInterception, cacheStop := engageCache(ctx, ac, registrar, runnerPath, logger)
@@ -295,8 +300,9 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 
 	logger.Println("Phase 3: Executing job...")
-	// Every .env writer above (SetRunnerEnvironment, WriteBuildkitCacheEnv, the
-	// cache interceptor) must run before this point: run.sh reads .env at startup.
+	// Every .env writer above (SetRunnerEnvironment, WriteBuildkitCacheEnv,
+	// WriteGoCacheEnv, the cache interceptor) must run before this point: run.sh
+	// reads .env at startup.
 	// That ordering held when config.sh created the runner directory and still
 	// holds on the JIT path, where the directory comes from the tarball extract.
 	result, err := executor.ExecuteJobWithConfig(ctx, runnerPath, ac.runnerConfig.JITConfig)
@@ -323,6 +329,7 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 	}
 
 	logUpload := shipRunnerLogs(ctx, ac, runnerPath, instanceID, jobID, logger)
+	goCacheStatus, goCacheStats := agent.ReadGoCacheOutcome(goCache)
 
 	logger.Println("Phase 4: Cleaning up and terminating...")
 
@@ -353,6 +360,8 @@ func runAgent(ctx context.Context, ac *agentConfig, downloader *agent.Downloader
 		CacheInterception:      cacheInterception,
 		BuildCacheInterception: agent.ReadBuildCacheOutcome(buildCacheOutcomeFile),
 		LogUpload:              logUpload,
+		GoCache:                goCacheStatus,
+		GoCacheStats:           goCacheStats,
 	}
 	if cacheProxy != nil {
 		jobStatus.CacheBytesWritten = cacheProxy.BytesWritten()

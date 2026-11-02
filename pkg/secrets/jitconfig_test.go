@@ -58,6 +58,9 @@ func TestRunnerConfig_WireKeysAreStable(t *testing.T) {
 		"RunnerGroup":       "runner_group",
 		"RunnerName":        "runner_name",
 		"JobID":             "job_id",
+		"GoCacheBucket":     "go_cache_bucket",
+		"GoCacheRegion":     "go_cache_region",
+		"GoCachePrefix":     "go_cache_prefix",
 	}
 
 	typ := reflect.TypeOf(RunnerConfig{})
@@ -97,6 +100,9 @@ var envVarForField = map[string]string{
 	"BuildkitCachePrefix": "RUNS_FLEET_BUILDKIT_CACHE_PREFIX",
 	"RunnerLogsBucket":    "RUNS_FLEET_RUNNER_LOGS_BUCKET",
 	"RunnerLogsPrefix":    "RUNS_FLEET_RUNNER_LOGS_PREFIX",
+	"GoCacheBucket":       "RUNS_FLEET_GOCACHE_BUCKET",
+	"GoCacheRegion":       "RUNS_FLEET_GOCACHE_REGION",
+	"GoCachePrefix":       "RUNS_FLEET_GOCACHE_PREFIX",
 }
 
 // fieldsEnvStoreCannotCarry are RunnerConfig fields EnvStore intentionally does

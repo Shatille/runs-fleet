@@ -16,6 +16,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/events"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	"github.com/Shavakan/runs-fleet/pkg/gocacheprog"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
 	"github.com/Shavakan/runs-fleet/pkg/secrets"
@@ -178,6 +179,11 @@ type Message struct {
 	// LogUpload is the runner-log upload's outcome, absent from a pre-rollout
 	// agent.
 	LogUpload string `json:"log_upload,omitempty"`
+	// GoCache is the transparent Go build cache's outcome
+	// (engaged|unused|degraded|disabled) and GoCacheStats the helper's summed
+	// counters. Both absent from a pre-rollout agent.
+	GoCache      string               `json:"go_cache,omitempty"`
+	GoCacheStats *gocacheprog.Summary `json:"go_cache_stats,omitempty"`
 	// CacheBytesWritten is v2 cache blob bytes stored to S3 through the interceptor
 	// this job (folded into the CacheBytesStored counter — the blob PUT bypasses the
 	// orchestrator, so it can't be counted server-side).

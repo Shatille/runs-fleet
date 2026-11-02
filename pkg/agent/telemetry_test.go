@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+
+	"github.com/Shavakan/runs-fleet/pkg/gocacheprog"
 )
 
 func init() {
@@ -661,5 +663,38 @@ func TestJobStatus_LogUploadRoundTrip(t *testing.T) {
 	}
 	if contains(string(zeroBytes), "log_upload") {
 		t.Errorf("empty LogUpload must be omitted, got: %s", string(zeroBytes))
+	}
+}
+
+func TestJobStatus_GoCacheRoundTrip(t *testing.T) {
+	status := JobStatus{
+		InstanceID:   "i-1",
+		JobID:        testJobID123,
+		GoCache:      GoCacheEngaged,
+		GoCacheStats: &gocacheprog.Summary{Gets: 12, HitsRemote: 3, DownloadBytes: 4096},
+	}
+	jsonBytes, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"go_cache":"engaged"`, `"go_cache_stats":{`, `"hits_remote":3`} {
+		if !contains(string(jsonBytes), key) {
+			t.Errorf("expected %s in %s", key, jsonBytes)
+		}
+	}
+	var decoded JobStatus
+	if err = json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.GoCache != GoCacheEngaged || decoded.GoCacheStats == nil || *decoded.GoCacheStats != *status.GoCacheStats {
+		t.Errorf("decoded = %+v / %+v", decoded.GoCache, decoded.GoCacheStats)
+	}
+
+	zeroBytes, err := json.Marshal(JobStatus{InstanceID: "i-1", JobID: testJobID123})
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if contains(string(zeroBytes), "go_cache") {
+		t.Errorf("absent go cache fields must be omitted, got: %s", string(zeroBytes))
 	}
 }

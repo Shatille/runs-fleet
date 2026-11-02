@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Shavakan/runs-fleet/pkg/gocacheprog"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
@@ -86,6 +87,13 @@ type JobStatus struct {
 	// "partial", "failed", "skipped", or "disabled". Absent (omitempty) from a
 	// pre-rollout agent, which the orchestrator treats as no measurement.
 	LogUpload string `json:"log_upload,omitempty"`
+	// GoCache is the transparent Go build cache's outcome for this job:
+	// "engaged", "unused", "degraded", or "disabled". Absent (omitempty) from a
+	// pre-rollout agent, which the orchestrator treats as no measurement.
+	GoCache string `json:"go_cache,omitempty"`
+	// GoCacheStats sums the GOCACHEPROG helper's counters over every go
+	// invocation in the job. Nil when no invocation was recorded.
+	GoCacheStats *gocacheprog.Summary `json:"go_cache_stats,omitempty"`
 	// CacheBytesWritten is the blob bytes stored to the S3 cache through the v2
 	// interceptor this job (the blob PUT bypasses the orchestrator, so it can't be
 	// counted server-side). Zero when interception didn't engage.
