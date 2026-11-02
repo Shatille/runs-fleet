@@ -74,6 +74,9 @@ type MetricsAPI interface {
 	PublishRunnerBuildCacheInterception(ctx context.Context, status string) error
 	PublishRunnerLogUpload(ctx context.Context, status string) error
 	PublishCacheBytesStored(ctx context.Context, bytes int64) error
+	PublishRunnerGoCache(ctx context.Context, status string) error
+	PublishGoCacheRequests(ctx context.Context, result string, count int64) error
+	PublishGoCacheBytes(ctx context.Context, direction string, bytes int64) error
 }
 
 // maxBootstrapRequeues bounds how many times a job whose instance fails to boot
@@ -680,31 +683,7 @@ func (h *Handler) processTermination(ctx context.Context, msg *Message) error {
 				termLog.Warn(ctx, "tool cache miss metric publish failed", slog.String("error", err.Error()))
 			}
 		}
-		// Cache-interceptor outcome: makes silent fail-open interception visible.
-		if msg.CacheInterception != "" {
-			if err := h.metrics.PublishRunnerCacheInterception(ctx, msg.CacheInterception); err != nil {
-				termLog.Warn(ctx, "cache interception metric publish failed", slog.String("error", err.Error()))
-			}
-		}
-		// Buildx layer-cache shim outcome: the rollout observability gate.
-		if msg.BuildCacheInterception != "" {
-			if err := h.metrics.PublishRunnerBuildCacheInterception(ctx, msg.BuildCacheInterception); err != nil {
-				termLog.Warn(ctx, "build cache interception metric publish failed", slog.String("error", err.Error()))
-			}
-		}
-		// Runner-log upload outcome: the only signal that a fleet missing
-		// s3:PutObject is discarding every job's logs.
-		if msg.LogUpload != "" {
-			if err := h.metrics.PublishRunnerLogUpload(ctx, msg.LogUpload); err != nil {
-				termLog.Warn(ctx, "runner log upload metric publish failed", slog.String("error", err.Error()))
-			}
-		}
-		// v2 cache write bytes (blob PUT bypasses the orchestrator; reported by the agent).
-		if msg.CacheBytesWritten > 0 {
-			if err := h.metrics.PublishCacheBytesStored(ctx, msg.CacheBytesWritten); err != nil {
-				termLog.Warn(ctx, "cache bytes stored metric publish failed", slog.String("error", err.Error()))
-			}
-		}
+		h.publishAgentOutcomes(ctx, msg)
 	}
 
 	// Clean up runner config from secrets store
@@ -871,4 +850,78 @@ func (h *Handler) deleteRunnerConfig(ctx context.Context, instanceID string) err
 
 	termLog.Info(ctx, "runner config deleted")
 	return nil
+}
+
+// publishAgentOutcomes publishes the per-job outcomes the agent reports in
+// the termination message. Each is best-effort and absent from an older agent.
+func (h *Handler) publishAgentOutcomes(ctx context.Context, msg *Message) {
+	// Cache-interceptor outcome: makes silent fail-open interception visible.
+	if msg.CacheInterception != "" {
+		if err := h.metrics.PublishRunnerCacheInterception(ctx, msg.CacheInterception); err != nil {
+			termLog.Warn(ctx, "cache interception metric publish failed", slog.String("error", err.Error()))
+		}
+	}
+	// Buildx layer-cache shim outcome: the rollout observability gate.
+	if msg.BuildCacheInterception != "" {
+		if err := h.metrics.PublishRunnerBuildCacheInterception(ctx, msg.BuildCacheInterception); err != nil {
+			termLog.Warn(ctx, "build cache interception metric publish failed", slog.String("error", err.Error()))
+		}
+	}
+	// Go build cache outcome and counters: sustained degraded means the
+	// helper is missing from the AMI or the role lacks gocache/ grants.
+	if msg.GoCache != "" {
+		if err := h.metrics.PublishRunnerGoCache(ctx, msg.GoCache); err != nil {
+			termLog.Warn(ctx, "go cache metric publish failed", slog.String("error", err.Error()))
+		}
+	}
+	if msg.GoCacheStats != nil {
+		h.publishGoCacheCounters(ctx, msg.GoCacheStats)
+	}
+	// Runner-log upload outcome: the only signal that a fleet missing
+	// s3:PutObject is discarding every job's logs.
+	if msg.LogUpload != "" {
+		if err := h.metrics.PublishRunnerLogUpload(ctx, msg.LogUpload); err != nil {
+			termLog.Warn(ctx, "runner log upload metric publish failed", slog.String("error", err.Error()))
+		}
+	}
+	// v2 cache write bytes (blob PUT bypasses the orchestrator; reported by the agent).
+	if msg.CacheBytesWritten > 0 {
+		if err := h.metrics.PublishCacheBytesStored(ctx, msg.CacheBytesWritten); err != nil {
+			termLog.Warn(ctx, "cache bytes stored metric publish failed", slog.String("error", err.Error()))
+		}
+	}
+}
+
+func (h *Handler) publishGoCacheCounters(ctx context.Context, stats *gocacheprog.Summary) {
+	for _, c := range []struct {
+		result string
+		count  int64
+	}{
+		{"hit_local", stats.HitsLocal},
+		{"hit_remote", stats.HitsRemote},
+		{"miss", stats.Misses},
+		{"put", stats.Puts},
+		{"remote_error", stats.RemoteErrors},
+	} {
+		if c.count <= 0 {
+			continue
+		}
+		if err := h.metrics.PublishGoCacheRequests(ctx, c.result, c.count); err != nil {
+			termLog.Warn(ctx, "go cache requests metric publish failed", slog.String("error", err.Error()))
+		}
+	}
+	for _, b := range []struct {
+		direction string
+		bytes     int64
+	}{
+		{"download", stats.DownloadBytes},
+		{"upload", stats.UploadBytes},
+	} {
+		if b.bytes <= 0 {
+			continue
+		}
+		if err := h.metrics.PublishGoCacheBytes(ctx, b.direction, b.bytes); err != nil {
+			termLog.Warn(ctx, "go cache bytes metric publish failed", slog.String("error", err.Error()))
+		}
+	}
 }

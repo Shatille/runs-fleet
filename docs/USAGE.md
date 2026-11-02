@@ -123,6 +123,33 @@ What to know:
 - **Architecture:** `arm64` and `amd64` runners keep separate caches (the runner OS/arch folds into the cache key), so a `arch=arm64`/`arch=amd64` matrix won't cross-contaminate — same as GitHub-hosted behavior.
 - **Best-effort:** Caching is fail-open. If the cache backend is unreachable the job still runs (just without a cache hit); it never fails the build.
 
+### Automatic Go build caching
+
+Go's own build cache is also shared across jobs with **zero workflow changes**.
+Runners set `GOCACHEPROG` to a runs-fleet helper, so every `go build`, `go
+test` and `go vet` stores each compiled package under Go's content hash of its
+inputs and fetches it back on the next job that needs the same package, in
+this repo or on another branch. Unlike `actions/setup-go`'s tarball, nothing
+goes stale: a package is a hit exactly when its inputs are unchanged.
+
+What to know:
+
+- **Works with Go 1.24 and later.** Older toolchains ignore the helper and
+  keep their default local cache.
+- **Isolation:** entries are scoped per repository, like the Actions cache.
+- **Opt out per workflow:** set `GOCACHEPROG: ""` in `env:` at the job or step
+  level to use Go's default local cache for that job.
+- **Fail-open:** if the bucket is unreachable or the helper is missing, `go`
+  runs with a per-job local cache and the job still passes. A flaky remote is
+  abandoned for the rest of the `go` command after five consecutive failures.
+- **Side effect:** with the helper engaged, `~/.cache/go-build` holds almost
+  nothing, so `actions/setup-go`'s cache and hand-rolled `go-build-*`
+  `actions/cache` keys shrink to a few kilobytes. The module cache is
+  unaffected. You can drop those steps or leave them; they are harmless.
+- **Enablement** is an operator setting (`RUNS_FLEET_GOCACHE_ENABLED`, with a
+  per-repo allowlist), so check with your fleet operator whether your repo is
+  covered.
+
 ### Automatic Docker layer caching
 
 The same cache system also covers Docker layer caches: `docker buildx build`

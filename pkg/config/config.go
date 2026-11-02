@@ -52,6 +52,11 @@ type Config struct {
 	CacheBucketName      string
 	CostReportSNSTopic   string
 	CostReportBucket     string
+	// GoCacheEnabled turns on the transparent Go build cache (GOCACHEPROG
+	// helper backed by CacheBucketName). GoCacheRepos restricts it to the
+	// listed "org/repo" or "org/*" entries; empty means every repo.
+	GoCacheEnabled bool
+	GoCacheRepos   []string
 
 	// EC2 fleet configuration
 	VPCID              string
@@ -217,6 +222,8 @@ func Load() (*Config, error) {
 		CacheBucketName:      getEnv("RUNS_FLEET_CACHE_BUCKET", ""),
 		CostReportSNSTopic:   getEnv("RUNS_FLEET_COST_REPORT_SNS_TOPIC", ""),
 		CostReportBucket:     getEnv("RUNS_FLEET_COST_REPORT_BUCKET", ""),
+		GoCacheEnabled:       getEnvBool("RUNS_FLEET_GOCACHE_ENABLED", false),
+		GoCacheRepos:         splitAndFilter(getEnv("RUNS_FLEET_GOCACHE_REPOS", "")),
 
 		// EC2-specific
 		VPCID:                         getEnv("RUNS_FLEET_VPC_ID", ""),
@@ -325,6 +332,9 @@ func (c *Config) Validate() error {
 	if err := validateBaseURL(c.BaseURL); err != nil {
 		return fmt.Errorf("RUNS_FLEET_BASE_URL: %w", err)
 	}
+	if err := c.validateGoCache(); err != nil {
+		return err
+	}
 	if c.MaxRuntimeMinutes <= 0 {
 		return fmt.Errorf("RUNS_FLEET_MAX_RUNTIME_MINUTES must be greater than 0, got %d", c.MaxRuntimeMinutes)
 	}
@@ -368,6 +378,24 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	return nil
+}
+
+// validateGoCache rejects a Go build cache that is switched on but can never
+// engage: no bucket to back it, or allowlist entries that match no repo.
+func (c *Config) validateGoCache() error {
+	if !c.GoCacheEnabled {
+		return nil
+	}
+	if c.CacheBucketName == "" {
+		return fmt.Errorf("RUNS_FLEET_GOCACHE_ENABLED requires RUNS_FLEET_CACHE_BUCKET")
+	}
+	for _, entry := range c.GoCacheRepos {
+		org, repo, ok := strings.Cut(entry, "/")
+		if !ok || org == "" || repo == "" || strings.Contains(repo, "/") || strings.Contains(org, "*") {
+			return fmt.Errorf("RUNS_FLEET_GOCACHE_REPOS entry %q must be org/repo or org/*", entry)
+		}
+	}
 	return nil
 }
 

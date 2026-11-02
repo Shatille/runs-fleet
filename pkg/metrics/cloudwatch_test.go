@@ -291,6 +291,47 @@ func TestCloudWatchPublisher_RunnerBuildCacheInterception(t *testing.T) {
 	assertDimMap(t, got.dimensions, map[string]string{"Status": "engaged"})
 }
 
+func TestCloudWatchPublisher_GoCacheMetrics(t *testing.T) {
+	t.Parallel()
+
+	t.Run("status", func(t *testing.T) {
+		t.Parallel()
+		var got capturedDatum
+		p := capturingPublisher(t, &got)
+		if err := p.PublishRunnerGoCache(context.Background(), "degraded"); err != nil {
+			t.Fatalf("publish error = %v", err)
+		}
+		if got.name != "RunnerGoCache" {
+			t.Errorf("name = %s, want RunnerGoCache", got.name)
+		}
+		assertDimMap(t, got.dimensions, map[string]string{"Status": "degraded"})
+	})
+	t.Run("requests", func(t *testing.T) {
+		t.Parallel()
+		var got capturedDatum
+		p := capturingPublisher(t, &got)
+		if err := p.PublishGoCacheRequests(context.Background(), "hit_remote", 42); err != nil {
+			t.Fatalf("publish error = %v", err)
+		}
+		if got.name != "GoCacheRequests" || !got.hasValue || got.value != 42 {
+			t.Errorf("datum = %+v, want GoCacheRequests value 42", got)
+		}
+		assertDimMap(t, got.dimensions, map[string]string{"Result": "hit_remote"})
+	})
+	t.Run("bytes", func(t *testing.T) {
+		t.Parallel()
+		var got capturedDatum
+		p := capturingPublisher(t, &got)
+		if err := p.PublishGoCacheBytes(context.Background(), "download", 4096); err != nil {
+			t.Fatalf("publish error = %v", err)
+		}
+		if got.name != "GoCacheBytes" || !got.hasValue || got.value != 4096 || got.unit != types.StandardUnitBytes {
+			t.Errorf("datum = %+v, want GoCacheBytes 4096 bytes", got)
+		}
+		assertDimMap(t, got.dimensions, map[string]string{"Direction": "download"})
+	})
+}
+
 func TestCloudWatchPublisher_GaugeMetrics(t *testing.T) {
 	t.Parallel()
 

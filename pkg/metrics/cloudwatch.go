@@ -328,6 +328,21 @@ func (p *CloudWatchPublisher) PublishRunnerLogUpload(ctx context.Context, status
 	return p.putCounter(ctx, "RunnerLogUpload", dims("Status", status))
 }
 
+// PublishRunnerGoCache counts a job by Go build cache outcome (status).
+func (p *CloudWatchPublisher) PublishRunnerGoCache(ctx context.Context, status string) error {
+	return p.putCounter(ctx, "RunnerGoCache", dims("Status", status))
+}
+
+// PublishGoCacheRequests adds GOCACHEPROG requests by result.
+func (p *CloudWatchPublisher) PublishGoCacheRequests(ctx context.Context, result string, count int64) error {
+	return p.putCounterValue(ctx, "GoCacheRequests", float64(count), dims("Result", result))
+}
+
+// PublishGoCacheBytes adds Go build cache bytes moved by direction.
+func (p *CloudWatchPublisher) PublishGoCacheBytes(ctx context.Context, direction string, bytes int64) error {
+	return p.putCounterValueUnit(ctx, "GoCacheBytes", float64(bytes), types.StandardUnitBytes, dims("Direction", direction))
+}
+
 // --- helpers ---
 
 // dims builds a CloudWatch dimension list from name/value pairs. Empty values are

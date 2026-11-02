@@ -909,3 +909,82 @@ func TestManager_PrepareRunner_RunnerLogsFieldsEmptyWhenBucketAbsent(t *testing.
 			cfg.RunnerLogsBucket, cfg.RunnerLogsPrefix)
 	}
 }
+
+func TestRepoAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		repos []string
+		repo  string
+		want  bool
+	}{
+		{"empty list allows all", nil, "acme/widgets", true},
+		{"exact match", []string{"acme/widgets"}, "acme/widgets", true},
+		{"exact match is case-insensitive", []string{"Acme/Widgets"}, "acme/widgets", true},
+		{"other repo in org not listed", []string{"acme/widgets"}, "acme/gadgets", false},
+		{"org wildcard", []string{"acme/*"}, "acme/gadgets", true},
+		{"org wildcard is case-insensitive", []string{"ACME/*"}, "acme/gadgets", true},
+		{"wildcard does not cross orgs", []string{"acme/*"}, "other/gadgets", false},
+		{"bare star is not a wildcard", []string{"*"}, "acme/gadgets", false},
+		{"mixed list", []string{"other/thing", "acme/*"}, "acme/gadgets", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := repoAllowed(tt.repos, tt.repo); got != tt.want {
+				t.Errorf("repoAllowed(%v, %q) = %v, want %v", tt.repos, tt.repo, got, tt.want)
+			}
+		})
+	}
+}
+
+const testGoCacheBucket = "runs-fleet-cache"
+
+func prepareWithGoCache(t *testing.T, cfg ManagerConfig, repo string) *secrets.RunnerConfig {
+	t.Helper()
+	mockStore := &mockSecretsStore{}
+	manager := NewManager(&mockGitHubClient{regToken: "tok"}, mockStore, cfg)
+	req := PrepareRunnerRequest{InstanceID: "i-1", JobID: "job-1", Repo: repo, Labels: []string{"self-hosted"}}
+	if err := manager.PrepareRunner(context.Background(), req); err != nil {
+		t.Fatalf("PrepareRunner() error = %v", err)
+	}
+	if mockStore.lastPutCfg == nil {
+		t.Fatal("stored config is nil")
+	}
+	return mockStore.lastPutCfg
+}
+
+func TestManager_PrepareRunner_GoCacheFieldsSetForAllowedRepo(t *testing.T) {
+	t.Parallel()
+
+	cfg := prepareWithGoCache(t, ManagerConfig{
+		GoCacheBucket: testGoCacheBucket,
+		GoCacheRegion: "ap-northeast-1",
+		GoCacheRepos:  []string{"acme/*"},
+	}, "acme/widgets")
+	if cfg.GoCacheBucket != testGoCacheBucket || cfg.GoCacheRegion != "ap-northeast-1" {
+		t.Errorf("bucket/region = %q/%q", cfg.GoCacheBucket, cfg.GoCacheRegion)
+	}
+	if cfg.GoCachePrefix != "gocache/acme/widgets" {
+		t.Errorf("GoCachePrefix = %q, want gocache/acme/widgets", cfg.GoCachePrefix)
+	}
+}
+
+func TestManager_PrepareRunner_GoCacheFieldsEmptyWhenNotEnabledForRepo(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]ManagerConfig{
+		"bucket absent":    {GoCacheRegion: "ap-northeast-1", GoCacheRepos: []string{"acme/widgets"}},
+		"repo not allowed": {GoCacheBucket: testGoCacheBucket, GoCacheRegion: "ap-northeast-1", GoCacheRepos: []string{"other/*"}},
+	}
+	for name, mc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := prepareWithGoCache(t, mc, "acme/widgets")
+			if cfg.GoCacheBucket != "" || cfg.GoCacheRegion != "" || cfg.GoCachePrefix != "" {
+				t.Errorf("go cache fields must be empty, got bucket=%q region=%q prefix=%q", cfg.GoCacheBucket, cfg.GoCacheRegion, cfg.GoCachePrefix)
+			}
+		})
+	}
+}

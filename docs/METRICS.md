@@ -123,6 +123,9 @@ histograms; on CloudWatch they are emitted as single-sample statistic sets.
 | `CacheAuthRejected` | `cache_auth_rejected_total` | counter | Reason | Rejected cache auth attempt. |
 | `RunnerCacheInterception` | `runner_cache_interception_total` | counter | Status | Per-job cache-interceptor outcome (`engaged` \| `failed` \| `disabled`). See below. |
 | `RunnerBuildCacheInterception` | `runner_build_cache_interception_total` | counter | Status | Per-job transparent buildx layer-cache shim outcome (`engaged` \| `skipped` \| `failed` \| `disabled`). See below. |
+| `RunnerGoCache` | `runner_go_cache_total` | counter | Status | Per-job transparent Go build cache outcome (`engaged` \| `unused` \| `degraded` \| `disabled`). See below. |
+| `GoCacheRequests` | `go_cache_requests_total` | counter | Result | GOCACHEPROG requests summed per job (`hit_local` \| `hit_remote` \| `miss` \| `put` \| `remote_error`). |
+| `GoCacheBytes` | `go_cache_bytes_total` | counter (bytes) | Direction | Go build cache bytes moved between the runner and the `gocache/` prefix (`download` \| `upload`). |
 
 ### Housekeeping / cost
 
@@ -214,6 +217,26 @@ During rollout, watch `engaged` climb as workflows exercise builds; a spike in
 `failed` surfaces a broken IMDS/creds path before it silently disables caching
 fleet-wide. `skipped` is benign (the client opted out or is on an unsupported
 builder).
+
+### `RunnerGoCache{Status}`
+
+One count per job, tagging the transparent Go build cache's outcome. The agent
+sums the `runs-fleet-gocacheprog` helper's per-invocation counters and reports:
+
+| Status | Meaning |
+|--------|---------|
+| `engaged` | The helper served at least one get or put with no helper or remote fault. A cold repo whose every get missed still counts as engaged: misses are not faults. |
+| `unused` | The cache was configured but no `go` command ran in the job (or none asked the cache for anything). |
+| `degraded` | The helper is not installed as an executable file on the AMI, its `.env` wiring failed, or the job saw a helper fault, a remote error or a failed upload. The job still ran; `go` fell back to a per-job local cache. |
+| `disabled` | `RUNS_FLEET_GOCACHE_ENABLED` is off or the repo is outside `RUNS_FLEET_GOCACHE_REPOS`. |
+
+Sustained `degraded` across the fleet means the AMI lacks the helper or the
+instance role lacks the `gocache/*` grants (including `s3:ListBucket`, without
+which every miss is an AccessDenied that trips the helper's breaker).
+`GoCacheRequests{remote_error}` says which: it is zero when the helper never
+engaged and climbs when S3 is refusing. A healthy rollout shows `hit_remote`
+rising on the second run of a commit and `GoCacheBytes{download}` tracking it.
+No repo or org dimension is emitted (cardinality policy above).
 
 ### v2 write bytes → `CacheBytesStored`
 

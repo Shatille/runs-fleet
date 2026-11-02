@@ -361,7 +361,17 @@ func initRunnerManager(githubClient *gh.Client, secretsStore secrets.Store, cfg 
 		BuildkitCacheBucket: cfg.CacheBucketName,
 		BuildkitCacheRegion: cfg.AWSRegion,
 		RunnerLogsBucket:    cfg.CacheBucketName,
+		GoCacheBucket:       goCacheBucket(cfg),
+		GoCacheRegion:       cfg.AWSRegion,
+		GoCacheRepos:        cfg.GoCacheRepos,
 	})
+}
+
+func goCacheBucket(cfg *config.Config) string {
+	if !cfg.GoCacheEnabled {
+		return ""
+	}
+	return cfg.CacheBucketName
 }
 
 func initCircuitBreaker(ctx context.Context, awsCfg aws.Config, cfg *config.Config, fm *fleet.Manager, eh *events.Handler) *circuit.Breaker {

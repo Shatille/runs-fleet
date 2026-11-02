@@ -348,3 +348,15 @@ func (p *DatadogPublisher) PublishRunnerBuildCacheInterception(_ context.Context
 func (p *DatadogPublisher) PublishRunnerLogUpload(_ context.Context, status string) error { //nolint:revive
 	return p.client.Incr("runner_log_upload", ddTag(nil, "status", status), 1)
 }
+
+func (p *DatadogPublisher) PublishRunnerGoCache(_ context.Context, status string) error { //nolint:revive
+	return p.client.Incr("runner_go_cache", ddTag(nil, "status", status), 1)
+}
+
+func (p *DatadogPublisher) PublishGoCacheRequests(_ context.Context, result string, count int64) error { //nolint:revive
+	return p.client.Count("go_cache_requests", count, ddTag(nil, "result", result), 1)
+}
+
+func (p *DatadogPublisher) PublishGoCacheBytes(_ context.Context, direction string, bytes int64) error { //nolint:revive
+	return p.client.Count("go_cache_bytes", bytes, ddTag(nil, "direction", direction), 1)
+}

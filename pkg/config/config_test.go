@@ -1402,3 +1402,119 @@ func TestValidateOIDCConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadGoCache(t *testing.T) {
+	tests := []struct {
+		name        string
+		enabled     string
+		repos       string
+		wantEnabled bool
+		wantRepos   []string
+	}{
+		{name: "off by default", wantRepos: []string{}},
+		{name: "enabled for every repo", enabled: "true", wantEnabled: true, wantRepos: []string{}},
+		{name: "allowlist is split and trimmed", enabled: "true", repos: " acme/widgets, acme/* ,", wantEnabled: true, wantRepos: []string{"acme/widgets", "acme/*"}},
+		{name: "bad entries are tolerated while disabled", repos: "*", wantRepos: []string{"*"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalEnv := os.Environ()
+			t.Cleanup(func() {
+				os.Clearenv()
+				for _, e := range originalEnv {
+					pair := splitEnv(e)
+					_ = os.Setenv(pair[0], pair[1])
+				}
+			})
+
+			os.Clearenv()
+			for k, v := range map[string]string{
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+				"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+				"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
+				"RUNS_FLEET_CACHE_BUCKET":           "runs-fleet-cache",
+				"RUNS_FLEET_GOCACHE_ENABLED":        tt.enabled,
+				"RUNS_FLEET_GOCACHE_REPOS":          tt.repos,
+			} {
+				_ = os.Setenv(k, v)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.GoCacheEnabled != tt.wantEnabled {
+				t.Errorf("GoCacheEnabled = %v, want %v", cfg.GoCacheEnabled, tt.wantEnabled)
+			}
+			if len(cfg.GoCacheRepos) != len(tt.wantRepos) {
+				t.Fatalf("GoCacheRepos = %v, want %v", cfg.GoCacheRepos, tt.wantRepos)
+			}
+			for i := range tt.wantRepos {
+				if cfg.GoCacheRepos[i] != tt.wantRepos[i] {
+					t.Errorf("GoCacheRepos = %v, want %v", cfg.GoCacheRepos, tt.wantRepos)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadGoCacheRejectsUnusableSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		bucket string
+		repos  string
+		want   string
+	}{
+		{name: "no bucket", bucket: "", want: "RUNS_FLEET_CACHE_BUCKET"},
+		{name: "bare star", bucket: "b", repos: "*", want: `"*"`},
+		{name: "trailing slash", bucket: "b", repos: "acme/widgets/", want: `"acme/widgets/"`},
+		{name: "wildcard org", bucket: "b", repos: "*/widgets", want: `"*/widgets"`},
+		{name: "no slash", bucket: "b", repos: "acme", want: `"acme"`},
+		{name: "one bad among good", bucket: "b", repos: "acme/*,acme/widgets/extra", want: `"acme/widgets/extra"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalEnv := os.Environ()
+			t.Cleanup(func() {
+				os.Clearenv()
+				for _, e := range originalEnv {
+					pair := splitEnv(e)
+					_ = os.Setenv(pair[0], pair[1])
+				}
+			})
+
+			os.Clearenv()
+			for k, v := range map[string]string{
+				"RUNS_FLEET_QUEUE_URL":              "https://sqs.us-east-1.amazonaws.com/123/queue",
+				"RUNS_FLEET_VPC_ID":                 "vpc-123",
+				"RUNS_FLEET_SUBNET_IDS":             "subnet-1,subnet-2",
+				"RUNS_FLEET_GITHUB_WEBHOOK_SECRET":  "secret",
+				"RUNS_FLEET_GITHUB_APP_ID":          "123456",
+				"RUNS_FLEET_GITHUB_APP_PRIVATE_KEY": "test-key",
+				"RUNS_FLEET_SECURITY_GROUP_ID":      "sg-123",
+				"RUNS_FLEET_INSTANCE_PROFILE_ARN":   "arn:aws:iam::123456789:instance-profile/test",
+				"RUNS_FLEET_RUNNER_IMAGE":           "123456789012.dkr.ecr.us-east-1.amazonaws.com/runs-fleet-runner:latest",
+				"RUNS_FLEET_BASE_URL":               "https://runs-fleet.example.com",
+				"RUNS_FLEET_GOCACHE_ENABLED":        "true",
+				"RUNS_FLEET_CACHE_BUCKET":           tt.bucket,
+				"RUNS_FLEET_GOCACHE_REPOS":          tt.repos,
+			} {
+				_ = os.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want one mentioning %s", err, tt.want)
+			}
+		})
+	}
+}
