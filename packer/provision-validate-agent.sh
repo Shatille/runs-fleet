@@ -221,6 +221,53 @@ done
 
 echo "  OK: tool cache helm 4.2, kubectl 1.35, protoc v25.6, uv 0.8, GraalVM CE 25 ($TOOLCACHE_PLATFORM)"
 
+echo "==> Validating Go build cache helper"
+GOCACHEPROG_HELPER=/usr/local/bin/runs-fleet-gocacheprog
+[ -x "$GOCACHEPROG_HELPER" ] || fail "$GOCACHEPROG_HELPER missing or not executable"
+# The agent engages the helper only when every user can execute it (jobs run
+# as ec2-user); a tighter mode silently disables the Go build cache fleet-wide.
+OWNMODE=$(stat -c '%U:%G %a' "$GOCACHEPROG_HELPER")
+[ "$OWNMODE" = "root:root 755" ] || fail "$GOCACHEPROG_HELPER wrong owner/mode: $OWNMODE"
+file "$GOCACHEPROG_HELPER" | grep -q "$EXPECTED_ELF" \
+  || fail "$GOCACHEPROG_HELPER arch mismatch (expected $EXPECTED_ELF): $(file -b "$GOCACHEPROG_HELPER")"
+# Protocol smoke as the runner user with no bucket configured (local-only):
+# the capability line must come first and a close must be answered.
+smoke_dir=$(sudo -u ec2-user mktemp -d)
+set +e
+smoke_out=$(printf '{"ID":1,"Command":"close"}\n\n' \
+  | sudo -u ec2-user env RUNS_FLEET_GOCACHE_DIR="$smoke_dir/l1" "$GOCACHEPROG_HELPER" 2>&1)
+smoke_rc=$?
+set -e
+[ "$smoke_rc" -eq 0 ] || fail "helper exited $smoke_rc on handshake+close: $smoke_out"
+[ "$(echo "$smoke_out" | sed -n 1p)" = '{"ID":0,"KnownCommands":["get","put","close"]}' ] \
+  || fail "helper capability line unexpected: $smoke_out"
+[ "$(echo "$smoke_out" | sed -n 2p)" = '{"ID":1}' ] || fail "helper did not answer close: $smoke_out"
+sudo rm -rf "$smoke_dir"
+# Real builds through the helper on the oldest and newest baked toolchains: the
+# second build of an unchanged module must be served from the helper's local
+# tier with no helper errors. This is also where a toolchain that ignored
+# GOCACHEPROG would surface (no outcome line at all).
+for gline in 1.24 1.26; do
+  gdir=$(newest_toolcache_dir go "$gline")
+  [ -n "$gdir" ] && [ -x "$gdir/bin/go" ] || fail "no runnable go ${gline} to validate GOCACHEPROG with"
+  gobin="$gdir/bin/go"
+  work=$(sudo -u ec2-user mktemp -d)
+  sudo -u ec2-user bash -c "printf 'module hello\n\ngo ${gline}\n' > '$work/go.mod' && printf 'package main\n\nfunc main() {}\n' > '$work/main.go'"
+  for run in 1 2; do
+    sudo -u ec2-user env HOME=/home/ec2-user GOFLAGS= GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off \
+      GOCACHE="$work/gocache" GOCACHEPROG="$GOCACHEPROG_HELPER" \
+      RUNS_FLEET_GOCACHE_DIR="$work/l1" RUNS_FLEET_GOCACHE_OUTCOME="$work/outcome" \
+      "$gobin" -C "$work" build -o "$work/hello" . \
+      || fail "go ${gline} build ${run} through GOCACHEPROG failed"
+  done
+  [ -s "$work/outcome" ] || fail "go ${gline} never started the helper (no outcome written)"
+  last=$(tail -n1 "$work/outcome")
+  echo "$last" | grep -qE '"hits_local":[1-9]' || fail "go ${gline}: second build served no hits through the helper: $last"
+  echo "$last" | grep -qF '"errors":0' || fail "go ${gline}: helper reported errors: $last"
+  sudo rm -rf "$work"
+done
+echo "  OK: $GOCACHEPROG_HELPER (root:root 755, handshake, go 1.24 + 1.26 second-build hits)"
+
 echo "==> Validating cache-engage helper"
 HELPER=/usr/local/sbin/runs-fleet-cache-engage
 HOST=results-receiver.actions.githubusercontent.com

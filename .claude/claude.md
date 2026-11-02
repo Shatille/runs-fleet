@@ -41,6 +41,7 @@ GitHub Webhook → API Gateway → SQS FIFO
 
 - `cmd/server/` - Fargate orchestrator (webhooks, queue processing, fleet management)
 - `cmd/agent/` - EC2 instance bootstrap binary (registers runner, executes job)
+- `cmd/gocacheprog/` - GOCACHEPROG helper baked into the runner AMI (transparent Go build cache: local disk tier + S3 tier)
 - `pkg/admin/` - Admin API and web UI for fleet management
 - `pkg/agent/` - Agent runtime logic (job execution, telemetry)
 - `pkg/cache/` - S3-backed GitHub Actions cache protocol
@@ -50,6 +51,7 @@ GitHub Webhook → API Gateway → SQS FIFO
 - `pkg/db/` - DynamoDB state management (jobs, pools, locks)
 - `pkg/events/` - EventBridge event processing (spot interruptions)
 - `pkg/fleet/` - EC2 fleet orchestration (spot strategy, launch templates)
+- `pkg/gocacheprog/` - GOCACHEPROG protocol, two-tier cache policy and outcome stats behind `cmd/gocacheprog`
 - `pkg/github/` - GitHub App API client (auth, registration tokens, workflow-job status) plus webhook validation and label parsing
 - `pkg/gitops/` - GitOps integration for pool configuration
 - `pkg/housekeeping/` - Cleanup tasks (orphaned instances, stale SSM, old jobs)

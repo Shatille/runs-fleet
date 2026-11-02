@@ -139,6 +139,32 @@
           };
         };
 
+        runs-fleet-gocacheprog = arch: pkgs.buildGo126Module {
+          pname = "runs-fleet-gocacheprog-${arch}";
+          inherit version;
+          src = ./.;
+
+          vendorHash = null;
+
+          subPackages = [ "cmd/gocacheprog" ];
+
+          ldflags = [
+            "-s"
+            "-w"
+            "-extldflags=-static"
+          ];
+
+          CGO_ENABLED = "0";
+          GOOS = "linux";
+          GOARCH = arch;
+
+          meta = {
+            description = "GOCACHEPROG helper for the transparent Go build cache (${arch})";
+            homepage = "https://github.com/Shavakan/runs-fleet";
+            license = pkgs.lib.licenses.mit;
+          };
+        };
+
         runs-fleet-docker = pkgs.dockerTools.buildImage {
           name = "runs-fleet";
           tag = "latest";
@@ -163,6 +189,8 @@
           agent-arm64 = runs-fleet-agent "arm64";
           buildx-shim-amd64 = runs-fleet-buildx-shim "amd64";
           buildx-shim-arm64 = runs-fleet-buildx-shim "arm64";
+          gocacheprog-amd64 = runs-fleet-gocacheprog "amd64";
+          gocacheprog-arm64 = runs-fleet-gocacheprog "arm64";
           docker = runs-fleet-docker;
           admin-ui = admin-ui;
           golangci-lint = golangci-lint-pinned;
