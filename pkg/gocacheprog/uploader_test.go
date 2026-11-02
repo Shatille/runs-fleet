@@ -137,6 +137,27 @@ func TestUploader_UploadsQueuedBodies(t *testing.T) {
 	})
 }
 
+func TestUploader_ZeroWorkersStillUploads(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		remote := newMemRemote()
+		files := map[string][]byte{"/o": []byte("x")}
+		u, stats := newTestUploader(remote, 0, 4, files)
+
+		if !u.enqueue(upload{actionID: testID(1), outputID: testID(2), size: 1, path: "/o"}) {
+			t.Fatal("enqueue refused")
+		}
+		if abandoned := u.drain(context.Background()); abandoned != 0 {
+			t.Fatalf("abandoned = %d", abandoned)
+		}
+		if _, ok := remote.object(testID(1)); !ok {
+			t.Fatal("upload never ran")
+		}
+		if sum := stats.Summary(); sum.Uploads != 1 {
+			t.Fatalf("stats = %+v", sum)
+		}
+	})
+}
+
 func TestUploader_EnqueueNeverBlocksWhenQueueIsFull(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		remote := newMemRemote()

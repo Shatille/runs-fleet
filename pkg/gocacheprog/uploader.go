@@ -49,7 +49,7 @@ func newUploader(remote Remote, stats *Stats, warn *warner, workers, depth int) 
 		ctx:           ctx,
 		cancel:        cancel,
 	}
-	for range workers {
+	for range max(workers, 1) {
 		u.wg.Add(1)
 		go u.work()
 	}
