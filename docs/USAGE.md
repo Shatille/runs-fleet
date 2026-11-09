@@ -245,6 +245,17 @@ jobs:
     runs-on: "runs-fleet/cpu=4/arch=${{ matrix.arch }}"
 ```
 
+### Recovery keeps placement requirements
+
+Native-label retries restore CPU, RAM, architecture, family and generation requirements before selecting a warm runner or launching a replacement.
+Disk size is restored for cold-start launch; the existing warm-pool matcher does not filter instances by disk size.
+A mixed pool can contain smaller instances and other architectures; a retry does not make those instances eligible for a more demanding label.
+
+Native `runs-fleet/...` labels are parsed again before dispatching a recovered job, and custom-alias labels are re-resolved through the configured `RUNS_FLEET_LABEL_ALIASES` rules.
+If an alias rule was removed and the retry carries no resolved placement fields, recovery does not infer a request from the instance type: a registration label and a selected instance type cannot reconstruct options such as a custom disk size.
+Such messages are left for queue redelivery and dead-letter handling instead of registering their label on arbitrary hardware.
+Recovery preserves the on-demand retry policy and the original GitHub registration label.
+
 ### Ephemeral pools (auto-created)
 
 Ephemeral pools are automatically created when a job references a pool that doesn't exist. They inherit instance specs from the first job that references them:

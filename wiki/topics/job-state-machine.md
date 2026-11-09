@@ -134,6 +134,15 @@ Four distinct mechanisms exist because a job can get stuck in four ways:
   [pkg/events/rerun.go](../../pkg/events/rerun.go) +
   [pkg/github/rerun.go](../../pkg/github/rerun.go).
 
+Recovery messages rebuilt from job records can retain `OriginalLabel` and `InstanceType` while losing parsed placement fields.
+`internal/worker/placement.go` restores those requirements before warm-pool selection and cold-start launch.
+Without that restoration, an empty flexible spec admits an unrelated warm spare and registers the requested label on incompatible hardware.
+GitHub then matches any queued job with that label, so the impact can cross run boundaries even though the replacement was created for an earlier job.
+Native labels restore the original constraints through the shared parser; alias labels are re-resolved through the configured `RUNS_FLEET_LABEL_ALIASES` rules.
+An alias that no longer matches a rule and carries no resolved requirements is rejected: a selected instance type cannot reconstruct options such as custom disk size.
+Disk size is restored for cold-start launch; warm-pool disk filtering remains outside the existing matcher.
+Retry/on-demand policy remains separate from placement restoration.
+
 ## Talks To [coverage: high -- 20 sources]
 
 - **DynamoDB** (`pkg/db/jobs.go`) — `runs-fleet-jobs` is the sole source of

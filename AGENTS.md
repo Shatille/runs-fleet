@@ -293,14 +293,12 @@ terraform apply
    - Fix all failures before proceeding
 
 3. **Code review**
-   - Invoke `code-reviewer` agent (shavakan-agents:code-reviewer)
-   - Address ALL comments and findings
-   - Re-request review after changes
-   - Iterate until agent produces zero actionable comments
+   - Run a supported independent local review
+   - Fix or rebut every finding, and re-review after behavior-changing fixes
+   - Run at most two passes per head lineage; report unresolved findings after the second pass
 
 4. **Commit**
-   - Use `git-commit` skill (shavakan-skills:git-commit)
-   - Do NOT use manual git commands for commits
+   - After the gates pass, use `git commit` with a one-line conventional commit subject
 
 **Non-negotiable:** Code that fails lint, tests, or review does not get committed.
 

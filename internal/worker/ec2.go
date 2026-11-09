@@ -14,6 +14,7 @@ import (
 	"github.com/Shavakan/runs-fleet/pkg/config"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/metrics"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
@@ -93,6 +94,10 @@ type EC2WorkerDeps struct {
 	DB          *db.Client
 	Config      *config.Config
 	SubnetIndex *uint64
+
+	// LabelAliases re-resolves custom-label retries, whose requeue messages carry
+	// only the registration label. Nil leaves alias retries unrecoverable.
+	LabelAliases *gh.AliasResolver
 
 	// WarmPoolAssigner allows injection of custom assigner for testing.
 	// If nil, creates default WarmPoolAssigner from Pool, Runner, DB.
@@ -250,6 +255,11 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 		))
 	defer span.End()
 
+	if err := recoverJobPlacement(&job, deps.LabelAliases); err != nil {
+		ec2Log.Error(ctx, "job placement recovery failed", slog.String("error", err.Error()))
+		return
+	}
+
 	if deps.DB != nil && deps.DB.HasJobsTable() {
 		if err := deps.DB.ClaimJob(ctx, job.JobID, job.RunID, job.Repo); err != nil {
 			if errors.Is(err, db.ErrJobAlreadyClaimed) {
@@ -280,9 +290,10 @@ func processEC2Message(ctx context.Context, deps EC2WorkerDeps, msg queue.Messag
 			assigner = deps.WarmPoolAssigner
 		} else {
 			assigner = &WarmPoolAssigner{
-				Pool:   deps.Pool,
-				Runner: deps.Runner,
-				DB:     deps.DB,
+				Pool:         deps.Pool,
+				Runner:       deps.Runner,
+				DB:           deps.DB,
+				LabelAliases: deps.LabelAliases,
 			}
 		}
 		result, err := assigner.TryAssignToWarmPool(ctx, &job)
@@ -520,20 +531,11 @@ func PrepareRunners(ctx context.Context, preparer RunnerPreparer, job *queue.Job
 // truth for the fallback message so the ec2-worker and the direct path cannot
 // diverge in what they re-enqueue.
 func BuildOnDemandFallbackJob(job *queue.JobMessage) *queue.JobMessage {
-	return &queue.JobMessage{
-		JobID:         job.JobID,
-		RunID:         job.RunID,
-		Repo:          job.Repo,
-		InstanceType:  job.InstanceType,
-		InstanceTypes: job.InstanceTypes,
-		Pool:          job.Pool,
-		Spot:          false,
-		OriginalLabel: job.OriginalLabel,
-		RetryCount:    job.RetryCount + 1,
-		ForceOnDemand: true,
-		Arch:          job.Arch,
-		StorageGiB:    job.StorageGiB,
-	}
+	fallback := *job
+	fallback.Spot = false
+	fallback.ForceOnDemand = true
+	fallback.RetryCount++
+	return &fallback
 }
 
 func handleOnDemandFallback(_ context.Context, deps EC2WorkerDeps, job *queue.JobMessage, msgHandle string) {

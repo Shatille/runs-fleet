@@ -220,14 +220,15 @@ func main() {
 
 	runWorker(func(c context.Context) {
 		worker.RunEC2Worker(c, worker.EC2WorkerDeps{
-			Queue:       jobQueue,
-			Fleet:       fleetManager,
-			Pool:        poolManager,
-			Metrics:     metricsPublisher,
-			Runner:      runnerManager,
-			DB:          dbClient,
-			Config:      cfg,
-			SubnetIndex: &subnetIndex,
+			Queue:        jobQueue,
+			Fleet:        fleetManager,
+			Pool:         poolManager,
+			Metrics:      metricsPublisher,
+			Runner:       runnerManager,
+			DB:           dbClient,
+			Config:       cfg,
+			SubnetIndex:  &subnetIndex,
+			LabelAliases: labelAliasResolver,
 		})
 	})
 	runWorker(poolManager.ReconcileLoop)
