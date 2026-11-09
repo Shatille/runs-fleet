@@ -739,8 +739,8 @@ rm -f /tmp/protoc.zip
 
 echo "==> Pre-baking uv into the tool cache (0.8)"
 UV_LINE="0.8"
-uv_full=$(dl "https://api.github.com/repos/astral-sh/uv/tags?per_page=100" \
-  | jq -r --arg m "${UV_LINE}." '[.[].name] | map(select(startswith($m))) | first // empty')
+uv_full=$(dl "https://api.github.com/repos/astral-sh/uv/git/matching-refs/tags/${UV_LINE}." \
+  | jq -r '.[].ref | ltrimstr("refs/tags/")' | sort -V | tail -1)
 [ -n "$uv_full" ] || { echo "no uv ${UV_LINE}.x tag found"; exit 1; }
 uv_asset="uv-${GNU_ARCH}-unknown-linux-gnu.tar.gz"
 dl "https://github.com/astral-sh/uv/releases/download/${uv_full}/${uv_asset}" -o /tmp/uv.tar.gz \
