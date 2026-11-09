@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -198,13 +199,28 @@ func flowTestKey(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(pemBytes)
 }
 
-type flowLogger struct{ lines []string }
+type flowLogger struct {
+	mu    sync.Mutex
+	lines []string
+}
 
 func (l *flowLogger) Printf(f string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.lines = append(l.lines, fmt.Sprintf(f, v...))
 }
-func (l *flowLogger) Println(v ...interface{}) { l.lines = append(l.lines, fmt.Sprintln(v...)) }
-func (l *flowLogger) String() string           { return strings.Join(l.lines, "\n") }
+
+func (l *flowLogger) Println(v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintln(v...))
+}
+
+func (l *flowLogger) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
+}
 
 func newFlowManager(t *testing.T, stub *stubGitHub, group string) (*runner.Manager, secrets.Store, *flowSSM) {
 	t.Helper()
