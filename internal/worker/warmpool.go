@@ -9,6 +9,7 @@ import (
 	"github.com/Shavakan/runs-fleet/internal/handler"
 	"github.com/Shavakan/runs-fleet/pkg/db"
 	"github.com/Shavakan/runs-fleet/pkg/fleet"
+	gh "github.com/Shavakan/runs-fleet/pkg/github"
 	"github.com/Shavakan/runs-fleet/pkg/logging"
 	"github.com/Shavakan/runs-fleet/pkg/pools"
 	"github.com/Shavakan/runs-fleet/pkg/queue"
@@ -38,9 +39,10 @@ type JobDBClient interface {
 
 // WarmPoolAssigner handles assignment of jobs to warm pool instances.
 type WarmPoolAssigner struct {
-	Pool   PoolManager
-	Runner RunnerPreparer
-	DB     JobDBClient
+	Pool         PoolManager
+	Runner       RunnerPreparer
+	DB           JobDBClient
+	LabelAliases *gh.AliasResolver
 }
 
 // WarmPoolResult contains the result of a warm pool assignment attempt.
@@ -68,7 +70,10 @@ func (w *WarmPoolAssigner) TryAssignToWarmPool(ctx context.Context, job *queue.J
 		return nil, fmt.Errorf("warm pool assignment aborted, context done: %w", err)
 	}
 
-	// Build FlexibleSpec from job message for multi-spec pool matching
+	if err := recoverJobPlacement(job, w.LabelAliases); err != nil {
+		return nil, err
+	}
+
 	// If no spec fields are set, spec is nil (legacy: any instance matches)
 	var spec *fleet.FlexibleSpec
 	if job.CPUMin > 0 || job.CPUMax > 0 || job.RAMMin > 0 || job.RAMMax > 0 || len(job.Families) > 0 || job.Gen > 0 || job.Arch != "" {
