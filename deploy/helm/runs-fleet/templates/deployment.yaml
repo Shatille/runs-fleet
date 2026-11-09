@@ -260,6 +260,14 @@ spec:
             - name: RUNS_FLEET_HOT_POOL_CAPS
               value: {{ .Values.hotPools.caps | toJson | quote }}
             {{- end }}
+            {{- if .Values.gocache.enabled }}
+            - name: RUNS_FLEET_GOCACHE_ENABLED
+              value: "true"
+            {{- if .Values.gocache.repos }}
+            - name: RUNS_FLEET_GOCACHE_REPOS
+              value: {{ .Values.gocache.repos | quote }}
+            {{- end }}
+            {{- end }}
             - name: RUNS_FLEET_LOG_LEVEL
               value: {{ .Values.logging.level }}
             - name: RUNS_FLEET_LOG_FORMAT

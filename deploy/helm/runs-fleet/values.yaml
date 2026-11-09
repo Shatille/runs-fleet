@@ -220,6 +220,13 @@ hotPools:
   #   lookbackDays: 7
   #   burstGapMinutes: 20
 
+# Transparent Go build cache (GOCACHEPROG helper baked into the runner AMI),
+# backed by aws.cacheBucket under the gocache/ prefix
+gocache:
+  enabled: false
+  # Comma-separated org/repo or org/* allowlist; empty = every repo
+  repos: ""
+
 # Secrets backend configuration
 secrets:
   # Backend selection: "ssm" (default) or "vault"
