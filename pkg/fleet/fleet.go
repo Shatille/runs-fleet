@@ -81,6 +81,13 @@ const spotPriceCacheTTL = 5 * time.Minute
 const availabilityCacheTTL = 24 * time.Hour
 const archARM64 = "arm64"
 
+// TagInstanceAssigned marks an instance that has had a runner config written for
+// it. It is durable and shared across replicas, unlike the in-memory idle
+// tracking, so a spare whose assignment was later requeued away stays excluded
+// from hot claims even after a replica restart. An instance launched for a job
+// carries it from launch.
+const TagInstanceAssigned = "runs-fleet:assigned"
+
 // maxFleetOverrides caps the total launch template overrides emitted across all
 // configs in a single CreateFleet request. The overrides are an
 // (instance type x subnet) matrix, so this bounds types x AZs. AWS allows up to
@@ -173,7 +180,10 @@ func (m *Manager) CreateFleet(ctx context.Context, spec *LaunchSpec) ([]string, 
 
 	useSpot := m.shouldUseSpot(ctx, spec)
 	capacity := fleetCapacityLabel(useSpot)
-	tags := m.buildTags(spec)
+	tags := append(m.buildTags(spec), types.Tag{
+		Key:   aws.String(TagInstanceAssigned),
+		Value: aws.String("true"),
+	})
 
 	req, err := m.buildFleetRequest(ctx, spec, useSpot, tags)
 	if err != nil {
