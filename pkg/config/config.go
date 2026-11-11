@@ -683,6 +683,7 @@ func validateTags(tags map[string]string) error {
 		// - Role (conditional)
 		// - runs-fleet:runner-image (conditional)
 		// - runs-fleet:termination-queue-url (conditional)
+		// - runs-fleet:assigned (job launches)
 		// Reserve 15 for system tags to be safe, allowing 35 custom tags
 		systemTagReserve = 15
 		maxTags          = 50 - systemTagReserve

@@ -33,11 +33,7 @@ const (
 	stateStopped = "stopped"
 )
 
-// tagInstanceAssigned marks an instance that has had a runner config written for
-// it. It is durable and shared across replicas, unlike the in-memory idle
-// tracking, so a spare whose assignment was later requeued away stays excluded
-// from hot claims even after a replica restart.
-const tagInstanceAssigned = "runs-fleet:assigned"
+const tagInstanceAssigned = fleet.TagInstanceAssigned
 
 // defaultBootstrapGracePeriod is how long after launch a warm-pool spare is left
 // alone before it may be stopped. Stopping a spare mid-boot begins an OS shutdown

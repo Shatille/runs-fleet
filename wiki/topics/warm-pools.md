@@ -465,6 +465,9 @@ and one `PoolActions{Action,Reason}` counter **per affected instance**.
   its config once at boot and never revalidates, so a *running* instance that
   already consumed a config can never serve another claim. A durable tag
   survives a replica restart where the in-memory idle map does not (PR #416).
+  An instance launched directly for a job (`fleet.CreateFleet`) carries the tag
+  from launch, so it is never offered as a hot spare once its job ends; only
+  `CreateOnDemandInstance` spares start untagged.
 - **PR #433 (`c2fc00e`) / PR #451 (`09538c1`): never destroy an instance already
   promised to a job.** `HasLiveInstanceClaim` exists because
   `ClaimInstanceForJob` writes to the pools table *before* `StartInstances` is
