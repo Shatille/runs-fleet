@@ -246,7 +246,9 @@ from the runner to a presigned S3 URL through the on-host blob shim
 (`pkg/cache/blobshim`) — the orchestrator's v2 finalize is a no-op ack and never
 sees the payload. The shim meters each successful **data** PUT (a single-shot Put
 Blob or a committed block list — never the intermediate block staging, which
-would double-count) and the agent reports the per-job total via
+would double-count). Block uploads stream to S3 as multipart parts through
+orchestrator-presigned URLs; the orchestrator's multipart complete does not meter
+either, since the shim already counted the committed list. The agent reports the per-job total via
 `Proxy.BytesWritten()`. The handler folds it into the existing `CacheBytesStored`
 counter, so the counter now reflects v1 commits **and** v2 writes with no
 double-counting (v2 writes never traverse the orchestrator commit path).

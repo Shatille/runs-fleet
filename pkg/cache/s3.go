@@ -34,19 +34,24 @@ type PresignAPI interface {
 
 // Server implements GitHub Actions cache protocol using S3 backend.
 type Server struct {
-	s3Client        S3API
-	presignClient   PresignAPI
-	cacheBucketName string
-	defaultScope    string // Optional default scope (org/repo) for cache isolation
+	s3Client         S3API
+	presignClient    PresignAPI
+	multipart        MultipartAPI
+	multipartPresign MultipartPresignAPI
+	cacheBucketName  string
+	defaultScope     string // Optional default scope (org/repo) for cache isolation
 }
 
 // NewServer creates a new cache server backed by S3.
 func NewServer(cfg aws.Config, bucketName string) *Server {
 	client := s3.NewFromConfig(cfg)
+	presign := s3.NewPresignClient(client)
 	return &Server{
-		s3Client:        client,
-		presignClient:   s3.NewPresignClient(client),
-		cacheBucketName: bucketName,
+		s3Client:         client,
+		presignClient:    presign,
+		multipart:        client,
+		multipartPresign: presign,
+		cacheBucketName:  bucketName,
 	}
 }
 
@@ -68,10 +73,12 @@ func (s *Server) WithScope(scope string) *Server {
 		return s
 	}
 	return &Server{
-		s3Client:        s.s3Client,
-		presignClient:   s.presignClient,
-		cacheBucketName: s.cacheBucketName,
-		defaultScope:    scope,
+		s3Client:         s.s3Client,
+		presignClient:    s.presignClient,
+		multipart:        s.multipart,
+		multipartPresign: s.multipartPresign,
+		cacheBucketName:  s.cacheBucketName,
+		defaultScope:     scope,
 	}
 }
 

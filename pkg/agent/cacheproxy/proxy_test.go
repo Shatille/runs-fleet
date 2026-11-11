@@ -4,16 +4,20 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 )
 
 // stubOrchestrator answers the v1 reserve endpoint with a presigned PUT URL.
@@ -216,5 +220,80 @@ func TestNewRequiresOrchestratorURL(t *testing.T) {
 
 	if _, err := New(Config{}); err == nil {
 		t.Error("New should require OrchestratorBaseURL")
+	}
+}
+
+func TestProxyStreamsBlocksThroughOrchestratorMultipart(t *testing.T) {
+	t.Parallel()
+
+	var partPuts atomic.Int64
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/part/") {
+			_, _ = io.Copy(io.Discard, r.Body)
+			partPuts.Add(1)
+			w.Header().Set("ETag", `"p"`)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(s3.Close)
+	s3URL, err := url.Parse(s3.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+
+	var creates atomic.Int64
+	orch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case wire.MultipartCreatePath:
+			creates.Add(1)
+			_, _ = io.WriteString(w, `{"uploadId":"u-1"}`)
+		case wire.MultipartPartPath:
+			_, _ = io.WriteString(w, `{"url":"https://s3.internal/part/1"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(orch.Close)
+
+	staging := t.TempDir()
+	p, err := New(Config{
+		OrchestratorBaseURL: orch.URL,
+		CacheToken:          "tok",
+		ResultsHost:         "results.test",
+		ListenAddr:          "127.0.0.1:0",
+		StagingDir:          staging,
+		HTTPClient:          &http.Client{Transport: &hostRewriteTransport{base: http.DefaultTransport, from: "s3.internal", to: s3URL}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p.resolver = func(context.Context, string) ([]string, error) { return []string{"203.0.113.10"}, nil }
+	if err = p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+
+	blockID := base64.StdEncoding.EncodeToString([]byte("0f8fad5b-d9cb-469f-a165-70867728950e000000000000"))
+	blobURL := "https://" + p.Addr() + blobshim.PathPrefix + blobshim.EncodeUploadTarget("https://s3.internal/put-target", "k", "v1") +
+		"?comp=block&blockid=" + url.QueryEscape(blockID)
+	req, err := http.NewRequest(http.MethodPut, blobURL, strings.NewReader(strings.Repeat("x", 5<<20)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := caClient(t, p).Do(req)
+	if err != nil {
+		t.Fatalf("stage block over TLS: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	if creates.Load() != 1 || partPuts.Load() != 1 {
+		t.Errorf("multipart creates = %d, part PUTs = %d, want 1 and 1", creates.Load(), partPuts.Load())
+	}
+	if entries, _ := os.ReadDir(staging); len(entries) != 0 {
+		t.Errorf("staging dir has %d entries, want none", len(entries))
 	}
 }

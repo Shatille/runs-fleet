@@ -152,7 +152,8 @@ func (c *ServiceV2) handleCreateCacheEntry(w http.ResponseWriter, r *http.Reques
 	}
 	cacheLog.Info(r.Context(), "v2 cache entry created",
 		slog.String("key", req.Key), slog.String("version", req.Version))
-	writeJSON(w, createCacheEntryResponse{OK: true, SignedUploadURL: c.blobURL(url)})
+	signed := c.blobBase + blobshim.PathPrefix + blobshim.EncodeUploadTarget(url, req.Key, req.Version)
+	writeJSON(w, createCacheEntryResponse{OK: true, SignedUploadURL: signed})
 }
 
 func (c *ServiceV2) handleGetDownloadURL(w http.ResponseWriter, r *http.Request) {

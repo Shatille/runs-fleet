@@ -344,6 +344,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	}
 
 	mux.Handle("POST /_apis/artifactcache/caches", wrap(h.ReserveCacheEntry))
+	h.registerMultipartRoutes(mux, wrap)
 	mux.Handle("GET /_apis/artifactcache/cache", wrap(h.GetCacheEntry))
 
 	mux.Handle("/_apis/artifactcache/caches/", wrap(func(w http.ResponseWriter, r *http.Request) {

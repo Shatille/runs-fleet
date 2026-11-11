@@ -122,6 +122,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	cacheMux := http.NewServeMux()
 	cachev2.NewServiceV2(presigner, "https://"+p.cfg.ResultsHost, nil).RegisterRoutes(cacheMux)
 	shim := blobshim.NewHandler(p.cfg.HTTPClient, p.cfg.StagingDir, func(n int64) { p.bytesWritten.Add(n) })
+	shim.SetMultipart(presigner)
 	upstream := &url.URL{Scheme: "https", Host: p.cfg.ResultsHost}
 	handler := intercept.NewInterceptor(cacheMux, shim, upstream, transport, p.healthy.Load)
 
