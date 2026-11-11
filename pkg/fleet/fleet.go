@@ -81,11 +81,8 @@ const spotPriceCacheTTL = 5 * time.Minute
 const availabilityCacheTTL = 24 * time.Hour
 const archARM64 = "arm64"
 
-// TagInstanceAssigned marks an instance that has had a runner config written for
-// it. It is durable and shared across replicas, unlike the in-memory idle
-// tracking, so a spare whose assignment was later requeued away stays excluded
-// from hot claims even after a replica restart. An instance launched for a job
-// carries it from launch.
+// TagInstanceAssigned durably excludes job-assigned instances from hot-pool claims.
+const TagInstanceAssigned = "runs-fleet:assigned"
 const TagInstanceAssigned = "runs-fleet:assigned"
 
 // maxFleetOverrides caps the total launch template overrides emitted across all
