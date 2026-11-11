@@ -22,9 +22,6 @@ func sdkBlockID(i int) string {
 	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("0f8fad5b-d9cb-469f-a165-70867728950e%012d", i)))
 }
 
-// fakeOrchestrator plays the orchestrator's multipart routes against the fake
-// S3: parts land at /parts/<uploadID>/<n>, and complete concatenates them in
-// the order given into /<key>.
 type fakeOrchestrator struct {
 	s3          *fakeS3
 	base        string
@@ -321,10 +318,10 @@ func TestMultipartConcurrentBlocksShareOneUpload(t *testing.T) {
 	codes := make([]int, n)
 	for i := range n {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
-			codes[i] = stage(t, h, blob, sdkBlockID(i), fmt.Sprintf("%02d", i))
-		}()
+			codes[idx] = stage(t, h, blob, sdkBlockID(idx), fmt.Sprintf("%02d", idx))
+		}(i)
 	}
 	wg.Wait()
 	ids := make([]string, n)
