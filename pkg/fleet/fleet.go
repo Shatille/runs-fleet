@@ -83,7 +83,6 @@ const archARM64 = "arm64"
 
 // TagInstanceAssigned durably excludes job-assigned instances from hot-pool claims.
 const TagInstanceAssigned = "runs-fleet:assigned"
-const TagInstanceAssigned = "runs-fleet:assigned"
 
 // maxFleetOverrides caps the total launch template overrides emitted across all
 // configs in a single CreateFleet request. The overrides are an
