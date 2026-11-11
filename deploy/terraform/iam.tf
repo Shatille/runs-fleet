@@ -335,7 +335,7 @@ resource "aws_iam_role_policy" "orchestrator" {
       },
       {
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:AbortMultipartUpload"]
         Resource = [local.cache_bucket_arn, "${local.cache_bucket_arn}/*", local.config_bucket_arn, "${local.config_bucket_arn}/*"]
       },
       {

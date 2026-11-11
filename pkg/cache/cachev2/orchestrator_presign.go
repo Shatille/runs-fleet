@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
 	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 )
 
@@ -102,4 +103,76 @@ func (p *HTTPPresigner) authenticate(req *http.Request) {
 	if p.token != "" {
 		req.Header.Set(wire.CacheTokenHeader, p.token)
 	}
+}
+
+// CreateMultipart starts a streamed upload for the cache entry. An orchestrator
+// without multipart routes answers 404, reported as blobshim.ErrMultipartUnsupported.
+func (p *HTTPPresigner) CreateMultipart(ctx context.Context, key, version string) (string, error) {
+	var out wire.MultipartCreateResponse
+	if err := p.postMultipart(ctx, wire.MultipartCreatePath, wire.MultipartRequest{Key: key, Version: version}, &out); err != nil {
+		return "", err
+	}
+	if out.UploadID == "" {
+		return "", fmt.Errorf("multipart create: empty upload ID")
+	}
+	return out.UploadID, nil
+}
+
+// PresignPart returns a presigned URL for one part of a streamed upload.
+func (p *HTTPPresigner) PresignPart(ctx context.Context, key, version, uploadID string, partNumber int32) (string, error) {
+	var out wire.MultipartPartResponse
+	req := wire.MultipartRequest{Key: key, Version: version, UploadID: uploadID, PartNumber: partNumber}
+	if err := p.postMultipart(ctx, wire.MultipartPartPath, req, &out); err != nil {
+		return "", err
+	}
+	if out.URL == "" {
+		return "", fmt.Errorf("multipart part: empty URL")
+	}
+	return out.URL, nil
+}
+
+// CompleteMultipart assembles the uploaded parts into the cache entry.
+func (p *HTTPPresigner) CompleteMultipart(ctx context.Context, key, version, uploadID string, parts []wire.MultipartPart, size int64) error {
+	req := wire.MultipartRequest{Key: key, Version: version, UploadID: uploadID, Parts: parts, Size: size}
+	return p.postMultipart(ctx, wire.MultipartCompletePath, req, nil)
+}
+
+// AbortMultipart discards a streamed upload's parts.
+func (p *HTTPPresigner) AbortMultipart(ctx context.Context, key, version, uploadID string) error {
+	req := wire.MultipartRequest{Key: key, Version: version, UploadID: uploadID}
+	return p.postMultipart(ctx, wire.MultipartAbortPath, req, nil)
+}
+
+func (p *HTTPPresigner) postMultipart(ctx context.Context, path string, body wire.MultipartRequest, out any) error {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+path, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", contentTypeJSON)
+	p.authenticate(req)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return blobshim.ErrMultipartUnsupported
+	case resp.StatusCode/100 != 2:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return fmt.Errorf("%s: status %d", path, resp.StatusCode)
+	case out == nil:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("%s: decode response: %w", path, err)
+	}
+	return nil
 }

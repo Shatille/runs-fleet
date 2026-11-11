@@ -7,12 +7,16 @@
 package blobshim
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,7 +24,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
+	"github.com/Shavakan/runs-fleet/pkg/logging"
 )
+
+var shimLog = logging.WithComponent(logging.LogTypeCache, "blobshim")
 
 // PathPrefix is the URL path under which the shim serves blob operations.
 const PathPrefix = "/blob/"
@@ -35,17 +45,64 @@ const (
 	msgMissingBlockID   = "missing blockid"
 	msgInvalidBlockList = "invalid block list"
 	msgUnknownBlock     = "unknown block"
+	msgInvalidBlockID   = "invalid block id"
 )
+
+// minPartSize is S3's smallest allowed multipart part, except for the last.
+const minPartSize = 5 << 20
+
+// ErrMultipartUnsupported is returned by a Multipart whose orchestrator has no
+// multipart routes; the shim then stages blocks on disk as before.
+var ErrMultipartUnsupported = errors.New("multipart upload unsupported")
+
+// Multipart streams staged blocks to S3 as multipart parts through
+// orchestrator-presigned URLs, so a committed blob never needs a disk copy.
+type Multipart interface {
+	CreateMultipart(ctx context.Context, key, version string) (uploadID string, err error)
+	PresignPart(ctx context.Context, key, version, uploadID string, partNumber int32) (url string, err error)
+	CompleteMultipart(ctx context.Context, key, version, uploadID string, parts []wire.MultipartPart, size int64) error
+	AbortMultipart(ctx context.Context, key, version, uploadID string) error
+}
+
+// target is what a blob token carries: the presigned URL, plus the cache entry
+// it belongs to when the token was minted for an upload.
+type target struct {
+	URL     string `json:"u"`
+	Key     string `json:"k,omitempty"`
+	Version string `json:"v,omitempty"`
+}
+
+// upload tracks one blob's streamed parts. An empty id means the blob is being
+// staged on disk; decided records that the choice was made at its first block.
+type upload struct {
+	mu      sync.Mutex
+	decided bool
+	id      string
+	parts   map[int]streamedPart
+}
+
+type streamedPart struct {
+	blockID string
+	part    wire.MultipartPart
+	size    int64
+}
 
 // Handler serves the Azure Block Blob subset the v2 cache client uses and
 // forwards the bytes to the presigned S3 URL encoded in the request path.
-// Staged blocks are buffered under a per-blob directory and reassembled, in
-// block-list order, on commit. The handler is stateless across cache entries.
+// Staged blocks stream to S3 as multipart parts when a Multipart is set and the
+// blob qualifies; otherwise they are buffered under a per-blob directory and
+// reassembled, in block-list order, on commit. Per-blob upload state lives
+// from the first staged block until commit.
 type Handler struct {
 	client      *http.Client
 	staging     string
 	allowTarget func(string) bool
 	onBytes     func(int64)
+	multipart   Multipart
+	minPartSize int64
+
+	mu      sync.Mutex
+	uploads map[string]*upload
 }
 
 // NewHandler returns a shim handler that forwards via client and buffers staged
@@ -56,7 +113,19 @@ func NewHandler(client *http.Client, stagingDir string, onBytes func(int64)) *Ha
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Handler{client: client, staging: stagingDir, allowTarget: allowedTarget, onBytes: onBytes}
+	return &Handler{
+		client:      client,
+		staging:     stagingDir,
+		allowTarget: allowedTarget,
+		onBytes:     onBytes,
+		minPartSize: minPartSize,
+		uploads:     map[string]*upload{},
+	}
+}
+
+// SetMultipart streams block uploads to S3 through m instead of staging them on disk.
+func (h *Handler) SetMultipart(m Multipart) {
+	h.multipart = m
 }
 
 // recordBytes reports n bytes stored (nil-safe).
@@ -71,12 +140,26 @@ func EncodeTarget(presignedURL string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(presignedURL))
 }
 
-func decodeTarget(token string) (string, error) {
+// EncodeUploadTarget encodes an upload's presigned URL together with its cache
+// key and version, which the shim needs to stream the blob as multipart parts.
+func EncodeUploadTarget(presignedURL, key, version string) string {
+	raw, _ := json.Marshal(target{URL: presignedURL, Key: key, Version: version})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeTarget(token string) (target, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return "", fmt.Errorf("decode blob token: %w", err)
+		return target{}, fmt.Errorf("decode blob token: %w", err)
 	}
-	return string(raw), nil
+	if !strings.HasPrefix(string(raw), "{") {
+		return target{URL: string(raw)}, nil
+	}
+	var t target
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return target{}, fmt.Errorf("decode blob token: %w", err)
+	}
+	return t, nil
 }
 
 // allowedTarget guards the forward target, which is decoded from the
@@ -103,8 +186,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := strings.TrimPrefix(r.URL.Path, PathPrefix)
-	target, err := decodeTarget(token)
-	if err != nil || !h.allowTarget(target) {
+	t, err := decodeTarget(token)
+	if err != nil || !h.allowTarget(t.URL) {
 		http.Error(w, msgBadTarget, http.StatusBadRequest)
 		return
 	}
@@ -113,52 +196,139 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		switch r.URL.Query().Get("comp") {
 		case "block":
-			h.stageBlock(w, r, token)
+			h.stageBlock(w, r, token, t)
 		case "blocklist":
-			h.commitBlockList(w, r, token, target)
+			h.commitBlockList(w, r, token, t)
 		case "":
-			h.putBlob(w, r, target)
+			h.putBlob(w, r, t.URL)
 		default:
 			http.Error(w, msgUnsupportedComp, http.StatusBadRequest)
 		}
 	case http.MethodGet:
-		h.getBlob(w, r, target)
+		h.getBlob(w, r, t.URL)
 	case http.MethodHead:
-		h.headBlob(w, r, target)
+		h.headBlob(w, r, t.URL)
 	default:
 		http.Error(w, msgMethodNotAllowed, http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, token string) {
+func (h *Handler) stageBlock(w http.ResponseWriter, r *http.Request, token string, t target) {
 	blockID := r.URL.Query().Get("blockid")
 	if blockID == "" {
 		http.Error(w, msgMissingBlockID, http.StatusBadRequest)
 		return
 	}
+	index, indexed := blockIndex(blockID)
+	u := h.upload(token)
+	u.mu.Lock()
+	if !u.decided {
+		u.decided = true
+		if h.multipart != nil && t.Key != "" && indexed && r.ContentLength >= h.minPartSize {
+			id, err := h.multipart.CreateMultipart(r.Context(), t.Key, t.Version)
+			switch {
+			case err == nil:
+				u.id = id
+				u.parts = map[int]streamedPart{}
+			case !errors.Is(err, ErrMultipartUnsupported):
+				shimLog.Warn(r.Context(), "multipart create failed; staging blocks on disk",
+					slog.String("key", t.Key), slog.String("error", err.Error()))
+			}
+		}
+	}
+	uploadID := u.id
+	u.mu.Unlock()
+
+	if uploadID == "" {
+		h.stageBlockOnDisk(w, r, token, blockID)
+		return
+	}
+	if !indexed || r.ContentLength < 0 {
+		http.Error(w, msgInvalidBlockID, http.StatusBadRequest)
+		return
+	}
+	partNumber := int32(index + 1)
+	partURL, err := h.multipart.PresignPart(r.Context(), t.Key, t.Version, uploadID, partNumber)
+	if err != nil {
+		shimLog.Warn(r.Context(), "multipart part presign failed",
+			slog.String("key", t.Key), slog.Int("part", int(partNumber)), slog.String("error", err.Error()))
+		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	if !h.allowTarget(partURL) {
+		shimLog.Warn(r.Context(), "multipart part URL rejected by target guard",
+			slog.String("key", t.Key), slog.Int("part", int(partNumber)))
+		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	status, etag, err := h.put(r, partURL, r.Body, r.ContentLength)
+	if err != nil || status/100 != 2 || etag == "" {
+		shimLog.Warn(r.Context(), "multipart part upload failed",
+			slog.String("key", t.Key), slog.Int("part", int(partNumber)), slog.Int("status", status), slog.Any("error", err))
+		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	u.mu.Lock()
+	u.parts[index] = streamedPart{blockID: blockID, part: wire.MultipartPart{PartNumber: partNumber, ETag: etag}, size: r.ContentLength}
+	u.mu.Unlock()
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (h *Handler) stageBlockOnDisk(w http.ResponseWriter, r *http.Request, token, blockID string) {
 	dir := h.blockDir(token)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		http.Error(w, msgStaging, http.StatusInternalServerError)
 		return
 	}
-	f, err := os.Create(filepath.Join(dir, encodeBlockID(blockID)))
+	path := filepath.Join(dir, encodeBlockID(blockID))
+	f, err := os.Create(path)
 	if err != nil {
 		http.Error(w, msgStaging, http.StatusInternalServerError)
 		return
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := io.Copy(f, r.Body); err != nil {
+	_, copyErr := io.Copy(f, r.Body)
+	closeErr := f.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(path)
 		http.Error(w, msgStaging, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token, target string) {
+func (h *Handler) upload(token string) *upload {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	u, ok := h.uploads[token]
+	if !ok {
+		u = &upload{}
+		h.uploads[token] = u
+	}
+	return u
+}
+
+func (h *Handler) takeUpload(token string) *upload {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	u := h.uploads[token]
+	delete(h.uploads, token)
+	return u
+}
+
+func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token string, t target) {
 	ids, err := parseBlockList(r.Body)
 	if err != nil {
 		http.Error(w, msgInvalidBlockList, http.StatusBadRequest)
 		return
+	}
+	if u := h.takeUpload(token); u != nil {
+		u.mu.Lock()
+		streamed := u.id != ""
+		u.mu.Unlock()
+		if streamed {
+			h.completeUpload(w, r, t, u, ids)
+			return
+		}
 	}
 	dir := h.blockDir(token)
 	files := make([]*os.File, 0, len(ids))
@@ -188,11 +358,52 @@ func (h *Handler) commitBlockList(w http.ResponseWriter, r *http.Request, token,
 		readers = append(readers, f)
 	}
 
-	status, err := h.forwardPut(r, target, io.MultiReader(readers...), total)
+	status, err := h.forwardPut(r, t.URL, io.MultiReader(readers...), total)
 	cleanup()
 	_ = os.RemoveAll(dir) // always drop staged blocks, success or failure
 	if err != nil || status/100 != 2 {
 		http.Error(w, msgUpstream, http.StatusBadGateway)
+		return
+	}
+	h.recordBytes(total)
+	w.WriteHeader(http.StatusCreated)
+}
+
+// completeUpload assembles a streamed blob. S3 orders parts by part number, so
+// the committed list must name every uploaded block in ascending index order.
+func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, t target, u *upload, ids []string) {
+	u.mu.Lock()
+	uploadID := u.id
+	parts := make([]wire.MultipartPart, 0, len(ids))
+	var total int64
+	status, msg := 0, ""
+	for i, id := range ids {
+		index, ok := blockIndex(id)
+		sp, staged := u.parts[index]
+		switch {
+		case !ok || !staged || sp.blockID != id:
+			status, msg = http.StatusBadRequest, msgUnknownBlock
+		case i > 0 && sp.part.PartNumber <= parts[i-1].PartNumber:
+			status, msg = http.StatusBadRequest, msgInvalidBlockList
+		}
+		if status != 0 {
+			break
+		}
+		parts = append(parts, sp.part)
+		total += sp.size
+	}
+	u.mu.Unlock()
+
+	if status == 0 {
+		if err := h.multipart.CompleteMultipart(r.Context(), t.Key, t.Version, uploadID, parts, total); err != nil {
+			shimLog.Warn(r.Context(), "multipart complete failed",
+				slog.String("key", t.Key), slog.Int("parts", len(parts)), slog.String("error", err.Error()))
+			status, msg = http.StatusBadGateway, msgUpstream
+		}
+	}
+	if status != 0 {
+		_ = h.multipart.AbortMultipart(r.Context(), t.Key, t.Version, uploadID)
+		http.Error(w, msg, status)
 		return
 	}
 	h.recordBytes(total)
@@ -221,18 +432,24 @@ func (h *Handler) putBlob(w http.ResponseWriter, r *http.Request, target string)
 // forwardPut PUTs body to the presigned target. contentLength must be set (-1
 // is rejected by S3 presigned PUTs), so callers pass the known size.
 func (h *Handler) forwardPut(r *http.Request, target string, body io.Reader, contentLength int64) (int, error) {
+	status, _, err := h.put(r, target, body, contentLength)
+	return status, err
+}
+
+// put sends body to a presigned URL and returns the response status and ETag.
+func (h *Handler) put(r *http.Request, target string, body io.Reader, contentLength int64) (int, string, error) {
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPut, target, body)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	req.ContentLength = contentLength
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode, nil
+	return resp.StatusCode, resp.Header.Get("ETag"), nil
 }
 
 func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request, target string) {
@@ -330,6 +547,27 @@ func totalFromContentRange(cr string) (int64, bool) {
 func (h *Handler) blockDir(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return filepath.Join(h.staging, hex.EncodeToString(sum[:]))
+}
+
+// blockIndex recovers the block's position from an @azure/storage-blob block
+// ID: base64 of a 36-character UUID followed by the index zero-padded to 12
+// digits. Indexes beyond S3's part-number ceiling are rejected.
+func blockIndex(id string) (int, bool) {
+	raw, err := base64.StdEncoding.DecodeString(id)
+	if err != nil || len(raw) != 48 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range raw[36:] {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n >= 10000 {
+		return 0, false
+	}
+	return n, true
 }
 
 // encodeBlockID maps an Azure block ID (itself base64, may contain / + =) to a

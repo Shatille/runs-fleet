@@ -244,6 +244,13 @@ forever; a `~refresh` suffix echoed back on a save is stripped), and per-run
 `actions/cache` keys are newest-first by construction, so expiry alone keeps the
 live entries and drops the rest.
 
+Runners stream large cache saves to S3 as multipart uploads that the
+orchestrator creates, presigns and completes. Give the orchestrator role
+`s3:AbortMultipartUpload` on the bucket, so it can discard a failed upload, and add an
+`AbortIncompleteMultipartUpload` rule (1 day) on the `caches/` prefix, so parts of
+uploads a cancelled job never finished are removed; expiration rules do not
+remove incomplete uploads.
+
 The cache bucket (`RUNS_FLEET_CACHE_BUCKET`) also serves transparent Docker
 layer caching for buildx builds, under a `buildkit/` prefix beside the Actions
 cache's `caches/`. This needs no configuration; it becomes effective once the

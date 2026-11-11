@@ -2,10 +2,12 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Shavakan/runs-fleet/pkg/cache/blobshim"
 	"github.com/Shavakan/runs-fleet/pkg/cache/cachev2"
 	"github.com/Shavakan/runs-fleet/pkg/cache/wire"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -102,5 +104,50 @@ func TestHTTPPresignerSendsToken(t *testing.T) {
 	}
 	if gotToken != "tok-123" {
 		t.Errorf("X-Cache-Token = %q, want tok-123", gotToken)
+	}
+}
+
+func TestHTTPPresignerMultipartRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeMultipart{}
+	server := NewServerWithClientsAndScope(&MockS3API{}, &MockPresignAPI{}, "bucket", "org/repo")
+	server.SetMultipartClients(f, f)
+	mux := http.NewServeMux()
+	NewHandlerWithAuth(server, nil, "").RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	p := cachev2.NewHTTPPresigner(ts.Client(), ts.URL, "")
+	ctx := context.Background()
+	id, err := p.CreateMultipart(ctx, "k", "v1")
+	if err != nil || id != testUploadID {
+		t.Fatalf("CreateMultipart = %q, %v", id, err)
+	}
+	url, err := p.PresignPart(ctx, "k", "v1", id, 4)
+	if err != nil || url != testPartURL {
+		t.Fatalf("PresignPart = %q, %v", url, err)
+	}
+	if *f.presignIn.PartNumber != 4 {
+		t.Errorf("part number = %d, want 4", *f.presignIn.PartNumber)
+	}
+	if err := p.CompleteMultipart(ctx, "k", "v1", id, []wire.MultipartPart{{PartNumber: 1, ETag: "a"}}, 9); err != nil {
+		t.Fatalf("CompleteMultipart: %v", err)
+	}
+	if err := p.AbortMultipart(ctx, "k", "v1", id); err != nil {
+		t.Fatalf("AbortMultipart: %v", err)
+	}
+	if f.createKey != "caches/org/repo/v1/k" || f.abortKey != "caches/org/repo/v1/k" {
+		t.Errorf("keys = create %q abort %q", f.createKey, f.abortKey)
+	}
+}
+
+func TestHTTPPresignerMultipartUnsupported(t *testing.T) {
+	t.Parallel()
+
+	ts := v1Server(t, &MockS3API{})
+	p := cachev2.NewHTTPPresigner(ts.Client(), ts.URL, "")
+	if _, err := p.CreateMultipart(context.Background(), "k", "v1"); !errors.Is(err, blobshim.ErrMultipartUnsupported) {
+		t.Errorf("CreateMultipart err = %v, want ErrMultipartUnsupported", err)
 	}
 }

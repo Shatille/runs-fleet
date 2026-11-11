@@ -78,8 +78,9 @@ func TestCreateCacheEntryEmbedsPresignedUploadURL(t *testing.T) {
 	if !resp.OK {
 		t.Error("ok = false")
 	}
-	if got := decodeBlobTarget(t, resp.SignedUploadURL); got != p.uploadURL {
-		t.Errorf("embedded target = %q, want %q", got, p.uploadURL)
+	want := testBlobBase + blobshim.PathPrefix + blobshim.EncodeUploadTarget(p.uploadURL, "k", "v1")
+	if resp.SignedUploadURL != want {
+		t.Errorf("upload url = %q, want the presigned URL with its key and version (%q)", resp.SignedUploadURL, want)
 	}
 }
 
