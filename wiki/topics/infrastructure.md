@@ -66,8 +66,9 @@ Four templates: `runner-base-{amd64,arm64}.pkr.hcl` and
 **Base (`provision-base.sh`, ~16 min)** — the shared OS layer and the default
 home for any new package. In order of appearance:
 
-- `dnf upgrade --releasever=latest`, then `dnf remove --oldinstallonly` — see
-  Key Decisions; this is what moves the OS past published CVEs.
+- `dnf upgrade --releasever=latest` — see Key Decisions; this is what moves the
+  OS past published CVEs. `provision-prune-kernels.sh` removes the superseded
+  kernel as the last step before the scan, in both layers.
 - `*-minimal` → full package variants; base packages; git-lfs system hooks;
   GitHub CLI repo + `gh`.
 - On ARM64 only: a **from-source gold linker** (binutils) for Go race-detector
@@ -469,9 +470,14 @@ admin UI).
   fixes live in a *newer* snapshot. Without this the Trivy gate fails on
   kernel/containerd/docker/wget CVEs that nothing in the build could advance.
   The kernel is `installonly`, so the upgrade *adds* the new one and leaves the
-  old package in the RPM DB where Trivy still reads it; hence the
-  `--oldinstallonly` removal with `protect_running_kernel=false` — safe only
-  because this image is snapshotted and never rebooted in place. The repeat in
+  old package in the RPM DB where Trivy still reads it.
+  `provision-prune-kernels.sh` removes it by name with
+  `protect_running_kernel=false` as the last step before the scan, then asserts
+  the default boot entry is the remaining kernel. `dnf remove --oldinstallonly`
+  cannot do this: it always skips the running kernel, which on a build instance
+  is the superseded one. It runs last because it deletes the running kernel's
+  modules — safe only because this image is snapshotted and never rebooted in
+  place. The repeat in
   the runner layer exists because that layer runs the gate and rebuilds far more
   often. Separately, Go-toolchain CVEs (e.g. CVE-2026-46600) are cleared by
   bumping the `toolchain` directive — `go.mod` now carries `go 1.26.0` with
