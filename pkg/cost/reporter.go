@@ -63,6 +63,14 @@ var familyVCPUHourly = map[string]float64{
 	"m7i": 0.0630,
 	"r6i": 0.0800,
 	"r7i": 0.0840,
+	"c8i": 0.058985,
+	"m8i": 0.068355,
+	"r8i": 0.08379,
+	"c8a": 0.06783,
+	"m8a": 0.07861,
+	"r8a": 0.09636,
+	"c9g": 0.05453,
+	"m9g": 0.06319,
 }
 
 // burstablePricing prices the t-family per type. Burstable sizes cannot be

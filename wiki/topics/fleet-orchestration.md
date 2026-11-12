@@ -305,10 +305,11 @@ conservative; `typesPerSubnet` divides it so every subnet keeps at least one
 type), `defaultLaunchTemplateBase = "runs-fleet-runner"`, `amiCacheTTL = 5m`,
 `amiTerminateFreshness = 10m`, `amiResolveTimeout = 5s`.
 
-**Instance catalog** — `InstanceCatalog` has **116 entries** spanning **20
-distinct (arch, vCPU) shapes**, evenly split **58 arm64 / 58 amd64** across
-**14 families**: arm64 `t4g`, `c7g`, `m7g`, `r7g`, `c8g`, `m8g`, `r8g`; amd64
-`t3`, `c6i`, `c7i`, `m6i`, `m7i`, `r6i`, `r7i`. (Verified by enumerating
+**Instance catalog** — `InstanceCatalog` has **191 entries**, **78 arm64 /
+113 amd64**, across **23 families**: arm64 `t4g`, `c7g`, `m7g`, `r7g`, `c8g`,
+`m8g`, `r8g`, `c9g`, `m9g`; amd64 `t3`, `t8i`, `c6i`, `c7i`, `m6i`, `m7i`,
+`r6i`, `r7i`, `c8i`, `m8i`, `r8i` (Intel) and `c8a`, `m8a`, `r8a` (AMD). No
+bare-metal sizes. (Verified by enumerating
 `fleet.InstanceCatalog`.) The sub-4-GiB burstable sizes
 (`t4g.micro`/`t4g.small`, `t3.micro`/`t3.small`) are excluded from the catalog
 entirely — smallest selectable *burstable* RAM is 4 GiB (PR #376 RAM floor).
@@ -321,9 +322,16 @@ optimized entries `c7g.medium` and `c8g.medium`
 
 | arch | default families |
 | --- | --- |
-| `arm64` | `c8g, m8g, r8g, c7g, m7g` |
-| `amd64` | `c6i, c7i, m6i, m7i` |
+| `arm64` | `c8g, m8g, r8g, c7g, m7g, c9g, m9g` |
+| `amd64` | `c6i, c7i, m6i, m7i, c8i, m8i, c8a, m8a` |
 | unset | both lists concatenated, ARM first |
+
+`ResolveInstanceTypes` orders equal-sized types amd64 first, then by catalog
+position (stable sort). The first entry is the only type an on-demand launch
+uses and, with no `arch` label, decides the architecture, so new families are
+appended after existing ones to keep it fixed: `c6i.*` for amd64 and unset,
+`c7g.*` for arm64. The exception is an arch-less `cpu=1` request, which
+resolves to arm64 because only arm64 has 1-vCPU sizes.
 
 `t3`/`t4g` remain in the catalog only for explicit `family=` opt-in and pool
 configs that name them.

@@ -799,6 +799,10 @@ the price of a type is this × the catalog's vCPU count:
 | `c8g`  | 0.0525   | `c7i`  | 0.0536   | `r7g`  | 0.0803   |
 | `m7g`  | 0.0490   | `m6i`  | 0.0610   | `r6i`  | 0.0800   |
 | `m8g`  | 0.0540   | `m7i`  | 0.0630   | `r7i`  | 0.0840   |
+| `c9g`  | 0.05453  | `c8i`  | 0.058985 | `r8i`  | 0.08379  |
+| `m9g`  | 0.06319  | `m8i`  | 0.068355 | `r8a`  | 0.09636  |
+|        |          | `c8a`  | 0.06783  |        |          |
+|        |          | `m8a`  | 0.07861  |        |          |
 
 `burstablePricing` (reporter.go:74) — per type, because the t-tiers do not
 scale with vCPU: `t3.{nano…2xlarge}` `0.0068`→`0.4352` and

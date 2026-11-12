@@ -248,3 +248,21 @@ func TestEveryCatalogFamilyIsPricedExplicitly(t *testing.T) {
 		}
 	}
 }
+
+func TestGetInstancePriceCoversNewGenFamilies(t *testing.T) {
+	wants := map[string]float64{
+		"c8i.2xlarge": 0.47188,
+		"m8i.2xlarge": 0.54684,
+		"r8i.2xlarge": 0.67032,
+		"c8a.2xlarge": 0.54264,
+		"m8a.2xlarge": 0.62888,
+		"r8a.2xlarge": 0.77088,
+		"c9g.2xlarge": 0.43624,
+		"m9g.2xlarge": 0.50552,
+	}
+	for typ, want := range wants {
+		if got := cost.GetInstancePrice(typ); !approx(got, want) {
+			t.Errorf("GetInstancePrice(%q) = %v, want %v", typ, got, want)
+		}
+	}
+}

@@ -78,9 +78,11 @@ When `arch` is omitted, runs-fleet does **not** submit both architectures to EC2
 If you want hard control over architecture, set `arch=arm64` or `arch=amd64` explicitly.
 
 **Default families per arch:**
-- ARM64: `c8g, m8g, r8g, c7g, m7g`
-- AMD64: `c6i, c7i, m6i, m7i`
+- ARM64: `c8g, m8g, r8g, c7g, m7g, c9g, m9g`
+- AMD64: `c6i, c7i, m6i, m7i, c8i, m8i, c8a, m8a`
 - No arch: all of the above
+
+The x86 high-memory families (`r6i`, `r7i`, `r8i`, `r8a`) are in the catalog but not in the defaults; request them with `family=`. `gen=8` with `arch=amd64` selects the Intel (`c8i`, `m8i`) and AMD (`c8a`, `m8a`) 8th-generation defaults, and `gen=9` with `arch=arm64` selects Graviton5 (`c9g`, `m9g`).
 
 Burstable families (`t3`, `t4g`, `t8i`) are excluded from these defaults — their price-weighted selection made t3.medium dominate warm pools. To use them, request them explicitly with `family=t3`, `family=t4g`, or `family=t8i`. Note that `t8i` only offers `t8i.medium` (2 vCPU, 4 GiB); its smaller sizes fall under the 4 GiB RAM floor.
 
