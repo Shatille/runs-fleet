@@ -94,6 +94,30 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "r8g.24xlarge", CPU: 96, RAM: 768, Arch: "arm64", Family: "r8g", Gen: 8},
 	{Type: "r8g.48xlarge", CPU: 192, RAM: 1536, Arch: "arm64", Family: "r8g", Gen: 8},
 
+	// ARM64 (Graviton5) - Compute Optimized (9th gen)
+	{Type: "c9g.medium", CPU: 1, RAM: 2, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.large", CPU: 2, RAM: 4, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.xlarge", CPU: 4, RAM: 8, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.2xlarge", CPU: 8, RAM: 16, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.4xlarge", CPU: 16, RAM: 32, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.8xlarge", CPU: 32, RAM: 64, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.12xlarge", CPU: 48, RAM: 96, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.16xlarge", CPU: 64, RAM: 128, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.24xlarge", CPU: 96, RAM: 192, Arch: "arm64", Family: "c9g", Gen: 9},
+	{Type: "c9g.48xlarge", CPU: 192, RAM: 384, Arch: "arm64", Family: "c9g", Gen: 9},
+
+	// ARM64 (Graviton5) - Memory Optimized (9th gen)
+	{Type: "m9g.medium", CPU: 1, RAM: 4, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.large", CPU: 2, RAM: 8, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.xlarge", CPU: 4, RAM: 16, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.2xlarge", CPU: 8, RAM: 32, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.4xlarge", CPU: 16, RAM: 64, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.8xlarge", CPU: 32, RAM: 128, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.12xlarge", CPU: 48, RAM: 192, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.16xlarge", CPU: 64, RAM: 256, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.24xlarge", CPU: 96, RAM: 384, Arch: "arm64", Family: "m9g", Gen: 9},
+	{Type: "m9g.48xlarge", CPU: 192, RAM: 768, Arch: "arm64", Family: "m9g", Gen: 9},
+
 	// amd64 - Burstable (3rd gen)
 	// t3.micro (1 GiB) and t3.small (2 GiB) excluded for the same reason as t4g above:
 	// too little RAM for CI, and being the cheapest match they'd win price-ranking for
@@ -170,6 +194,72 @@ var InstanceCatalog = []InstanceSpec{
 	{Type: "r7i.16xlarge", CPU: 64, RAM: 512, Arch: "amd64", Family: "r7i", Gen: 7},
 	{Type: "r7i.24xlarge", CPU: 96, RAM: 768, Arch: "amd64", Family: "r7i", Gen: 7},
 	{Type: "r7i.48xlarge", CPU: 192, RAM: 1536, Arch: "amd64", Family: "r7i", Gen: 7},
+
+	// amd64 - Compute Optimized (8th gen, Intel)
+	{Type: "c8i.large", CPU: 2, RAM: 4, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.xlarge", CPU: 4, RAM: 8, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.2xlarge", CPU: 8, RAM: 16, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.4xlarge", CPU: 16, RAM: 32, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.8xlarge", CPU: 32, RAM: 64, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.12xlarge", CPU: 48, RAM: 96, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.16xlarge", CPU: 64, RAM: 128, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.24xlarge", CPU: 96, RAM: 192, Arch: "amd64", Family: "c8i", Gen: 8},
+	{Type: "c8i.48xlarge", CPU: 192, RAM: 384, Arch: "amd64", Family: "c8i", Gen: 8},
+
+	// amd64 - Memory Optimized (8th gen, Intel)
+	{Type: "m8i.large", CPU: 2, RAM: 8, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.4xlarge", CPU: 16, RAM: 64, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.8xlarge", CPU: 32, RAM: 128, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.12xlarge", CPU: 48, RAM: 192, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.16xlarge", CPU: 64, RAM: 256, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.24xlarge", CPU: 96, RAM: 384, Arch: "amd64", Family: "m8i", Gen: 8},
+	{Type: "m8i.48xlarge", CPU: 192, RAM: 768, Arch: "amd64", Family: "m8i", Gen: 8},
+
+	// amd64 - High Memory (8th gen, Intel)
+	{Type: "r8i.large", CPU: 2, RAM: 16, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.xlarge", CPU: 4, RAM: 32, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.2xlarge", CPU: 8, RAM: 64, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.4xlarge", CPU: 16, RAM: 128, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.8xlarge", CPU: 32, RAM: 256, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.12xlarge", CPU: 48, RAM: 384, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.16xlarge", CPU: 64, RAM: 512, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.24xlarge", CPU: 96, RAM: 768, Arch: "amd64", Family: "r8i", Gen: 8},
+	{Type: "r8i.48xlarge", CPU: 192, RAM: 1536, Arch: "amd64", Family: "r8i", Gen: 8},
+
+	// amd64 - Compute Optimized (8th gen, AMD)
+	{Type: "c8a.large", CPU: 2, RAM: 4, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.xlarge", CPU: 4, RAM: 8, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.2xlarge", CPU: 8, RAM: 16, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.4xlarge", CPU: 16, RAM: 32, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.8xlarge", CPU: 32, RAM: 64, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.12xlarge", CPU: 48, RAM: 96, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.16xlarge", CPU: 64, RAM: 128, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.24xlarge", CPU: 96, RAM: 192, Arch: "amd64", Family: "c8a", Gen: 8},
+	{Type: "c8a.48xlarge", CPU: 192, RAM: 384, Arch: "amd64", Family: "c8a", Gen: 8},
+
+	// amd64 - Memory Optimized (8th gen, AMD)
+	{Type: "m8a.large", CPU: 2, RAM: 8, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.xlarge", CPU: 4, RAM: 16, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.2xlarge", CPU: 8, RAM: 32, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.4xlarge", CPU: 16, RAM: 64, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.8xlarge", CPU: 32, RAM: 128, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.12xlarge", CPU: 48, RAM: 192, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.16xlarge", CPU: 64, RAM: 256, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.24xlarge", CPU: 96, RAM: 384, Arch: "amd64", Family: "m8a", Gen: 8},
+	{Type: "m8a.48xlarge", CPU: 192, RAM: 768, Arch: "amd64", Family: "m8a", Gen: 8},
+
+	// amd64 - High Memory (8th gen, AMD)
+	{Type: "r8a.large", CPU: 2, RAM: 16, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.xlarge", CPU: 4, RAM: 32, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.2xlarge", CPU: 8, RAM: 64, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.4xlarge", CPU: 16, RAM: 128, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.8xlarge", CPU: 32, RAM: 256, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.12xlarge", CPU: 48, RAM: 384, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.16xlarge", CPU: 64, RAM: 512, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.24xlarge", CPU: 96, RAM: 768, Arch: "amd64", Family: "r8a", Gen: 8},
+	{Type: "r8a.48xlarge", CPU: 192, RAM: 1536, Arch: "amd64", Family: "r8a", Gen: 8},
 }
 
 // instanceCatalogByType provides O(1) lookup by instance type.
@@ -300,12 +390,17 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 	}
 
 	// Sort by CPU count (ascending) for better spot availability
-	// Smaller instances are generally more available
-	sort.Slice(matches, func(i, j int) bool {
+	// Smaller instances are generally more available.
+	// Ties sort amd64 first, then in catalog order: on-demand launches use only
+	// the first entry, so append new families after existing ones.
+	sort.SliceStable(matches, func(i, j int) bool {
 		if matches[i].CPU != matches[j].CPU {
 			return matches[i].CPU < matches[j].CPU
 		}
-		return matches[i].RAM < matches[j].RAM
+		if matches[i].RAM != matches[j].RAM {
+			return matches[i].RAM < matches[j].RAM
+		}
+		return matches[i].Arch == archAMD64 && matches[j].Arch != archAMD64
 	})
 
 	result := make([]string, len(matches))
@@ -318,19 +413,23 @@ func ResolveInstanceTypes(spec FlexibleSpec) []string {
 
 // DefaultFlexibleFamilies returns the default instance families for an architecture.
 // When arch is empty, returns both ARM64 and AMD64 families for maximum spot diversification.
-// Includes 8th gen families (c8g, m8g, r8g) which may not be available in all regions.
+// Includes newer generations (8th gen, 9th gen Graviton) which may not be available in
+// all regions. x86 high-memory families (r6i/r7i/r8i/r8a) are opt-in only.
 // Burstable families (t3/t4g/t8i) stay in the catalog for explicit family= opt-in but are
 // excluded here: price-weighted selection made t3.medium dominate warm pools (a benchmark
 // measured CI 2.25x slower on it), so an unconstrained request must not land on one.
 func DefaultFlexibleFamilies(arch string) []string {
 	switch arch {
-	case "amd64":
-		return []string{"c6i", "c7i", "m6i", "m7i"}
+	case archAMD64:
+		return []string{"c6i", "c7i", "m6i", "m7i", "c8i", "m8i", "c8a", "m8a"}
 	case "arm64":
-		return []string{"c8g", "m8g", "r8g", "c7g", "m7g"}
+		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "c9g", "m9g"}
 	default:
 		// No arch preference - include both for diversification
-		return []string{"c8g", "m8g", "r8g", "c7g", "m7g", "c6i", "c7i", "m6i", "m7i"}
+		return []string{
+			"c8g", "m8g", "r8g", "c7g", "m7g", "c9g", "m9g",
+			"c6i", "c7i", "m6i", "m7i", "c8i", "m8i", "c8a", "m8a",
+		}
 	}
 }
 

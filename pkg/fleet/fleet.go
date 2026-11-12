@@ -80,6 +80,7 @@ type subnetAZCache struct {
 const spotPriceCacheTTL = 5 * time.Minute
 const availabilityCacheTTL = 24 * time.Hour
 const archARM64 = "arm64"
+const archAMD64 = "amd64"
 
 // TagInstanceAssigned durably excludes job-assigned instances from hot-pool claims.
 const TagInstanceAssigned = "runs-fleet:assigned"
@@ -371,7 +372,7 @@ func (m *Manager) getLaunchTemplateForArch(arch string) string {
 	}
 
 	// amd64 instances use a separate launch template (different AMI)
-	if arch == "amd64" {
+	if arch == archAMD64 {
 		return baseName + "-amd64"
 	}
 

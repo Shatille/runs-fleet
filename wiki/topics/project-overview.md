@@ -191,8 +191,8 @@ Routing labels:
 | `spot=false` | Force on-demand cold-start |
 
 Default families when no `family=` label is given
-([docs/USAGE.md](../../docs/USAGE.md)): ARM64 → c8g, m8g, r8g, c7g, m7g;
-AMD64 → c6i, c7i, m6i, m7i; no arch → all of the above. Burstable families
+([docs/USAGE.md](../../docs/USAGE.md)): ARM64 → c8g, m8g, r8g, c7g, m7g, c9g, m9g;
+AMD64 → c6i, c7i, m6i, m7i, c8i, m8i, c8a, m8a; no arch → all of the above. Burstable families
 (`t3`, `t4g`) are excluded from the defaults since PR #385 — they remain in
 the catalog for explicit `family=t3`/`family=t4g` opt-in. When `arch` is
 omitted, runs-fleet queries average spot prices per candidate arch, submits

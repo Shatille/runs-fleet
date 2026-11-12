@@ -935,6 +935,23 @@ func TestParseLabels_Generation(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:              "Gen 8 amd64",
+			labels:            []string{"runs-fleet/cpu=4/arch=amd64/gen=8"},
+			wantGen:           8,
+			wantInstanceTypes: []string{"c8i.xlarge", "m8i.xlarge", "c8a.xlarge", "m8a.xlarge"},
+		},
+		{
+			name:              "Gen 9 ARM64",
+			labels:            []string{"runs-fleet/cpu=4/arch=arm64/gen=9"},
+			wantGen:           9,
+			wantInstanceTypes: []string{"c9g.xlarge", "m9g.xlarge"},
+		},
+		{
+			name:              "New-generation families by name",
+			labels:            []string{"runs-fleet/cpu=4/family=r8a+m9g"},
+			wantInstanceTypes: []string{"r8a.xlarge", "m9g.xlarge"},
+		},
+		{
 			name:              "Gen with family filter",
 			labels:            []string{"runs-fleet=12345/cpu=4/arch=arm64/gen=8/family=c8g"},
 			wantGen:           8,
