@@ -475,7 +475,7 @@ admin UI).
   the runner layer exists because that layer runs the gate and rebuilds far more
   often. Separately, Go-toolchain CVEs (e.g. CVE-2026-46600) are cleared by
   bumping the `toolchain` directive — `go.mod` now carries `go 1.26.0` with
-  `toolchain go1.26.10`.
+  `toolchain go1.26.11`.
 - **Tool-cache entries must match the key each `setup-*` action computes
   (#452, #448).** This is the single most error-prone thing in the base layer,
   because a wrong directory name is invisible at runtime — the action silently
@@ -661,7 +661,7 @@ admin UI).
   the registry cache instead of running fresh. Renaming the stage silently
   reintroduces that.
 - **Both Dockerfiles build on the floating `golang:1.26-alpine` image, while
-  `go.mod` pins `toolchain go1.26.10`.** A stdlib fix reaches the images either
+  `go.mod` pins `toolchain go1.26.11`.** A stdlib fix reaches the images either
   through the floating tag or through the toolchain directive (a download when
   the image lags) — worth knowing before assuming a CVE fix reached both.
 - **Nix Go binaries and the AMI's diverge.** `nix build .#agent-arm64` builds
