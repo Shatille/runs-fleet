@@ -135,6 +135,11 @@ build {
     script = "${path.root}/provision-base.sh"
   }
 
+  # Keep last before the scan: it removes the running kernel's modules.
+  provisioner "shell" {
+    script = "${path.root}/provision-prune-kernels.sh"
+  }
+
   # Vulnerability gate: scan the provisioned filesystem before the AMI snapshot
   # is taken. Reuses the same Trivy config + VEX as the container path. If the
   # scan finds an unsuppressed HIGH/CRITICAL finding, the build fails and no

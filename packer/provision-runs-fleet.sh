@@ -16,11 +16,10 @@ echo "==> Advancing the OS to the newest AL2023 release snapshot"
 # and runner AMIs are rebuilt far more often than base AMIs, so a CVE published
 # after the last base bake would fail the gate with nothing in this build able to
 # fix it. A no-op when the base is current. See the base script for why
-# --releasever and the installonly kernel removal are both needed.
+# --releasever is needed; provision-prune-kernels.sh removes the superseded
+# kernel just before the scan.
 sudo dnf upgrade -y --releasever=latest \
   || { echo "OS snapshot upgrade failed"; exit 1; }
-sudo dnf remove -y --oldinstallonly --setopt protect_running_kernel=false \
-  || echo "no superseded kernels to remove"
 
 echo "==> Creating runs-fleet agent directory"
 sudo mkdir -p /opt/runs-fleet

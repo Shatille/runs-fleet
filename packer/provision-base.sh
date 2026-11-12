@@ -18,16 +18,11 @@ echo "==> Advancing the OS to the newest AL2023 release snapshot"
 # fixes live in a NEWER snapshot. --releasever=latest is what actually moves
 # kernel/containerd/docker/wget past their published CVEs, and without it the
 # Trivy gate in the runner layer fails on packages nothing in the build ever
-# advances (see packer/README.md: there is no scheduled rebuild).
+# advances (see packer/README.md: there is no scheduled rebuild). The kernel is
+# installonly, so this ADDS the new one; provision-prune-kernels.sh removes the
+# superseded one just before the scan.
 sudo dnf upgrade -y --releasever=latest \
   || { echo "OS snapshot upgrade failed"; exit 1; }
-# The kernel is installonly, so the upgrade ADDS the new one and leaves the old
-# package in the RPM DB where Trivy still reads it; installonly_limit=3 means
-# dnf will not prune it on its own. protect_running_kernel=false is required
-# because the build instance is still running the kernel being removed — safe
-# here only because this image is snapshotted and never rebooted in place.
-sudo dnf remove -y --oldinstallonly --setopt protect_running_kernel=false \
-  || echo "no superseded kernels to remove"
 
 echo "==> Replacing *-minimal packages with full variants"
 # Scoped to its own transaction so --allowerasing only affects the known

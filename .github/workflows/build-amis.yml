@@ -75,6 +75,7 @@ jobs:
               # The base build also runs the Trivy CVE gate, so its provisioner
               # and config must rebuild base too.
               - 'packer/provision-trivy-scan.sh'
+              - 'packer/provision-prune-kernels.sh'
               - '.trivy/**'
               - '.github/RUNNER_MIN_VERSION'
               - '.github/workflows/build-amis.yml'
@@ -87,6 +88,7 @@ jobs:
               # every build job skips — a silent no-op.
               - 'packer/provision-validate-agent.sh'
               - 'packer/provision-trivy-scan.sh'
+              - 'packer/provision-prune-kernels.sh'
               - '.trivy/**'
               - 'scripts/**'
               - '.github/workflows/build-amis.yml'
