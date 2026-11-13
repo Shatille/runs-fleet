@@ -107,8 +107,9 @@ largest CloudWatch emitter (see Key Decisions).
      Spot candidates are split off (`StopInstances` rejects spot) and routed to
      terminate; on-demand candidates are stopped up to the `desiredStopped`
      headroom, with overflow terminated.
-8. **Stopped reserve.** `stopped > desiredStopped` terminates the excess,
-   excluding instances a local claim has reserved
+8. **Stopped reserve.** `stopped - started > desiredStopped` terminates the
+   excess, excluding instances this pass started in step 7 (the snapshot still
+   lists them as stopped) and instances a local claim has reserved
    (`poolLock.filterNotInFlight`). `stopped < desiredStopped && desiredRunning == 0`
    creates on-demand instances for
    `desiredStopped - stopped - stoppedCount - withinGraceSpares` — crediting

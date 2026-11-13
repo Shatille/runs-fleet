@@ -681,12 +681,14 @@ func (m *Manager) reconcilePool(ctx context.Context, poolName string) (err error
 		}
 	}
 
-	if stopped > desiredStopped {
-		excess := stopped - desiredStopped
+	if stopped-started > desiredStopped {
+		excess := stopped - started - desiredStopped
+		// The snapshot still lists the instances started above as stopped.
+		leftStopped := m.filterByState(instances, stateStopped)[started:]
 		// Exclude instances a local claim is mid-flight on: the claim has already
 		// issued (or is about to issue) StartInstances, but EC2 may still report
 		// the instance as stopped, and terminating it here would kill a job's runner.
-		stoppedInstances := m.poolLockFor(poolName).filterNotInFlight(m.filterByState(instances, stateStopped))
+		stoppedInstances := m.poolLockFor(poolName).filterNotInFlight(leftStopped)
 		toTerminate := min(excess, len(stoppedInstances))
 		if toTerminate > 0 {
 			instanceIDs := make([]string, toTerminate)
