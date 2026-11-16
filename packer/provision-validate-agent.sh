@@ -245,7 +245,7 @@ set -e
 sudo rm -rf "$smoke_dir"
 # Real builds through the helper on the oldest and newest baked toolchains: the
 # second build of an unchanged module must be served from the helper's local
-# tier with no helper errors. This is also where a toolchain that ignored
+# tier, which is go's own GOCACHE directory, with no helper errors. This is also where a toolchain that ignored
 # GOCACHEPROG would surface (no outcome line at all).
 for gline in 1.24 1.26; do
   gdir=$(newest_toolcache_dir go "$gline")
@@ -256,7 +256,7 @@ for gline in 1.24 1.26; do
   for run in 1 2; do
     sudo -u ec2-user env HOME=/home/ec2-user GOFLAGS= GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off \
       GOCACHE="$work/gocache" GOCACHEPROG="$GOCACHEPROG_HELPER" \
-      RUNS_FLEET_GOCACHE_DIR="$work/l1" RUNS_FLEET_GOCACHE_OUTCOME="$work/outcome" \
+      RUNS_FLEET_GOCACHE_OUTCOME="$work/outcome" \
       "$gobin" -C "$work" build -o "$work/hello" . \
       || fail "go ${gline} build ${run} through GOCACHEPROG failed"
   done
@@ -264,6 +264,9 @@ for gline in 1.24 1.26; do
   last=$(tail -n1 "$work/outcome")
   echo "$last" | grep -qE '"hits_local":[1-9]' || fail "go ${gline}: second build served no hits through the helper: $last"
   echo "$last" | grep -qF '"errors":0' || fail "go ${gline}: helper reported errors: $last"
+  # The helper shares go's own cache directory, so its records must land in GOCACHE.
+  sudo -u ec2-user bash -c "ls '$work'/gocache/*/*-a >/dev/null 2>&1" \
+    || fail "go ${gline}: helper stored nothing under GOCACHE ($work/gocache)"
   sudo rm -rf "$work"
 done
 echo "  OK: $GOCACHEPROG_HELPER (root:root 755, handshake, go 1.24 + 1.26 second-build hits)"

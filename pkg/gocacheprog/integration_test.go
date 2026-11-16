@@ -17,9 +17,14 @@ import "fmt"
 func main() { fmt.Println("hello") }
 `
 
-func TestIntegration_RealGoBuildHitsOnSecondRun(t *testing.T) {
+type integrationFixture struct {
+	goBin, root, helper, mod string
+}
+
+func newIntegrationFixture(t *testing.T) integrationFixture {
+	t.Helper()
 	if testing.Short() {
-		t.Skip("builds the helper and runs the real toolchain twice")
+		t.Skip("builds the helper and runs the real toolchain")
 	}
 	goBin, err := exec.LookPath("go")
 	if err != nil {
@@ -44,25 +49,46 @@ func TestIntegration_RealGoBuildHitsOnSecondRun(t *testing.T) {
 	if werr := os.WriteFile(filepath.Join(mod, "main.go"), []byte(helloMain), 0o644); werr != nil {
 		t.Fatal(werr)
 	}
+	return integrationFixture{goBin: goBin, root: root, helper: helper, mod: mod}
+}
 
-	outcome := filepath.Join(root, "outcome")
-	env := append(hostEnv(),
-		"GOCACHE="+filepath.Join(root, "gocache"),
-		"GOCACHEPROG="+helper,
+func (f integrationFixture) env(goCache string, extra ...string) []string {
+	return append(append(hostEnv(),
+		"GOCACHE="+goCache,
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
 		"GOSUMDB=off",
 		"GOFLAGS=",
-		gocacheprog.EnvDir+"="+filepath.Join(root, "l1"),
+	), extra...)
+}
+
+func (f integrationFixture) build(t *testing.T, env []string) string {
+	t.Helper()
+	cmd := exec.Command(f.goBin, "build", "-x", "-o", filepath.Join(f.root, "hello-bin"), ".")
+	cmd.Dir = f.mod
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func compiled(buildLog string) bool {
+	return strings.Contains(buildLog, "/compile ")
+}
+
+func TestIntegration_RealGoBuildHitsOnSecondRun(t *testing.T) {
+	f := newIntegrationFixture(t)
+
+	outcome := filepath.Join(f.root, "outcome")
+	env := f.env(filepath.Join(f.root, "gocache"),
+		"GOCACHEPROG="+f.helper,
+		gocacheprog.EnvDir+"="+filepath.Join(f.root, "l1"),
 		gocacheprog.EnvOutcome+"="+outcome,
 	)
-	for run := 1; run <= 2; run++ {
-		cmd := exec.Command(goBin, "build", "-o", filepath.Join(root, "hello-bin"), ".")
-		cmd.Dir = mod
-		cmd.Env = env
-		if out, rerr := cmd.CombinedOutput(); rerr != nil {
-			t.Fatalf("run %d: %v\n%s", run, rerr, out)
-		}
+	for range 2 {
+		f.build(t, env)
 	}
 
 	sums, err := gocacheprog.ReadOutcomes(outcome)
@@ -82,6 +108,88 @@ func TestIntegration_RealGoBuildHitsOnSecondRun(t *testing.T) {
 	if first.Errors != 0 || last.Errors != 0 {
 		t.Fatalf("helper reported errors: first %+v, last %+v", first, last)
 	}
+}
+
+func TestIntegration_PlainGoReusesWhatTheHelperStored(t *testing.T) {
+	f := newIntegrationFixture(t)
+	goCache := filepath.Join(f.root, "gocache")
+
+	if log := f.build(t, f.env(goCache, "GOCACHEPROG="+f.helper)); !compiled(log) {
+		t.Fatalf("first build compiled nothing:\n%s", log)
+	}
+	records, err := filepath.Glob(filepath.Join(goCache, "*", "*-a"))
+	if err != nil || len(records) == 0 {
+		t.Fatalf("helper stored no records under GOCACHE %s (err %v)", goCache, err)
+	}
+
+	if log := f.build(t, f.env(goCache)); compiled(log) {
+		t.Fatalf("go without the helper recompiled instead of reusing the helper's entries:\n%s", log)
+	}
+}
+
+func TestIntegration_HelperCoexistsWithGoRunExecutableEntries(t *testing.T) {
+	f := newIntegrationFixture(t)
+	goCache := filepath.Join(f.root, "gocache")
+	goRun := func(env []string) {
+		t.Helper()
+		cmd := exec.Command(f.goBin, "run", ".")
+		cmd.Dir = f.mod
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "hello") {
+			t.Fatalf("go run: %v\n%s", err, out)
+		}
+	}
+
+	goRun(f.env(goCache))
+	executables, err := filepath.Glob(filepath.Join(goCache, "*", "*-d", "*"))
+	if err != nil || len(executables) == 0 {
+		t.Skipf("this toolchain cached no executable entry (err %v)", err)
+	}
+
+	outcome := filepath.Join(f.root, "outcome")
+	withHelper := f.env(goCache, "GOCACHEPROG="+f.helper, gocacheprog.EnvOutcome+"="+outcome)
+	f.build(t, withHelper)
+	goRun(withHelper)
+	goRun(f.env(goCache))
+
+	sums, err := gocacheprog.ReadOutcomes(outcome)
+	if err != nil || len(sums) == 0 {
+		t.Fatalf("outcomes: %v, err %v", sums, err)
+	}
+	for _, sum := range sums {
+		if sum.Errors != 0 {
+			t.Fatalf("helper reported errors over a cache holding executables: %+v", sum)
+		}
+	}
+	for _, exe := range executables {
+		if _, serr := os.Stat(exe); serr != nil {
+			t.Fatalf("helper disturbed go's cached executable: %v", serr)
+		}
+	}
+}
+
+func TestIntegration_HelperServesWhatPlainGoStored(t *testing.T) {
+	f := newIntegrationFixture(t)
+	goCache := filepath.Join(f.root, "gocache")
+
+	if log := f.build(t, f.env(goCache)); !compiled(log) {
+		t.Fatalf("first build compiled nothing:\n%s", log)
+	}
+
+	outcome := filepath.Join(f.root, "outcome")
+	log := f.build(t, f.env(goCache, "GOCACHEPROG="+f.helper, gocacheprog.EnvOutcome+"="+outcome))
+	if compiled(log) {
+		t.Fatalf("go with the helper recompiled instead of reusing go's own entries:\n%s", log)
+	}
+	sums, err := gocacheprog.ReadOutcomes(outcome)
+	if err != nil || len(sums) == 0 {
+		t.Fatalf("outcomes: %v, err %v", sums, err)
+	}
+	last := sums[len(sums)-1]
+	if last.HitsLocal == 0 || last.Errors != 0 {
+		t.Fatalf("helper outcome = %+v, want local hits and no errors", last)
+	}
+	t.Logf("helper outcome over go's own cache: %+v", last)
 }
 
 func hostEnv() []string {

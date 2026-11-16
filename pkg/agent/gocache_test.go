@@ -50,7 +50,6 @@ func TestWriteGoCacheEnv_WritesEveryVarWithHelperLast(t *testing.T) {
 	}
 	lines := readEnvLines(t, runnerPath)
 	want := []string{
-		"RUNS_FLEET_GOCACHE_DIR=" + filepath.Join(runnerPath, "_rf_gocache"),
 		"RUNS_FLEET_GOCACHE_OUTCOME=" + setup.OutcomeFile,
 		"RUNS_FLEET_GOCACHE_BUCKET=runs-fleet-cache",
 		"RUNS_FLEET_GOCACHE_REGION=ap-northeast-1",
@@ -59,9 +58,6 @@ func TestWriteGoCacheEnv_WritesEveryVarWithHelperLast(t *testing.T) {
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Fatalf(".env lines =\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
-	}
-	if _, err := os.Stat(filepath.Join(runnerPath, "_rf_gocache")); !os.IsNotExist(err) {
-		t.Fatalf("cache dir pre-created by the agent (err=%v); the helper must create it as the runner user", err)
 	}
 }
 

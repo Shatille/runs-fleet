@@ -1,6 +1,10 @@
 package gocacheprog
 
-import "testing"
+import (
+	"errors"
+	"path/filepath"
+	"testing"
+)
 
 func TestConfigFromEnv(t *testing.T) {
 	t.Parallel()
@@ -24,10 +28,6 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatalf("remote cfg = %+v", cfg)
 	}
 
-	if _, merr := ConfigFromEnv(func(string) string { return "" }); merr == nil {
-		t.Fatal("missing cache dir accepted")
-	}
-
 	bad, err := ConfigFromEnv(func(k string) string {
 		switch k {
 		case EnvDir:
@@ -42,5 +42,34 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 	if bad.GetWorkers != defaultGetWorkers || bad.OutcomeFile != "" || bad.Bucket != "" {
 		t.Fatalf("defaults = %+v", bad)
+	}
+}
+
+func TestConfigFromEnv_CacheDirFollowsGo(t *testing.T) {
+	t.Parallel()
+
+	userCache := func() (string, error) { return "/home/runner/.cache", nil }
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"override wins":            {map[string]string{EnvDir: "/override", "GOCACHE": "/from/go"}, "/override"},
+		"GOCACHE from cmd/go":      {map[string]string{"GOCACHE": "/from/go"}, "/from/go"},
+		"GOCACHE=off is not a dir": {map[string]string{"GOCACHE": "off"}, filepath.Join("/home/runner/.cache", "go-build")},
+		"go's default":             {nil, filepath.Join("/home/runner/.cache", "go-build")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := configFromEnv(func(k string) string { return tc.env[k] }, userCache)
+			if err != nil || cfg.Dir != tc.want {
+				t.Fatalf("Dir = %q, err %v; want %q", cfg.Dir, err, tc.want)
+			}
+		})
+	}
+
+	noHome := func() (string, error) { return "", errors.New("$HOME is not defined") }
+	if _, err := configFromEnv(func(string) string { return "" }, noHome); err == nil {
+		t.Fatal("no cache dir resolvable, yet no error")
 	}
 }

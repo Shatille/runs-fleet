@@ -263,8 +263,7 @@ transparent Go build cache under a `gocache/<org>/<repo>/` prefix, one object
 per Go action ID. The orchestrator stamps the bucket, region and prefix into
 the runner config for allowed repos; the agent writes them into the runner
 `.env` as `RUNS_FLEET_GOCACHE_BUCKET`, `RUNS_FLEET_GOCACHE_REGION`,
-`RUNS_FLEET_GOCACHE_PREFIX`, `RUNS_FLEET_GOCACHE_DIR` (per-job local tier under
-the runner directory) and `RUNS_FLEET_GOCACHE_OUTCOME`, then sets `GOCACHEPROG`
+`RUNS_FLEET_GOCACHE_PREFIX` and `RUNS_FLEET_GOCACHE_OUTCOME`, then sets `GOCACHEPROG`
 to `/usr/local/bin/runs-fleet-gocacheprog`, but only when that helper is an
 executable file (cmd/go treats a missing helper as fatal, so an AMI without it
 reports `degraded` and leaves `go` untouched). The instance profile needs
@@ -279,6 +278,11 @@ timeout, 20 s upload drain at exit plus a 5 s grace for cancelled uploads to
 return, 4 upload workers over a 256-deep queue,
 breaker at 5 consecutive remote failures; get concurrency (default 8) is the
 one knob, via `RUNS_FLEET_GOCACHE_GET_WORKERS` in the runner environment. The
+helper's local tier is Go's own cache directory (the `GOCACHE` cmd/go exports,
+normally `~/.cache/go-build`) in cmd/go's on-disk format, so a workflow's own
+go-build cache step and the helper share one set of files, and the helper
+applies cmd/go's five-day trim that go skips under `GOCACHEPROG`;
+`RUNS_FLEET_GOCACHE_DIR` overrides the directory. The
 orchestrator refuses to start when the cache is enabled without a bucket or
 with an allowlist entry that is not `org/repo` or `org/*`. Per-workflow opt-out:
 `env: GOCACHEPROG: ""`. See "Automatic Go build caching" in

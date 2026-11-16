@@ -20,9 +20,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "runs-fleet-gocacheprog: %v\n", err)
 		os.Exit(1)
 	}
-	local, err := gocacheprog.NewLocal(cfg.Dir)
+	local, err := gocacheprog.OpenLocal(cfg.Dir, os.Stderr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "runs-fleet-gocacheprog: open cache dir %s: %v\n", cfg.Dir, err)
+		fmt.Fprintf(os.Stderr, "runs-fleet-gocacheprog: %v\n", err)
 		os.Exit(1)
 	}
 	stats := &gocacheprog.Stats{}
@@ -33,6 +33,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "runs-fleet-gocacheprog: write outcome: %v\n", aerr)
 		}
 	}
+	local.Trim()
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "runs-fleet-gocacheprog: %v\n", runErr)
 		os.Exit(1)
