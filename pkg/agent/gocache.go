@@ -22,7 +22,6 @@ const (
 var GoCacheHelperPath = "/usr/local/bin/runs-fleet-gocacheprog"
 
 const (
-	goCacheDir         = "_rf_gocache"
 	goCacheOutcomeFile = "_rf_gocache_outcome"
 	goCacheProgEnv     = "GOCACHEPROG"
 )
@@ -50,7 +49,6 @@ func (r *Registrar) WriteGoCacheEnv(runnerPath string, cfg *secrets.RunnerConfig
 	}
 	outcomeFile := filepath.Join(runnerPath, goCacheOutcomeFile)
 	entries := [][2]string{
-		{gocacheprog.EnvDir, filepath.Join(runnerPath, goCacheDir)},
 		{gocacheprog.EnvOutcome, outcomeFile},
 		{gocacheprog.EnvBucket, cfg.GoCacheBucket},
 		{gocacheprog.EnvRegion, cfg.GoCacheRegion},

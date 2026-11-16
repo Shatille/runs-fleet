@@ -140,14 +140,19 @@ What to know:
   keep their default local cache.
 - **Isolation:** entries are scoped per repository, like the Actions cache.
 - **Opt out per workflow:** set `GOCACHEPROG: ""` in `env:` at the job or step
-  level to use Go's default local cache for that job.
+  level to use Go's default local cache for that job. It reads the same
+  directory the helper fills, so a mixed job loses nothing.
 - **Fail-open:** if the bucket is unreachable or the helper is missing, `go`
   runs with a per-job local cache and the job still passes. A flaky remote is
   abandoned for the rest of the `go` command after five consecutive failures.
-- **Side effect:** with the helper engaged, `~/.cache/go-build` holds almost
-  nothing, so `actions/setup-go`'s cache and hand-rolled `go-build-*`
-  `actions/cache` keys shrink to a few kilobytes. The module cache is
-  unaffected. You can drop those steps or leave them; they are harmless.
+- **Your own Go cache step keeps working:** the helper keeps its local copies
+  in Go's cache directory (`~/.cache/go-build`, or wherever `GOCACHE` points)
+  in Go's own format. Whatever `actions/setup-go` or an `actions/cache` step
+  restores there is served straight from disk, and only what is missing comes
+  from the shared cache; what the step saves is what the job used. Entries
+  unused for five days are dropped, as Go itself would. Such a step is
+  optional: it trades restore and save time for fewer downloads, so keep the
+  archive small or leave it out.
 - **Enablement** is an operator setting (`RUNS_FLEET_GOCACHE_ENABLED`, with a
   per-repo allowlist), so check with your fleet operator whether your repo is
   covered.
